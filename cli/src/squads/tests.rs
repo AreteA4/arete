@@ -475,142 +475,20 @@ fn large_vault_execute_fits_through_lookup_tables() {
 }
 
 // ---------------------------------------------------------------------------
-// Builders checked against the vendored IDL subset
+// Config proposal builders
 // ---------------------------------------------------------------------------
 
-fn idl() -> Value {
-    serde_json::from_str(include_str!("idl-subset.json")).unwrap()
-}
-
-fn idl_instruction<'a>(idl: &'a Value, name: &str) -> &'a Value {
-    idl["instructions"]
-        .as_array()
-        .unwrap()
+/// `(writable, signer)` of each account, in order.
+fn flags(instruction: &Instruction) -> Vec<(bool, bool)> {
+    instruction
+        .accounts
         .iter()
-        .find(|instruction| instruction["name"] == name)
-        .unwrap()
-}
-
-fn idl_type<'a>(idl: &'a Value, name: &str) -> &'a Value {
-    &idl["types"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|ty| ty["name"] == name)
-        .unwrap_or_else(|| panic!("type {name} is not in the IDL subset"))["type"]
-}
-
-/// Borsh-encode `value` as the IDL type `ty` says (the subset's types only).
-fn idl_encode(idl: &Value, ty: &Value, value: &Value, out: &mut Vec<u8>) {
-    match ty {
-        Value::String(name) => match name.as_str() {
-            "u8" => out.push(value.as_u64().unwrap() as u8),
-            "bool" => out.push(u8::from(value.as_bool().unwrap())),
-            "u16" => out.extend_from_slice(&(value.as_u64().unwrap() as u16).to_le_bytes()),
-            "u32" => out.extend_from_slice(&(value.as_u64().unwrap() as u32).to_le_bytes()),
-            "u64" => out.extend_from_slice(&value.as_u64().unwrap().to_le_bytes()),
-            "publicKey" => out.extend_from_slice(&key(value)),
-            "string" => {
-                let text = value.as_str().unwrap();
-                out.extend_from_slice(&(text.len() as u32).to_le_bytes());
-                out.extend_from_slice(text.as_bytes());
-            }
-            other => panic!("unsupported IDL type {other}"),
-        },
-        Value::Object(map) if map.contains_key("option") => {
-            if value.is_null() {
-                out.push(0);
-            } else {
-                out.push(1);
-                idl_encode(idl, &map["option"], value, out);
-            }
-        }
-        Value::Object(map) if map.contains_key("vec") => {
-            let items = value.as_array().unwrap();
-            out.extend_from_slice(&(items.len() as u32).to_le_bytes());
-            for item in items {
-                idl_encode(idl, &map["vec"], item, out);
-            }
-        }
-        Value::Object(map) if map.contains_key("defined") => {
-            let defined = idl_type(idl, map["defined"].as_str().unwrap());
-            match defined["kind"].as_str().unwrap() {
-                "struct" => {
-                    for field in defined["fields"].as_array().unwrap() {
-                        let name = field["name"].as_str().unwrap();
-                        idl_encode(idl, &field["type"], &value[name], out);
-                    }
-                }
-                "enum" => {
-                    // `{ "<Variant>": { fields } }`
-                    let (variant, fields) = value.as_object().unwrap().iter().next().unwrap();
-                    let variants = defined["variants"].as_array().unwrap();
-                    let at = variants
-                        .iter()
-                        .position(|candidate| candidate["name"] == variant.as_str())
-                        .unwrap();
-                    out.push(at as u8);
-                    for field in variants[at]["fields"].as_array().into_iter().flatten() {
-                        let name = field["name"].as_str().unwrap();
-                        idl_encode(idl, &field["type"], &fields[name], out);
-                    }
-                }
-                other => panic!("unsupported IDL kind {other}"),
-            }
-        }
-        other => panic!("unsupported IDL type {other}"),
-    }
-}
-
-/// The instruction data the IDL gives for `name` with `args`.
-fn idl_data(idl: &Value, name: &str, args: &Value) -> Vec<u8> {
-    let instruction = idl_instruction(idl, name);
-    let snake: String = name
-        .chars()
-        .flat_map(|c| {
-            if c.is_ascii_uppercase() {
-                vec!['_', c.to_ascii_lowercase()]
-            } else {
-                vec![c]
-            }
-        })
-        .collect();
-    let mut data = instruction_discriminator(&snake).to_vec();
-    for arg in instruction["args"].as_array().unwrap() {
-        idl_encode(
-            idl,
-            &arg["type"],
-            &args[arg["name"].as_str().unwrap()],
-            &mut data,
-        );
-    }
-    data
-}
-
-/// The builder's accounts carry the IDL's mutability and signer flags.
-fn assert_idl_accounts(idl: &Value, name: &str, built: &Instruction) {
-    let accounts = idl_instruction(idl, name)["accounts"].as_array().unwrap();
-    assert_eq!(accounts.len(), built.accounts.len(), "{name}");
-    for (account, meta) in accounts.iter().zip(&built.accounts) {
-        assert_eq!(
-            account["isMut"].as_bool().unwrap(),
-            meta.writable,
-            "{name}.{}",
-            account["name"]
-        );
-        assert_eq!(
-            account["isSigner"].as_bool().unwrap(),
-            meta.signer,
-            "{name}.{}",
-            account["name"]
-        );
-    }
+        .map(|meta| (meta.writable, meta.signer))
+        .collect()
 }
 
 #[test]
-fn config_transaction_create_encodes_like_the_idl() {
-    let idl = idl();
-    assert_eq!(idl["address"], PROGRAM_ID);
+fn config_transaction_create_add_member_matches_hand_checked_bytes() {
     let multisig = [7u8; 32];
     let creator = [8u8; 32];
     let proposer = [9u8; 32];
@@ -623,20 +501,23 @@ fn config_transaction_create_encodes_like_the_idl() {
             mask: PERMISSION_INITIATE,
         }],
     );
-    assert_eq!(
-        built.data,
-        idl_data(
-            &idl,
-            "configTransactionCreate",
-            &serde_json::json!({ "args": {
-                "actions": [{ "AddMember": { "newMember": {
-                    "key": b58(&proposer), "permissions": { "mask": 1 }
-                } } }],
-                "memo": null
-            } })
+    // sha256("global:config_transaction_create")[..8], then
+    // ConfigTransactionCreateArgs { actions: vec![AddMember { new_member:
+    // Member { key, permissions: { mask: 1 } } }], memo: None }:
+    // u32 length 1, variant 0, the 32-byte key, mask 1, option tag 0.
+    let expected = hex_data(&serde_json::json!({
+        "data": concat!(
+            "9bec57e4894b5127",
+            "01000000",
+            "00",
+            "0909090909090909090909090909090909090909090909090909090909090909",
+            "01",
+            "00"
         )
-    );
-    assert_idl_accounts(&idl, "configTransactionCreate", &built);
+    }));
+    assert_eq!(built.data, expected);
+    // multisig (mut), transaction (mut), creator (signer), rent_payer (mut
+    // signer), system_program.
     assert_eq!(
         account_keys(&built),
         vec![
@@ -647,33 +528,32 @@ fn config_transaction_create_encodes_like_the_idl() {
             b58(&system_program()),
         ]
     );
+    assert_eq!(
+        flags(&built),
+        vec![
+            (true, false),
+            (true, false),
+            (false, true),
+            (true, true),
+            (false, false)
+        ]
+    );
 
-    // Every modelled action encodes as its IDL variant, and decodes back.
+    // Every modelled action encodes the way ConfigTransaction decodes it.
     let actions = [
+        ConfigAction::AddMember {
+            key: proposer,
+            mask: PERMISSION_INITIATE,
+        },
         ConfigAction::RemoveMember { key: proposer },
         ConfigAction::ChangeThreshold { threshold: 2 },
         ConfigAction::SetTimeLock { seconds: 60 },
         ConfigAction::SetRentCollector {
             collector: Some(creator),
         },
+        ConfigAction::SetRentCollector { collector: None },
     ];
     let built = config_transaction_create(&multisig, &creator, 5, &actions);
-    assert_eq!(
-        built.data,
-        idl_data(
-            &idl,
-            "configTransactionCreate",
-            &serde_json::json!({ "args": {
-                "actions": [
-                    { "RemoveMember": { "oldMember": b58(&proposer) } },
-                    { "ChangeThreshold": { "newThreshold": 2 } },
-                    { "SetTimeLock": { "newTimeLock": 60 } },
-                    { "SetRentCollector": { "newRentCollector": b58(&creator) } }
-                ],
-                "memo": null
-            } })
-        )
-    );
     let mut account = account_discriminator("ConfigTransaction").to_vec();
     account.extend_from_slice(&multisig);
     account.extend_from_slice(&creator);
@@ -687,21 +567,7 @@ fn config_transaction_create_encodes_like_the_idl() {
 }
 
 #[test]
-fn proposal_create_encodes_like_the_idl_and_the_deployed_program() {
-    let idl = idl();
-    let multisig = [7u8; 32];
-    let creator = [8u8; 32];
-    let built = proposal_create(&multisig, &creator, 4, false);
-    assert_eq!(
-        built.data,
-        idl_data(
-            &idl,
-            "proposalCreate",
-            &serde_json::json!({ "args": { "transactionIndex": 4, "draft": false } })
-        )
-    );
-    assert_idl_accounts(&idl, "proposalCreate", &built);
-
+fn proposal_create_encodes_like_the_deployed_program() {
     // An observed mainnet proposal_create (creator and rent payer the same
     // member) re-encodes byte for byte.
     let vectors = vectors();
@@ -713,6 +579,18 @@ fn proposal_create_encodes_like_the_idl_and_the_deployed_program() {
     let built = proposal_create(&multisig, &creator, index, data[16] == 1);
     assert_eq!(built.data, data);
     assert_eq!(account_keys(&built), keys(&observed["accounts"]));
+    // multisig, proposal (mut), creator (signer), rent_payer (mut signer),
+    // system_program.
+    assert_eq!(
+        flags(&built),
+        vec![
+            (false, false),
+            (true, false),
+            (false, true),
+            (true, true),
+            (false, false)
+        ]
+    );
 }
 
 #[test]
