@@ -39,11 +39,11 @@ that `a4 dev up` runs in development and your backend runs with
 A project keeps its automations in three layers, and only the last one knows
 where they run:
 
-| Layer | File | |
-| --- | --- | --- |
-| Definition | `automations/index.ts` | Handlers, schedules and view sources. `a4 dev up` runs it. |
-| Runtime | `automations/runtime.ts` | `runtime(env)`: the client, signer, store, simulator and policy, built from the host's environment. |
-| Host entry | `worker.ts`, `api/arete/[route].ts` or `server.ts` | A few lines that hand both to an adapter, plus the host's config. |
+| Layer      | File                                               |                                                                                                     |
+| ---------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Definition | `automations/index.ts`                             | Handlers, schedules and view sources. `a4 dev up` runs it.                                          |
+| Runtime    | `automations/runtime.ts`                           | `runtime(env)`: the client, signer, store, simulator and policy, built from the host's environment. |
+| Host entry | `worker.ts`, `api/arete/[route].ts` or `server.ts` | A few lines that hand both to an adapter, plus the host's config.                                   |
 
 `arete-automations add` writes the runtime (when the project has none) and a
 host's entry, then prints the remaining steps. It never overwrites a file, and
@@ -80,11 +80,11 @@ Set `ARETE_CLUSTER=mainnet` to let the policy sign on mainnet. The adapters
 refuse to start when the bundled protocol client targets another cluster, for
 example a build made while `a4 dev up` had the dev client installed.
 
-| Host | Workers | Schedules and sources | Notes |
-| --- | --- | --- | --- |
-| Cloudflare Workers (`/cloudflare`) | After each webhook and cron run | Cron trigger, every minute | Needs `nodejs_compat`. The runtime is built per request; use Hyperdrive for Postgres. |
-| Vercel (`/vercel`) | After each webhook (`waitUntil`) and cron run | `vercel.json` cron | Per-minute crons need a Pro plan. Use a pooled Postgres URL. |
-| Node (`/node`) | Continuously | In-process ticks; live view subscriptions | Any container host. The only target for append-view sources. |
+| Host                               | Workers                                       | Schedules and sources                     | Notes                                                                                 |
+| ---------------------------------- | --------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------- |
+| Cloudflare Workers (`/cloudflare`) | After each webhook and cron run               | Cron trigger, every minute                | Needs `nodejs_compat`. The runtime is built per request; use Hyperdrive for Postgres. |
+| Vercel (`/vercel`)                 | After each webhook (`waitUntil`) and cron run | `vercel.json` cron                        | Per-minute crons need a Pro plan. Use a pooled Postgres URL.                          |
+| Node (`/node`)                     | Continuously                                  | In-process ticks; live view subscriptions | Any container host. The only target for append-view sources.                          |
 
 The adapters are thin. To run in another framework (Hono, Express, Bun,
 Deno), call `createAutomations(await runtime(env))`, then

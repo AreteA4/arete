@@ -102,8 +102,9 @@ export async function serve(
       server.listen(port, options.hostname ?? '0.0.0.0', () => resolve());
     });
   } catch (error) {
-    // Nothing started may outlive a failed start: sources, the pool.
-    await shutdown();
+    // Nothing started may outlive a failed start: sources, the pool. The
+    // startup error is the one to report, not a failure while cleaning up.
+    await shutdown().catch(() => {});
     throw error;
   }
   const running = automations;
