@@ -75,4 +75,5 @@ Read [the threat model](threat-model.md) before you ship: it says what each
 layer protects against, and what it does not.
 
 See `examples/token-raise/` for a complete backend that refunds
-contributors automatically when a raise fails.
+contributors automatically when a raise fails. It is a pattern to adapt:
+point it at your own protocol's generated client.

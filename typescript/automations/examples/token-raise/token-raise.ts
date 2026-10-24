@@ -1,8 +1,9 @@
-// A stand-in for the module `a4 install protocol token-raise` generates, so
-// this example typechecks on its own. It uses the generator's export names
-// (TOKEN_RAISE_PROTOCOL, TokenRaiseProtocolTypes): replace this file with a
-// re-export of the generated module, which carries the real deployment,
-// hashes and types.
+// A stand-in for the client `a4 install protocol <your-protocol>` (or
+// `a4 dev up`) generates for a token-raise-shaped protocol, so this example
+// typechecks on its own. It uses the generator's export names for a protocol
+// named token-raise (TOKEN_RAISE_PROTOCOL, TokenRaiseProtocolTypes): replace
+// this file with a re-export of your protocol's generated module, which
+// carries the real deployment, hashes and types.
 
 import type { ProtocolDefinition, ProtocolTypeMap } from '@usearete/sdk';
 
