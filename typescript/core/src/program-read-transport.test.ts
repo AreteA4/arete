@@ -388,6 +388,28 @@ describe('program read transports', () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('generated-auth'))).toBe(false);
   });
 
+  it('mints a read session with an API credential and never sends it to the read endpoint', async () => {
+    const seen: Array<{ url: string; authorization: string | null }> = [];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      seen.push({ url, authorization: new Headers(init?.headers).get('authorization') });
+      if (url === 'https://generated-auth.example.test/session') {
+        return new Response(JSON.stringify({ token: 'read-session', scopes: ['read'] }));
+      }
+      return new Response(JSON.stringify({ value: 'ok' }));
+    });
+    const client = await Arete.connect(
+      alphaReadStack('https://reads.example.test/prefix', 'https://generated-auth.example.test/session'),
+      { fetch: fetchMock as typeof fetch, auth: { token: 'dashboard-login', tokenKind: 'api' } }
+    );
+
+    await client.programs.alpha.accounts.State.fetch('address');
+    expect(seen).toEqual([
+      { url: 'https://generated-auth.example.test/session', authorization: 'Bearer dashboard-login' },
+      { url: expect.stringContaining('https://reads.example.test/prefix'), authorization: 'Bearer read-session' },
+    ]);
+  });
+
   it('refreshes the exact targeted token after a release read auth failure', async () => {
     const tokenRequests: unknown[] = [];
     let readRequests = 0;

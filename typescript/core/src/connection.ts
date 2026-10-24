@@ -1,5 +1,11 @@
 import type { Frame } from './frame';
 import {
+  createApiBearerSource,
+  isApiCredentialAuth,
+  sessionMintEndpoint,
+  type ApiBearerSource,
+} from './api-credential';
+import {
   hasAuthorizationHeader,
   isBrowserEnvironment,
   NO_API_KEY_HINT,
@@ -424,6 +430,8 @@ export class ConnectionManager {
 
   private authConfig?: AuthConfig;
   private readonly authFetch: typeof fetch;
+  /** With `auth.tokenKind: 'api'`: the credential sessions are minted with. */
+  private readonly apiBearer?: ApiBearerSource;
   private currentToken?: string;
   private tokenExpiry?: number;
   private tokenScopes = new Set<string>();
@@ -456,6 +464,9 @@ export class ConnectionManager {
       }
       return globalThis.fetch(input, init);
     });
+    if (isApiCredentialAuth(this.authConfig)) {
+      this.apiBearer = createApiBearerSource(this.authConfig, this.authFetch);
+    }
 
     if (config.initialSubscriptions) {
       for (const subscription of config.initialSubscriptions) {
@@ -465,6 +476,12 @@ export class ConnectionManager {
   }
 
   private getTokenEndpoint(): string | undefined {
+    if (this.apiBearer) {
+      // The app's tokenEndpoint returns its API credential; sessions are
+      // minted where the binding (or the hosted stack) says.
+      return sessionMintEndpoint(this.authConfig)
+        ?? (this.hostedAreteUrl ? DEFAULT_HOSTED_TOKEN_ENDPOINT : undefined);
+    }
     if (this.authConfig?.tokenEndpoint) {
       return this.authConfig.tokenEndpoint;
     }
@@ -480,6 +497,10 @@ export class ConnectionManager {
   }
 
   private getAuthStrategy(): AuthStrategy {
+    if (this.apiBearer) {
+      const endpoint = this.getTokenEndpoint();
+      return endpoint ? { kind: 'token-endpoint', endpoint } : { kind: 'none' };
+    }
     if (this.authConfig?.token) {
       return { kind: 'static-token', token: this.authConfig.token };
     }
@@ -786,9 +807,12 @@ export class ConnectionManager {
 
   private async fetchTokenFromEndpoint(
     tokenEndpoint: string,
-    request: AuthTokenRequest
+    request: AuthTokenRequest,
+    refreshCredential = false
   ): Promise<TokenEndpointResponse> {
-    const apiKey = tokenEndpointApiKey(this.authConfig, tokenEndpoint);
+    const apiKey = this.apiBearer
+      ? await this.apiBearer.get(refreshCredential)
+      : tokenEndpointApiKey(this.authConfig, tokenEndpoint);
     const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
       headers: {
@@ -799,6 +823,16 @@ export class ConnectionManager {
       credentials: this.authConfig?.tokenEndpointCredentials,
       body: JSON.stringify(this.createTokenEndpointRequestBody(request)),
     });
+
+    if (
+      !response.ok
+      && response.status === 401
+      && this.apiBearer?.refreshable
+      && !refreshCredential
+    ) {
+      // The API credential may have expired: fetch it again, once.
+      return this.fetchTokenFromEndpoint(tokenEndpoint, request, true);
+    }
 
     if (!response.ok) {
       const rawError = await response.text();

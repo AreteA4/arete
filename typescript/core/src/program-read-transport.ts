@@ -1,5 +1,6 @@
 import { managedAddress, managedPage, managedReadOptions, type ManagedReadOptions, type NativePositionQuery } from './managed-solana';
 import { ConnectionManager } from './connection';
+import { isApiCredentialAuth, withSessionMintEndpoint } from './api-credential';
 import { resolveAuthConfig } from './auth-keys';
 import {
   AreteError,
@@ -107,6 +108,11 @@ function hostedAuthConfig(
   // otherwise unconfigured client still authenticates.
   const runtimeAuth = resolveAuthConfig(configuredAuth);
   const metadata = binding.auth;
+  // An API credential never reaches the read endpoint: the binding's
+  // session endpoint mints a read session with it.
+  if (isApiCredentialAuth(runtimeAuth)) {
+    return withSessionMintEndpoint(runtimeAuth!, metadata.sessionEndpoint);
+  }
   const runtimeStrategyConfigured = runtimeAuth?.token !== undefined
     || runtimeAuth?.getToken !== undefined
     || runtimeAuth?.tokenEndpoint !== undefined;
@@ -128,7 +134,7 @@ function hostedAuth(
   }
 
   const bindingId = config.binding.programReadBindingId;
-  if (!auth || auth.token !== undefined) {
+  if (!auth || (auth.token !== undefined && !isApiCredentialAuth(auth))) {
     return { staticToken: auth?.token };
   }
 

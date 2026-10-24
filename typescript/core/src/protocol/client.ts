@@ -1,3 +1,4 @@
+import { isApiCredentialAuth, withSessionMintEndpoint } from '../api-credential';
 import { classifyApiKey, isBrowserEnvironment, readEnvironmentVariable, resolveAuthConfig } from '../auth-keys';
 import { ConnectionManager } from '../connection';
 import {
@@ -543,16 +544,19 @@ class ProtocolHttp {
   ) {
     this.fetchImpl = resolveFetch(fetchImpl);
     const auth = resolveAuthConfig(configuredAuth);
-    if (auth?.token !== undefined) {
+    const apiCredential = isApiCredentialAuth(auth);
+    if (auth?.token !== undefined && !apiCredential) {
       if (!auth.token) throw new AreteError('Authentication token is empty', 'TOKEN_INVALID');
       this.staticToken = auth.token;
       return;
     }
     // Keys mint through the generated session endpoint unless the app
     // brought its own token strategy.
-    const managerAuth = hasRuntimeAuthStrategy(auth)
-      ? auth
-      : { ...auth, tokenEndpoint: sessionEndpoint };
+    const managerAuth = apiCredential
+      ? withSessionMintEndpoint(auth!, sessionEndpoint)
+      : hasRuntimeAuthStrategy(auth)
+        ? auth
+        : { ...auth, tokenEndpoint: sessionEndpoint };
     this.manager = new ConnectionManager({
       websocketUrl: null,
       auth: managerAuth,

@@ -5,9 +5,10 @@
  * or agent key (servers and scripts) or a user session token (an app that
  * signs its users in to Arete). They do not take the short-lived sessions
  * minted for stacks, gateways and protocol deployments, so this client never
- * mints one: `token` and `getToken` supply the bearer, `tokenEndpoint` is an
- * endpoint of the app's own that returns it, and a secret key is sent as it
- * is.
+ * mints one: `token`, `getToken` and `tokenEndpoint` hand out the API
+ * credential, as with `auth.tokenKind: 'api'` (set it, and the same auth also
+ * drives the hosted gateway transports, which mint binding sessions with it),
+ * and a secret key is sent as it is.
  *
  * SDK extensions receive a client as a {@link PlatformHttpClient} value
  * (the type is exported from `@usearete/sdk/program`), so extension code
@@ -16,7 +17,7 @@
  */
 
 import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
-import { ConnectionManager } from './connection';
+import { createApiBearerSource } from './api-credential';
 import { DEFAULT_A4_API_URL } from './a4-profile';
 import { AreteError, parseApiProblem, parseErrorCode, type AuthConfig } from './types';
 
@@ -92,32 +93,35 @@ export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}
   const fetchImpl = resolveFetch(options.fetch);
   const base = apiBase(options.apiUrl);
   const auth = resolveAuthConfig(options.auth);
-  let bearer: (forceRefresh: boolean) => Promise<string | undefined>;
-  let refreshable = false;
-  if (auth?.token !== undefined) {
-    if (!auth.token) throw new AreteError('Authentication token is empty', 'TOKEN_INVALID');
-    const token = auth.token;
-    bearer = async () => token;
-  } else if (auth?.getToken || auth?.tokenEndpoint) {
-    // The app's own provider or endpoint hands out the bearer; no Arete
-    // session is minted for these routes.
-    const manager = new ConnectionManager({ websocketUrl: null, auth, fetch: fetchImpl });
-    refreshable = true;
-    bearer = (forceRefresh) => manager.getHttpAuthToken([], forceRefresh);
-  } else if (auth?.secretKey !== undefined) {
-    const key = tokenEndpointApiKey(auth, base);
-    bearer = async () => key;
-  } else if (auth?.publishableKey !== undefined) {
+  if (auth?.publishableKey !== undefined && auth.secretKey === undefined
+    && auth.token === undefined && !auth.getToken && !auth.tokenEndpoint) {
     throw new AreteError(
       'Arete account routes refuse publishable keys; use a secret key on a server or a user session token',
       'INVALID_CONFIG'
     );
-  } else {
+  }
+  if (auth?.tokenKind === 'session' && (auth.token !== undefined || auth.getToken || auth.tokenEndpoint)) {
+    throw new AreteError(
+      "Arete API routes take the caller's own credential, not a stack or gateway session; "
+        + "set auth.tokenKind to 'api' for a token, getToken or tokenEndpoint that hands one out",
+      'INVALID_CONFIG'
+    );
+  }
+  // A secret key from the a4 login only goes to the Arete API it was stored for.
+  const credentialAuth = auth?.secretKey !== undefined
+    && auth.token === undefined && !auth.getToken && !auth.tokenEndpoint
+    ? { ...auth, secretKey: tokenEndpointApiKey(auth, base) }
+    : auth;
+  const source = createApiBearerSource(credentialAuth, fetchImpl);
+  if (credentialAuth?.secretKey === undefined && credentialAuth?.token === undefined
+    && !credentialAuth?.getToken && !credentialAuth?.tokenEndpoint) {
     throw new AreteError(
       'No Arete credential: pass auth.secretKey, auth.token, auth.getToken or auth.tokenEndpoint',
       'AUTH_REQUIRED'
     );
   }
+  const bearer = (forceRefresh: boolean) => source.get(forceRefresh);
+  const refreshable = source.refreshable;
 
   return {
     apiUrl: base,

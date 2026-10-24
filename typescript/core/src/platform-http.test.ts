@@ -66,6 +66,21 @@ describe('createPlatformHttpClient', () => {
     });
   });
 
+  it('refuses session-kind tokens, which the API does not accept', () => {
+    const { fetch } = fakeFetch(() => json(200, {}));
+    expect(() => createPlatformHttpClient({ auth: { token: 'x', tokenKind: 'session' }, fetch }))
+      .toThrow(/tokenKind to 'api'/);
+  });
+
+  it('shares an api-kind auth with the gateway transports: getToken is asked with no target', async () => {
+    const getToken = vi.fn(async () => 'login');
+    const { calls, fetch } = fakeFetch(() => json(200, []));
+    const client = createPlatformHttpClient({ auth: { getToken, tokenKind: 'api' }, fetch });
+    await client.request({ path: '/account/squads/notifications' });
+    expect(getToken).toHaveBeenCalledWith({ scopes: [] });
+    expect(new Headers(calls[0]!.init.headers).get('authorization')).toBe('Bearer login');
+  });
+
   it('refuses publishable keys and missing credentials', () => {
     const { fetch } = fakeFetch(() => json(200, {}));
     expect(() => createPlatformHttpClient({ auth: { publishableKey: 'a4_pk_x' }, fetch })).toThrow(/publishable/);
