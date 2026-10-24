@@ -154,6 +154,43 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
             json!({ "error": "no receipt", "code": "protocol-receipt-not-found" }),
         );
     }
+    if let Some(route) = path_only.strip_prefix("/api/protocol-deployments/d-1/squads/") {
+        let proposer = b58(&[61; 32]);
+        return match route {
+            "proposer" => (
+                200,
+                json!({ "pubkey": proposer, "permissions": "initiate", "rootKeyId": "rk-1" }),
+            ),
+            "status" => {
+                let multisig = path.split("multisig=").nth(1).unwrap_or_default();
+                if multisig == b58(&[62; 32]) {
+                    (
+                        200,
+                        json!({ "ready": true, "member": true, "mask": 1, "threshold": 2,
+                        "multisig": multisig, "proposer": proposer }),
+                    )
+                } else {
+                    (
+                        200,
+                        json!({ "ready": false, "member": false, "mask": null, "threshold": 2,
+                        "multisig": multisig, "proposer": proposer, "problem": "not_member" }),
+                    )
+                }
+            }
+            "add-proposer" if body["member"] == b58(&[63; 32]) => (
+                422,
+                json!({ "error": "member cannot initiate", "code": "member_cannot_initiate" }),
+            ),
+            "add-proposer" => (
+                200,
+                json!({ "transactionBase64": "AQ==", "transactionFormat": body["transactionFormat"].as_str().unwrap_or("v0"),
+                    "transactionIndex": 7, "proposal": b58(&[64; 32]), "configTransaction": b58(&[65; 32]),
+                    "multisig": body["multisig"], "member": body["member"], "proposer": proposer,
+                    "lastValidBlockHeight": 1000 }),
+            ),
+            _ => (404, json!({ "error": "not found" })),
+        };
+    }
     if path_only == "/api/registry/protocols/tip-jar/install" {
         return (
             200,
@@ -761,6 +798,9 @@ fn the_execute_tool_is_listed_only_with_a_signer() {
         "protocol_prepare",
         "protocol_submit",
         "protocol_intent",
+        "protocol_squads_proposer",
+        "protocol_squads_status",
+        "protocol_squads_add_proposer",
         "dev_actions",
     ] {
         assert!(listed.iter().any(|name| name == tool), "{tool} missing");
@@ -1086,4 +1126,183 @@ async fn receipts_are_fetched_and_verified_offline_and_on_chain() {
     assert_eq!(missing["found"], false);
     assert_eq!(missing["code"], "protocol-receipt-not-found");
     assert!(agent.receipt(" ").await.is_err());
+}
+
+#[tokio::test]
+async fn squads_onboarding_reads_the_proposer_status_and_add_proposer_transaction() {
+    let (origin, state) = mock_api();
+    let agent = ProtocolAgent::new(None).with_api(&origin, "a4_sk_test");
+    let target = hosted(Some("d-1"));
+    let rpc = format!("{origin}/rpc");
+
+    let proposer = agent.squads_proposer(&target, Some(&rpc)).await.unwrap();
+    assert_eq!(proposer["pubkey"], b58(&[61; 32]));
+    assert_eq!(proposer["permissions"], "initiate");
+    assert_eq!(proposer["deploymentId"], "d-1");
+    // The mock RPC answers 5 lamports.
+    assert_eq!(proposer["proposerLamports"], 5);
+    assert_eq!(proposer["balance"], "low");
+    assert!(proposer["next"].as_str().unwrap().contains("mask 1"));
+    // Without an RPC the balance is unavailable, never zero.
+    let without = agent.squads_proposer(&target, None).await.unwrap();
+    assert_eq!(without["proposerLamports"], Value::Null);
+    assert_eq!(without["balance"], "unavailable");
+
+    let ready = agent
+        .squads_status(&target, &b58(&[62; 32]), Some(&rpc))
+        .await
+        .unwrap();
+    assert_eq!(ready["ready"], true);
+    assert!(ready["next"]
+        .as_str()
+        .unwrap()
+        .starts_with("The proposer can propose"));
+    let missing = agent
+        .squads_status(&target, &b58(&[66; 32]), None)
+        .await
+        .unwrap();
+    assert_eq!(missing["problem"], "not_member");
+    assert!(missing["next"]
+        .as_str()
+        .unwrap()
+        .contains("protocol_squads_add_proposer"));
+    let error = agent
+        .squads_status(&target, "not-a-key", None)
+        .await
+        .unwrap_err();
+    assert!(error.downcast_ref::<InvalidArgs>().is_some(), "{error}");
+
+    let member = b58(&[67; 32]);
+    let added = agent
+        .squads_add_proposer(&target, &b58(&[62; 32]), &member, Some("v1"))
+        .await
+        .unwrap();
+    assert_eq!(added["transactionIndex"], 7);
+    assert_eq!(added["transactionFormat"], "v1");
+    assert!(added["next"].as_str().unwrap().starts_with(&member));
+    let request = seen(&state)
+        .into_iter()
+        .rev()
+        .find(|seen| seen.path.ends_with("/add-proposer"))
+        .unwrap();
+    assert_eq!(request.method, "POST");
+    assert_eq!(
+        request.body,
+        json!({ "multisig": b58(&[62; 32]), "member": member, "transactionFormat": "v1" })
+    );
+    // The routes are read with a read-only protocol session.
+    let mint = seen(&state)
+        .into_iter()
+        .find(|seen| seen.path == "/ws/sessions")
+        .unwrap();
+    assert_eq!(mint.body["scopes"], json!(["protocol:read"]));
+    assert_eq!(mint.body["targetId"], "d-1");
+
+    let refused = agent
+        .squads_add_proposer(&target, &b58(&[62; 32]), &b58(&[63; 32]), None)
+        .await
+        .unwrap_err();
+    let refusal = refused
+        .downcast_ref::<crate::protocol_api::SquadsRefused>()
+        .unwrap();
+    assert_eq!(refusal.status, 422);
+    assert_eq!(refusal.code, "member_cannot_initiate");
+    assert!(
+        refused.to_string().contains("with the Initiate permission"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn squads_refusals_carry_what_to_do() {
+    for code in [
+        "member_cannot_initiate",
+        "proposer_already_member",
+        "proposer_permissions_invalid",
+        "squads_multisig_controlled",
+        "squads_multisig_missing",
+        "protocol_squads_not_used",
+    ] {
+        assert!(
+            crate::protocol_api::squads_refusal_hint(code).is_some(),
+            "{code}"
+        );
+    }
+    let refusal = crate::protocol_api::SquadsRefused {
+        what: "Preparing the add-proposer proposal".into(),
+        status: 409,
+        code: "protocol-squads-not-used".into(),
+        body: json!({ "error": "no squads step" }),
+    };
+    assert_eq!(refusal.normalized_code(), "protocol_squads_not_used");
+    assert!(
+        refusal.to_string().contains("no step whose authority"),
+        "{refusal}"
+    );
+    let other = crate::protocol_api::SquadsRefused {
+        what: "Reading the Squads proposer".into(),
+        status: 500,
+        code: String::new(),
+        body: json!({ "error": "boom" }),
+    };
+    assert_eq!(
+        other.to_string(),
+        "Reading the Squads proposer failed (500): boom"
+    );
+    assert!(squads_status_next(
+        &json!({ "ready": false, "problem": "permissions_invalid", "mask": 7 })
+    )
+    .contains("mask 7"));
+}
+
+#[test]
+fn the_squads_tools_take_a_target_a_multisig_and_a_member() {
+    let tools = crate::AreteMcp::with_protocol_agent(ProtocolAgent::new(None)).tools();
+    let schema = |name: &str| -> Value {
+        let tool = tools
+            .iter()
+            .find(|tool| tool.name == name)
+            .unwrap_or_else(|| panic!("{name} is not listed"));
+        Value::Object((*tool.input_schema).clone())
+    };
+    let required = |name: &str| -> Vec<String> {
+        let mut required: Vec<String> = schema(name)["required"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect();
+        required.sort();
+        required
+    };
+    assert!(required("protocol_squads_proposer").is_empty());
+    assert_eq!(required("protocol_squads_status"), ["multisig"]);
+    assert_eq!(
+        required("protocol_squads_add_proposer"),
+        ["member", "multisig"]
+    );
+    for name in [
+        "protocol_squads_proposer",
+        "protocol_squads_status",
+        "protocol_squads_add_proposer",
+    ] {
+        let properties = &schema(name)["properties"];
+        for target in ["deployment", "protocol", "dev", "project"] {
+            assert!(properties.get(target).is_some(), "{name} has no {target}");
+        }
+    }
+    assert!(schema("protocol_squads_add_proposer")["properties"]
+        .get("transaction_format")
+        .is_some());
+    // Nothing here signs: the add-proposer tool returns the transaction.
+    let add = tools
+        .iter()
+        .find(|tool| tool.name == "protocol_squads_add_proposer")
+        .unwrap();
+    assert!(add
+        .description
+        .as_deref()
+        .unwrap()
+        .contains("Nothing is signed or sent"));
 }

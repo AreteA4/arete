@@ -386,6 +386,65 @@ pub struct ProtocolActionsArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolSquadsProposerArgs {
+    /// Deployment id. Give this or `protocol`.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`); its install
+    /// descriptor's deployment is used.
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolSquadsStatusArgs {
+    /// The team's Squads v4 multisig account (base58), not one of its vaults.
+    pub multisig: String,
+    /// Deployment id. Give this or `protocol`.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`).
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolSquadsAddProposerArgs {
+    /// The team's Squads v4 multisig account (base58), not one of its vaults.
+    pub multisig: String,
+    /// A multisig member with the Initiate permission (base58; in an
+    /// `a4 dev` session also a dev wallet name). It signs, sends and pays.
+    pub member: String,
+    /// `v0` or `v1` (default: the server's).
+    #[serde(default)]
+    pub transaction_format: Option<String>,
+    /// Deployment id. Give this or `protocol`.
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Protocol package reference (e.g. `token-raise`).
+    #[serde(default)]
+    pub protocol: Option<String>,
+    /// Target the local `a4 dev` session instead of Arete.
+    #[serde(default)]
+    pub dev: Option<bool>,
+    /// `a4 dev` project directory (implies `dev`).
+    #[serde(default)]
+    pub project: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ProtocolInstancesArgs {
     /// Deployment id. Give this or `protocol`.
     #[serde(default)]
@@ -1475,6 +1534,12 @@ impl AreteMcp {
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect()
+    }
+
+    /// The tools this server lists, with their schemas.
+    #[cfg(test)]
+    pub(crate) fn tools(&self) -> Vec<rmcp::model::Tool> {
+        self.tool_router.list_all()
     }
 
     /// Serve `describe_sdk` from `source`.
@@ -2591,6 +2656,90 @@ impl AreteMcp {
         let result = self
             .protocols
             .instance(&target, &args.instance, args.wallet.as_deref())
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "The calling account's Squads proposer for a protocol deployment whose \
+                          steps are proposed to a team's Squads v4 multisig (`authority: \
+                          squadsProposer`). Arete holds this key (one per account, shared by \
+                          its deployments); it may only initiate proposals and never votes \
+                          or executes. Returns `pubkey`, `permissions` (`initiate`), \
+                          `rootKeyId`, and `proposerLamports` / `balance` (`ok`, `low`, or \
+                          `unavailable` without an RPC: ARETE_MCP_RPC_URL, the signer's \
+                          `rpcUrl`, always in `a4 dev`). The team adds the proposer to its \
+                          multisig as a member with exactly the Initiate permission (mask 1) \
+                          and funds it with a little SOL: it pays the fee and rent of every \
+                          proposal. Name the deployment with `deployment` or `protocol`, or \
+                          `dev: true` for `a4 dev`. Next: protocol_squads_status, \
+                          protocol_squads_add_proposer."
+    )]
+    async fn protocol_squads_proposer(
+        &self,
+        Parameters(args): Parameters<ProtocolSquadsProposerArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let result = self
+            .protocols
+            .squads_proposer(&target, None)
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Whether the calling account's Squads proposer can propose to `multisig` \
+                          (the Squads v4 multisig account): `ready` (a member with exactly the \
+                          Initiate permission and enough SOL), `member`, `mask`, `threshold`, \
+                          `proposer`, `problem` (`not_member`, `permissions_invalid`, or \
+                          `proposer_unfunded`: a valid member that cannot pay for a proposal; \
+                          send it SOL) when not ready, the proposer's `proposerLamports`, \
+                          `proposerMinLamports` (what one proposal needs, when the server \
+                          reports it), `balance` (`low` means fund it before proposals fail) \
+                          and `next`. Name the deployment with \
+                          `deployment` or `protocol`, or `dev: true` for `a4 dev`."
+    )]
+    async fn protocol_squads_status(
+        &self,
+        Parameters(args): Parameters<ProtocolSquadsStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let result = self
+            .protocols
+            .squads_status(&target, &args.multisig, None)
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "An unsigned transaction that creates a Squads config proposal adding \
+                          the calling account's proposer to `multisig` with the Initiate \
+                          permission only. Nothing is signed or sent: `member`, an existing \
+                          member with the Initiate permission (a dev wallet name in `a4 dev`), \
+                          signs, sends and pays for it; then the multisig's members approve \
+                          and execute the config proposal (normally in the Squads app). \
+                          Returns `transactionBase64`, `transactionFormat`, \
+                          `transactionIndex`, `proposal`, `configTransaction`, `multisig`, \
+                          `member`, `proposer` and `lastValidBlockHeight`. Refusals carry a \
+                          code and what to do: `member_cannot_initiate`, \
+                          `proposer_already_member`, `proposer_permissions_invalid`, \
+                          `squads_multisig_controlled` (a config authority must add it), \
+                          `squads_multisig_missing`, `protocol-squads-not-used` (the deployment \
+                          has no Squads step). Name the deployment with `deployment` or \
+                          `protocol`, or `dev: true` for `a4 dev`."
+    )]
+    async fn protocol_squads_add_proposer(
+        &self,
+        Parameters(args): Parameters<ProtocolSquadsAddProposerArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let format = transaction_format(args.transaction_format.as_deref())?;
+        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
+        let result = self
+            .protocols
+            .squads_add_proposer(&target, &args.multisig, &args.member, format)
             .await
             .map_err(protocol_error)?;
         shaped_result(&result)

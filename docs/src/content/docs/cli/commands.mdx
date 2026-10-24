@@ -108,6 +108,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 protocol show <slug>`                                                     | One listed protocol: trust tier, steps, install command           |
 | `a4 protocol request-listing`                                                 | Ask for your deployment to be listed                              |
 | `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
+| `a4 protocol squads proposer\|status\|add-proposer [target]`                  | Bring your own Squads multisig: proposer, status, add it          |
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
 | `a4 telemetry status`                                                         | Show telemetry status                                             |
@@ -1208,6 +1209,63 @@ a4 protocol actions --dev --wallet default    # a dev wallet name or a pubkey
 | `--dev` / `--project <dir>` | The project's dev deployment                      |
 | `--json`                    | The answer as JSON                                |
 
+### a4 protocol squads
+
+A step whose authority is `squadsProposer` is proposed to your team's own
+Squads v4 multisig by a proposer key Arete holds for your account (one key
+per account, shared by its deployments). The proposer may only initiate:
+add it to the multisig as a member with exactly the Initiate permission
+(mask 1), and fund it with a little SOL, since it pays the fee and rent of
+each proposal. Your members still approve and execute. Name the deployment
+as `a4 protocol actions` does: a deployment id or a protocol package, or
+`--dev` for the project's dev deployment.
+
+```bash
+a4 protocol squads proposer <deployment>
+a4 protocol squads status <deployment> --multisig <M>
+a4 protocol squads add-proposer <deployment> --multisig <M> --member <a member who can initiate>
+a4 protocol squads add-proposer <deployment> --multisig <M> --member <pubkey> \
+  --keypair ~/.config/solana/member.json --rpc-url https://api.mainnet-beta.solana.com
+a4 protocol squads add-proposer --dev --multisig <M> --member alice --send
+```
+
+- `proposer` prints the proposer's public key and, when an RPC answers
+  (`--rpc-url`, `ARETE_MCP_RPC_URL`, or the dev environment), its balance.
+- `status` says whether the proposer can propose to the multisig: `ready`,
+  `member`, `mask`, `threshold`, the balance (and what one proposal needs,
+  when the server reports it) and, when not ready, the problem and its fix:
+  `not_member` (add it with `add-proposer`), `permissions_invalid` (remove it
+  in Squads and add it again) or `proposer_unfunded` (send it SOL; in a dev
+  environment `a4 dev fund <proposer>`).
+- `add-proposer` fetches the unsigned transaction that creates a Squads
+  config proposal adding the proposer with Initiate only. `--member` must
+  already be a member with Initiate: it signs, sends and pays. By default the
+  transaction is printed (base64) with the proposal; sign and send it with
+  that member's wallet, then approve and execute the config proposal in
+  Squads. `--keypair` signs with a Solana keypair file (it must be
+  `--member`) and sends through `--rpc-url`. With `--dev`, `--member` may be a
+  dev wallet name, and `--send` signs with it and sends through the dev
+  environment; approve and execute with [`a4 dev squads`](/cli/local-development/#squads-multisigs).
+
+| Flag                          | Description                                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| `--multisig <address>`        | The multisig account, not one of its vaults (`status`, `add-proposer`)           |
+| `--member <pubkey>`           | A member with Initiate who signs and pays (with `--dev`, also a dev wallet name) |
+| `--keypair <file>`            | `add-proposer`: sign with this keypair and send                                  |
+| `--send`                      | `add-proposer --dev`: sign with the dev wallet `--member` and send               |
+| `--rpc-url <url>`             | Where `--keypair` sends, and where balances are read (not with `--dev`)          |
+| `--transaction-format v0\|v1` | `add-proposer`: the transaction format (default: the server's)                   |
+| `--dev` / `--project <dir>`   | The project's dev deployment                                                     |
+| `--json`                      | The answer as JSON                                                               |
+
+Refusals of `add-proposer` say what to do: `member_cannot_initiate`,
+`proposer_already_member`, `proposer_permissions_invalid`,
+`squads_multisig_controlled` (a multisig with a config authority: that
+authority adds the proposer), `squads_multisig_missing`, and
+`protocol-squads-not-used` (the deployment has no Squads step). The MCP
+server offers the same reads as `protocol_squads_proposer`,
+`protocol_squads_status` and `protocol_squads_add_proposer`.
+
 ### a4 protocol search \[query\]
 
 `a4 protocol search` lists the callable protocol packages that publishers
@@ -1321,6 +1379,7 @@ a4 dev delete --yes
 | `a4 dev step`, `a4 dev wallet`, `a4 dev instance`, `a4 dev replay`    | drive the protocol with local dev wallets                            |
 | `a4 dev sdk`, `a4 dev capture`                                        | the protocol client from the local build; a capture from an RPC node |
 | `a4 dev consent <wallet> --steps <a,b>`                               | opt a dev wallet in to the project's `[dev.automations]`             |
+| `a4 dev squads create\|show\|approve\|execute\|vault-execute`         | Squads v4 multisigs in the environment, driven by dev wallets        |
 
 Every environment command takes `--env <name|id>` (default `ARETE_DEV_ENV`,
 else the project's) and `--json`.

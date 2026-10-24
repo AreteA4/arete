@@ -30,6 +30,7 @@ pub mod env;
 pub mod proxy;
 pub mod runtime;
 pub mod sdk_gen;
+pub mod squads;
 pub mod tools;
 pub mod ui;
 pub mod up;
@@ -129,6 +130,10 @@ pub enum DevCommands {
     /// Opt a dev wallet in to the project's automations ([dev.automations]):
     /// it signs a consent for the steps, as a user's wallet would
     Consent(ConsentArgs),
+    /// Squads v4 multisigs on the dev environment: create one, approve and
+    /// execute its config and vault transactions with dev wallets
+    #[command(subcommand)]
+    Squads(squads::DevSquadsCommands),
 }
 
 #[derive(Args, Debug, Clone)]
@@ -581,6 +586,7 @@ pub fn run(command: DevCommands, json: bool) -> Result<()> {
         DevCommands::Capture(args) => capture::capture(args, json),
         DevCommands::Sdk(args) => sdk(args, json),
         DevCommands::Consent(args) => consent(args, json),
+        DevCommands::Squads(command) => block_on(squads::run(command, json)),
         DevCommands::Replay(args) => block_on(async move {
             let text = std::fs::read_to_string(&args.file)
                 .with_context(|| format!("Failed to read {}", args.file.display()))?;
