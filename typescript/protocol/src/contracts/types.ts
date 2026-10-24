@@ -187,7 +187,15 @@ export type AuthorityV1 =
   | { kind: "participant" }
   | { kind: "role"; role: string }
   | { kind: "keeper" }
-  | { kind: "squadsProposer"; multisig: string };
+  | {
+      kind: "squadsProposer";
+      multisig: string;
+      /**
+       * The Squads v4 vault the step acts from, 0..=255. Absent means vault 0;
+       * lowering drops an explicit 0, so a canonical spec never contains it.
+       */
+      vaultIndex?: number;
+    };
 
 export const SIGNER_CLASSES = [
   "wallet",

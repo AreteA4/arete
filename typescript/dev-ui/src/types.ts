@@ -12,7 +12,7 @@ export type Authority =
   | { kind: "participant" }
   | { kind: "role"; role: string }
   | { kind: "keeper" }
-  | { kind: "squadsProposer"; multisig: string };
+  | { kind: "squadsProposer"; multisig: string; vaultIndex?: number };
 
 export interface FieldSchema {
   type: "string" | "boolean" | "integer" | "array" | "object";
