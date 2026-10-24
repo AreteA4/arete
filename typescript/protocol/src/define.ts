@@ -358,15 +358,13 @@ function lowerAuthority(authority: AuthorityInput, path: string): AuthorityV1 {
   if (authority.kind !== "squadsProposer") return authority;
   // Vault 0 is the default: the canonical spec omits it, so a definition that
   // names vault 0 hashes the same as one that leaves it out.
-  const { vaultIndex } = authority;
+  // Other fields pass through so the validator still rejects unknown keys,
+  // such as a misspelled `vaultindex`.
+  const { vaultIndex, ...rest } = authority;
   if (vaultIndex !== undefined && (!Number.isInteger(vaultIndex) || vaultIndex < 0 || vaultIndex > 255)) {
     definitionError(`${path}/vaultIndex`, "vaultIndex must be an integer in 0..=255");
   }
-  return {
-    kind: "squadsProposer",
-    multisig: authority.multisig,
-    ...(vaultIndex !== undefined && vaultIndex !== 0 ? { vaultIndex } : {}),
-  };
+  return { ...rest, ...(vaultIndex !== undefined && vaultIndex !== 0 ? { vaultIndex } : {}) };
 }
 
 function lowerGuards(guards: GuardsInput | undefined): GuardV1[] {

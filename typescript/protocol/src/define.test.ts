@@ -137,6 +137,20 @@ describe("defineProtocol", () => {
     }
   });
 
+  it("rejects a misspelled Squads vault index", () => {
+    const typo = defineProtocol({
+      ...tokenRaise,
+      steps: {
+        ...tokenRaise.steps,
+        finalize: {
+          ...tokenRaise.steps.finalize,
+          authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig", vaultindex: 3 } as never,
+        },
+      },
+    });
+    expect(() => lowerProtocol(typo)).toThrow(/unknown field .vaultindex./);
+  });
+
   it("reports contract errors with codes and paths", () => {
     expect(() =>
       lowerProtocol(
