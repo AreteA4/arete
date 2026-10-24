@@ -1,8 +1,9 @@
 /**
- * The token raise's create step: creates the mint, the Meteora presale and
- * the team's Squads multisig in one transaction. A template can't express
- * it because the presale and multisig accounts derive from keys allocated
- * per intent, and the quote mint must be checked first.
+ * The token raise's create step: creates the mint and the Meteora presale
+ * in one transaction. A template can't express it because the presale
+ * derives from keys allocated per intent, and the quote mint must be checked
+ * first. The raise is finalised through the team's existing Squads
+ * multisig (the `treasury` resource), so nothing here creates one.
  *
  * Instruction data here is illustrative fixture bytes, not real program
  * layouts; a real handler encodes them with the generated program SDKs.
@@ -20,10 +21,9 @@ interface CreateArgs {
   hardCap: string;
   walletCap: string;
   quoteMint: string;
-  members: string[];
 }
 
-const PROGRAMS = ["meteoraPresale", "splToken", "squadsV4", "system"] as const;
+const PROGRAMS = ["meteoraPresale", "splToken", "system"] as const;
 
 function u64le(value: string): number[] {
   let remaining = BigInt(value);
@@ -44,7 +44,6 @@ export async function createLaunch(
 
   const mint = input.ephemeral.mint!;
   const presaleBase = input.ephemeral.presaleBase!;
-  const createKey = input.ephemeral.createKey!;
   const program = (alias: (typeof PROGRAMS)[number]) => input.programs[alias]!;
 
   return wirePreparedOperation(
@@ -80,15 +79,6 @@ export async function createLaunch(
               ...u64le(input.args.walletCap),
               ...u64le(input.args.deadline),
             ]),
-          },
-          {
-            programId: program("squadsV4"),
-            keys: [
-              { pubkey: createKey, isSigner: true, isWritable: false },
-              { pubkey: input.wallet, isSigner: true, isWritable: true },
-              ...input.args.members.map((member) => ({ pubkey: member, isSigner: false, isWritable: false })),
-            ],
-            data: Uint8Array.from([2, input.args.members.length]),
           },
         ],
       },

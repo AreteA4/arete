@@ -116,7 +116,7 @@ describe("defineProtocol", () => {
           ...tokenRaise.steps,
           finalize: {
             ...tokenRaise.steps.finalize,
-            authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig", vaultIndex },
+            authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig", vaultIndex },
           },
         },
       });
@@ -128,7 +128,7 @@ describe("defineProtocol", () => {
       decoder.decode(canonicalizeJcs(vectors.documents.tokenRaiseVaultIndex!.document as never)),
     );
     const zero = lowerProtocol(withVault(0)).spec;
-    expect(zero.steps.finalize!.authority).toEqual({ kind: "squadsProposer", multisig: "instance.accounts.multisig" });
+    expect(zero.steps.finalize!.authority).toEqual({ kind: "squadsProposer", multisig: "resources.treasury.multisig" });
     expect(validateContract("protocol-spec", zero)).toBe(validateContract("protocol-spec", fixture));
     for (const bad of [256, -1, 1.5]) {
       expect(() => lowerProtocol(withVault(bad))).toThrow(
@@ -144,7 +144,7 @@ describe("defineProtocol", () => {
         ...tokenRaise.steps,
         finalize: {
           ...tokenRaise.steps.finalize,
-          authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig", vaultindex: 3 } as never,
+          authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig", vaultindex: 3 } as never,
         },
       },
     });

@@ -31,7 +31,6 @@ export type TokenRaiseContributeGuardCode = 'deadline_passed' | 'hard_cap_exceed
 export interface TokenRaiseCreateArgs {
   deadline: ProtocolInteger;
   hardCap: ProtocolInteger;
-  members: readonly string[];
   quoteMint: string;
   softCap: ProtocolInteger;
   walletCap: ProtocolInteger;
@@ -82,14 +81,14 @@ export const TOKEN_RAISE_PROTOCOL: ProtocolDefinition<TokenRaiseProtocolTypes, t
   version: '1.0.0',
   package: 'token-raise',
   packageReleaseHash: 'arete:registry-package-release:v2:sha256:9999999999999999999999999999999999999999999999999999999999999999',
-  protocolSpecHash: 'arete:h1:protocol-spec:sha256:29f83127858da49a1eb9308c1986319ea71180eb1bdcd85567d52f31b6c719a0',
+  protocolSpecHash: 'arete:h1:protocol-spec:sha256:7b451102e26f29a46e6d621681833b5df52d6e02d59201f11738f0445cba01cf',
   protocolReleaseHash: 'arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff',
   deployment: { deploymentId: '7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10', access: 'public', apiUrl: 'https://api.example.test/api', sessionEndpoint: 'https://api.example.test/ws/sessions' },
   instanceVisibility: 'account',
   steps: {
     claim: { scope: 'participant', access: 'public', guards: ['raise_not_finalized'], args: [] },
     contribute: { scope: 'participant', access: 'public', guards: ['raise_not_open', 'deadline_passed', 'wallet_cap_exceeded', 'hard_cap_exceeded'], args: ['amount'] },
-    create: { scope: 'create', access: 'secret', guards: ['soft_cap_above_hard_cap'], args: ['deadline', 'hardCap', 'members', 'quoteMint', 'softCap', 'walletCap'] },
+    create: { scope: 'create', access: 'secret', guards: ['soft_cap_above_hard_cap'], args: ['deadline', 'hardCap', 'quoteMint', 'softCap', 'walletCap'] },
     refund: { scope: 'participant', access: 'public', guards: ['raise_not_failed'], args: [] },
   },
   events: { "contribution.confirmed": { machine: 'participant' }, "raise.failed": { machine: 'instance' }, "raise.succeeded": { machine: 'instance' } },

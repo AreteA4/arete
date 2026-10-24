@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "input": {
     "kind": "protocol-spec",
-    "hash": "arete:h1:protocol-spec:sha256:29f83127858da49a1eb9308c1986319ea71180eb1bdcd85567d52f31b6c719a0"
+    "hash": "arete:h1:protocol-spec:sha256:7b451102e26f29a46e6d621681833b5df52d6e02d59201f11738f0445cba01cf"
   },
   "sdkOutputTreeHash": "{{SDK_OUTPUT_TREE_HASH}}",
   "extensions": null,

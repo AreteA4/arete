@@ -1570,7 +1570,7 @@ mod tests {
     fn instance_owned_accounts_are_bound_from_ephemeral_keys() {
         let mut spec = token_raise();
         let owned: Vec<String> = instance_owned_accounts(&spec).into_iter().collect();
-        assert_eq!(owned, ["mint", "multisig", "presale", "vault"]);
+        assert_eq!(owned, ["mint", "presale"]);
         let bind = spec.steps.get_mut("create").unwrap().bind.as_mut().unwrap();
         bind.accounts = [
             ("creator", "wallet"),

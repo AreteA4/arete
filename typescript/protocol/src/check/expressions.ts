@@ -14,7 +14,11 @@
 import { sortedKeys } from "../contracts/shape.js";
 import { isClientCallable, type MachineKind, type ProtocolSpecV1, type StepV1 } from "../contracts/types.js";
 
-export type ExpressionFindingCode = "unknown-reference" | "unknown-function" | "invalid-expression";
+export type ExpressionFindingCode =
+  | "unknown-reference"
+  | "unknown-function"
+  | "invalid-expression"
+  | "squads-multisig-not-from-resources";
 
 export interface ExpressionFinding {
   code: ExpressionFindingCode;
@@ -277,7 +281,9 @@ export function checkSpecExpressions(spec: ProtocolSpecV1): ExpressionFinding[] 
     const step = spec.steps[name]!;
     const base = `/steps/${name}`;
     const scope = stepScope(spec, step, { params, instance, resources });
-    if (step.authority.kind === "squadsProposer") check(step.authority.multisig, scope, `${base}/authority/multisig`);
+    if (step.authority.kind === "squadsProposer") {
+      findings.push(...checkSquadsMultisig(step.authority.multisig, resources, `${base}/authority/multisig`));
+    }
     step.guards.forEach((guard, i) => check(guard.expr, scope, `${base}/guards/${i}/expr`));
     if (step.fee.kind === "input" && step.fee.asset.kind === "spl") check(step.fee.asset.mint, scope, `${base}/fee/asset/mint`);
     for (const account of sortedKeys(step.bind?.accounts ?? {})) {
@@ -303,6 +309,50 @@ export function checkSpecExpressions(spec: ProtocolSpecV1): ExpressionFinding[] 
         });
       });
     }
+  }
+  return findings;
+}
+
+/**
+ * A Squads step's multisig comes from the deployment config: an expression
+ * over `resources.*` and constants only, so it is known (and can be checked)
+ * before the deployment activates.
+ */
+function checkSquadsMultisig(source: string, resources: ReadonlySet<string>, path: string): ExpressionFinding[] {
+  const none = set([]);
+  const scope: ExpressionScope = { now: false, wallet: false, params: none, participant: false, ephemeral: none, reads: none, resources };
+  const tokens = tokenizeExpression(source);
+  if (!Array.isArray(tokens)) return checkExpression(source, scope, path);
+  const outside: ExpressionFinding[] = [];
+  let readsResource = false;
+  tokens.forEach((token, i) => {
+    if (token.kind !== "identifier" || LITERAL_WORDS.has(token.text)) return;
+    const next = tokens[i + 1];
+    if (next?.kind === "operator" && next.text === "(") return;
+    if (token.text.split(".")[0] === "resources") {
+      readsResource = true;
+      return;
+    }
+    outside.push({
+      code: "squads-multisig-not-from-resources",
+      path,
+      offset: token.offset,
+      length: token.text.length,
+      message: `a Squads step's multisig must come from the deployment config: declare it as a resource and read it with resources.<name>, not '${token.text}'`,
+    });
+  });
+  const inScope = checkExpression(source, scope, path).filter(
+    (finding) => finding.code !== "unknown-reference" || source.startsWith("resources.", finding.offset),
+  );
+  const findings = [...inScope, ...outside].sort((a, b) => a.offset - b.offset);
+  if (findings.length === 0 && !readsResource) {
+    findings.push({
+      code: "squads-multisig-not-from-resources",
+      path,
+      offset: 0,
+      length: source.length,
+      message: "a Squads step's multisig must come from the deployment config: declare it as a resource and read it with resources.<name>",
+    });
   }
   return findings;
 }

@@ -395,7 +395,8 @@ mod tests {
         assert_eq!(finalize["authority"], "squadsProposer");
         let create = steps.iter().find(|step| step["name"] == "create").unwrap();
         assert_eq!(create["access"], "secret");
-        assert_eq!(create["args"][2]["type"], "array<string(pubkey)>");
+        assert_eq!(create["args"][2]["name"], "quoteMint");
+        assert_eq!(create["args"][2]["type"], "string(pubkey)");
         assert_eq!(summary["machines"]["instance"]["initial"], "open");
         assert_eq!(summary["events"].as_array().unwrap().len(), 3);
         assert_eq!(summary["metadata"]["instance"]["fields"][0]["name"], "name");

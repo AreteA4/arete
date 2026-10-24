@@ -401,7 +401,7 @@ describe("generateStackSource: direct activity", () => {
   const createBind = (copy: ProtocolSpecV1) => copy.steps.create!.bind!;
 
   it("treats accounts bound from the create step's ephemeral keys as the instance's own", () => {
-    expect([...instanceOwnedAccounts(spec)].sort()).toEqual(["mint", "multisig", "presale", "vault"]);
+    expect([...instanceOwnedAccounts(spec)].sort()).toEqual(["mint", "presale"]);
     const accounts = withSpec((copy) => {
       createBind(copy).accounts = {
         creator: "wallet",

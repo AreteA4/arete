@@ -256,7 +256,7 @@ export interface ProgramTemplateInstruction<P extends InstalledProgram = Install
  * ```ts
  * ix(meteoraPresale, "creator_withdraw", {
  *   args: { remaining_accounts_info: "resources.noRemainingAccounts" },
- *   accounts: { presale: "instance.accounts.presale", owner: "instance.accounts.vault" },
+ *   accounts: { presale: "instance.accounts.presale", owner: 'pda("squadsV4", "vault", resources.treasury.multisig, 0)' },
  * })
  * ```
  */

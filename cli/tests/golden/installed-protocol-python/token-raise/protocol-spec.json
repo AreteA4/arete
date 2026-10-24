@@ -276,6 +276,22 @@
         ],
         "type": "object"
       }
+    },
+    "treasury": {
+      "description": "The team's Squads v4 multisig. Raises are finalised from its vault 0.",
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "multisig": {
+            "format": "pubkey",
+            "type": "string"
+          }
+        },
+        "required": [
+          "multisig"
+        ],
+        "type": "object"
+      }
     }
   },
   "roles": {},
@@ -464,14 +480,6 @@
             "format": "u64",
             "type": "string"
           },
-          "members": {
-            "items": {
-              "format": "pubkey",
-              "type": "string"
-            },
-            "maxItems": 10,
-            "type": "array"
-          },
           "quoteMint": {
             "format": "pubkey",
             "type": "string"
@@ -488,7 +496,6 @@
         "required": [
           "deadline",
           "hardCap",
-          "members",
           "quoteMint",
           "softCap",
           "walletCap"
@@ -501,9 +508,7 @@
       "bind": {
         "accounts": {
           "mint": "ephemeral.mint",
-          "multisig": "pda(\"squadsV4\", \"multisig\", ephemeral.createKey)",
-          "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)",
-          "vault": "pda(\"squadsV4\", \"vault\", pda(\"squadsV4\", \"multisig\", ephemeral.createKey), 0)"
+          "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)"
         },
         "roles": {}
       },
@@ -513,14 +518,12 @@
         "programs": [
           "meteoraPresale",
           "splToken",
-          "squadsV4",
           "system"
         ]
       },
       "ephemeral": [
         "mint",
-        "presaleBase",
-        "createKey"
+        "presaleBase"
       ],
       "fee": {
         "kind": "none"
@@ -550,13 +553,13 @@
       },
       "authority": {
         "kind": "squadsProposer",
-        "multisig": "instance.accounts.multisig"
+        "multisig": "resources.treasury.multisig"
       },
       "build": {
         "instructions": [
           {
             "accounts": {
-              "owner": "instance.accounts.vault",
+              "owner": "pda(\"squadsV4\", \"vault\", resources.treasury.multisig, 0)",
               "presale": "instance.accounts.presale"
             },
             "args": {},

@@ -156,7 +156,6 @@ pub struct TokenRaiseCreateArgs {
     /// Format: `u64`.
     #[serde(rename = "hardCap")]
     pub hard_cap: ProtocolInteger,
-    pub members: Vec<String>,
     /// Format: `pubkey`.
     #[serde(rename = "quoteMint")]
     pub quote_mint: String,
@@ -424,7 +423,7 @@ pub const TOKEN_RAISE_PROTOCOL: protocol::ProtocolDefinition = protocol::Protoco
     version: "1.0.0",
     package: "token-raise",
     package_release_hash: "arete:registry-package-release:v2:sha256:9999999999999999999999999999999999999999999999999999999999999999",
-    protocol_spec_hash: "arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb",
+    protocol_spec_hash: "arete:h1:protocol-spec:sha256:7bf6fd4340857bf8c5b381a03b30b07eb42f9e52e5a461a1dd286147dbca08f4",
     protocol_release_hash: "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     deployment: protocol::ProtocolDeploymentDescriptor {
         deployment_id: "7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
@@ -453,7 +452,7 @@ pub const TOKEN_RAISE_PROTOCOL: protocol::ProtocolDefinition = protocol::Protoco
             scope: protocol::ProtocolStepScope::Create,
             access: protocol::ProtocolStepAccess::Secret,
             guards: &["soft_cap_above_hard_cap"],
-            args: &["deadline", "hardCap", "members", "quoteMint", "softCap", "walletCap"],
+            args: &["deadline", "hardCap", "quoteMint", "softCap", "walletCap"],
         },
         protocol::ProtocolStepDefinition {
             name: "refund",

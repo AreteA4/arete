@@ -127,7 +127,6 @@ function createInput(): PrepareInputV1 {
       hardCap: "5000",
       walletCap: "500",
       quoteMint: QUOTE_MINT,
-      members: ["SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"],
     },
     resources: { launchDefaults: { tokenDecimals: 6 } },
     params: {},
@@ -139,11 +138,9 @@ function createInput(): PrepareInputV1 {
     ephemeral: {
       mint: "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
       presaleBase: "ComputeBudget111111111111111111111111111111",
-      createKey: "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
     },
     programs: {
       meteoraPresale: "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
-      squadsV4: "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
       system: "11111111111111111111111111111111",
       splToken: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
     },
@@ -350,7 +347,6 @@ describe("handler host: prepare", () => {
       "11111111111111111111111111111111",
       "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
       "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
-      "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
     ]);
     expect(ctxRequests).toEqual([
       {

@@ -82,6 +82,22 @@
         "additionalProperties": false
       },
       "description": "Publisher defaults for new launches."
+    },
+    "treasury": {
+      "schema": {
+        "type": "object",
+        "properties": {
+          "multisig": {
+            "type": "string",
+            "format": "pubkey"
+          }
+        },
+        "required": [
+          "multisig"
+        ],
+        "additionalProperties": false
+      },
+      "description": "The team's Squads v4 multisig. Raises are finalised from its vault 0."
     }
   },
   "instanceVisibility": "account",
@@ -214,20 +230,11 @@
           "quoteMint": {
             "type": "string",
             "format": "pubkey"
-          },
-          "members": {
-            "type": "array",
-            "items": {
-              "type": "string",
-              "format": "pubkey"
-            },
-            "maxItems": 10
           }
         },
         "required": [
           "deadline",
           "hardCap",
-          "members",
           "quoteMint",
           "softCap",
           "walletCap"
@@ -244,8 +251,7 @@
       "reads": [],
       "ephemeral": [
         "mint",
-        "presaleBase",
-        "createKey"
+        "presaleBase"
       ],
       "fee": {
         "kind": "none"
@@ -261,7 +267,6 @@
         "programs": [
           "meteoraPresale",
           "splToken",
-          "squadsV4",
           "system"
         ]
       },
@@ -270,9 +275,7 @@
       "bind": {
         "accounts": {
           "mint": "ephemeral.mint",
-          "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)",
-          "multisig": "pda(\"squadsV4\", \"multisig\", ephemeral.createKey)",
-          "vault": "pda(\"squadsV4\", \"vault\", pda(\"squadsV4\", \"multisig\", ephemeral.createKey), 0)"
+          "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)"
         },
         "roles": {}
       }
@@ -361,7 +364,7 @@
       "scope": "instance",
       "authority": {
         "kind": "squadsProposer",
-        "multisig": "instance.accounts.multisig"
+        "multisig": "resources.treasury.multisig"
       },
       "args": {
         "type": "object",
@@ -402,7 +405,7 @@
             "args": {},
             "accounts": {
               "presale": "instance.accounts.presale",
-              "owner": "instance.accounts.vault"
+              "owner": "pda(\"squadsV4\", \"vault\", resources.treasury.multisig, 0)"
             }
           }
         ]

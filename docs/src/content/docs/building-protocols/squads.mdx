@@ -74,11 +74,11 @@ resource's value for each deployment in `arete.toml`:
 treasury = "treasury.json"   # { "multisig": "<your multisig address>" }
 ```
 
-A multisig that comes only from `resources` is fixed for the deployment, so
-Arete checks it when the deployment activates. A step can instead read the
-multisig from the instance (`instance.accounts.multisig`), for example when
-each instance creates its own multisig; that one is checked when the step is
-proposed.
+The multisig must come from the deployment config: the step's `multisig`
+reads a resource (`resources.<name>`) and nothing else. A protocol never
+creates a multisig, and a step that reads it from the instance or its
+arguments is refused when the protocol is checked. Because the multisig is
+fixed for the deployment, Arete checks it when the deployment activates.
 
 The step acts from vault 0 unless it sets `vaultIndex`. Use different vault
 indexes to keep protocols that share a multisig apart. The vault the step's
@@ -161,8 +161,8 @@ When a step is proposed, approve it the same way and run it with
 
 ## When a proposal waits
 
-If a step is proposed while the proposer is not a valid member (for a
-multisig read from the instance), nothing is signed. The proposal waits and
+If a step is proposed while the proposer is not a valid member (for example,
+someone removed it after the deployment activated), nothing is signed. The proposal waits and
 retries for up to 24 hours, and the instance's event stream reports
 `arete.squads.proposerMissing` with the multisig, the proposer and the
 problem. Add the proposer and it goes through on the next retry; after 24
