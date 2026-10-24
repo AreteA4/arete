@@ -1,0 +1,279 @@
+{
+  "$comment": "A subset of the Anchor IDL of squads_multisig_program 2.1.0 (SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf): the instructions `a4 dev squads add-proposer` builds and their argument types, with docs removed. Tests encode against it.",
+  "version": "2.1.0",
+  "name": "squads_multisig_program",
+  "address": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+  "instructions": [
+    {
+      "name": "configTransactionCreate",
+      "accounts": [
+        {
+          "name": "multisig",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "transaction",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "creator",
+          "isMut": false,
+          "isSigner": true
+        },
+        {
+          "name": "rentPayer",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": "ConfigTransactionCreateArgs"
+          }
+        }
+      ]
+    },
+    {
+      "name": "proposalCreate",
+      "accounts": [
+        {
+          "name": "multisig",
+          "isMut": false,
+          "isSigner": false
+        },
+        {
+          "name": "proposal",
+          "isMut": true,
+          "isSigner": false
+        },
+        {
+          "name": "creator",
+          "isMut": false,
+          "isSigner": true
+        },
+        {
+          "name": "rentPayer",
+          "isMut": true,
+          "isSigner": true
+        },
+        {
+          "name": "systemProgram",
+          "isMut": false,
+          "isSigner": false
+        }
+      ],
+      "args": [
+        {
+          "name": "args",
+          "type": {
+            "defined": "ProposalCreateArgs"
+          }
+        }
+      ]
+    }
+  ],
+  "types": [
+    {
+      "name": "ConfigTransactionCreateArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "actions",
+            "type": {
+              "vec": {
+                "defined": "ConfigAction"
+              }
+            }
+          },
+          {
+            "name": "memo",
+            "type": {
+              "option": "string"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ProposalCreateArgs",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "transactionIndex",
+            "type": "u64"
+          },
+          {
+            "name": "draft",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Member",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "key",
+            "type": "publicKey"
+          },
+          {
+            "name": "permissions",
+            "type": {
+              "defined": "Permissions"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Permissions",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "mask",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigAction",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "AddMember",
+            "fields": [
+              {
+                "name": "newMember",
+                "type": {
+                  "defined": "Member"
+                }
+              }
+            ]
+          },
+          {
+            "name": "RemoveMember",
+            "fields": [
+              {
+                "name": "oldMember",
+                "type": "publicKey"
+              }
+            ]
+          },
+          {
+            "name": "ChangeThreshold",
+            "fields": [
+              {
+                "name": "newThreshold",
+                "type": "u16"
+              }
+            ]
+          },
+          {
+            "name": "SetTimeLock",
+            "fields": [
+              {
+                "name": "newTimeLock",
+                "type": "u32"
+              }
+            ]
+          },
+          {
+            "name": "AddSpendingLimit",
+            "fields": [
+              {
+                "name": "createKey",
+                "type": "publicKey"
+              },
+              {
+                "name": "vaultIndex",
+                "type": "u8"
+              },
+              {
+                "name": "mint",
+                "type": "publicKey"
+              },
+              {
+                "name": "amount",
+                "type": "u64"
+              },
+              {
+                "name": "period",
+                "type": {
+                  "defined": "Period"
+                }
+              },
+              {
+                "name": "members",
+                "type": {
+                  "vec": "publicKey"
+                }
+              },
+              {
+                "name": "destinations",
+                "type": {
+                  "vec": "publicKey"
+                }
+              }
+            ]
+          },
+          {
+            "name": "RemoveSpendingLimit",
+            "fields": [
+              {
+                "name": "spendingLimit",
+                "type": "publicKey"
+              }
+            ]
+          },
+          {
+            "name": "SetRentCollector",
+            "fields": [
+              {
+                "name": "newRentCollector",
+                "type": {
+                  "option": "publicKey"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "Period",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "OneTime"
+          },
+          {
+            "name": "Day"
+          },
+          {
+            "name": "Week"
+          },
+          {
+            "name": "Month"
+          }
+        ]
+      }
+    }
+  ]
+}
