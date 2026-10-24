@@ -48,7 +48,7 @@ an application session.
 | `intents.get(executionId)`                                    | Read execution outcome                                           |
 | `events(instanceId, options)`                                 | Resumable instance event stream                                  |
 | `metadata.instance(id)`, `metadata.participant(input)`        | Metadata handles and wallet proof messages                       |
-| `squads.proposer()`, `addProposer(input)`, `status(multisig)` | Multisig proposer onboarding                                     |
+| `squads.proposer()`, `status(multisig)`                       | The Squads proposer and whether it is an Initiate-only member    |
 | `getReceipt(signature)`, `getReceiptKeys()`                   | Receipt and verification keys                                    |
 | `stacks`, `programs`                                          | Included definitions, or connected dependencies inside a session |
 | `close()`                                                     | Release the client's owned resources                             |

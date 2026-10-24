@@ -433,11 +433,14 @@ whether it is allowed and why not.
 A step whose authority is `squadsProposer` is proposed to a Squads v4
 multisig by your account's proposer. The Squads app cannot see a dev
 environment, so `a4 dev squads` creates and drives a multisig there with dev
-wallets. These commands only talk to the project's environment.
+wallets. Every transaction is built locally and signed by a dev wallet; these
+commands only talk to the project's environment.
 
 ```bash
-a4 dev squads create --members alice,bob --threshold 2      # every member: initiate, vote, execute
-a4 protocol squads add-proposer --dev --multisig <M> --member alice --send
+a4 protocol squads proposer --dev                            # the environment's proposer <P>
+a4 dev squads create --members alice,bob --threshold 2 --proposer <P>   # proposer: Initiate only
+# or, for an existing multisig:
+a4 dev squads add-proposer --multisig <M> --proposer <P> --wallet alice   # prints the index <n>
 a4 dev squads approve --multisig <M> --index <n> --wallet alice
 a4 dev squads approve --multisig <M> --index <n> --wallet bob
 a4 dev squads execute --multisig <M> --index <n> --wallet alice
@@ -451,7 +454,8 @@ a4 dev squads vault-execute --multisig <M> --index <n> --wallet alice
 
 | Command                                                                             | What it does                                                                                                                 |
 | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `a4 dev squads create --members <name\|pubkey,...> --threshold <n> [--wallet name]` | creates a multisig (no config authority, no time lock), paid by `--wallet` (default the first member); prints it and vault 0 |
+| `a4 dev squads create --members <name\|pubkey,...> --threshold <n> [--wallet name] [--proposer P]` | creates a multisig (no config authority, no time lock), paid by `--wallet` (default the first member); with `--proposer`, also adds that proposer with Initiate only; prints it and vault 0 |
+| `a4 dev squads add-proposer --multisig <M> --proposer <P> --wallet <name>` | opens a config proposal adding `P` with Initiate only (mask 1) at the next transaction index; the wallet must be a member that can initiate, and pays. Refused when `P` is already a member (with another mask: remove it first) |
 | `a4 dev squads show --multisig <M>`                                                 | members and permissions, threshold, the latest transaction index, vault 0                                                    |
 | `a4 dev squads approve --multisig <M> --index <n> --wallet <name>`                  | approves a proposal, activating a draft first                                                                                |
 | `a4 dev squads execute --multisig <M> --index <n> --wallet <name>`                  | executes an approved config transaction, such as the add-proposer proposal                                                   |
