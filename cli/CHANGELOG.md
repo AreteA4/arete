@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+## [0.45.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.44.3...a4-cli-v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **automations:** scaffold automations with protocol init and add host adapters ([81a09c5](https://github.com/AreteA4/arete/commit/81a09c540312f69b46edb21e447d6f7041f30432))
+* **automations:** scaffold automations with protocol init and add host adapters ([ba38557](https://github.com/AreteA4/arete/commit/ba38557ffe0737843d965f8644229bd82c2a75f7))
+* **cli,mcp:** bring-your-own Squads multisig onboarding ([ab5be0f](https://github.com/AreteA4/arete/commit/ab5be0f88a012da3d5d963447af5a86ae0a2482f))
+* **cli,mcp:** bring-your-own Squads multisig onboarding ([41dd7a2](https://github.com/AreteA4/arete/commit/41dd7a21c005d13529e00b67885ab34b6ef17fcb))
+
+
+### Bug Fixes
+
+* **automations:** address review on host adapters and scaffold ([b4304b4](https://github.com/AreteA4/arete/commit/b4304b4604226971d23603e2a4bc645a33007664))
+* **cli:** accept inline values in [protocol.resources] and report arete.toml errors ([38533ac](https://github.com/AreteA4/arete/commit/38533acbba035566d80c1657ff0e0152047cb4ab))
+* **cli:** accept inline values in [protocol.resources] and report arete.toml errors ([2ff74b0](https://github.com/AreteA4/arete/commit/2ff74b0f57dbdea3a66a5356ca39d20ce7096891))
+* **cli:** load vault-execute accounts through lookup tables; keep --project in follow-ups ([ac853ff](https://github.com/AreteA4/arete/commit/ac853ffeb627e80330ef89d63d77e5ce150108ea))
+* **sdk:** relax only account params for options.accounts ([99b9097](https://github.com/AreteA4/arete/commit/99b9097ef3efd8b3f53b65f116831cdd9ff8b76d))
+* **sdk:** type-check buildInstruction params and report every mismatch ([99d85f3](https://github.com/AreteA4/arete/commit/99d85f3af6c2c975683501a152934a082e3575e5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.44.3 to 0.45.0
+    * arete-artifacts bumped from 0.5.2 to 0.5.3
+    * arete-hash bumped from 0.6.2 to 0.7.0
+    * arete-mcp bumped from 0.44.3 to 0.45.0
+  * build-dependencies
+    * arete-hash bumped from 0.6.2 to 0.7.0
+
 ## [0.44.3](https://github.com/AreteA4/arete/compare/a4-cli-v0.44.2...a4-cli-v0.44.3) (2026-10-23)
 
 

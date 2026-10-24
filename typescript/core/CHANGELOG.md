@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.45.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.44.3...arete-typescript-v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **sdk:** export program extension helpers from @usearete/sdk/program ([8e1e234](https://github.com/AreteA4/arete/commit/8e1e234f446daff3942a09f917bf7029ed329d08))
+* **sdk:** export program extension helpers from @usearete/sdk/program ([9f64a35](https://github.com/AreteA4/arete/commit/9f64a3529ed741e8bdd306aaff4abf8c5491688d))
+* **sdk:** export RawAccountInfo type from @usearete/sdk/program ([29f1467](https://github.com/AreteA4/arete/commit/29f14672f0bd689f85011518f6709aa636e2f600))
+
+
+### Bug Fixes
+
+* **sdk:** accept omitted option args and options.accounts in typed params ([974146f](https://github.com/AreteA4/arete/commit/974146feb6668c134a5ac3686f0c1ddb6ef5e61f))
+* **sdk:** accept prebuilt options of any wider type ([076a88e](https://github.com/AreteA4/arete/commit/076a88e27f83d1da50a5e38d3949f89c43633e84))
+* **sdk:** relax only account params for options.accounts ([99b9097](https://github.com/AreteA4/arete/commit/99b9097ef3efd8b3f53b65f116831cdd9ff8b76d))
+* **sdk:** relax params only for accounts the options are sure to supply ([0253413](https://github.com/AreteA4/arete/commit/02534136ec34fabcf8339d712ab8a24fe35abc4a))
+* **sdk:** type-check buildInstruction params and report every mismatch ([99d85f3](https://github.com/AreteA4/arete/commit/99d85f3af6c2c975683501a152934a082e3575e5))
+* **sdk:** type-check buildInstruction params and report every mismatch ([428fc85](https://github.com/AreteA4/arete/commit/428fc854d5e30f3aa335cc10f26146f844231a9d))
+
 ## [0.44.3](https://github.com/AreteA4/arete/compare/arete-typescript-v0.44.2...arete-typescript-v0.44.3) (2026-10-23)
 
 

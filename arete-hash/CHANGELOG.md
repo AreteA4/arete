@@ -10,6 +10,14 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.6.2...arete-hash-v0.7.0) (2026-10-24)
+
+
+### Features
+
+* **protocol:** let a squadsProposer step choose its Squads vault ([fc98944](https://github.com/AreteA4/arete/commit/fc98944680600f8430a165d83c1709f46f239a04))
+* **protocol:** let a squadsProposer step choose its Squads vault ([598787b](https://github.com/AreteA4/arete/commit/598787b302ef9c2005bb656b18f92abeeab0d0b4))
+
 ## [0.6.2](https://github.com/AreteA4/arete/compare/arete-hash-v0.6.1...arete-hash-v0.6.2) (2026-10-22)
 
 

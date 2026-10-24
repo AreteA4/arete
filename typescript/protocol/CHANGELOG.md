@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.3.0](https://github.com/AreteA4/arete/compare/arete-protocol-npm-v0.2.2...arete-protocol-npm-v0.3.0) (2026-10-24)
+
+
+### Features
+
+* **protocol:** let a squadsProposer step choose its Squads vault ([fc98944](https://github.com/AreteA4/arete/commit/fc98944680600f8430a165d83c1709f46f239a04))
+* **protocol:** let a squadsProposer step choose its Squads vault ([598787b](https://github.com/AreteA4/arete/commit/598787b302ef9c2005bb656b18f92abeeab0d0b4))
+* **sdk:** export program extension helpers from @usearete/sdk/program ([8e1e234](https://github.com/AreteA4/arete/commit/8e1e234f446daff3942a09f917bf7029ed329d08))
+* **sdk:** export program extension helpers from @usearete/sdk/program ([9f64a35](https://github.com/AreteA4/arete/commit/9f64a3529ed741e8bdd306aaff4abf8c5491688d))
+
+
+### Bug Fixes
+
+* **protocol:** keep unknown Squads authority fields so typos are rejected ([d9da14f](https://github.com/AreteA4/arete/commit/d9da14f7153e16d97980edeef12dab5f6e8dd189))
+
 ## [0.2.2](https://github.com/AreteA4/arete/compare/arete-protocol-npm-v0.2.1...arete-protocol-npm-v0.2.2) (2026-10-22)
 
 

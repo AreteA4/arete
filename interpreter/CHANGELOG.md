@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.45.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.44.3...arete-interpreter-v0.45.0) (2026-10-24)
+
+
+### Bug Fixes
+
+* **sdk:** relax only account params for options.accounts ([99b9097](https://github.com/AreteA4/arete/commit/99b9097ef3efd8b3f53b65f116831cdd9ff8b76d))
+* **sdk:** type-check buildInstruction params and report every mismatch ([99d85f3](https://github.com/AreteA4/arete/commit/99d85f3af6c2c975683501a152934a082e3575e5))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.44.3 to 0.45.0
+    * arete-hash bumped from 0.6.2 to 0.7.0
+    * arete-artifacts bumped from 0.5.2 to 0.5.3
+
 ## [0.44.3](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.44.2...arete-interpreter-v0.44.3) (2026-10-23)
 
 
