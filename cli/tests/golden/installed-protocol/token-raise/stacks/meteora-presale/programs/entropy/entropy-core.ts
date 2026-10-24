@@ -73,7 +73,7 @@ export type OpenError = EntropyProgramError;
  * Creates a new entropy var account.
  * Var PDA seeds: ["var", authority, id].
  */
-export const openInstruction = createInstructionHandler<OpenParams, OpenError>({
+export const openInstruction = createInstructionHandler<OpenParams, OpenError, 'authority' | 'payer' | 'provider' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [0],
   args: [
@@ -103,7 +103,7 @@ export type CloseError = EntropyProgramError;
 /**
  * Closes an entropy var account and returns rent to the authority.
  */
-export const closeInstruction = createInstructionHandler<CloseParams, CloseError>({
+export const closeInstruction = createInstructionHandler<CloseParams, CloseError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [1],
   args: [],
@@ -127,7 +127,7 @@ export type NextError = EntropyProgramError;
  * Updates the var for the next random value sample.
  * Resets the commit to the previous seed and clears slot_hash, seed, and value.
  */
-export const nextInstruction = createInstructionHandler<NextParams, NextError>({
+export const nextInstruction = createInstructionHandler<NextParams, NextError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [2],
   args: [
@@ -152,7 +152,7 @@ export type RevealError = EntropyProgramError;
  * Reveals the seed and finalizes the random value.
  * The seed must hash to the commit stored in the var account.
  */
-export const revealInstruction = createInstructionHandler<RevealParams, RevealError>({
+export const revealInstruction = createInstructionHandler<RevealParams, RevealError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [4],
   args: [
@@ -176,7 +176,7 @@ export type SampleError = EntropyProgramError;
  * Samples the slot hash at the end_at slot.
  * Must be called after the end_at slot has passed.
  */
-export const sampleInstruction = createInstructionHandler<SampleParams, SampleError>({
+export const sampleInstruction = createInstructionHandler<SampleParams, SampleError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [5],
   args: [],
@@ -196,7 +196,7 @@ export const sampleInstruction = createInstructionHandler<SampleParams, SampleEr
 export const ENTROPY = {
   name: 'entropy',
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:7b02c7560668148dbdfaa200da75da66e2d1352861a5b1b497cd76cd7bdcf10c',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:f97e1f50f639d2721c747655c1840f6d2f6b524c740d047790749ccea111732c',
   programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
   idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
   normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',

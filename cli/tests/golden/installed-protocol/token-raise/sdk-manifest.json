@@ -4,7 +4,7 @@
     "kind": "protocol-spec",
     "hash": "arete:h1:protocol-spec:sha256:29f83127858da49a1eb9308c1986319ea71180eb1bdcd85567d52f31b6c719a0"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:dee23eb8ed27e24ff601587e391329a20eca41ab28428280ea214ee612bda118",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:e10b29663f2bf0b8b43377d69f8e742c7233df363c675a4d67cce3d53f723f58",
   "extensions": null,
   "artifacts": [
     "README.md",

@@ -675,13 +675,26 @@ pub fn generate_instructions_code(
                 .join(", ")
         );
 
+        // --- Account params: the params keys `options.accounts` may supply
+        // in their place. Arguments are never listed. ---
+        let account_names = if user_params.is_empty() {
+            "never".to_string()
+        } else {
+            user_params
+                .iter()
+                .map(|param| format!("'{}'", param.name))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+
         let docs = render_docs(&instr.docs);
         let handler = format!(
-            "{docs}export const {handler_const} = createInstructionHandler<{params_type}, {error_type}>({{\n  programId: '{program_id}',\n  discriminator: {discriminator},\n  args: {args_literal},\n  accounts: {accounts_literal},\n  errors: {program_errors_const},\n}});",
+            "{docs}export const {handler_const} = createInstructionHandler<{params_type}, {error_type}, {account_names}>({{\n  programId: '{program_id}',\n  discriminator: {discriminator},\n  args: {args_literal},\n  accounts: {accounts_literal},\n  errors: {program_errors_const},\n}});",
             docs = docs,
             handler_const = handler_const,
             params_type = params_type,
             error_type = error_type,
+            account_names = account_names,
             program_id = program_id,
             discriminator = discriminator,
             args_literal = args_literal,
@@ -3629,7 +3642,7 @@ mod tests {
         assert!(code.contains("signerKind: 'provided'"));
         assert!(code.contains("category: 'userProvided'"));
         assert!(code.contains(
-            "export const closeSubscriptionAuthorityInstruction = createInstructionHandler<CloseSubscriptionAuthorityParams, CloseSubscriptionAuthorityError>"
+            "export const closeSubscriptionAuthorityInstruction = createInstructionHandler<CloseSubscriptionAuthorityParams, CloseSubscriptionAuthorityError, 'user' | 'subscriptionAuthority'>"
         ));
         assert!(code.contains("SUBSCRIPTIONS_PROGRAM_ERRORS: ErrorMetadata[]"));
         assert!(code.contains("code: 130, name: 'unauthorized'"));

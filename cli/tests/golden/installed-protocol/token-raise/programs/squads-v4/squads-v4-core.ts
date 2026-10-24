@@ -16,7 +16,7 @@ export interface PingParams {
 
 export type PingError = SquadsV4ProgramError;
 
-export const pingInstruction = createInstructionHandler<PingParams, PingError>({
+export const pingInstruction = createInstructionHandler<PingParams, PingError, 'payer'>({
   programId: 'Vote111111111111111111111111111111111111111',
   discriminator: [1, 2, 3, 4, 5, 6, 7, 8],
   args: [],
@@ -34,7 +34,7 @@ export const pingInstruction = createInstructionHandler<PingParams, PingError>({
 export const VOTE_PROGRAM = {
   name: 'vote_program',
   programId: 'Vote111111111111111111111111111111111111111',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:733210b7dbb86e32b99118c4dfb3c056efa6a4663fe10f7b60f34724e5c65fd2',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:bf76876571dbd6d030f70a137b43abc5e447015a546cd7f20543ff00533e0902',
   programSpecHash: 'arete:h1:program-spec:sha256:79425ade85e0a9614e3f5b9b43e32db349266dc2edd7e7840a4e17b4621b9e86',
   idlContentHash: 'arete:h1:idl-content:sha256:e8807fcf09326e59d31b3601ef4cabe93b4a59c64da4a4609c7d3aac50e20468',
   normalizedIdlHash: 'arete:h1:idl-normalized:sha256:be085beefa8c6b82c87473f54f40b19f107b7418619d3ad1b38d0e46f7c04bd0',

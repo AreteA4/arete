@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:7b3b5a825854a0e561c1a7eeff95e5871be702009b8952b606d07b66a8641b2a"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:811e89282070b54e625805af81f8647f10fae88cfb147390964124f689569a7f",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:be49cfd908573735d26e118a3999e7b2ccf194e711f7e9915a367c3d1922c650",
   "extensions": {
     "contentSha256": "c2ccd42e92638e903a96398afafcda98b319e3c6e2e4ead58dd73e20a669c82d"
   },

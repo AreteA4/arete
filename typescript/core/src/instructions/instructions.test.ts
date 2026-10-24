@@ -25,6 +25,7 @@ import {
   createInstructionHandler,
   buildInstruction,
   executeInstruction,
+  InstructionParamsError,
 } from './executor';
 import type { WalletAdapter, BuiltInstruction, SendResult } from '../wallet/types';
 
@@ -1028,7 +1029,7 @@ describe('createInstructionHandler + buildInstruction', () => {
     const handler = makeHandler();
     expect(() =>
       buildInstruction(handler, { amount: 1n, mint: 42 as unknown as string }, { wallet })
-    ).toThrow(/not a known argument/);
+    ).toThrow(/accounts that are not base58 address strings: mint/);
   });
 
   it('accepts helper-only resolve inputs for PDA derivation', () => {
@@ -1081,14 +1082,174 @@ describe('createInstructionHandler + buildInstruction', () => {
         { amount: 1n, mint: SYSTEM_PROGRAM, mnit: TOKEN_PROGRAM },
         { wallet }
       )
-    ).toThrow(/Unknown parameter "mnit"/);
+    ).toThrow(/unknown keys: mnit/);
   });
 
   it('rejects missing required args instead of encoding zeros', () => {
     const handler = makeHandler();
     expect(() =>
       buildInstruction(handler, { mint: SYSTEM_PROGRAM }, { wallet })
-    ).toThrow(/Missing required argument "amount"/);
+    ).toThrow(/missing required args: amount/);
+  });
+
+  describe('params validation', () => {
+    const MINT = WSOL_MINT;
+
+    // Shaped like the generated SPL Token handlers.
+    const initializeMint2 = createInstructionHandler({
+      name: 'InitializeMint2',
+      programId: TOKEN_PROGRAM,
+      discriminator: [20],
+      args: [
+        { name: 'decimals', type: 'u8' },
+        { name: 'mint_authority', type: 'pubkey' },
+        { name: 'freeze_authority', type: { option: 'pubkey' } },
+      ],
+      accounts: [{ name: 'mint', isSigner: false, isWritable: true, category: 'userProvided' }],
+    });
+    const mintTo = createInstructionHandler({
+      name: 'MintTo',
+      programId: TOKEN_PROGRAM,
+      discriminator: [7],
+      args: [{ name: 'amount', type: 'u64' }],
+      accounts: [
+        { name: 'mint', isSigner: false, isWritable: true, category: 'userProvided' },
+        { name: 'destination', isSigner: false, isWritable: true, category: 'userProvided' },
+        { name: 'authority', isSigner: true, isWritable: false, category: 'signer', signerKind: 'provided' },
+      ],
+    });
+
+    function catchError(run: () => unknown): InstructionParamsError {
+      try {
+        run();
+      } catch (error) {
+        expect(error).toBeInstanceOf(InstructionParamsError);
+        return error as InstructionParamsError;
+      }
+      throw new Error('expected buildInstruction to throw');
+    }
+
+    it('reports every problem at once, naming the instruction', () => {
+      const error = catchError(() =>
+        buildInstruction(initializeMint2, {
+          decimals: 6,
+          mintAuthority: MINT,
+          freezeAuthority: null,
+          mint: MINT,
+        })
+      );
+      expect(error.instruction).toBe('instruction "InitializeMint2"');
+      expect(error.missingArgs).toEqual(['mint_authority']);
+      expect(error.missingAccounts).toEqual([]);
+      expect(error.unknownKeys).toEqual(['mintAuthority', 'freezeAuthority']);
+      expect(error.message).toBe(
+        'Invalid params for instruction "InitializeMint2": missing required args: mint_authority; ' +
+          'unknown keys: mintAuthority (did you mean "mint_authority"?), ' +
+          'freezeAuthority (did you mean "freeze_authority"?). ' +
+          'Expected args [decimals, mint_authority, freeze_authority?] and accounts [mint] ' +
+          '(? = optional or resolved automatically)'
+      );
+    });
+
+    it('names missing accounts and suggests nothing for unrelated keys', () => {
+      const error = catchError(() =>
+        buildInstruction(mintTo, { amount: 1n, mint: MINT, account: MINT, owner: MINT })
+      );
+      expect(error.missingAccounts).toEqual(['destination', 'authority']);
+      expect(error.unknownKeys).toEqual(['account', 'owner']);
+      expect(error.message).toContain('instruction "MintTo"');
+      expect(error.message).toContain('missing required accounts: destination, authority');
+      expect(error.message).toContain('unknown keys: account, owner.');
+    });
+
+    it('suggests the camelCase spelling for snake_case keys', () => {
+      const handler = createInstructionHandler({
+        name: 'deposit',
+        programId: TOKEN_PROGRAM,
+        discriminator: [1],
+        args: [{ name: 'maxAmount', type: 'u64' }],
+        accounts: [
+          { name: 'tokenAccount', isSigner: false, isWritable: true, category: 'userProvided' },
+        ],
+      });
+      const error = catchError(() =>
+        buildInstruction(handler, { max_amount: 1n, token_account: MINT })
+      );
+      expect(error.missingArgs).toEqual(['maxAmount']);
+      expect(error.missingAccounts).toEqual(['tokenAccount']);
+      expect(error.message).toContain('max_amount (did you mean "maxAmount"?)');
+      expect(error.message).toContain('token_account (did you mean "tokenAccount"?)');
+    });
+
+    it('builds when every required key is present and option args are omitted', () => {
+      const built = buildInstruction(initializeMint2, {
+        decimals: 6,
+        mint_authority: SYSTEM_PROGRAM,
+        mint: MINT,
+      });
+      expect(built.data[0]).toBe(20);
+      expect(built.data[1]).toBe(6);
+      // Omitted option arg encodes as None (trailing 0).
+      expect(built.data[built.data.length - 1]).toBe(0);
+      expect(built.keys.map((key) => key.pubkey)).toEqual([MINT]);
+    });
+
+    it('accepts required accounts from options.accounts', () => {
+      const built = buildInstruction(
+        mintTo,
+        { amount: 1n, mint: MINT },
+        { accounts: { destination: SYSTEM_PROGRAM, authority: TOKEN_PROGRAM } }
+      );
+      expect(built.keys.map((key) => key.pubkey)).toEqual([MINT, SYSTEM_PROGRAM, TOKEN_PROGRAM]);
+    });
+
+    it('keeps optional, known, PDA and wallet-signer accounts optional', () => {
+      const handler = createInstructionHandler({
+        name: 'open',
+        programId: TOKEN_PROGRAM,
+        discriminator: [5],
+        args: [],
+        accounts: [
+          { name: 'payer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
+          {
+            name: 'state',
+            isSigner: false,
+            isWritable: true,
+            category: 'pda',
+            pdaConfig: { seeds: [{ type: 'accountRef', accountName: 'payer' }] },
+          },
+          { name: 'systemProgram', isSigner: false, isWritable: false, category: 'known', knownAddress: SYSTEM_PROGRAM },
+          { name: 'referrer', isSigner: false, isWritable: false, category: 'userProvided', isOptional: true },
+        ],
+      });
+      const built = buildInstruction(handler, { referrer: undefined }, { wallet });
+      expect(built.keys).toHaveLength(3);
+
+      // Without a wallet the wallet signer slot must be passed.
+      const error = catchError(() => buildInstruction(handler, {}));
+      expect(error.missingAccounts).toEqual(['payer']);
+    });
+
+    it('describes handlers without a name by program', () => {
+      const error = catchError(() => buildInstruction(makeHandler(), {}, { wallet }));
+      expect(error.instruction).toBe(`instruction of program ${TOKEN_PROGRAM}`);
+      expect(error.missingArgs).toEqual(['amount']);
+      expect(error.missingAccounts).toEqual(['mint']);
+    });
+
+    it('names the instruction in serializer errors', () => {
+      expect(() =>
+        buildInstruction(initializeMint2, { decimals: 6, mint_authority: 'nope', mint: MINT })
+      ).toThrow(/^instruction "InitializeMint2": /);
+    });
+
+    it('surfaces the params error as the cause of an execution failure', async () => {
+      const failure = await executeInstruction(mintTo, { amount: 1n, mint: MINT }, { wallet }).catch(
+        (error: unknown) => error
+      );
+      expect(failure).toBeInstanceOf(TransactionExecutionError);
+      expect((failure as TransactionExecutionError).cause).toBeInstanceOf(InstructionParamsError);
+    });
   });
 
   it('still treats an omitted option arg as None', () => {

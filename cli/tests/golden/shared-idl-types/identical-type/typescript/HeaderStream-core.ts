@@ -197,7 +197,7 @@ export interface AlphaConfigureParams {
 
 export type AlphaConfigureError = HeaderStreamAlphaProgramError;
 
-export const alphaConfigureInstruction = createInstructionHandler<AlphaConfigureParams, AlphaConfigureError>({
+export const alphaConfigureInstruction = createInstructionHandler<AlphaConfigureParams, AlphaConfigureError, 'authority' | 'vault'>({
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
   discriminator: [0],
   args: [
@@ -218,7 +218,7 @@ export interface BetaConfigureParams {
 
 export type BetaConfigureError = HeaderStreamBetaProgramError;
 
-export const betaConfigureInstruction = createInstructionHandler<BetaConfigureParams, BetaConfigureError>({
+export const betaConfigureInstruction = createInstructionHandler<BetaConfigureParams, BetaConfigureError, 'authority' | 'vault'>({
   programId: 'Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS',
   discriminator: [0],
   args: [
@@ -306,7 +306,7 @@ export const HEADER_STREAM_STACK_CORE = {
     alpha: {
       name: 'alpha',
       programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:76635e01963ac3bcba1ddd6f98d2c7725150850483cfe93ab740954ded75df00',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:dffad91ba0db460dab53665f98e8dc501d946d693fd1f29840bf34e68cbc295c',
       programSpecHash: 'arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4',
       idlContentHash: 'arete:h1:idl-content:sha256:6e5dd6926c3f40fd2a5a546909c0c773cb9cd3349ac7c28227efbdc920f9e081',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:9ed97cc808f1573ab3e5511f10deeaffea26dd2157815a393b0e8b7c68e4a6ea',
@@ -337,7 +337,7 @@ export const HEADER_STREAM_STACK_CORE = {
     beta: {
       name: 'beta',
       programId: 'Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:c7a8e8a9a2a060272b267fee758717d8507c363e736d52bb0891d55a5fa3aadf',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9164e5e6d50ac7c0209f8f4d68a3ba0706f3c84cccccb5546aed748d8cfa38a7',
       programSpecHash: 'arete:h1:program-spec:sha256:09c1dbf3601259b356733fcca78684d5cfa7bb96d8455af06073d246cdf5819e',
       idlContentHash: 'arete:h1:idl-content:sha256:f71d7465982f766605b3f4ed4b54e266a36a650e5a3cd531deed3687deb17e79',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:1a47e6f5552891691a91a51b34dd174a2086fb953c3b7b6155091bd093709406',

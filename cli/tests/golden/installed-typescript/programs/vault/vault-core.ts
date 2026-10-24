@@ -47,7 +47,7 @@ export interface DepositSemanticParams {
 
 export type DepositError = VaultProgramError;
 
-export const depositInstruction = createInstructionHandler<DepositParams, DepositError>({
+export const depositInstruction = createInstructionHandler<DepositParams, DepositError, 'authority' | 'vault' | 'mint'>({
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
   discriminator: [0],
   args: [
@@ -79,7 +79,7 @@ export interface WithdrawSemanticParams {
 
 export type WithdrawError = VaultProgramError;
 
-export const withdrawInstruction = createInstructionHandler<WithdrawParams, WithdrawError>({
+export const withdrawInstruction = createInstructionHandler<WithdrawParams, WithdrawError, 'authority' | 'vault'>({
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
   discriminator: [1],
   args: [
@@ -110,7 +110,7 @@ export interface PayFeeSemanticParams {
 
 export type PayFeeError = VaultProgramError;
 
-export const payFeeInstruction = createInstructionHandler<PayFeeParams, PayFeeError>({
+export const payFeeInstruction = createInstructionHandler<PayFeeParams, PayFeeError, 'authority'>({
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
   discriminator: [2],
   args: [
@@ -132,7 +132,7 @@ export const payFeeInstruction = createInstructionHandler<PayFeeParams, PayFeeEr
 export const VAULT = {
   name: 'vault',
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:e6dc1615f0fb4deab202e02c8b5acd15969b8240e0f86daefd0cf53aa5a82e73',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:18bd1d8313dbb6d85b2fa2f9bd1530d3a675266bb65826e240cbfab6c54b9d3d',
   programSpecHash: 'arete:h1:program-spec:sha256:7f8377cbaeffdc6a33986144c5abb640d00d000519185ff85ac1ccfe1917b976',
   idlContentHash: 'arete:h1:idl-content:sha256:e9f168d8b448ac603f8ed6c99f9bb9ba82a0908a723610a5f89877120dfc194c',
   normalizedIdlHash: 'arete:h1:idl-normalized:sha256:c79563495cb02035c1def338b7349e986cfc64349f306e79d601ad33207f9799',

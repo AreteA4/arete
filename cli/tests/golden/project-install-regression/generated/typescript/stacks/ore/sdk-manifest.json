@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:338c718dfbb5a260392414ee5e7f2e07ceb01a07fdcccbf748822d43cdb89a09"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:8a5b8cb41dce7bb23b3bd8b8739f15fb69aed4f9a59dae8b122206fd28ed100e",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:350705557e6d550776734ce43b40170574b5ae2f4de238320d940b4f4242e93e",
   "extensions": null,
   "artifacts": [
     "README.md",

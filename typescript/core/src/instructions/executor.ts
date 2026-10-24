@@ -41,7 +41,10 @@ export type { BuiltInstruction } from '../wallet/types';
 export interface InstructionHandler<
   TParams = Record<string, unknown>,
   TError = unknown,
+  TAccountName extends string = string,
 > {
+  /** Instruction name, used in error messages. */
+  name?: string;
   /** Program ID for this instruction (base58). Used for PDA derivation. */
   programId?: string;
   /** Ordered account metadata used by the core SDK for resolution. */
@@ -55,6 +58,12 @@ export interface InstructionHandler<
    */
   argNames: string[];
   /**
+   * Arguments that must be present. Option arguments are left out: an omitted
+   * option encodes as `None`. When absent, missing arguments are reported by
+   * the serializer instead.
+   */
+  requiredArgNames?: string[];
+  /**
    * Build the instruction from already-resolved, ordered accounts.
    * Implemented by {@link createInstructionHandler}.
    */
@@ -63,12 +72,20 @@ export interface InstructionHandler<
   readonly _params?: TParams;
   /** Phantom: typed error union. */
   readonly _error?: TError;
+  /**
+   * Phantom: the keys of `TParams` that are accounts rather than arguments.
+   * `string` when the handler does not say, in which case no params key is
+   * treated as an account at the type level.
+   */
+  readonly _accountNames?: TAccountName;
 }
 
 /**
  * Configuration accepted by {@link createInstructionHandler}.
  */
 export interface InstructionHandlerConfig {
+  /** Instruction name, used in error messages. */
+  name?: string;
   /** Program ID (base58). */
   programId: string;
   /** Instruction discriminator bytes (8 for Anchor, 1 for Steel, etc.). */
@@ -93,19 +110,25 @@ export interface InstructionHandlerConfig {
 export function createInstructionHandler<
   TParams = Record<string, unknown>,
   TError = unknown,
->(config: InstructionHandlerConfig): InstructionHandler<TParams, TError> {
+  TAccountName extends string = string,
+>(config: InstructionHandlerConfig): InstructionHandler<TParams, TError, TAccountName> {
   const discriminator =
     config.discriminator instanceof Uint8Array
       ? config.discriminator
       : Uint8Array.from(config.discriminator);
   const argNames = config.args.map((a) => a.name);
+  const requiredArgNames = config.args
+    .filter((a) => !(typeof a.type === 'object' && 'option' in a.type))
+    .map((a) => a.name);
   const errors = config.errors ?? [];
 
   return {
+    ...(config.name !== undefined ? { name: config.name } : {}),
     programId: config.programId,
     accounts: config.accounts,
     errors,
     argNames,
+    requiredArgNames,
     build(args: Record<string, unknown>, resolved: ResolvedAccount[]): BuiltInstruction {
       const data = encodeInstructionData(discriminator, args, config.args);
       return {
@@ -160,28 +183,224 @@ export interface ExecutionResult {
 }
 
 /**
- * Splits a merged params object into serialized args and account overrides.
+ * The params type a handler accepts: the `TParams` it was created with
+ * (generated program modules pass their `<Instruction>Params` interface).
+ * Handlers created without a params type accept any object.
+ */
+export type InstructionParams<THandler> =
+  THandler extends InstructionHandler<infer TParams, any>
+    ? unknown extends TParams
+      ? Record<string, unknown>
+      : TParams
+    : never;
+
+/**
+ * Keys of option arguments: generated params declare them as `T | null`, and
+ * an omitted option encodes as `None`. `unknown`/`any` typed keys are not
+ * treated as options.
+ */
+type OptionParamKeys<TParams> = {
+  [K in keyof TParams]-?: unknown extends TParams[K]
+    ? never
+    : null extends TParams[K]
+      ? K
+      : never;
+}[keyof TParams];
+
+type Simplify<T> = { [K in keyof T]: T[K] } & {};
+
+/**
+ * `TParams` with option arguments, and the accounts named in `TAccountKeys`
+ * (supplied through `options.accounts`), made optional. Every other key keeps
+ * its required/optional modifier.
+ */
+export type AcceptedInstructionParams<TParams, TAccountKeys extends PropertyKey = never> =
+  Simplify<
+    {
+      [K in keyof TParams as K extends OptionParamKeys<TParams> | TAccountKeys
+        ? never
+        : K]: TParams[K];
+    } & {
+      [K in keyof TParams as K extends OptionParamKeys<TParams> | TAccountKeys
+        ? K
+        : never]?: TParams[K];
+    }
+  >;
+
+/**
+ * The params keys a handler declares as accounts (its third type parameter;
+ * generated program modules pass the union of their account params). A
+ * handler that does not declare them has none known, so no params key can be
+ * supplied through `options.accounts` instead: an argument must always be in
+ * params.
+ */
+type HandlerAccountNames<THandler> =
+  THandler extends InstructionHandler<any, any, infer TAccountName>
+    ? string extends TAccountName
+      ? never
+      : TAccountName
+    : never;
+
+/**
+ * The accounts of `THandler` named by an `options.accounts` map, when its keys
+ * are known literally. A wide `Record<string, string>` names no account in
+ * particular, and keys that are not accounts of the handler (arguments
+ * included) are never relaxed.
+ */
+type SuppliedAccountKeys<THandler, TAccountKeys extends string> = string extends TAccountKeys
+  ? never
+  : Extract<TAccountKeys, HandlerAccountNames<THandler>>;
+
+/**
+ * The params type {@link buildInstruction} checks a call against.
+ *
+ * An untyped value, whose type has a string index signature (such as
+ * `Record<string, unknown>`), is accepted as is: generated operation wrappers
+ * pass `params as unknown as Record<string, unknown>`. Anything else, object
+ * literals included, is checked against the handler's
+ * {@link InstructionParams}, with excess-property checks. Option arguments may
+ * be omitted, and accounts of the handler passed through `options.accounts`
+ * (`TAccountKeys`) need not be repeated in params. Arguments stay required.
+ */
+export type CheckedInstructionParams<THandler, TParams, TAccountKeys extends string = never> =
+  string extends keyof TParams
+    ? TParams
+    : AcceptedInstructionParams<InstructionParams<THandler>, SuppliedAccountKeys<THandler, TAccountKeys>>;
+
+/**
+ * Options that are sure to supply the accounts named in `TAccountKeys`: the
+ * `accounts` map is required and defined. Only these relax the params check;
+ * an optional map may be absent at run time.
+ */
+type OptionsSupplyingAccounts<TOptions, TAccountKeys extends string> = Omit<TOptions, 'accounts'> & {
+  accounts: { [K in TAccountKeys]: string };
+};
+
+/**
+ * Call signatures of the bound executor's `build`/`execute`: the first
+ * overload applies when the options supply accounts, the second to any other
+ * options, which leave params fully checked.
+ */
+interface BoundInstructionCall<TOptions, TResult> {
+  <
+    THandler extends InstructionHandler<any, any>,
+    TParams = InstructionParams<THandler>,
+    TAccountKeys extends string = never,
+  >(
+    handler: THandler,
+    params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
+    options: OptionsSupplyingAccounts<TOptions, TAccountKeys>
+  ): TResult;
+  <THandler extends InstructionHandler<any, any>, TParams = InstructionParams<THandler>>(
+    handler: THandler,
+    params: CheckedInstructionParams<THandler, TParams>,
+    options?: TOptions
+  ): TResult;
+}
+
+/**
+ * Thrown by {@link buildInstruction} when a params object does not match the
+ * instruction: missing required arguments or accounts, keys that are neither
+ * an argument nor an account, or account values that are not address strings.
+ * Every problem is reported at once.
+ */
+export class InstructionParamsError extends Error {
+  /** Instruction name, or a description of the handler when it has none. */
+  readonly instruction: string;
+  /** Required arguments that were not provided. */
+  readonly missingArgs: readonly string[];
+  /** Required accounts that were neither provided nor resolvable. */
+  readonly missingAccounts: readonly string[];
+  /** Keys that are neither an argument nor an account of the instruction. */
+  readonly unknownKeys: readonly string[];
+  /** Account keys whose value is not an address string. */
+  readonly invalidAccounts: readonly string[];
+
+  constructor(details: {
+    instruction: string;
+    missingArgs: readonly string[];
+    missingAccounts: readonly string[];
+    unknownKeys: readonly string[];
+    invalidAccounts: readonly string[];
+    message: string;
+  }) {
+    super(details.message);
+    this.name = 'InstructionParamsError';
+    this.instruction = details.instruction;
+    this.missingArgs = details.missingArgs;
+    this.missingAccounts = details.missingAccounts;
+    this.unknownKeys = details.unknownKeys;
+    this.invalidAccounts = details.invalidAccounts;
+  }
+}
+
+function describeHandler(handler: InstructionHandler<any, any>): string {
+  if (handler.name) return `instruction "${handler.name}"`;
+  return handler.programId ? `instruction of program ${handler.programId}` : 'instruction';
+}
+
+function normalizeKey(key: string): string {
+  return key.replace(/[_-]/g, '').toLowerCase();
+}
+
+/** A declared key that differs from `key` only in case or separators. */
+function suggestKey(key: string, candidates: readonly string[]): string | undefined {
+  const normalized = normalizeKey(key);
+  return candidates.find((candidate) => normalizeKey(candidate) === normalized);
+}
+
+/**
+ * Whether an account can be filled without the caller passing an address.
+ * Mirrors the account resolver: known addresses, derivable PDAs, and signer
+ * slots explicitly assigned to a connected wallet.
+ */
+function resolvesAutomatically(meta: AccountMeta, options: BuildOptions): boolean {
+  switch (meta.category) {
+    case 'known':
+      return Boolean(meta.knownAddress);
+    case 'pda':
+      return Boolean(meta.pdaConfig);
+    case 'signer':
+      return meta.signerKind === 'wallet' && Boolean(options.wallet?.publicKey);
+    default:
+      return false;
+  }
+}
+
+/**
+ * Splits a merged params object into serialized args and account overrides,
+ * and checks it against the instruction.
  *
  * Keys matching a declared argument name are args; keys matching a declared
  * account name (with a string value) are account address overrides. This
  * applies to signer slots too, allowing explicit signer addresses to fill or
- * override those slots. Anything else throws — a typo'd key silently dropped
+ * override those slots. Unknown keys, non-string account values, missing
+ * required args and missing caller-provided accounts are collected and thrown
+ * together as an {@link InstructionParamsError}: a typo'd key silently dropped
  * here would otherwise change the built instruction. `options.accounts` on
  * {@link BuildOptions} is the explicit override map and wins over merged params.
  */
 function splitParams(
   handler: InstructionHandler<any, any>,
-  params: Record<string, unknown>
+  params: Record<string, unknown>,
+  options: BuildOptions
 ): {
   args: Record<string, unknown>;
   accountOverrides: Record<string, string>;
   resolve?: Record<string, unknown>;
 } {
+  if (params === null || typeof params !== 'object' || Array.isArray(params)) {
+    throw new Error(`Params for ${describeHandler(handler)} must be an object`);
+  }
+
   const argNameSet = new Set(handler.argNames);
-  const accountNameSet = new Set(handler.accounts.map((a) => a.name));
+  const accountNames = handler.accounts.map((a) => a.name);
+  const accountNameSet = new Set(accountNames);
   const args: Record<string, unknown> = {};
   const accountOverrides: Record<string, string> = {};
   let resolve: Record<string, unknown> | undefined;
+  const unknownKeys: string[] = [];
+  const invalidAccounts: string[] = [];
 
   for (const [key, value] of Object.entries(params)) {
     if (argNameSet.has(key)) {
@@ -191,23 +410,85 @@ function splitParams(
         continue;
       }
       if (value === null || Array.isArray(value) || typeof value !== 'object') {
-        throw new Error('Parameter "resolve" must be an object when provided');
+        throw new Error(
+          `Parameter "resolve" for ${describeHandler(handler)} must be an object when provided`
+        );
       }
       resolve = value as Record<string, unknown>;
     } else if (accountNameSet.has(key)) {
+      if (value === undefined) {
+        // An optional account spelled out as `undefined` is simply omitted.
+        continue;
+      }
       if (typeof value !== 'string') {
-        // Non-string values are not valid account addresses.
-        throw new Error(
-          `Parameter "${key}" is not a known argument and is not a base58 account address`
-        );
+        invalidAccounts.push(key);
+        continue;
       }
       accountOverrides[key] = value;
     } else {
-      throw new Error(
-        `Unknown parameter "${key}". Expected one of args [${[...argNameSet].join(', ')}] ` +
-          `or accounts [${[...accountNameSet].join(', ')}]`
-      );
+      unknownKeys.push(key);
     }
+  }
+
+  const missingArgs = (handler.requiredArgNames ?? []).filter(
+    (name) => args[name] === undefined
+  );
+  const missingAccounts = handler.accounts
+    .filter(
+      (meta) =>
+        !meta.isOptional &&
+        accountOverrides[meta.name] === undefined &&
+        options.accounts?.[meta.name] === undefined &&
+        !invalidAccounts.includes(meta.name) &&
+        !resolvesAutomatically(meta, options)
+    )
+    .map((meta) => meta.name);
+
+  if (
+    unknownKeys.length > 0 ||
+    invalidAccounts.length > 0 ||
+    missingArgs.length > 0 ||
+    missingAccounts.length > 0
+  ) {
+    const instruction = describeHandler(handler);
+    const declaredKeys = [...handler.argNames, ...accountNames];
+    const problems: string[] = [];
+    if (missingArgs.length > 0) {
+      problems.push(`missing required args: ${missingArgs.join(', ')}`);
+    }
+    if (missingAccounts.length > 0) {
+      problems.push(`missing required accounts: ${missingAccounts.join(', ')}`);
+    }
+    if (unknownKeys.length > 0) {
+      const described = unknownKeys.map((key) => {
+        const suggestion = suggestKey(key, declaredKeys);
+        return suggestion ? `${key} (did you mean "${suggestion}"?)` : key;
+      });
+      problems.push(`unknown keys: ${described.join(', ')}`);
+    }
+    if (invalidAccounts.length > 0) {
+      problems.push(`accounts that are not base58 address strings: ${invalidAccounts.join(', ')}`);
+    }
+    const requiredArgs = new Set(handler.requiredArgNames ?? handler.argNames);
+    const expectedArgs = handler.argNames
+      .map((name) => (requiredArgs.has(name) ? name : `${name}?`))
+      .join(', ');
+    const expectedAccounts = handler.accounts
+      .map((meta) =>
+        meta.isOptional || resolvesAutomatically(meta, options) ? `${meta.name}?` : meta.name
+      )
+      .join(', ');
+    throw new InstructionParamsError({
+      instruction,
+      missingArgs,
+      missingAccounts,
+      unknownKeys,
+      invalidAccounts,
+      message:
+        `Invalid params for ${instruction}: ${problems.join('; ')}. ` +
+        `Expected args [${expectedArgs}] and accounts [${expectedAccounts}] ` +
+        `(? = optional or resolved automatically)`,
+    });
   }
 
   return { args, accountOverrides, resolve };
@@ -218,13 +499,38 @@ function splitParams(
  *
  * This is a pure function: it performs no network access. It is the unit of
  * composition for batching (`wallet.signAndSend([a, b, c])`).
+ *
+ * `params` is checked against the handler's params type, so a misspelled,
+ * unknown or missing argument or account is a compile error. At run time the
+ * same problems throw an {@link InstructionParamsError} naming the instruction.
  */
+export function buildInstruction<
+  THandler extends InstructionHandler<any, any>,
+  TParams = InstructionParams<THandler>,
+  TAccountKeys extends string = never,
+>(
+  handler: THandler,
+  params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
+  options: OptionsSupplyingAccounts<BuildOptions, TAccountKeys>
+): BuiltInstruction;
+export function buildInstruction<
+  THandler extends InstructionHandler<any, any>,
+  TParams = InstructionParams<THandler>,
+>(
+  handler: THandler,
+  params: CheckedInstructionParams<THandler, TParams>,
+  options?: BuildOptions
+): BuiltInstruction;
 export function buildInstruction(
   handler: InstructionHandler<any, any>,
   params: Record<string, unknown>,
   options: BuildOptions = {}
 ): BuiltInstruction {
-  const { args, accountOverrides, resolve } = splitParams(handler, params);
+  const { args, accountOverrides, resolve } = splitParams(
+    handler,
+    params as unknown as Record<string, unknown>,
+    options
+  );
 
   const resolutionOptions: AccountResolutionOptions = {
     accounts: { ...accountOverrides, ...options.accounts },
@@ -233,10 +539,18 @@ export function buildInstruction(
     programId: handler.programId,
   };
 
-  const resolution = resolveAccounts(handler.accounts, args, resolutionOptions);
-  validateAccountResolution(resolution);
-
-  const instruction = handler.build(args, resolution.accounts);
+  let instruction: BuiltInstruction;
+  try {
+    const resolution = resolveAccounts(handler.accounts, args, resolutionOptions);
+    validateAccountResolution(resolution);
+    instruction = handler.build(args, resolution.accounts);
+  } catch (error) {
+    // Name the instruction in resolver and serializer errors too.
+    if (error instanceof Error && !error.message.startsWith('instruction ')) {
+      error.message = `${describeHandler(handler)}: ${error.message}`;
+    }
+    throw error;
+  }
   if (options.remainingAccounts?.length) {
     instruction.keys.push(...options.remainingAccounts);
   }
@@ -251,6 +565,23 @@ export function buildInstruction(
  * against the handler's IDL error definitions and surfaced as an
  * {@link InstructionError}.
  */
+export function executeInstruction<
+  THandler extends InstructionHandler<any, any>,
+  TParams = InstructionParams<THandler>,
+  TAccountKeys extends string = never,
+>(
+  handler: THandler,
+  params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
+  options: OptionsSupplyingAccounts<ExecuteOptions, TAccountKeys>
+): Promise<ExecutionResult>;
+export function executeInstruction<
+  THandler extends InstructionHandler<any, any>,
+  TParams = InstructionParams<THandler>,
+>(
+  handler: THandler,
+  params: CheckedInstructionParams<THandler, TParams>,
+  options?: ExecuteOptions
+): Promise<ExecutionResult>;
 export async function executeInstruction(
   handler: InstructionHandler<any, any>,
   params: Record<string, unknown>,
@@ -294,21 +625,20 @@ export async function executeInstruction(
 /**
  * Creates an instruction executor bound to a specific wallet.
  */
-export function createInstructionExecutor(wallet: WalletAdapter) {
+export function createInstructionExecutor(wallet: WalletAdapter): {
+  execute: BoundInstructionCall<Omit<ExecuteOptions, 'wallet'>, Promise<ExecutionResult>>;
+  build: BoundInstructionCall<Omit<BuildOptions, 'wallet'>, BuiltInstruction>;
+} {
   return {
-    execute: async (
-      handler: InstructionHandler,
+    execute: (
+      handler: InstructionHandler<any, any>,
       params: Record<string, unknown>,
       options?: Omit<ExecuteOptions, 'wallet'>
-    ) => {
-      return executeInstruction(handler, params, { ...options, wallet });
-    },
+    ) => executeInstruction(handler, params, { ...options, wallet }),
     build: (
-      handler: InstructionHandler,
+      handler: InstructionHandler<any, any>,
       params: Record<string, unknown>,
       options?: Omit<BuildOptions, 'wallet'>
-    ) => {
-      return buildInstruction(handler, params, { ...options, wallet });
-    },
+    ) => buildInstruction(handler, params, { ...options, wallet }),
   };
 }

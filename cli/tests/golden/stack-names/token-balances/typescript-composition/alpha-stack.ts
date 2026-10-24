@@ -96,7 +96,7 @@ export interface DepositParams {
 
 export type DepositError = TokenBalancesAlphaProgramError;
 
-export const depositInstruction = createInstructionHandler<DepositParams, DepositError>({
+export const depositInstruction = createInstructionHandler<DepositParams, DepositError, 'authority' | 'vault'>({
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
   discriminator: [0],
   args: [
@@ -173,7 +173,7 @@ export const TOKEN_BALANCES_ALPHA_STACK_CORE = {
     vault: {
       name: 'vault',
       programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:033d3d7a1fd9e4125d18976ac1284d7cfec1c59e79eb03a950ae70fea26c5a20',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:9530578515e041fc709ca7e25c9abfaa2775d0c8252074376d6bcd04debbdc31',
       programSpecHash: 'arete:h1:program-spec:sha256:82d33b756cb10907d6585bdc2e1e02170b1286819e317bbe5311de01901b22ba',
       idlContentHash: 'arete:h1:idl-content:sha256:85aefcaba918c8b89b2b25ef683a17be27b36c86eaf5be939303f62af74ea044',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:3de7188f6a21b4dfc7ca7e7db7b0730d692e33c56ec4985495382e73e0fd3140',

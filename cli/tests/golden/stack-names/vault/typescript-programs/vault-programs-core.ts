@@ -34,7 +34,7 @@ export interface DepositParams {
 
 export type DepositError = VaultProgramError;
 
-export const depositInstruction = createInstructionHandler<DepositParams, DepositError>({
+export const depositInstruction = createInstructionHandler<DepositParams, DepositError, 'authority' | 'vault'>({
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
   discriminator: [0],
   args: [
@@ -55,7 +55,7 @@ export const depositInstruction = createInstructionHandler<DepositParams, Deposi
 export const VAULT = {
   name: 'vault',
   programId: '2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:e4465bb582ce973cc5ae3729caf2467a1d9555049a177f11cceaf6a2b113cc0e',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:dc3509e2b2759365232fcb931d0ffec628114031f2ab9e7d0ce74d38ab386432',
   programSpecHash: 'arete:h1:program-spec:sha256:82d33b756cb10907d6585bdc2e1e02170b1286819e317bbe5311de01901b22ba',
   idlContentHash: 'arete:h1:idl-content:sha256:85aefcaba918c8b89b2b25ef683a17be27b36c86eaf5be939303f62af74ea044',
   normalizedIdlHash: 'arete:h1:idl-normalized:sha256:3de7188f6a21b4dfc7ca7e7db7b0730d692e33c56ec4985495382e73e0fd3140',

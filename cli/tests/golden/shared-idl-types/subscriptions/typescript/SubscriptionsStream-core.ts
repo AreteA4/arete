@@ -1794,7 +1794,7 @@ export interface InitSubscriptionAuthorityParams {
 
 export type InitSubscriptionAuthorityError = SubscriptionsStreamProgramError;
 
-export const initSubscriptionAuthorityInstruction = createInstructionHandler<InitSubscriptionAuthorityParams, InitSubscriptionAuthorityError>({
+export const initSubscriptionAuthorityInstruction = createInstructionHandler<InitSubscriptionAuthorityParams, InitSubscriptionAuthorityError, 'owner' | 'subscriptionAuthority' | 'tokenMint' | 'userAta' | 'tokenProgram'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [0],
   args: [],
@@ -1823,7 +1823,7 @@ export interface CreateFixedDelegationParams {
 
 export type CreateFixedDelegationError = SubscriptionsStreamProgramError;
 
-export const createFixedDelegationInstruction = createInstructionHandler<CreateFixedDelegationParams, CreateFixedDelegationError>({
+export const createFixedDelegationInstruction = createInstructionHandler<CreateFixedDelegationParams, CreateFixedDelegationError, 'delegator' | 'subscriptionAuthority' | 'delegationAccount' | 'delegatee'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [1],
   args: [
@@ -1853,7 +1853,7 @@ export interface CreateRecurringDelegationParams {
 
 export type CreateRecurringDelegationError = SubscriptionsStreamProgramError;
 
-export const createRecurringDelegationInstruction = createInstructionHandler<CreateRecurringDelegationParams, CreateRecurringDelegationError>({
+export const createRecurringDelegationInstruction = createInstructionHandler<CreateRecurringDelegationParams, CreateRecurringDelegationError, 'delegator' | 'subscriptionAuthority' | 'delegationAccount' | 'delegatee'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [2],
   args: [
@@ -1876,7 +1876,7 @@ export interface RevokeDelegationParams {
 
 export type RevokeDelegationError = SubscriptionsStreamProgramError;
 
-export const revokeDelegationInstruction = createInstructionHandler<RevokeDelegationParams, RevokeDelegationError>({
+export const revokeDelegationInstruction = createInstructionHandler<RevokeDelegationParams, RevokeDelegationError, 'authority' | 'delegationAccount'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [3],
   args: [],
@@ -1904,7 +1904,7 @@ export interface TransferFixedParams {
 
 export type TransferFixedError = SubscriptionsStreamProgramError;
 
-export const transferFixedInstruction = createInstructionHandler<TransferFixedParams, TransferFixedError>({
+export const transferFixedInstruction = createInstructionHandler<TransferFixedParams, TransferFixedError, 'delegationPda' | 'subscriptionAuthority' | 'delegatorAta' | 'receiverAta' | 'tokenMint' | 'tokenProgram' | 'delegatee'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [4],
   args: [
@@ -1941,7 +1941,7 @@ export interface TransferRecurringParams {
 
 export type TransferRecurringError = SubscriptionsStreamProgramError;
 
-export const transferRecurringInstruction = createInstructionHandler<TransferRecurringParams, TransferRecurringError>({
+export const transferRecurringInstruction = createInstructionHandler<TransferRecurringParams, TransferRecurringError, 'delegationPda' | 'subscriptionAuthority' | 'delegatorAta' | 'receiverAta' | 'tokenMint' | 'tokenProgram' | 'delegatee'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [5],
   args: [
@@ -1972,7 +1972,7 @@ export interface CloseSubscriptionAuthorityParams {
 
 export type CloseSubscriptionAuthorityError = SubscriptionsStreamProgramError;
 
-export const closeSubscriptionAuthorityInstruction = createInstructionHandler<CloseSubscriptionAuthorityParams, CloseSubscriptionAuthorityError>({
+export const closeSubscriptionAuthorityInstruction = createInstructionHandler<CloseSubscriptionAuthorityParams, CloseSubscriptionAuthorityError, 'user' | 'subscriptionAuthority'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [6],
   args: [],
@@ -1992,7 +1992,7 @@ export interface CreatePlanParams {
 
 export type CreatePlanError = SubscriptionsStreamProgramError;
 
-export const createPlanInstruction = createInstructionHandler<CreatePlanParams, CreatePlanError>({
+export const createPlanInstruction = createInstructionHandler<CreatePlanParams, CreatePlanError, 'merchant' | 'planPda' | 'tokenMint'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [7],
   args: [
@@ -2017,7 +2017,7 @@ export interface UpdatePlanParams {
 
 export type UpdatePlanError = SubscriptionsStreamProgramError;
 
-export const updatePlanInstruction = createInstructionHandler<UpdatePlanParams, UpdatePlanError>({
+export const updatePlanInstruction = createInstructionHandler<UpdatePlanParams, UpdatePlanError, 'owner' | 'planPda' | 'eventAuthority'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [8],
   args: [
@@ -2039,7 +2039,7 @@ export interface DeletePlanParams {
 
 export type DeletePlanError = SubscriptionsStreamProgramError;
 
-export const deletePlanInstruction = createInstructionHandler<DeletePlanParams, DeletePlanError>({
+export const deletePlanInstruction = createInstructionHandler<DeletePlanParams, DeletePlanError, 'owner' | 'planPda'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [9],
   args: [],
@@ -2068,7 +2068,7 @@ export interface TransferSubscriptionParams {
 
 export type TransferSubscriptionError = SubscriptionsStreamProgramError;
 
-export const transferSubscriptionInstruction = createInstructionHandler<TransferSubscriptionParams, TransferSubscriptionError>({
+export const transferSubscriptionInstruction = createInstructionHandler<TransferSubscriptionParams, TransferSubscriptionError, 'subscriptionPda' | 'planPda' | 'subscriptionAuthority' | 'delegatorAta' | 'receiverAta' | 'caller' | 'tokenMint' | 'tokenProgram'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [10],
   args: [
@@ -2100,7 +2100,7 @@ export interface SubscribeParams {
 
 export type SubscribeError = SubscriptionsStreamProgramError;
 
-export const subscribeInstruction = createInstructionHandler<SubscribeParams, SubscribeError>({
+export const subscribeInstruction = createInstructionHandler<SubscribeParams, SubscribeError, 'subscriber' | 'merchant' | 'planPda' | 'subscriptionPda' | 'subscriptionAuthorityPda'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [11],
   args: [
@@ -2127,7 +2127,7 @@ export interface CancelSubscriptionParams {
 
 export type CancelSubscriptionError = SubscriptionsStreamProgramError;
 
-export const cancelSubscriptionInstruction = createInstructionHandler<CancelSubscriptionParams, CancelSubscriptionError>({
+export const cancelSubscriptionInstruction = createInstructionHandler<CancelSubscriptionParams, CancelSubscriptionError, 'subscriber' | 'planPda' | 'subscriptionPda'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [12],
   args: [],
@@ -2156,7 +2156,7 @@ export interface ResumeSubscriptionParams {
 
 export type ResumeSubscriptionError = SubscriptionsStreamProgramError;
 
-export const resumeSubscriptionInstruction = createInstructionHandler<ResumeSubscriptionParams, ResumeSubscriptionError>({
+export const resumeSubscriptionInstruction = createInstructionHandler<ResumeSubscriptionParams, ResumeSubscriptionError, 'subscriber' | 'planPda' | 'subscriptionPda' | 'subscriptionAuthority' | 'eventAuthority'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [13],
   args: [
@@ -2183,7 +2183,7 @@ export interface RevokeSubscriptionAuthorityParams {
 
 export type RevokeSubscriptionAuthorityError = SubscriptionsStreamProgramError;
 
-export const revokeSubscriptionAuthorityInstruction = createInstructionHandler<RevokeSubscriptionAuthorityParams, RevokeSubscriptionAuthorityError>({
+export const revokeSubscriptionAuthorityInstruction = createInstructionHandler<RevokeSubscriptionAuthorityParams, RevokeSubscriptionAuthorityError, 'user' | 'userAta' | 'tokenMint' | 'tokenProgram' | 'subscriptionAuthority'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [14],
   args: [],
@@ -2209,7 +2209,7 @@ export interface RevokeAbandonedDelegationParams {
 
 export type RevokeAbandonedDelegationError = SubscriptionsStreamProgramError;
 
-export const revokeAbandonedDelegationInstruction = createInstructionHandler<RevokeAbandonedDelegationParams, RevokeAbandonedDelegationError>({
+export const revokeAbandonedDelegationInstruction = createInstructionHandler<RevokeAbandonedDelegationParams, RevokeAbandonedDelegationError, 'payer' | 'delegationAccount' | 'subscriptionAuthority'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [15],
   args: [],
@@ -2234,7 +2234,7 @@ export interface RevokeAbandonedSubscriptionParams {
 
 export type RevokeAbandonedSubscriptionError = SubscriptionsStreamProgramError;
 
-export const revokeAbandonedSubscriptionInstruction = createInstructionHandler<RevokeAbandonedSubscriptionParams, RevokeAbandonedSubscriptionError>({
+export const revokeAbandonedSubscriptionInstruction = createInstructionHandler<RevokeAbandonedSubscriptionParams, RevokeAbandonedSubscriptionError, 'payer' | 'subscriptionAccount' | 'subscriptionAuthority' | 'planPda'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [16],
   args: [],
@@ -2258,7 +2258,7 @@ export interface CancelSubscriptionNowParams {
 
 export type CancelSubscriptionNowError = SubscriptionsStreamProgramError;
 
-export const cancelSubscriptionNowInstruction = createInstructionHandler<CancelSubscriptionNowParams, CancelSubscriptionNowError>({
+export const cancelSubscriptionNowInstruction = createInstructionHandler<CancelSubscriptionNowParams, CancelSubscriptionNowError, 'subscriber' | 'merchant' | 'planPda' | 'subscriptionPda' | 'eventAuthority'>({
   programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
   discriminator: [17],
   args: [
@@ -2408,7 +2408,7 @@ export const SUBSCRIPTIONS_STREAM_STACK_CORE = {
     subscriptions: {
       name: 'subscriptions',
       programId: 'De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:b333f0d40d885e34a3f042b2da339bc7aa70f2891aef37987e84513bc564d36a',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:ccf2ab6cdb234ebc4f12402b84f3af05edfecf839c6438824cc630c20f54a89a',
       programSpecHash: 'arete:h1:program-spec:sha256:a10a30f17be97429474e990fdc24b87edf51e4c5fe0021b0651d434d11f3e698',
       idlContentHash: 'arete:h1:idl-content:sha256:6b1a0054e474098d8e646ca0238f197ea5d31fa93ca79c4dd466c6edf4fef554',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:c12d4e2b8c21cd79a97e3e9dd698cc60dd1a511c1ef4e31dbc502a8fd89485c4',

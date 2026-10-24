@@ -13,7 +13,7 @@ export type OreCloseError = OreStreamOreProgramError;
  * Round PDA seeds: ["round", round_id].
  * Treasury PDA seeds: ["treasury"].
  */
-export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreCloseError>({
+export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreCloseError, 'signer' | 'board' | 'rentPayer' | 'round' | 'treasury'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [5],
   args: [],
