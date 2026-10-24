@@ -50,9 +50,9 @@ host's entry, then prints the remaining steps. It never overwrites a file, and
 deploying stays with the host's own CLI:
 
 ```bash
-npx arete-automations add cloudflare    # worker.ts + wrangler.jsonc
-npx arete-automations add vercel        # api/arete/[route].ts + vercel.json
-npx arete-automations add node          # server.ts + Dockerfile, for Fly.io, Railway, Render or any VM
+npx @usearete/automations add cloudflare    # worker.ts + wrangler.jsonc
+npx @usearete/automations add vercel        # api/arete/[route].ts + vercel.json
+npx @usearete/automations add node          # server.ts + Dockerfile, for Fly.io, Railway, Render or any VM
 ```
 
 `--signer privy` writes a Privy signer for your users' delegated wallets
@@ -70,7 +70,7 @@ The steps are the same on every host:
 ```bash
 a4 protocol deploy                                # the protocol release
 a4 install --locked                               # the published client, not the dev one
-DATABASE_URL=... npx arete-automations migrate    # the store's tables, once per schema change
+DATABASE_URL=... npx @usearete/automations migrate    # the store's tables, once per schema change
 # set ARETE_SECRET_KEY, DATABASE_URL, RPC_URL, CRON_SECRET and the signer's secrets on the host
 npx wrangler deploy                               # or: vercel deploy --prod, fly deploy, ...
 a4 protocol webhook add --url https://<host>/arete/webhook --secret-only | npx wrangler secret put ARETE_WEBHOOK_SECRET
@@ -108,14 +108,14 @@ const store = postgresStore(pool); // your pg Pool; no connections of its own
   migration tool:
 
   ```bash
-  npx arete-automations migrations --out db/migrations
+  npx @usearete/automations migrations --out db/migrations
   ```
 
   A store whose database is behind refuses to run.
 
 - **Two database roles.** Migrate with a role that can create tables; run with
   one limited to reading and writing rows.
-  `npx arete-automations grants --role app_runtime` prints its grants.
+  `npx @usearete/automations grants --role app_runtime` prints its grants.
 - **Inside your transactions.** `store.using(client)` runs store writes inside
   a transaction you have open, for example to save a consent grant together
   with your user record.

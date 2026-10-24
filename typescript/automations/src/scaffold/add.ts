@@ -113,7 +113,7 @@ export function add(options: AddOptions): AddResult {
     ...install,
     'a4 protocol deploy                      # the protocol, if this release is not deployed yet',
     'a4 install --locked                     # bundle the published client, not the one a4 dev generated',
-    'DATABASE_URL=... npx arete-automations migrate',
+    'DATABASE_URL=... npx @usearete/automations migrate',
     ...secrets.filter((line) => !line.startsWith('a4 protocol webhook')),
     template.deployCommand,
     // The webhook needs the deployment's address, so its secret is stored after the first deploy.

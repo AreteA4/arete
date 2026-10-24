@@ -1057,7 +1057,7 @@ system-program --as system --ts`: `arete.toml`, `arete.lock` and
 `@usearete/protocol`, `@usearete/sdk` and `zod`, plus `@usearete/automations`
 and `tsx` for the automations; `tsconfig.json` mapping `@programs/*`;
 `.gitignore`; and a `README.md`. The automations know nothing about where
-they will be deployed: `npx arete-automations add <cloudflare|vercel|node>`
+they will be deployed: `npx @usearete/automations add <cloudflare|vercel|node>`
 writes a host's entry later ([Run automations in production](/automations/production/#deploy-to-a-host)). It refuses to overwrite an
 existing file (`.gitignore` only gains missing lines). `--name <name>` sets
 the spec name (`^[a-z][A-Za-z0-9]*$`, default: the directory name in
