@@ -350,7 +350,7 @@ export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   drain(options?: { maxJobs?: number }): Promise<number>;
   /** Run jobs in the background until `stop()`. */
   start(options?: { pollInterval?: Duration; concurrency?: number }): void;
-  /** Stop the workers and the live sources `use()` started. */
+  /** Stop the workers and the live sources `use()` started, and disconnect the stacks it connected. */
   stop(): Promise<void>;
 }
 
@@ -422,6 +422,8 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   const polled = new Map<string, ListSource>();
   // Live sources a definition started, stopped with the workers.
   const watched = new Set<SourceHandle>();
+  // Stacks a definition connected for its sources, disconnected on stop().
+  const connections = new Set<{ disconnect(): void }>();
   const proofTtlMs = durationMs(options.consent?.proofTtl ?? 600_000);
 
   const report = (error: unknown, context: { jobId?: string; phase: string }) => {
@@ -1722,7 +1724,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
               watched.add(tracked);
               return tracked;
             },
-        connect: useOptions.connect ?? connectStack,
+        connect: async (stack) => {
+          const connected = await (useOptions.connect ?? connectStack)(stack);
+          if (typeof (connected as { disconnect?: unknown }).disconnect === 'function') connections.add(connected);
+          return connected;
+        },
       };
       await definition.setup(setup);
       return automations;
@@ -1767,6 +1773,14 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       running = false;
       await Promise.all([...loops, ...[...watched].map((handle) => handle.stop())]);
       loops = [];
+      for (const connection of connections) {
+        try {
+          connection.disconnect();
+        } catch (error) {
+          report(error, { phase: 'source' });
+        }
+      }
+      connections.clear();
     },
   };
   return automations;

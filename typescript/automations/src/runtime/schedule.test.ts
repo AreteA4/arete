@@ -110,6 +110,20 @@ describe('poll-mode sources', () => {
     expect(view.open).toBe(0);
   });
 
+  it('disconnects the stacks a definition connected when stopped', async () => {
+    const h = harness();
+    let disconnected = 0;
+    const connected = defineAutomations({ name: 'vault', deployment: {} } as never, async (automations) => {
+      await automations.connect({ name: 'rates' } as never);
+    });
+    await h.automations.use(connected as never, { sources: 'poll', connect: async () => ({ disconnect: () => void (disconnected += 1) }) as never });
+    expect(disconnected).toBe(0);
+    await h.automations.stop();
+    expect(disconnected).toBe(1);
+    await h.automations.stop();
+    expect(disconnected).toBe(1);
+  });
+
   it('refuses an append source, which needs a live subscription', async () => {
     const h = harness();
     const appendOnly = defineAutomations({ name: 'vault', deployment: {} } as never, (automations) => {

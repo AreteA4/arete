@@ -30,6 +30,7 @@ describe('arete-automations add', () => {
     expect(read(root, 'automations/runtime.ts')).toContain("keypairSigner(JSON.parse(need(env, 'SIGNER_KEYPAIR'))");
     expect(read(root, 'wrangler.jsonc')).toContain('"name": "tip-jar-automations"');
     expect(read(root, 'wrangler.jsonc')).toContain('"crons": ["* * * * *"]');
+    expect(result.devDependencies).toEqual(['wrangler', '@types/pg']);
     expect(result.next).toContain('a4 install --locked                     # bundle the published client, not the one a4 dev generated');
     expect(result.next.at(-1)).toBe(
       'a4 protocol webhook add --url https://<worker>.workers.dev/arete/webhook --secret-only | npx wrangler secret put ARETE_WEBHOOK_SECRET',

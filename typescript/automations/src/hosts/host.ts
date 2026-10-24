@@ -99,9 +99,9 @@ export interface Host<Env = HostEnv> {
 
 /**
  * The routes over `definition`. With `cache`, one runtime is built per
- * process and reused (Node, Vercel); without, one per invocation and
- * disposed after it (Workers, where a connection cannot outlive its
- * request).
+ * process and reused (Node, Vercel); without, one per invocation, whose
+ * stack connections and runtime are closed after it (Workers, where a
+ * connection cannot outlive its request).
  */
 export function createHost<Env extends object = HostEnv>(
   definition: AutomationsDefinition<any>,
@@ -112,15 +112,25 @@ export function createHost<Env extends object = HostEnv>(
   const maxJobsPerTick = options.maxJobsPerTick ?? 100;
   let cached: Promise<Instance> | null = null;
 
+  /** Close what an instance opened: the stacks its definition connected, then the factory's resources. */
+  const release = async (instance: { automations?: Automations; config: RuntimeConfig }) => {
+    try {
+      await instance.automations?.stop();
+    } finally {
+      await instance.config.dispose?.();
+    }
+  };
+
   const build = async (env: Env): Promise<Instance> => {
     const config = await runtime(env);
+    let automations: Automations | undefined;
     try {
       checkCluster(env as HostEnv, config);
-      const automations = createAutomations(config);
+      automations = createAutomations(config);
       await automations.use(definition, { sources: 'poll' });
       return { automations, config };
     } catch (error) {
-      await config.dispose?.();
+      await release({ automations, config }).catch(() => {});
       throw error;
     }
   };
@@ -140,7 +150,7 @@ export function createHost<Env extends object = HostEnv>(
     try {
       return await work(instance, (promise) => void pending.push(promise));
     } finally {
-      const done = Promise.allSettled(pending).then(() => instance.config.dispose?.());
+      const done = Promise.allSettled(pending).then(() => release(instance));
       if (waitUntil) waitUntil(done);
       else await done;
     }
