@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+## [0.46.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.45.0...a4-cli-v0.46.0) (2026-10-24)
+
+
+### ⚠ BREAKING CHANGES
+
+* **protocol:** arete-protocol check and build refuse Squads steps whose multisig reads the instance, args, params or wallet. Declare the multisig as a resource and use resources.<name>.multisig.
+
+### Features
+
+* **protocol:** a Squads step's multisig comes from a resource ([b10b64f](https://github.com/AreteA4/arete/commit/b10b64f641edc7e193aae71d3a17eb4dec1bc9ad))
+
+
+### Bug Fixes
+
+* **protocol:** keep the error for a bare resources multisig ([14b4724](https://github.com/AreteA4/arete/commit/14b47247ff1ff069b849ab4ca946be53743b2990))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.45.0 to 0.46.0
+    * arete-artifacts bumped from 0.5.3 to 0.5.4
+    * arete-hash bumped from 0.7.0 to 0.8.0
+    * arete-mcp bumped from 0.45.0 to 0.46.0
+  * build-dependencies
+    * arete-hash bumped from 0.7.0 to 0.8.0
+
 ## [0.45.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.44.3...a4-cli-v0.45.0) (2026-10-24)
 
 
