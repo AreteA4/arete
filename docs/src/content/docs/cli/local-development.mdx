@@ -428,6 +428,37 @@ is not `completed` is skipped unless `--include-failed`. Replays never add to
 do now: the create steps and the instances it relates to, each step with
 whether it is allowed and why not.
 
+### Squads multisigs
+
+A step whose authority is `squadsProposer` is proposed to a Squads v4
+multisig by your account's proposer. The Squads app cannot see a dev
+environment, so `a4 dev squads` creates and drives a multisig there with dev
+wallets. These commands only talk to the project's environment.
+
+```bash
+a4 dev squads create --members alice,bob --threshold 2      # every member: initiate, vote, execute
+a4 protocol squads add-proposer --dev --multisig <M> --member alice --send
+a4 dev squads approve --multisig <M> --index <n> --wallet alice
+a4 dev squads approve --multisig <M> --index <n> --wallet bob
+a4 dev squads execute --multisig <M> --index <n> --wallet alice
+a4 protocol squads status --dev --multisig <M>                # ready
+a4 dev fund <proposer> 1                                     # if it reports proposer_unfunded
+# after a step proposes to the multisig:
+a4 dev squads show --multisig <M>                            # the latest transaction index
+a4 dev squads approve --multisig <M> --index <n> --wallet alice   # and bob
+a4 dev squads vault-execute --multisig <M> --index <n> --wallet alice
+```
+
+| Command                                                                             | What it does                                                                                                                 |
+| ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| `a4 dev squads create --members <name\|pubkey,...> --threshold <n> [--wallet name]` | creates a multisig (no config authority, no time lock), paid by `--wallet` (default the first member); prints it and vault 0 |
+| `a4 dev squads show --multisig <M>`                                                 | members and permissions, threshold, the latest transaction index, vault 0                                                    |
+| `a4 dev squads approve --multisig <M> --index <n> --wallet <name>`                  | approves a proposal, activating a draft first                                                                                |
+| `a4 dev squads execute --multisig <M> --index <n> --wallet <name>`                  | executes an approved config transaction, such as the add-proposer proposal                                                   |
+| `a4 dev squads vault-execute --multisig <M> --index <n> --wallet <name>`            | executes an approved vault transaction, such as a step's proposal (fund the vault first if it pays)                          |
+
+Spending-limit config actions and batches are not supported.
+
 ### Your own stacks
 
 `a4 dev up` deploys your project's stacks into its Arete cloud dev environment,

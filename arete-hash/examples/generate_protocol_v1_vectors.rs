@@ -145,12 +145,16 @@ fn main() {
         .document("tokenRaise", "protocol-spec", raise.clone())
         .unwrap();
     // A template instruction with trailing accounts no IDL names.
-    let mut remaining = raise;
+    let mut remaining = raise.clone();
     remaining["steps"]["finalize"]["build"]["instructions"][0]["remainingAccounts"] = json!([
         { "pubkey": "instance.accounts.presale", "isWritable": true, "isSigner": false },
         { "pubkey": "params.quoteMint", "isWritable": false, "isSigner": false }
     ]);
     g.document("tokenRaiseRemainingAccounts", "protocol-spec", remaining);
+    // A Squads step that acts from a vault other than vault 0.
+    let mut vault = raise;
+    vault["steps"]["finalize"]["authority"]["vaultIndex"] = json!(3);
+    g.document("tokenRaiseVaultIndex", "protocol-spec", vault);
     g.document(
         "escrowResolution",
         "protocol-spec",
@@ -788,6 +792,59 @@ fn main() {
         rep(&format!("{remaining_path}/0/pubkey"), json!("")),
         "invalid-expression",
         &format!("{remaining_path}/0/pubkey"),
+    );
+    let vault_path = "/steps/finalize/authority/vaultIndex";
+    g.invalid(
+        "spec-vault-index-zero",
+        "tokenRaiseVaultIndex",
+        rep(vault_path, json!(0)),
+        "invalid-value",
+        vault_path,
+    );
+    g.invalid(
+        "spec-vault-index-too-large",
+        "tokenRaiseVaultIndex",
+        rep(vault_path, json!(256)),
+        "integer-out-of-range",
+        vault_path,
+    );
+    g.invalid(
+        "spec-vault-index-negative",
+        "tokenRaiseVaultIndex",
+        rep(vault_path, json!(-1)),
+        "integer-out-of-range",
+        vault_path,
+    );
+    g.invalid(
+        "spec-vault-index-string",
+        "tokenRaiseVaultIndex",
+        rep(vault_path, json!("1")),
+        "invalid-type",
+        vault_path,
+    );
+    g.invalid(
+        "spec-vault-index-float",
+        "tokenRaiseVaultIndex",
+        rep(vault_path, json!(1.5)),
+        "float-not-allowed",
+        vault_path,
+    );
+    g.invalid(
+        "spec-vault-index-null",
+        "tokenRaiseVaultIndex",
+        rep(vault_path, Value::Null),
+        "null-not-allowed",
+        vault_path,
+    );
+    g.invalid(
+        "spec-vault-index-on-keeper",
+        "tokenRaise",
+        rep(
+            "/steps/finalize/authority",
+            json!({ "kind": "keeper", "vaultIndex": 1 }),
+        ),
+        "unknown-field",
+        "/steps/finalize/authority/vaultIndex",
     );
     g.invalid(
         "spec-stack-unbound-account",

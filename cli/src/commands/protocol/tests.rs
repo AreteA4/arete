@@ -564,6 +564,47 @@ fn other_activation_failures_are_errors() {
 }
 
 #[test]
+fn a_squads_activation_refusal_prints_its_commands() {
+    let dir = project(&escrow_spec(), None);
+    let add = format!(
+        "a4 protocol squads add-proposer {DEPLOYMENT_ID} --multisig M --member <a member who can initiate>"
+    );
+    let status = format!("a4 protocol squads status {DEPLOYMENT_ID} --multisig M");
+    let server = responses(vec![
+        (200, json!([protocol_json("escrow-resolution")])),
+        (200, upload_json(ESCROW_RELEASE, false, "pending", false)),
+        (
+            200,
+            json!([deployment_json(
+                DEPLOYMENT_ID,
+                "disabled",
+                ESCROW_RELEASE,
+                "private"
+            )]),
+        ),
+        (
+            409,
+            json!({ "schemaVersion": 1, "error": "the Squads proposer is not a member", "code": "protocol-squads-proposer-missing",
+                "deploymentId": DEPLOYMENT_ID, "step": "finalize", "multisig": "M", "problem": "not_member",
+                "commands": { "addProposer": add, "status": status } }),
+        ),
+    ]);
+
+    let error = execute(&client(&server), &args(dir.path()), true).unwrap_err();
+    let text = format!("{error:#}");
+    assert!(
+        text.contains(&format!(
+            "Add the Squads proposer: `{add}`; then check it: `{status}`."
+        )),
+        "{text}"
+    );
+    assert!(
+        text.contains("the Squads proposer is not a member"),
+        "{text}"
+    );
+}
+
+#[test]
 fn a_failed_template_check_stops_before_any_deployment_call() {
     let dir = project(&escrow_spec(), None);
     let server = responses(vec![

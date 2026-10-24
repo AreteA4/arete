@@ -1977,6 +1977,655 @@
       },
       "kind": "protocol-stack-source"
     },
+    "tokenRaiseVaultIndex": {
+      "document": {
+        "ctxVersion": "arete.protocol-ctx/v1",
+        "description": "A token raise on Meteora Presale with a soft cap, team finalisation through Squads, and refunds.",
+        "events": {
+          "contribution.confirmed": {
+            "description": "A contribution confirmed on chain.",
+            "machine": "participant"
+          },
+          "raise.failed": {
+            "machine": "instance"
+          },
+          "raise.succeeded": {
+            "machine": "instance"
+          }
+        },
+        "handlerAbi": "arete.protocol-handler/v1",
+        "instanceVisibility": "account",
+        "machines": {
+          "instance": {
+            "derive": [
+              {
+                "at": "params.deadline",
+                "from": [
+                  "open"
+                ],
+                "to": "closed",
+                "when": "now >= params.deadline || reads.presale.totalDeposit >= params.hardCap"
+              },
+              {
+                "from": [
+                  "closed"
+                ],
+                "to": "succeeded",
+                "when": "reads.presale.totalDeposit >= params.softCap"
+              },
+              {
+                "from": [
+                  "closed"
+                ],
+                "to": "failed",
+                "when": "reads.presale.totalDeposit < params.softCap"
+              },
+              {
+                "from": [
+                  "awaiting_approval"
+                ],
+                "to": "finalized",
+                "when": "reads.presale.creatorWithdrawn"
+              }
+            ],
+            "initial": "open",
+            "reads": [
+              "presale"
+            ],
+            "states": {
+              "awaiting_approval": {
+                "kind": "recorded",
+                "terminal": false
+              },
+              "closed": {
+                "kind": "derived",
+                "terminal": false
+              },
+              "failed": {
+                "kind": "derived",
+                "terminal": true
+              },
+              "finalized": {
+                "kind": "derived",
+                "terminal": true
+              },
+              "open": {
+                "description": "Accepting contributions.",
+                "kind": "recorded",
+                "terminal": false
+              },
+              "succeeded": {
+                "kind": "derived",
+                "terminal": false
+              }
+            }
+          },
+          "participant": {
+            "derive": [],
+            "initial": "contributed",
+            "reads": [],
+            "states": {
+              "claimed": {
+                "kind": "recorded",
+                "terminal": true
+              },
+              "contributed": {
+                "kind": "recorded",
+                "terminal": false
+              },
+              "refunded": {
+                "kind": "recorded",
+                "terminal": true
+              }
+            }
+          }
+        },
+        "metadata": {
+          "instance": {
+            "fields": {
+              "name": {
+                "filterable": true,
+                "schema": {
+                  "maxLength": 64,
+                  "type": "string"
+                },
+                "writer": "creator"
+              },
+              "tagline": {
+                "filterable": false,
+                "schema": {
+                  "maxLength": 280,
+                  "type": "string"
+                },
+                "writer": "creator"
+              },
+              "ticker": {
+                "filterable": true,
+                "schema": {
+                  "maxLength": 10,
+                  "type": "string"
+                },
+                "writer": "creator"
+              }
+            },
+            "maxBytes": 4096
+          }
+        },
+        "name": "tokenRaise",
+        "params": {
+          "additionalProperties": false,
+          "properties": {
+            "deadline": {
+              "format": "unixTimestamp",
+              "type": "string"
+            },
+            "hardCap": {
+              "format": "u64",
+              "type": "string"
+            },
+            "quoteMint": {
+              "format": "pubkey",
+              "type": "string"
+            },
+            "softCap": {
+              "format": "u64",
+              "type": "string"
+            },
+            "walletCap": {
+              "format": "u64",
+              "type": "string"
+            }
+          },
+          "required": [
+            "deadline",
+            "hardCap",
+            "quoteMint",
+            "softCap",
+            "walletCap"
+          ],
+          "type": "object"
+        },
+        "programs": {
+          "meteoraPresale": {
+            "kind": "programSpec",
+            "programId": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
+            "programSpecHash": "arete:h1:program-spec:sha256:a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+          },
+          "splToken": {
+            "builtin": "splToken",
+            "kind": "builtin"
+          },
+          "squadsV4": {
+            "kind": "programSpec",
+            "programId": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
+            "programSpecHash": "arete:h1:program-spec:sha256:b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2"
+          },
+          "system": {
+            "builtin": "system",
+            "kind": "builtin"
+          }
+        },
+        "reactions": [
+          {
+            "action": {
+              "kind": "proposeSquads",
+              "step": "finalize"
+            },
+            "id": "proposeFinalize",
+            "trigger": {
+              "from": [],
+              "kind": "onTransition",
+              "machine": "instance",
+              "to": [
+                "succeeded"
+              ]
+            }
+          },
+          {
+            "action": {
+              "event": "raise.succeeded",
+              "kind": "emit"
+            },
+            "id": "announceSucceeded",
+            "trigger": {
+              "from": [],
+              "kind": "onTransition",
+              "machine": "instance",
+              "to": [
+                "succeeded"
+              ]
+            }
+          },
+          {
+            "action": {
+              "event": "raise.failed",
+              "kind": "emit"
+            },
+            "id": "announceFailed",
+            "trigger": {
+              "from": [],
+              "kind": "onTransition",
+              "machine": "instance",
+              "to": [
+                "failed"
+              ]
+            }
+          },
+          {
+            "action": {
+              "event": "contribution.confirmed",
+              "kind": "emit"
+            },
+            "id": "announceContribution",
+            "trigger": {
+              "kind": "onConfirmed",
+              "step": "contribute"
+            }
+          }
+        ],
+        "reads": {
+          "escrow": {
+            "account": "Escrow",
+            "address": "pda(\"meteoraPresale\", \"escrow\", instance.accounts.presale, wallet)",
+            "kind": "account",
+            "optional": true,
+            "program": "meteoraPresale"
+          },
+          "presale": {
+            "account": "Presale",
+            "address": "instance.accounts.presale",
+            "kind": "account",
+            "optional": false,
+            "program": "meteoraPresale"
+          }
+        },
+        "resources": {
+          "launchDefaults": {
+            "description": "Publisher defaults for new launches.",
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "tokenDecimals": {
+                  "maximum": 9,
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "tokenDecimals"
+              ],
+              "type": "object"
+            }
+          }
+        },
+        "roles": {},
+        "schema": "arete.protocol-spec/v1",
+        "stack": {
+          "activity": [
+            {
+              "amountArg": "max_amount",
+              "instanceAccount": "presale",
+              "instruction": "deposit",
+              "program": "meteoraPresale",
+              "step": "contribute",
+              "walletAccount": "owner"
+            }
+          ],
+          "instanceAccounts": {
+            "presale": {
+              "account": "Presale",
+              "program": "meteoraPresale"
+            }
+          },
+          "instanceFields": {
+            "totalDeposit": {
+              "account": "presale",
+              "field": "total_deposit"
+            }
+          }
+        },
+        "stacks": {
+          "meteoraPresale": {
+            "package": "meteora-presale",
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+          }
+        },
+        "steps": {
+          "claim": {
+            "access": "public",
+            "args": {
+              "additionalProperties": false,
+              "properties": {},
+              "required": [],
+              "type": "object"
+            },
+            "authority": {
+              "kind": "participant"
+            },
+            "build": {
+              "instructions": [
+                {
+                  "accounts": {
+                    "owner": "wallet",
+                    "presale": "instance.accounts.presale"
+                  },
+                  "args": {},
+                  "instruction": "claim",
+                  "program": "meteoraPresale"
+                }
+              ],
+              "kind": "template"
+            },
+            "ephemeral": [],
+            "fee": {
+              "kind": "none"
+            },
+            "glue": {
+              "atas": [
+                {
+                  "mint": "instance.accounts.mint",
+                  "owner": "wallet"
+                }
+              ],
+              "unwrapSol": false
+            },
+            "guards": [
+              {
+                "code": "raise_not_finalized",
+                "expr": "instance.state == \"finalized\""
+              }
+            ],
+            "reads": [],
+            "scope": "participant",
+            "transitions": [
+              {
+                "from": [
+                  "contributed"
+                ],
+                "machine": "participant",
+                "to": "claimed"
+              }
+            ]
+          },
+          "contribute": {
+            "access": "public",
+            "args": {
+              "additionalProperties": false,
+              "properties": {
+                "amount": {
+                  "format": "u64",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "amount"
+              ],
+              "type": "object"
+            },
+            "authority": {
+              "kind": "participant"
+            },
+            "build": {
+              "instructions": [
+                {
+                  "accounts": {
+                    "owner": "wallet",
+                    "presale": "instance.accounts.presale"
+                  },
+                  "args": {
+                    "max_amount": "args.amount"
+                  },
+                  "instruction": "deposit",
+                  "program": "meteoraPresale"
+                }
+              ],
+              "kind": "template"
+            },
+            "ephemeral": [],
+            "fee": {
+              "amountArg": "amount",
+              "asset": {
+                "kind": "native"
+              },
+              "kind": "input"
+            },
+            "glue": {
+              "atas": [
+                {
+                  "mint": "params.quoteMint",
+                  "owner": "wallet"
+                }
+              ],
+              "unwrapSol": false,
+              "wrapSol": {
+                "amount": "args.amount"
+              }
+            },
+            "guards": [
+              {
+                "code": "raise_not_open",
+                "expr": "instance.state == \"open\""
+              },
+              {
+                "code": "deadline_passed",
+                "expr": "now < params.deadline"
+              },
+              {
+                "code": "wallet_cap_exceeded",
+                "expr": "(reads.escrow.totalDeposit ?? 0) + args.amount <= params.walletCap"
+              },
+              {
+                "code": "hard_cap_exceeded",
+                "expr": "reads.presale.totalDeposit + args.amount <= params.hardCap"
+              }
+            ],
+            "reads": [
+              "escrow",
+              "presale"
+            ],
+            "scope": "participant",
+            "title": "Contribute",
+            "transitions": []
+          },
+          "create": {
+            "access": "secret",
+            "args": {
+              "additionalProperties": false,
+              "properties": {
+                "deadline": {
+                  "format": "unixTimestamp",
+                  "type": "string"
+                },
+                "hardCap": {
+                  "format": "u64",
+                  "type": "string"
+                },
+                "members": {
+                  "items": {
+                    "format": "pubkey",
+                    "type": "string"
+                  },
+                  "maxItems": 10,
+                  "type": "array"
+                },
+                "quoteMint": {
+                  "format": "pubkey",
+                  "type": "string"
+                },
+                "softCap": {
+                  "format": "u64",
+                  "type": "string"
+                },
+                "walletCap": {
+                  "format": "u64",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "deadline",
+                "hardCap",
+                "members",
+                "quoteMint",
+                "softCap",
+                "walletCap"
+              ],
+              "type": "object"
+            },
+            "authority": {
+              "kind": "creator"
+            },
+            "bind": {
+              "accounts": {
+                "mint": "ephemeral.mint",
+                "multisig": "pda(\"squadsV4\", \"multisig\", ephemeral.createKey)",
+                "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)",
+                "vault": "pda(\"squadsV4\", \"vault\", pda(\"squadsV4\", \"multisig\", ephemeral.createKey), 0)"
+              },
+              "roles": {}
+            },
+            "build": {
+              "export": "createLaunch",
+              "kind": "handler",
+              "programs": [
+                "meteoraPresale",
+                "splToken",
+                "squadsV4",
+                "system"
+              ]
+            },
+            "ephemeral": [
+              "mint",
+              "presaleBase",
+              "createKey"
+            ],
+            "fee": {
+              "kind": "none"
+            },
+            "glue": {
+              "atas": [],
+              "unwrapSol": false
+            },
+            "guards": [
+              {
+                "code": "soft_cap_above_hard_cap",
+                "expr": "args.softCap <= args.hardCap",
+                "message": "The soft cap must not exceed the hard cap."
+              }
+            ],
+            "reads": [],
+            "scope": "create",
+            "title": "Create a launch",
+            "transitions": []
+          },
+          "finalize": {
+            "args": {
+              "additionalProperties": false,
+              "properties": {},
+              "required": [],
+              "type": "object"
+            },
+            "authority": {
+              "kind": "squadsProposer",
+              "multisig": "instance.accounts.multisig",
+              "vaultIndex": 3
+            },
+            "build": {
+              "instructions": [
+                {
+                  "accounts": {
+                    "owner": "instance.accounts.vault",
+                    "presale": "instance.accounts.presale"
+                  },
+                  "args": {},
+                  "instruction": "creator_withdraw",
+                  "program": "meteoraPresale"
+                }
+              ],
+              "kind": "template"
+            },
+            "ephemeral": [],
+            "fee": {
+              "kind": "none"
+            },
+            "glue": {
+              "atas": [],
+              "unwrapSol": false
+            },
+            "guards": [
+              {
+                "code": "raise_not_succeeded",
+                "expr": "instance.state == \"succeeded\""
+              }
+            ],
+            "reads": [],
+            "scope": "instance",
+            "title": "Finalise through Squads",
+            "transitions": [
+              {
+                "from": [
+                  "succeeded"
+                ],
+                "machine": "instance",
+                "to": "awaiting_approval"
+              }
+            ]
+          },
+          "refund": {
+            "access": "public",
+            "args": {
+              "additionalProperties": false,
+              "properties": {},
+              "required": [],
+              "type": "object"
+            },
+            "authority": {
+              "kind": "participant"
+            },
+            "build": {
+              "instructions": [
+                {
+                  "accounts": {
+                    "owner": "wallet",
+                    "presale": "instance.accounts.presale"
+                  },
+                  "args": {},
+                  "instruction": "withdraw",
+                  "program": "meteoraPresale"
+                }
+              ],
+              "kind": "template"
+            },
+            "ephemeral": [],
+            "fee": {
+              "kind": "none"
+            },
+            "glue": {
+              "atas": [],
+              "unwrapSol": true
+            },
+            "guards": [
+              {
+                "code": "raise_not_failed",
+                "expr": "instance.state == \"failed\""
+              }
+            ],
+            "reads": [],
+            "scope": "participant",
+            "transitions": [
+              {
+                "from": [
+                  "contributed"
+                ],
+                "machine": "participant",
+                "to": "refunded"
+              }
+            ]
+          }
+        },
+        "version": "1.0.0"
+      },
+      "kind": "protocol-spec"
+    },
     "unreviewedReceipt": {
       "document": {
         "attestationPubkey": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
@@ -3023,6 +3672,107 @@
       "path": "/steps/finalize/build/instructions/0/remainingAccounts/0/pubkey"
     },
     {
+      "code": "invalid-value",
+      "document": "tokenRaiseVaultIndex",
+      "kind": "protocol-spec",
+      "name": "spec-vault-index-zero",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/steps/finalize/authority/vaultIndex",
+          "value": 0
+        }
+      ],
+      "path": "/steps/finalize/authority/vaultIndex"
+    },
+    {
+      "code": "integer-out-of-range",
+      "document": "tokenRaiseVaultIndex",
+      "kind": "protocol-spec",
+      "name": "spec-vault-index-too-large",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/steps/finalize/authority/vaultIndex",
+          "value": 256
+        }
+      ],
+      "path": "/steps/finalize/authority/vaultIndex"
+    },
+    {
+      "code": "integer-out-of-range",
+      "document": "tokenRaiseVaultIndex",
+      "kind": "protocol-spec",
+      "name": "spec-vault-index-negative",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/steps/finalize/authority/vaultIndex",
+          "value": -1
+        }
+      ],
+      "path": "/steps/finalize/authority/vaultIndex"
+    },
+    {
+      "code": "invalid-type",
+      "document": "tokenRaiseVaultIndex",
+      "kind": "protocol-spec",
+      "name": "spec-vault-index-string",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/steps/finalize/authority/vaultIndex",
+          "value": "1"
+        }
+      ],
+      "path": "/steps/finalize/authority/vaultIndex"
+    },
+    {
+      "code": "float-not-allowed",
+      "document": "tokenRaiseVaultIndex",
+      "kind": "protocol-spec",
+      "name": "spec-vault-index-float",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/steps/finalize/authority/vaultIndex",
+          "value": 1.5
+        }
+      ],
+      "path": "/steps/finalize/authority/vaultIndex"
+    },
+    {
+      "code": "null-not-allowed",
+      "document": "tokenRaiseVaultIndex",
+      "kind": "protocol-spec",
+      "name": "spec-vault-index-null",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/steps/finalize/authority/vaultIndex",
+          "value": null
+        }
+      ],
+      "path": "/steps/finalize/authority/vaultIndex"
+    },
+    {
+      "code": "unknown-field",
+      "document": "tokenRaise",
+      "kind": "protocol-spec",
+      "name": "spec-vault-index-on-keeper",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/steps/finalize/authority",
+          "value": {
+            "kind": "keeper",
+            "vaultIndex": 1
+          }
+        }
+      ],
+      "path": "/steps/finalize/authority/vaultIndex"
+    },
+    {
       "code": "unknown-bound-account",
       "document": "tokenRaise",
       "kind": "protocol-spec",
@@ -3783,6 +4533,12 @@
       "hash": "arete:h1:protocol-spec:sha256:5a45b4b43847753efd58340466afa50b68db18824c2ff993e907296a53e87b12",
       "kind": "protocol-spec",
       "name": "tokenRaiseRemainingAccounts"
+    },
+    {
+      "document": "tokenRaiseVaultIndex",
+      "hash": "arete:h1:protocol-spec:sha256:65eef2aac26e22469aa86e055d5ed1687105e23155d28cb360ff787369ea8950",
+      "kind": "protocol-spec",
+      "name": "tokenRaiseVaultIndex"
     },
     {
       "document": "escrowResolution",

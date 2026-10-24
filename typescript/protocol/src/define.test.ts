@@ -108,6 +108,49 @@ describe("defineProtocol", () => {
     );
   });
 
+  it("lowers a Squads vault index and omits vault 0", () => {
+    const withVault = (vaultIndex: number) =>
+      defineProtocol({
+        ...tokenRaise,
+        steps: {
+          ...tokenRaise.steps,
+          finalize: {
+            ...tokenRaise.steps.finalize,
+            authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig", vaultIndex },
+          },
+        },
+      });
+    const vectors = parseContractJson(readFileSync(resolve(here, "../../../test-vectors/protocol-v1.json"))) as {
+      documents: Record<string, { document: unknown }>;
+    };
+    const vault = lowerProtocol(withVault(3)).spec;
+    expect(decoder.decode(canonicalizeJcs(vault as never))).toBe(
+      decoder.decode(canonicalizeJcs(vectors.documents.tokenRaiseVaultIndex!.document as never)),
+    );
+    const zero = lowerProtocol(withVault(0)).spec;
+    expect(zero.steps.finalize!.authority).toEqual({ kind: "squadsProposer", multisig: "instance.accounts.multisig" });
+    expect(validateContract("protocol-spec", zero)).toBe(validateContract("protocol-spec", fixture));
+    for (const bad of [256, -1, 1.5]) {
+      expect(() => lowerProtocol(withVault(bad))).toThrow(
+        expect.objectContaining({ path: "/steps/finalize/authority/vaultIndex" }),
+      );
+    }
+  });
+
+  it("rejects a misspelled Squads vault index", () => {
+    const typo = defineProtocol({
+      ...tokenRaise,
+      steps: {
+        ...tokenRaise.steps,
+        finalize: {
+          ...tokenRaise.steps.finalize,
+          authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig", vaultindex: 3 } as never,
+        },
+      },
+    });
+    expect(() => lowerProtocol(typo)).toThrow(/unknown field .vaultindex./);
+  });
+
   it("reports contract errors with codes and paths", () => {
     expect(() =>
       lowerProtocol(

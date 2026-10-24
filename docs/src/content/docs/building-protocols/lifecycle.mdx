@@ -48,6 +48,15 @@ bound to wallets by the create step.
 authority: { kind: "role", role: "recipient" },
 ```
 
+An admin step can instead be proposed to a team's Squads v4 multisig. The
+optional `vaultIndex` (an integer from 0 to 255, default 0) picks which vault
+of that multisig the step acts from, so protocols that share a multisig can
+keep separate vaults.
+
+```ts
+authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig", vaultIndex: 1 },
+```
+
 **Access** determines which credentials may prepare a wallet step. `public`
 allows a publishable-key client; `secret` requires a secret-key session.
 Create and role steps default to `secret`; other wallet steps default to

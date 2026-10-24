@@ -17,7 +17,16 @@ import { definePolicy } from '../policy/policy';
 import type { Simulator } from '../policy/simulator';
 import type { AutomationClient } from '../runtime/automations';
 import type { Clock } from '../runtime/time';
+import { prepareIdempotencyKey, type StepRequest, stepJobId } from '../runtime/types';
 import { intentFor, wire } from './wire';
+
+/**
+ * The prefix (`step:<hash>:`) of every idempotency key one step job's
+ * prepares send, whatever the generation, for `script` and `partialFailure`.
+ */
+export function stepKeyPrefix(deliveryId: string, request: Pick<StepRequest, 'step' | 'wallet' | 'instance'>): string {
+  return prepareIdempotencyKey(stepJobId(deliveryId, request), 0).slice(0, -1);
+}
 
 export const DEPLOYMENT = 'dep-1';
 export const PROGRAM = encodeBase58(new Uint8Array(32).fill(40));
@@ -116,6 +125,13 @@ export interface FakeProtocolOptions {
   rejectPrepare?: (step: string) => string | undefined;
   /** The program the prepared transactions invoke. */
   program?: string;
+  /**
+   * Participant-scope steps. The instance read does not list them (as the API
+   * does not); the participant read does, for wallets in `participants`.
+   */
+  participantSteps?: string[];
+  /** The wallets that are participants of every instance; others read as 404. */
+  participants?: string[];
 }
 
 export function fakeProtocol(options: FakeProtocolOptions = {}) {
@@ -124,6 +140,8 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
   const prepareCalls: PrepareCall[] = [];
   const submitCalls: { executionId: string; signed: string[] }[] = [];
   const allowedCalls: { instance: string; wallet: string }[] = [];
+  const participantCalls: { instance: string; wallet: string }[] = [];
+  const participantSteps = options.participantSteps ?? [];
   const eventListeners: ProtocolEventsOptions['onEvent'][] = [];
   const terminal = new Set<string>();
   const instanceReads: string[] = [];
@@ -136,6 +154,10 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
       await options.onPrepare?.(call);
       const rejected = options.rejectPrepare?.(step);
       if (rejected) return { ok: false, rejection: { rejected, step } };
+      // The API's rule: a longer or percent-encoded key is a 400.
+      if (prepareOptions?.idempotencyKey !== undefined && !/^[A-Za-z0-9._:-]{1,128}$/.test(prepareOptions.idempotencyKey)) {
+        throw new Error('idempotencyKey must match ^[A-Za-z0-9._:-]{1,128}$');
+      }
       const key = prepareOptions?.idempotencyKey ?? `key-${prepareCalls.length}`;
       const existing = byKey.get(key);
       if (existing) {
@@ -198,13 +220,33 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
 
   const client: AutomationClient & { steps: Record<string, ReturnType<typeof stepClient>> } = {
     deploymentId: DEPLOYMENT,
+    ...(participantSteps.length > 0
+      ? { definition: { steps: Object.fromEntries(participantSteps.map((step) => [step, { scope: 'participant' }])) } as never }
+      : {}),
     steps: new Proxy({} as Record<string, ReturnType<typeof stepClient>>, {
       get: (_target, name) => (typeof name === 'string' ? stepClient(name) : undefined),
     }),
     async allowedSteps({ instance, wallet }) {
       allowedCalls.push({ instance, wallet });
-      const steps = ['deposit', 'withdraw', 'rebalance', 'claim'];
+      const steps = ['deposit', 'withdraw', 'rebalance', 'claim'].filter((step) => !participantSteps.includes(step));
       return steps.map((step) => options.allowed?.(step, wallet) ?? { step, allowed: true });
+    },
+    participants: {
+      async get({ instance, wallet }) {
+        participantCalls.push({ instance, wallet });
+        if (!(options.participants ?? []).includes(wallet)) {
+          throw Object.assign(new Error('Protocol participant read failed (404)'), { details: { status: 404 } });
+        }
+        return {
+          instanceId: instance,
+          wallet,
+          participantId: `participant-${wallet}`,
+          state: null,
+          metadata: {},
+          history: [],
+          allowedSteps: participantSteps.map((step) => options.allowed?.(step, wallet) ?? { step, allowed: true }),
+        } as never;
+      },
     },
     async submit(intent, signed) {
       const executionId = typeof intent === 'string' ? intent : intent.executionId;
@@ -245,6 +287,7 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
     prepareCalls,
     submitCalls,
     allowedCalls,
+    participantCalls,
     intents,
     instanceReads,
     /** Make an instance terminal. */

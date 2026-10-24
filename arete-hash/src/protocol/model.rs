@@ -313,7 +313,13 @@ pub enum AuthorityV1 {
     Keeper,
     /// A Squads proposer that may propose but never vote or execute.
     #[serde(rename_all = "camelCase")]
-    SquadsProposer { multisig: String },
+    SquadsProposer {
+        multisig: String,
+        /// The Squads v4 vault the step acts from. Absent means vault 0; a
+        /// canonical spec omits it rather than writing 0.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        vault_index: Option<u8>,
+    },
 }
 
 impl AuthorityV1 {
@@ -322,6 +328,15 @@ impl AuthorityV1 {
             Self::Creator | Self::Participant | Self::Role { .. } => SignerClass::Wallet,
             Self::Keeper => SignerClass::Keeper,
             Self::SquadsProposer { .. } => SignerClass::SquadsProposer,
+        }
+    }
+
+    /// The Squads v4 vault index a `squadsProposer` step acts from, with the
+    /// default applied. `None` for every other authority.
+    pub fn squads_vault_index(&self) -> Option<u8> {
+        match self {
+            Self::SquadsProposer { vault_index, .. } => Some(vault_index.unwrap_or(0)),
+            _ => None,
         }
     }
 

@@ -7,10 +7,11 @@ import { SignerRefusal } from '../signer/signer';
 import { runStoreConformance } from '../store/conformance';
 import { memoryStore } from '../store/memory';
 import type { AutomationStore } from '../store/store';
-import { DEPLOYMENT, fakeProtocol, feeOnlySimulator, policy } from '../test-support/fake-protocol';
+import { DEPLOYMENT, fakeProtocol, feeOnlySimulator, policy, stepKeyPrefix } from '../test-support/fake-protocol';
 import { ALICE, BOB, harness, SECRET, storedGrant, walletsSigner } from '../test-support/harness';
 import { clientCluster, createAutomations } from './automations';
 import { scheduleSlot } from './time';
+import { prepareIdempotencyKey, stepJobId } from './types';
 
 runStoreConformance('memoryStore', async () => memoryStore(), { describe, it, expect });
 
@@ -22,6 +23,23 @@ function onDeposits(automations: ReturnType<typeof harness>['automations'], opti
     ),
   );
 }
+
+describe('prepareIdempotencyKey', () => {
+  it('fits the API rule for a webhook-triggered step on an instance', () => {
+    // A delivery id, a wallet and a UUID instance: about 143 characters of
+    // job id, percent-encoded. The key the API sees must still match.
+    const jobId = stepJobId('webhook:7107fa3f-5566-469b-943f-c974b8ecbe5c:5', {
+      step: 'close',
+      wallet: 'GpMRTTciGBis6F2SN2xCp2uJjm7QY3baXb81kHAhUo9e',
+      instance: 'adb0c3a3-7d65-42eb-9f5a-b40486673a90',
+    });
+    expect(jobId.length).toBeGreaterThan(128);
+    const key = prepareIdempotencyKey(jobId, 12);
+    expect(key).toMatch(/^[A-Za-z0-9._:-]{1,128}$/);
+    expect(prepareIdempotencyKey(jobId, 12)).toBe(key);
+    expect(prepareIdempotencyKey(jobId, 13)).not.toBe(key);
+  });
+});
 
 describe('dispatch and handlers', () => {
   it('runs a dispatched trigger through to a completed step', async () => {
@@ -36,7 +54,7 @@ describe('dispatch and handlers', () => {
     expect(h.outcomes[0]!.signatures[0]).toBeTypeOf('string');
     expect(h.fake.prepareCalls[0]!.options).toMatchObject({
       transactionFormat: 'v1',
-      idempotencyKey: `step:dispatch%3Atick-1:deposit:${ALICE}:inst-1:0`,
+      idempotencyKey: prepareIdempotencyKey(`step:dispatch%3Atick-1:deposit:${ALICE}:inst-1`, 0),
     });
     expect(h.fake.prepareCalls[0]!.input).toEqual({ amount: '1000', wallet: ALICE, instance: 'inst-1' });
   });
@@ -173,6 +191,43 @@ describe('the step pipeline', () => {
     expect(h.rejected[0]).toMatchObject({ state: 'rejected', code: 'raise_closed' });
     expect(h.fake.prepareCalls).toHaveLength(0);
     expect(h.errors).toHaveLength(0);
+  });
+
+  // The API lists a participant step on the wallet's participant, not on the
+  // instance; a refund on a failed raise is one.
+  it('reads a participant step from the wallet participant', async () => {
+    const h = harness({ participantSteps: ['deposit'], participants: [ALICE] });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'deposit' });
+    expect(h.fake.participantCalls).toEqual([{ instance: 'inst-1', wallet: ALICE }]);
+    expect(h.fake.allowedCalls).toHaveLength(0);
+  });
+
+  it('rejects a participant step its participant may not run', async () => {
+    const h = harness({
+      participantSteps: ['deposit'],
+      participants: [ALICE],
+      allowed: (step) => ({ step, allowed: false, reason: 'raise_not_failed' }),
+    });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.rejected[0]).toMatchObject({ state: 'rejected', code: 'raise_not_failed' });
+    expect(h.fake.prepareCalls).toHaveLength(0);
+  });
+
+  it('lets prepare decide a participant step for a wallet that is not a participant yet', async () => {
+    const h = harness({ participantSteps: ['deposit'], participants: [] });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'deposit' });
+    expect(h.fake.prepareCalls).toHaveLength(1);
   });
 
   it('records a prepare rejection', async () => {
@@ -507,7 +562,7 @@ describe('expiry and reconciliation', () => {
   it('keeps the wallet locked while an intent is submitted_unknown', async () => {
     const h = harness({
       script: (key) =>
-        key.includes(':deposit:') ? [...Array<'submitted_unknown'>(12).fill('submitted_unknown'), 'completed'] : ['completed'],
+        key.startsWith(stepKeyPrefix('dispatch:t', { step: 'deposit', wallet: ALICE, instance: 'inst-1' })) ? [...Array<'submitted_unknown'>(12).fill('submitted_unknown'), 'completed'] : ['completed'],
     });
     await h.grant(ALICE);
     h.automations.on('both', (_payload, ctx) => [

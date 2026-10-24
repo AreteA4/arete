@@ -53,6 +53,7 @@ import {
   type DeliveryJob,
   type Job,
   type JobOutcome,
+  prepareIdempotencyKey,
   type StepJob,
   type StepJobState,
   type StepRequest,
@@ -738,6 +739,29 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     };
 
     /** Prepare, check, sign and submit a `running` step job. */
+    // An instance read lists only the instance's own steps; a participant
+    // step is listed on the wallet's participant. A wallet that is not a
+    // participant yet has none to read, so its prepare decides (undefined).
+    // null: the step is not listed at all.
+    const availabilityOf = async (
+      step: string,
+      instance: string,
+      wallet: string,
+    ): Promise<ProtocolStepAvailability | null | undefined> => {
+      const scope = (client.definition?.steps as Record<string, { readonly scope?: string }> | undefined)?.[step]?.scope;
+      if (scope === 'participant') {
+        if (!client.participants) return undefined;
+        try {
+          const participant = await client.participants.get({ instance, wallet });
+          return participant.allowedSteps.find((entry) => entry.step === step) ?? null;
+        } catch (error) {
+          if ((error as { details?: { status?: number } }).details?.status === 404) return undefined;
+          throw error;
+        }
+      }
+      return (await client.allowedSteps({ instance, wallet })).find((entry) => entry.step === step) ?? null;
+    };
+
     const attempt = async (job: StepJob): Promise<void> => {
       const { request } = job;
       const wallet = request.wallet;
@@ -756,13 +780,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       const target = checkTarget(policy, job.deploymentId, cluster);
       if (target) return refuse(job, target);
       if (request.instance !== undefined) {
-        const availability = (await client.allowedSteps({ instance: request.instance, wallet })).find(
-          (entry) => entry.step === request.step,
-        );
-        if (!availability) {
+        const availability = await availabilityOf(request.step, request.instance, wallet);
+        if (availability === null) {
           return finish(job, 'rejected', { code: 'step_not_available', reason: `${request.step} is not a step of this instance` });
         }
-        if (!availability.allowed) {
+        if (availability !== undefined && !availability.allowed) {
           return finish(job, 'rejected', {
             code: availability.reason ?? 'not_allowed',
             ...(availability.detail !== undefined ? { detail: availability.detail } : {}),
@@ -785,7 +807,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       }
       const result = await stepClient.prepare(
         { ...request.args, wallet, ...(request.instance !== undefined ? { instance: request.instance } : {}) },
-        { transactionFormat: format, idempotencyKey: `${job.id}:${job.progress.generation}` },
+        { transactionFormat: format, idempotencyKey: prepareIdempotencyKey(job.id, job.progress.generation) },
       );
       if (!result.ok) {
         return finish(job, 'rejected', {

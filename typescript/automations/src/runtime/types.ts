@@ -1,3 +1,5 @@
+import { sha256 } from '@noble/hashes/sha2';
+import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils';
 import type { ExecutionIntentV1, ProtocolPreparedTransaction, ProtocolTransactionFormat } from '@usearete/sdk';
 
 /** Where a trigger came from. */
@@ -133,4 +135,15 @@ export type Job = DeliveryJob | StepJob;
 export function stepJobId(deliveryId: string, request: Pick<StepRequest, 'step' | 'wallet' | 'instance'>): string {
   const base = `step:${encodeURIComponent(deliveryId)}:${encodeURIComponent(request.step)}:${request.wallet}`;
   return request.instance === undefined ? base : `${base}:${encodeURIComponent(request.instance)}`;
+}
+
+/**
+ * The idempotency key a step job's prepare sends for one generation. The API
+ * accepts `[A-Za-z0-9._:-]{1,128}`, and a job id is percent-encoded and can be
+ * longer (a webhook delivery, a wallet and an instance id), so the key
+ * carries the id's SHA-256 instead. It is deterministic, so a retry of the
+ * same generation gets the same intent back.
+ */
+export function prepareIdempotencyKey(jobId: string, generation: number): string {
+  return `step:${bytesToHex(sha256(utf8ToBytes(jobId)))}:${generation}`;
 }
