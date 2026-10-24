@@ -51,7 +51,8 @@ a4 dev up
 
 To start a new protocol project, `a4 protocol init [dir]` writes a
 template-only tip jar (`protocol.ts`) that pays through the System Program,
-with `arete.toml`, `arete.lock`, `package.json`, `tsconfig.json`,
+its automations (`automations/index.ts`, which `a4 dev up` runs beside the
+protocol), with `arete.toml`, `arete.lock`, `package.json`, `tsconfig.json`,
 `.gitignore` and a `README.md`:
 
 ```sh

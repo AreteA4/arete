@@ -63,12 +63,18 @@ unavailable. `a4 init` adds coding-agent instructions, skills, and MCP setup;
 doctor reports configuration problems and fixes.
 
 Read `protocol.ts`. The `open` step transfers an amount from its caller to a
-recipient and creates an instance in state `open`. The recipient's `close`
-step transfers an amount back to the creator and moves the instance to
-terminal state `closed`, emitting `tipJar.closed`.
+recipient and creates an instance in state `open`, emitting `tipJar.opened`.
+Any wallet can `tip` the recipient while the jar is open, as often as it
+likes. The recipient's `close` step transfers an amount back to the creator
+and moves the instance to terminal state `closed`, emitting `tipJar.closed`.
 
-This is a two-transfer teaching example. It does not lock funds in escrow or
-require the recipient to return them.
+`automations/index.ts` tips on supporters' behalf once they opt in: daily for
+a jar they chose, and on every new jar for a recipient they follow. `a4 dev
+up` runs it too; the project's `README.md` walks through both, and
+[Your first automation](/automations/quickstart/) explains how it works.
+
+This is a teaching example built from transfers. It does not lock funds in
+escrow or require the recipient to return them.
 
 ## 3. Start the environment
 

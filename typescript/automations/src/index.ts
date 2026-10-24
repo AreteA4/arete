@@ -33,8 +33,14 @@ export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signe
 export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';
 export { isSignerRefusal, SignerRefusal } from './signer/signer';
 export { clientCluster, createAutomations } from './runtime/automations';
-export { connectStack, defineAutomations, isAutomationsDefinition } from './runtime/define';
-export type { AutomationsDefinition, AutomationsSetup, DefinitionPolicy, StackConnector } from './runtime/define';
+export { connectStack, defineAutomations, describeDefinition, isAutomationsDefinition } from './runtime/define';
+export type {
+  AutomationsDefinition,
+  AutomationsSetup,
+  DefinitionManifest,
+  DefinitionPolicy,
+  StackConnector,
+} from './runtime/define';
 export type {
   AutomationClient,
   AutomationEvent,
@@ -48,14 +54,21 @@ export type {
   ExpressLikeResponse,
   Handler,
   HandlerContext,
+  ScheduledTrigger,
+  ScheduleOptions,
   SourceHandle,
   StepOptions,
+  TickOptions,
+  TickResult,
   TriggerInfo,
+  UseOptions,
   WebhookHandlerOptions,
   WebhookResult,
 } from './runtime/automations';
-export { durationMs, scheduleSlot, systemClock } from './runtime/time';
-export type { Clock, Duration, SchedulePeriod } from './runtime/time';
+export { checkCluster } from './hosts/host';
+export type { HostEnv, HostOptions, RuntimeConfig, RuntimeFactory, WaitUntil } from './hosts/host';
+export { durationMs, scheduleSlot, scheduleSlotFor, systemClock } from './runtime/time';
+export type { Clock, Duration, ScheduleEvery, SchedulePeriod } from './runtime/time';
 export {
   ACTIVE_STEP_STATES,
   stepJobId,

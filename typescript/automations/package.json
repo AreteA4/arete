@@ -32,6 +32,21 @@
       "import": "./dist/privy.js",
       "require": "./dist/privy.cjs"
     },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.ts",
+      "import": "./dist/cloudflare.js",
+      "require": "./dist/cloudflare.cjs"
+    },
+    "./vercel": {
+      "types": "./dist/vercel.d.ts",
+      "import": "./dist/vercel.js",
+      "require": "./dist/vercel.cjs"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "require": "./dist/node.cjs"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
@@ -47,6 +62,15 @@
       ],
       "privy": [
         "./dist/privy.d.ts"
+      ],
+      "cloudflare": [
+        "./dist/cloudflare.d.ts"
+      ],
+      "vercel": [
+        "./dist/vercel.d.ts"
+      ],
+      "node": [
+        "./dist/node.d.ts"
       ]
     }
   },

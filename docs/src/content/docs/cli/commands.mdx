@@ -99,7 +99,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK  |
 | `a4 up <manifest>`                                                            | Deploy one exact StackManifest                                    |
 | `a4 up <alias>`                                                               | Deploy an installed stack                                         |
-| `a4 protocol init [dir]`                                                      | Scaffold a protocol project (a template-only tip jar)             |
+| `a4 protocol init [dir]`                                                      | Scaffold a protocol project (a tip jar with automations)          |
 | `a4 protocol deploy [dir]`                                                    | Upload a built protocol and deploy it privately                   |
 | `a4 protocol actions [protocol\|deployment] --wallet <pubkey>`                | What a wallet can do now on a deployment                          |
 | `a4 dev up`                                                                   | Develop against your cloud dev environment, redeploying on change |
@@ -108,6 +108,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 protocol show <slug>`                                                     | One listed protocol: trust tier, steps, install command           |
 | `a4 protocol request-listing`                                                 | Ask for your deployment to be listed                              |
 | `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
+| `a4 protocol webhook add\|list\|remove\|test`                                 | The webhook endpoints that receive your deployment's events       |
 | `a4 protocol squads proposer\|status\|add-proposer [target]`                  | Bring your own Squads multisig: proposer, status, add it          |
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
@@ -1046,12 +1047,18 @@ deploys without the report.
 
 `a4 protocol init [dir]` creates a protocol project in `dir` (default: the
 current directory, created when missing): a template-only tip jar in
-`protocol.ts` whose steps are System Program transfers, the registry's
+`protocol.ts` whose steps (`open`, `tip`, `close`) are System Program
+transfers; its automations in `automations/index.ts` (recurring tips on a
+schedule, and tips for new jars on the `tipJar.opened` event), which
+`[dev.automations]` in `arete.toml` makes `a4 dev up` run; the registry's
 `system-program` package installed as `@programs/system` (`a4 install program
 system-program --as system --ts`: `arete.toml`, `arete.lock` and
-`generated/typescript/programs/system/`), `package.json` with
-`@usearete/protocol`, `@usearete/sdk` and `zod`, `tsconfig.json` mapping
-`@programs/*`, `.gitignore` and a `README.md`. It refuses to overwrite an
+`generated/typescript/programs/system/`); `package.json` with
+`@usearete/protocol`, `@usearete/sdk` and `zod`, plus `@usearete/automations`
+and `tsx` for the automations; `tsconfig.json` mapping `@programs/*`;
+`.gitignore`; and a `README.md`. The automations know nothing about where
+they will be deployed: `npx arete-automations add <cloudflare|vercel|node>`
+writes a host's entry later ([Run automations in production](/automations/production/#deploy-to-a-host)). It refuses to overwrite an
 existing file (`.gitignore` only gains missing lines). `--name <name>` sets
 the spec name (`^[a-z][A-Za-z0-9]*$`, default: the directory name in
 camelCase); `--no-install` skips the program install.
@@ -1358,6 +1365,41 @@ A request can be refused:
 | `protocol-listing-fee-policy`       | The fee policy misses the listing rules (minimum platform fee or fee destination). Deploy with one that meets them |
 | `protocol-listing-not-owner`        | Use a secret key of the account that owns the deployment                                                           |
 | `protocol-listing-account-standing` | The account cannot list protocols right now; contact Arete support                                                 |
+
+### a4 protocol webhook
+
+`a4 protocol webhook` manages the endpoints that receive your deployment's
+emitted events as signed POST deliveries. Every subcommand needs the
+deployment owner's secret key and finds the deployment the way
+`request-listing` does (`--deployment`, else the project's).
+
+`add` subscribes an https URL to the events the project's build declares (or
+`--events`) and prints the endpoint's signing secret. The secret is shown only
+once: store it where the endpoint runs as `ARETE_WEBHOOK_SECRET`. With
+`--secret-only` it prints just the secret, so you can pipe it into your host's
+secret store. If you lose it, remove the endpoint and add it again.
+
+```bash
+a4 protocol webhook add --url https://app.example/arete/webhook
+a4 protocol webhook add --url https://app.example/arete/webhook --events tipJar.tipped,tipJar.closed
+a4 protocol webhook add --url https://<worker>.workers.dev/arete/webhook --secret-only \
+  | npx wrangler secret put ARETE_WEBHOOK_SECRET
+a4 protocol webhook list
+a4 protocol webhook test <webhook-id>      # send a signed test delivery now
+a4 protocol webhook remove <webhook-id>    # disable the endpoint
+```
+
+| Flag                | Description                                                            |
+| ------------------- | ---------------------------------------------------------------------- |
+| `--url <url>`       | `add`: the endpoint's https URL                                        |
+| `--events <a,b>`    | `add`: event names (default: every event the project's build declares) |
+| `--secret-only`     | `add`: print only the signing secret                                   |
+| `--deployment <id>` | The deployment (default: the project's)                                |
+| `--dir <dir>`       | The protocol project to read (default `.`)                             |
+| `--json`            | The endpoint, list or test result as JSON                              |
+
+A dev environment sends no webhooks: under `a4 dev up`, the project's
+automations receive the environment's events as signed deliveries instead.
 
 ### a4 dev
 

@@ -1,16 +1,21 @@
 //! `a4 protocol init [dir]`: scaffold a protocol project.
 //!
 //! Writes a template-only tip jar (`protocol.ts`, no handler code) that pays
-//! through the System Program, with everything `arete-protocol check`,
-//! `a4 dev up` and `a4 protocol deploy` read:
+//! through the System Program, its automations (`automations/index.ts`, which
+//! `a4 dev up` runs through `[dev.automations]`), and everything
+//! `arete-protocol check`, `a4 dev up` and `a4 protocol deploy` read:
 //!
 //! - `arete.toml`, then the System Program from the registry, as `a4 install
 //!   program system-program --as system --ts` installs it: `arete.lock`,
 //!   `generated/typescript/programs/system/` and `@programs/*` in
 //!   `tsconfig.json`;
 //! - `package.json` (`@usearete/protocol`, `@usearete/sdk` and `zod`, which
-//!   the generated program module imports), `tsconfig.json`, `.gitignore`
-//!   and `README.md`.
+//!   the generated program module imports; `@usearete/automations` and `tsx`
+//!   for the automations), `tsconfig.json`, `.gitignore` and `README.md`.
+//!
+//! The automations are host-agnostic: `arete-automations add <cloudflare|
+//! vercel|node>` later writes a host's entry and the production wiring
+//! beside them, so nothing here depends on where they will be deployed.
 //!
 //! The default requires the registry's reviewed System Program package. A
 //! registry failure is actionable, not permission to substitute a different
@@ -38,6 +43,9 @@ use crate::project::runtime::{lockstep_version, ZOD_RANGE};
 
 /// The `@usearete/protocol` range a new project depends on.
 pub const PROTOCOL_PACKAGE_RANGE: &str = "^0.2.2"; // x-release-please-version
+
+/// The `tsx` range: `a4 dev up` runs the TypeScript automations with it.
+const TSX_RANGE: &str = "^4.19.0";
 
 /// The registry package init installs the System Program from.
 pub const SYSTEM_PROGRAM_PACKAGE: &str = "system-program";
@@ -86,9 +94,12 @@ const TSCONFIG: &str = r#"{
       "@programs/*": ["./generated/typescript/programs/*/index.js"]
     }
   },
-  "include": ["protocol.ts", "handlers", "generated"]
+  "include": ["*.ts", "handlers", "generated", "automations", "api"]
 }
 "#;
+
+/// The automations definition, relative to the project.
+pub const AUTOMATIONS_ENTRY: &str = "automations/index.ts";
 
 /// Lines `.gitignore` must hold.
 const GITIGNORE_LINES: [&str; 2] = ["node_modules/", ".arete/"];
@@ -197,7 +208,10 @@ pub fn protocol_ts(name: &str) -> String {
  *
  * - `open` (the create step; the creator signs) sends `amount` lamports to the
  *   recipient with a System Program transfer and names the recipient. The
- *   instance starts `open`.
+ *   instance starts `open` and emits `tipJar.opened`.
+ * - `tip` (any wallet, as a participant) sends `amount` lamports to the
+ *   recipient, as often as it likes while the jar is open, and emits
+ *   `tipJar.tipped`. Supporters can automate it: see automations/index.ts.
  * - `close` (the recipient signs) sends `amount` lamports back to the creator
  *   and moves the instance to `closed`, which emits `tipJar.closed`.
  *
@@ -210,10 +224,10 @@ import {{ defineProtocol, ix }} from "@usearete/protocol";
 export default defineProtocol({{
   name: "{name}",
   version: "0.1.0",
-  description: "A tip jar: two templated System Program transfers.",
+  description: "A tip jar: templated System Program transfers to a recipient, which supporters can automate.",
   programs: {{ system }},
   params: {{ amount: "u64" }},
-  roles: {{ recipient: {{ description: "Receives the tip and closes the jar." }} }},
+  roles: {{ recipient: {{ description: "Receives the tips and closes the jar." }} }},
   instanceVisibility: "shared",
   machines: {{
     instance: {{
@@ -222,6 +236,12 @@ export default defineProtocol({{
         open: "recorded",
         closed: {{ kind: "recorded", terminal: true }},
       }},
+    }},
+    // A wallet that tipped. The state is terminal, and `tip` declares the
+    // self-loop that lets a supporter tip again.
+    participant: {{
+      initial: "supporter",
+      states: {{ supporter: {{ kind: "recorded", terminal: true }} }},
     }},
   }},
   steps: {{
@@ -236,6 +256,23 @@ export default defineProtocol({{
         ix(system, "transfer", {{
           args: {{ lamports: "args.amount" }},
           accounts: {{ fundingAccount: "wallet", recipientAccount: "args.recipient" }},
+        }}),
+      ],
+    }},
+    tip: {{
+      scope: "participant",
+      title: "Tip the recipient",
+      authority: "participant",
+      args: {{ amount: "u64" }},
+      guards: {{
+        amount_zero: "args.amount > 0",
+        not_open: 'instance.state == "open"',
+      }},
+      transitions: [{{ machine: "participant", from: ["supporter"], to: "supporter" }}],
+      build: [
+        ix(system, "transfer", {{
+          args: {{ lamports: "args.amount" }},
+          accounts: {{ fundingAccount: "wallet", recipientAccount: "instance.roles.recipient" }},
         }}),
       ],
     }},
@@ -258,24 +295,100 @@ export default defineProtocol({{
     }},
   }},
   reactions: [
+    {{ id: "announceOpened", trigger: {{ kind: "onConfirmed", step: "open" }}, action: {{ kind: "emit", event: "tipJar.opened" }} }},
+    {{ id: "announceTip", trigger: {{ kind: "onConfirmed", step: "tip" }}, action: {{ kind: "emit", event: "tipJar.tipped" }} }},
     {{
       id: "announceClosed",
       trigger: {{ kind: "onTransition", machine: "instance", from: [], to: ["closed"] }},
       action: {{ kind: "emit", event: "tipJar.closed" }},
     }},
   ],
-  events: {{ "tipJar.closed": "instance" }},
-  // The protocol stack (`a4 stream --dev`) tracks both transfers:
+  // Named events: automations and webhooks subscribe to them.
+  events: {{
+    "tipJar.opened": "instance",
+    "tipJar.tipped": "participant",
+    "tipJar.closed": "instance",
+  }},
+  // The protocol stack (`a4 stream --dev`) tracks every transfer:
   // `fundingAccount` pays, `recipientAccount` receives. The recipient is a
   // wallet, not an account the instance owns, so only transfers sent through
   // Arete count.
   stack: {{
     activity: [
       {{ step: "open", program: "system", instruction: "transfer", instanceAccount: "recipientAccount", walletAccount: "fundingAccount", amountArg: "lamports" }},
+      {{ step: "tip", program: "system", instruction: "transfer", instanceAccount: "recipientAccount", walletAccount: "fundingAccount", amountArg: "lamports" }},
       {{ step: "close", program: "system", instruction: "transfer", instanceAccount: "recipientAccount", walletAccount: "fundingAccount", amountArg: "lamports" }},
     ],
   }},
 }});
+"#
+    )
+}
+
+/// `automations/index.ts`: the tip jar's automations, which `a4 dev up` runs
+/// against the dev environment and a host runs in production.
+pub fn automations_ts(name: &str, slug: &str) -> String {
+    format!(
+        r#"/**
+ * Automations for `{name}`: steps that run for a supporter after they opted in
+ * by signing a consent, without them opening the app.
+ *
+ * - **Recurring tips** (a schedule): once a day, every supporter who
+ *   consented to `tip` on a jar tips the amount they chose.
+ * - **Tips for new jars** (an event): supporters who follow a recipient tip
+ *   each new jar for that recipient as soon as `tipJar.opened` arrives.
+ *
+ * Handlers only return the steps to run. Each one is checked against the
+ * wallet's consent and limits, the policy below and the protocol's guards,
+ * then simulated, before it is signed.
+ *
+ * `a4 dev up` runs this module (`[dev.automations]` in arete.toml) with dev
+ * wallets as the supporters; schedules follow the dev environment's clock,
+ * so `a4 dev warp +1d` runs the daily tips. For production,
+ * `npx arete-automations add <cloudflare|vercel|node>` wires the same
+ * definition into a host. See README.md.
+ */
+import {{ defineAutomations }} from "@usearete/automations";
+
+// The protocol's client: the one `a4 dev up` generates for the dev
+// environment, or the published one after `a4 install --locked`.
+import protocol from "../generated/typescript/protocols/{slug}/{slug}.js";
+
+export default defineAutomations(
+  protocol,
+  (automations) => {{
+    automations.schedule("recurringTips", {{ every: "day" }});
+    automations.on("recurringTips", async (_trigger, ctx) => {{
+      // Grants for one jar, with the amount as a signed setting:
+      //   a4 dev consent alice --steps tip --instance <jar> --param amount=1000000
+      const grants = await ctx.consents.list({{ step: "tip" }});
+      return grants.flatMap((grant) => {{
+        const amount = grant.params.amount;
+        if (grant.instanceId === null || typeof amount !== "string") return [];
+        // The schedule dispatches once per day, so each jar is tipped once a day.
+        return [ctx.step("tip", {{ wallet: grant.wallet, instance: grant.instanceId, args: {{ amount }} }})];
+      }});
+    }});
+
+    automations.on("tipJar.opened", async (event, ctx) => {{
+      const jar = await ctx.client.instances!.get(event.instanceId);
+      // Grants for every jar, following one recipient:
+      //   a4 dev consent alice --steps tip --param recipient=<pubkey> --param amount=1000000
+      const grants = await ctx.consents.list({{ step: "tip" }});
+      return grants.flatMap((grant) => {{
+        const amount = grant.params.amount;
+        if (grant.instanceId !== null || grant.params.recipient !== jar.roles?.recipient || typeof amount !== "string") return [];
+        return [ctx.step("tip", {{ wallet: grant.wallet, instance: event.instanceId, args: {{ amount }} }})];
+      }});
+    }});
+  }},
+  {{
+    // What may be signed: tips are System Program transfers (always allowed),
+    // and at most 0.05 SOL may leave a wallet in one transaction. Each
+    // supporter's consent sets their own, lower limits.
+    policy: {{ programs: [], maxSolPerTransaction: "0.05" }},
+  }},
+);
 "#
     )
 }
@@ -295,6 +408,8 @@ fn package_json(dir_name: &str) -> Result<String> {
             "zod": ZOD_RANGE
         },
         "devDependencies": {
+            "@usearete/automations": lockstep_version(),
+            "tsx": TSX_RANGE,
             "typescript": "^5.6.0"
         }
     });
@@ -311,13 +426,15 @@ fn readme(dir_name: &str, name: &str, local_idl: bool) -> String {
         r#"# {dir_name}
 
 An Arete protocol, `{name}`, created by `a4 protocol init`: a tip jar whose
-two steps are System Program transfers built from templates.
+steps are System Program transfers built from templates, with automations
+that tip on a supporter's behalf once they opt in.
 
 | File | What it is |
 | --- | --- |
 | `protocol.ts` | the protocol definition (`defineProtocol`) |
+| `automations/index.ts` | the automations (`defineAutomations`): recurring tips and tips for new jars |
 | `generated/typescript/programs/system/` | the System Program ({system_source}), imported as `@programs/system` |
-| `arete.toml`, `arete.lock` | the project's dependencies and their pinned versions |
+| `arete.toml`, `arete.lock` | the project's dependencies and their pinned versions; `[dev.automations]` points `a4 dev up` at the automations |
 
 `generated/` and `arete.lock` are committed; `a4 install --check` checks them
 in CI. `.arete/` (build output and local session state) is not.
@@ -327,8 +444,11 @@ in CI. `.arete/` (build output and local session state) is not.
 ```sh
 npm install
 npx arete-protocol check          # type-check and validate the definition
-a4 dev up                         # local fork + runtime; redeploys on every change
-a4 dev step open --args '{{"recipient":"<pubkey>","amount":"1000000"}}'
+a4 dev up                         # dev environment; redeploys and restarts the automations on every change
+a4 dev wallet alice               # funded dev wallets: alice tips, bob receives
+a4 dev wallet bob
+a4 dev step open --wallet alice --args '{{"recipient":"<bob>","amount":"1000000"}}'
+a4 dev step tip --wallet alice --instance <jar> --args '{{"amount":"1000000"}}'
 a4 stream --dev                   # the protocol's instances and activity
 ```
 
@@ -340,7 +460,33 @@ Arete includes any applicable fee in the prepared transaction. The app should
 display that fee before signing. `close` accepts an amount chosen by its caller;
 returning funds does not automatically make it an exempt refund.
 
+## Automations
+
+`a4 dev up` runs `automations/index.ts` beside the protocol: dev wallets
+sign for the supporters, and jobs and consent are kept under
+`.arete/dev/automations/`. A supporter opts in by signing a consent; in dev,
+`a4 dev consent` signs it with a dev wallet.
+
+Recurring tips, daily, for one jar:
+
+```sh
+a4 dev consent alice --steps tip --instance <jar> --param amount=1000000
+a4 dev warp +1d                   # schedules follow the dev environment's clock
+# automations │ completed: tip for <alice> on <jar>: completed
+```
+
+Tips for every new jar a recipient opens:
+
+```sh
+a4 dev wallet carol
+a4 dev consent carol --steps tip --param recipient=<bob> --param amount=500000
+a4 dev step open --wallet alice --args '{{"recipient":"<bob>","amount":"1000000"}}'
+# automations │ completed: tip for <carol> on <new jar>: completed
+```
+
 ## Deploy
+
+Deploy the protocol:
 
 ```sh
 a4 protocol deploy
@@ -350,7 +496,25 @@ A program installed from a local IDL is pushed to your account as a private
 program first (`a4 program push`), and `arete.lock` records its program
 release.
 
-Docs: https://docs.arete.run/cli/local-development/ and
+Then deploy the automations to a host of your choice. This writes the host's
+entry and config, plus `automations/runtime.ts` (the production client,
+signer, Postgres store and policy, read from the environment), and prints
+the remaining steps:
+
+```sh
+npx arete-automations add cloudflare    # or: vercel, node (any container host)
+```
+
+Every host follows the same steps: install the published client
+(`a4 install --locked`), migrate the store (`npx arete-automations migrate`),
+set the secrets, deploy with the host's own CLI, then subscribe the webhook:
+
+```sh
+a4 protocol webhook add --url https://<host>/arete/webhook --secret-only | npx wrangler secret put ARETE_WEBHOOK_SECRET
+```
+
+Docs: https://docs.arete.run/cli/local-development/,
+https://docs.arete.run/automations/production/ and
 https://docs.arete.run/cli/commands/.
 "#
     )
@@ -389,6 +553,9 @@ pub fn init(args: &InitArgs, json: bool) -> Result<()> {
     } else {
         format!("cd {} && ", outcome.dir)
     };
+    println!(
+        "  Automations: {AUTOMATIONS_ENTRY} (`a4 dev up` runs them; `npx arete-automations add <cloudflare|vercel|node>` deploys them)"
+    );
     println!();
     println!("Next: {cd}npm install && npx arete-protocol check && a4 dev up");
     if !outcome.installed {
@@ -427,14 +594,18 @@ fn scaffold_with(
         })?,
     };
 
+    let slug = crate::commands::protocol::derive_slug(&name)?;
+    let manifest = format!(
+        "{}\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
+        crate::commands::config::new_manifest_contents(&absolute, Some(dir_name.clone()))?
+            .trim_end()
+    );
     let files: Vec<(&str, String)> = vec![
-        (
-            "arete.toml",
-            crate::commands::config::new_manifest_contents(&absolute, Some(dir_name.clone()))?,
-        ),
+        ("arete.toml", manifest),
         ("package.json", package_json(&dir_name)?),
         ("tsconfig.json", TSCONFIG.to_string()),
         ("protocol.ts", protocol_ts(&name)),
+        (AUTOMATIONS_ENTRY, automations_ts(&name, &slug)),
     ];
     // The fallback IDL is checked up front too, so a fallback never meets
     // an existing file after the rest are written.
@@ -674,10 +845,23 @@ mod tests {
             "package.json",
             "tsconfig.json",
             "protocol.ts",
+            AUTOMATIONS_ENTRY,
             "README.md",
         ] {
             assert!(root.join(file).is_file(), "{file}");
         }
+        // `a4 dev up` runs the automations, which import the client it
+        // generates for the protocol's slug.
+        let config = crate::commands::dev::automations::AutomationsConfig::load(&root)
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.entry.as_deref(), Some(AUTOMATIONS_ENTRY));
+        let automations = std::fs::read_to_string(root.join(AUTOMATIONS_ENTRY)).unwrap();
+        assert!(
+            automations.contains(r#"from "../generated/typescript/protocols/tip-jar/tip-jar.js""#)
+        );
+        assert!(automations.contains(r#"automations.schedule("recurringTips""#));
+        assert!(automations.contains(r#"automations.on("tipJar.opened""#));
         // No install, so no fallback IDL.
         assert!(!root.join(SYSTEM_IDL_PATH).exists());
         assert!(std::fs::read_to_string(root.join("protocol.ts"))
@@ -705,6 +889,12 @@ mod tests {
                 "{dependency}"
             );
         }
+        assert_eq!(
+            package["devDependencies"]["@usearete/automations"],
+            package["dependencies"]["@usearete/sdk"],
+            "the automations package is versioned with the SDK"
+        );
+        assert!(package["devDependencies"]["tsx"].is_string());
         let tsconfig: serde_json::Value =
             serde_json::from_str(&std::fs::read_to_string(root.join("tsconfig.json")).unwrap())
                 .unwrap();
@@ -809,6 +999,11 @@ mod tests {
         assert!(root.join(SYSTEM_IDL_PATH).is_file());
         let lock = std::fs::read_to_string(root.join("arete.lock")).unwrap();
         assert!(lock.contains("idl/system.idl.json"), "{lock}");
+        // The install rewrites arete.toml and keeps [dev.automations].
+        let config = crate::commands::dev::automations::AutomationsConfig::load(&root)
+            .unwrap()
+            .expect("[dev.automations] survives the install");
+        assert_eq!(config.entry.as_deref(), Some(AUTOMATIONS_ENTRY));
         // An existing fallback IDL refuses init before anything is written.
         let other = dir.path().join("other");
         std::fs::create_dir_all(other.join("idl")).unwrap();

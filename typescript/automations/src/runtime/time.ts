@@ -63,3 +63,29 @@ export function scheduleSlot(name: string, period: SchedulePeriod, at: Date | nu
       return `${name}:${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}`;
   }
 }
+
+/** How often a schedule runs: a calendar period (UTC), or a fixed interval of at least a second. */
+export type ScheduleEvery = SchedulePeriod | Duration;
+
+const PERIODS: readonly string[] = ['minute', 'hour', 'day', 'week', 'month'];
+
+export function isSchedulePeriod(every: ScheduleEvery): every is SchedulePeriod {
+  return typeof every === 'string' && PERIODS.includes(every);
+}
+
+/** Checks `every`, throwing a readable error for an interval under a second. */
+export function checkScheduleEvery(every: ScheduleEvery): void {
+  if (isSchedulePeriod(every)) return;
+  if (durationMs(every) < 1000) throw new RangeError(`a schedule runs at most once a second, not every ${every}`);
+}
+
+/**
+ * The slot `at` falls in for a schedule: a calendar period's slot as
+ * {@link scheduleSlot} names it, or for an interval the start of the
+ * interval since the epoch (`sweep:2026-10-23T12:15:00.000Z` for `15m`).
+ */
+export function scheduleSlotFor(name: string, every: ScheduleEvery, at: number): string {
+  if (isSchedulePeriod(every)) return scheduleSlot(name, every, at);
+  const ms = durationMs(every);
+  return `${name}:${new Date(Math.floor(at / ms) * ms).toISOString()}`;
+}

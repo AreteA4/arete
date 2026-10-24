@@ -57,6 +57,7 @@ pub mod init;
 pub mod listing;
 pub mod local_programs;
 pub mod squads;
+pub mod webhook;
 
 #[derive(Subcommand, Debug)]
 pub enum ProtocolCommands {
@@ -77,6 +78,9 @@ pub enum ProtocolCommands {
     RequestListing(listing::RequestListingArgs),
     /// Show your deployment's listing state
     ListingStatus(listing::ListingArgs),
+    /// Manage the webhook endpoints that receive your deployment's events
+    #[command(subcommand)]
+    Webhook(webhook::WebhookCommands),
     /// Bring your own Squads v4 multisig: the account's proposer, whether
     /// it can propose to a multisig, and the transaction that adds it
     #[command(subcommand)]
@@ -163,6 +167,7 @@ pub fn run(command: ProtocolCommands, json: bool) -> Result<()> {
         ProtocolCommands::Show(args) => listing::show(&args, json),
         ProtocolCommands::RequestListing(args) => listing::request_listing(&args, json),
         ProtocolCommands::ListingStatus(args) => listing::listing_status(&args, json),
+        ProtocolCommands::Webhook(command) => webhook::run(command, json),
         ProtocolCommands::Squads(command) => squads::run(command, json),
     }
 }
