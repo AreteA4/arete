@@ -268,11 +268,22 @@ export type CheckedInstructionParams<THandler, TParams, TAccountKeys extends str
     : AcceptedInstructionParams<InstructionParams<THandler>, SuppliedAccountKeys<THandler, TAccountKeys>>;
 
 /**
- * Build options whose `accounts` map is typed by its keys, so accounts given
- * there count towards the params check.
+ * The `accounts` keys an options type guarantees are present. Only a required,
+ * defined `accounts` map counts: an optional one may be absent at run time,
+ * so its keys relax nothing.
  */
-type TypedBuildOptions<TOptions extends BuildOptions, TAccountKeys extends string> = TOptions & {
-  accounts?: { [K in TAccountKeys]: string } | undefined;
+type GuaranteedAccountKeys<TOptions> = TOptions extends { accounts: infer TAccounts }
+  ? undefined extends TAccounts
+    ? never
+    : Extract<keyof TAccounts, string>
+  : never;
+
+/**
+ * `TOptions`, with keys that are not part of `TBase` rejected. Inferring the
+ * options type skips excess-property checks, so this restores them.
+ */
+type ExactOptions<TOptions, TBase> = TOptions & {
+  [K in Exclude<keyof TOptions, keyof TBase>]?: never;
 };
 
 /**
@@ -484,12 +495,13 @@ function splitParams(
 export function buildInstruction<
   THandler extends InstructionHandler<any, any>,
   TParams = InstructionParams<THandler>,
-  TAccountKeys extends string = never,
+  TOptions extends BuildOptions = BuildOptions,
 >(
   handler: THandler,
-  params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
-  options: TypedBuildOptions<BuildOptions, TAccountKeys> = {}
+  params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
+  buildOptions?: ExactOptions<TOptions, BuildOptions>
 ): BuiltInstruction {
+  const options: BuildOptions = buildOptions ?? {};
   const { args, accountOverrides, resolve } = splitParams(
     handler,
     params as unknown as Record<string, unknown>,
@@ -532,18 +544,19 @@ export function buildInstruction<
 export async function executeInstruction<
   THandler extends InstructionHandler<any, any>,
   TParams = InstructionParams<THandler>,
-  TAccountKeys extends string = never,
+  TOptions extends ExecuteOptions = ExecuteOptions,
 >(
   handler: THandler,
-  params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
-  options: TypedBuildOptions<ExecuteOptions, TAccountKeys> = {}
+  params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
+  executeOptions?: ExactOptions<TOptions, ExecuteOptions>
 ): Promise<ExecutionResult> {
+  const options: ExecuteOptions = executeOptions ?? {};
   let instruction: BuiltInstruction;
   try {
     instruction = buildInstruction(
       handler as InstructionHandler<any, any>,
       params as unknown as Record<string, unknown>,
-      options
+      options as BuildOptions
     );
   } catch (cause) {
     throw new TransactionExecutionError({
@@ -585,11 +598,11 @@ export function createInstructionExecutor(wallet: WalletAdapter) {
     execute: async <
       THandler extends InstructionHandler<any, any>,
       TParams = InstructionParams<THandler>,
-      TAccountKeys extends string = never,
+      TOptions extends Omit<ExecuteOptions, 'wallet'> = Omit<ExecuteOptions, 'wallet'>,
     >(
       handler: THandler,
-      params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
-      options?: TypedBuildOptions<Omit<ExecuteOptions, 'wallet'>, TAccountKeys>
+      params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
+      options?: ExactOptions<TOptions, Omit<ExecuteOptions, 'wallet'>>
     ) => {
       const executeOptions: ExecuteOptions = { ...options, wallet };
       return executeInstruction(
@@ -601,11 +614,11 @@ export function createInstructionExecutor(wallet: WalletAdapter) {
     build: <
       THandler extends InstructionHandler<any, any>,
       TParams = InstructionParams<THandler>,
-      TAccountKeys extends string = never,
+      TOptions extends Omit<BuildOptions, 'wallet'> = Omit<BuildOptions, 'wallet'>,
     >(
       handler: THandler,
-      params: CheckedInstructionParams<THandler, TParams, TAccountKeys>,
-      options?: TypedBuildOptions<Omit<BuildOptions, 'wallet'>, TAccountKeys>
+      params: CheckedInstructionParams<THandler, TParams, GuaranteedAccountKeys<TOptions>>,
+      options?: ExactOptions<TOptions, Omit<BuildOptions, 'wallet'>>
     ) => {
       const buildOptions: BuildOptions = { ...options, wallet };
       return buildInstruction(handler, params as unknown as Record<string, unknown>, buildOptions);

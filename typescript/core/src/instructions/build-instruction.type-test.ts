@@ -267,6 +267,21 @@ void executor.execute(InitializeMint2Instruction, { decimals: 6, mint_authority:
 // @ts-expect-error `round` is missing
 executor.build(CloseInstruction, {}, { accounts: { signer: MINT, rentPayer: MINT } });
 
+// An optional `accounts` map may be absent, so its keys relax nothing.
+declare const maybeAccounts: { accounts?: { mint: string; destination: string; authority: string } };
+// @ts-expect-error the accounts are not guaranteed to be supplied
+buildInstruction(MintToInstruction, { amount: 1n }, maybeAccounts);
+// @ts-expect-error the accounts are not guaranteed to be supplied
+executor.build(MintToInstruction, { amount: 1n }, maybeAccounts);
+declare const undefinedAccounts: { accounts: { mint: string; destination: string; authority: string } | undefined };
+// @ts-expect-error the accounts map may be undefined
+buildInstruction(MintToInstruction, { amount: 1n }, undefinedAccounts);
+const definedAccounts = { accounts: { mint: MINT, destination: MINT, authority: MINT } };
+buildInstruction(MintToInstruction, { amount: 1n }, definedAccounts);
+// Options keys are still checked.
+// @ts-expect-error `remainingAccount` is not a build option
+buildInstruction(MintToInstruction, { amount: 1n, mint: MINT, destination: MINT, authority: MINT }, { remainingAccount: [] });
+
 // Only accounts can move to `options.accounts`: arguments are read from params
 // alone, so naming one there leaves it required.
 buildInstruction(
