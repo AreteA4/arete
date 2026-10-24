@@ -558,11 +558,52 @@ impl std::fmt::Display for ApiClientError {
         if let Some(code) = self.problem.code.as_deref() {
             write!(formatter, " ({code})")?;
         }
-        Ok(())
+        formatter.write_str(&problem_error_lines(self.problem.extra.get("errors")))
     }
 }
 
 impl std::error::Error for ApiClientError {}
+
+/// The most entries of a problem's `errors` list worth printing.
+const MAX_PROBLEM_ERRORS: usize = 20;
+
+/// A problem's `errors` list (for example a spec's failed expression checks),
+/// one indented line each: `path: message (code)`. Empty without a list.
+pub(crate) fn problem_error_lines(errors: Option<&serde_json::Value>) -> String {
+    let Some(errors) = errors.and_then(serde_json::Value::as_array) else {
+        return String::new();
+    };
+    let mut lines = String::new();
+    for error in errors.iter().take(MAX_PROBLEM_ERRORS) {
+        let line = match error {
+            serde_json::Value::String(message) => message.clone(),
+            serde_json::Value::Object(_) => {
+                let message = error["message"]
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| error.to_string());
+                let mut line = match error["path"].as_str().filter(|path| !path.is_empty()) {
+                    Some(path) => format!("{path}: {message}"),
+                    None => message,
+                };
+                if let Some(code) = error["code"].as_str() {
+                    line.push_str(&format!(" ({code})"));
+                }
+                line
+            }
+            other => other.to_string(),
+        };
+        lines.push_str("\n  - ");
+        lines.push_str(&line);
+    }
+    if errors.len() > MAX_PROBLEM_ERRORS {
+        lines.push_str(&format!(
+            "\n  ... and {} more",
+            errors.len() - MAX_PROBLEM_ERRORS
+        ));
+    }
+    lines
+}
 
 /// Compatibility view used by command code while API failures migrate from
 /// the legacy flat error to the structured problem contract.
@@ -4025,6 +4066,39 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    #[test]
+    fn api_errors_print_each_entry_of_their_errors_list() {
+        let problem: ApiProblemV1 = serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "error": "The spec's expressions do not type-check",
+            "code": "protocol-spec-check-failed",
+            "retryable": false,
+            "errors": [{
+                "code": "squads-multisig-not-from-resources",
+                "message": "a Squads step's multisig must come from the deployment config",
+                "path": "/steps/pay/authority/multisig"
+            }, "a plain message"]
+        }))
+        .unwrap();
+        let error = ApiClientError {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            headers: reqwest::header::HeaderMap::new(),
+            problem,
+        };
+        assert_eq!(
+            error.to_string(),
+            "API error (400 Bad Request): The spec's expressions do not type-check (protocol-spec-check-failed)\n  \
+             - /steps/pay/authority/multisig: a Squads step's multisig must come from the deployment config (squads-multisig-not-from-resources)\n  \
+             - a plain message"
+        );
+        assert_eq!(problem_error_lines(None), "");
+        assert_eq!(problem_error_lines(Some(&json!("not a list"))), "");
+        let many: Vec<_> = (0..25).map(|i| json!(format!("e{i}"))).collect();
+        let lines = problem_error_lines(Some(&json!(many)));
+        assert_eq!(lines.matches("\n  - ").count(), MAX_PROBLEM_ERRORS);
+        assert!(lines.ends_with("\n  ... and 5 more"));
+    }
 
     #[test]
     fn dangling_credentials_symlink_is_not_treated_as_missing() {
