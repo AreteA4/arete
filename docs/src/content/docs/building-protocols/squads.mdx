@@ -81,9 +81,13 @@ each instance creates its own multisig; that one is checked when the step is
 proposed.
 
 The step acts from vault 0 unless it sets `vaultIndex`. Use different vault
-indexes to keep protocols that share a multisig apart:
+indexes to keep protocols that share a multisig apart. The vault the step's
+instructions use must match, so change the `vault` expression too:
 
 ```ts
+const vault = 'pda("squads", "vault", resources.treasury.multisig, 1)';
+
+// in the step
 authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig", vaultIndex: 1 },
 ```
 
