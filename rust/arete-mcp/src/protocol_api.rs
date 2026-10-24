@@ -587,10 +587,7 @@ pub fn squads_refusal_hint(code: &str) -> Option<&'static str> {
             "This multisig is not attached to your account. Attach it first (squads_attach, `a4 squads attach <multisig>`, or https://app.arete.run/dashboard/squads)."
         }
         "protocol_squads_multisig_active" => {
-            "This multisig is active (Arete's proposer is a member), so it cannot be forgotten. Remove the proposer first, then forget it."
-        }
-        "protocol_squads_transaction_modified" => {
-            "The signed transaction is not the one prepared (a wallet may have added instructions). Sign the prepared bytes as they are, or prepare a new transaction."
+            "This multisig is active (Arete's proposer is a member), so it cannot be forgotten. Remove the proposer in the Squads app first, then forget it."
         }
         _ => return None,
     })
@@ -598,8 +595,8 @@ pub fn squads_refusal_hint(code: &str) -> Option<&'static str> {
 
 /// The text of a `protocol-squads-setup-required` refusal (a production
 /// deployment whose Squads multisig is not an active attachment of the
-/// account): the server's message, then the dashboard link and the
-/// commands.
+/// account): the server's message, the dashboard link, the Squads-app
+/// steps and the status command.
 pub fn squads_setup_required_text(body: &Value) -> String {
     let details = &body["details"];
     let message = body
@@ -611,15 +608,12 @@ pub fn squads_setup_required_text(body: &Value) -> String {
     let setup_url = details["setupUrl"]
         .as_str()
         .map(str::to_string)
-        .unwrap_or_else(|| arete_sdk::protocol::squads_dashboard_url(multisig));
+        .unwrap_or_else(|| crate::protocol_agent::squads_dashboard_url(multisig));
     let mut text = format!("{message}\n  Set it up: {setup_url}");
     if let Some(proposer) = details["proposer"].as_str() {
         text.push_str(&format!(
             "\n  Or in the Squads app: Members → Add member → {proposer} → permission Initiate only → approve and execute"
         ));
-    }
-    if let Some(command) = details["commands"]["addProposer"].as_str() {
-        text.push_str(&format!("\n  Hot wallet: {command} --keypair <file>"));
     }
     if let Some(command) = details["commands"]["status"].as_str() {
         text.push_str(&format!("\n  Check: {command}"));

@@ -463,26 +463,6 @@ pub struct SquadsAttachArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SquadsAddProposerArgs {
-    /// The team's Squads v4 multisig account (base58), not one of its vaults.
-    pub multisig: String,
-    /// A multisig member with the Initiate permission (base58) whose hot
-    /// wallet signs and pays.
-    pub member: String,
-    /// `v0` (the default) or `v1`.
-    #[serde(default)]
-    pub transaction_format: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SquadsSubmitArgs {
-    /// The `transactionId` a squads tool returned.
-    pub transaction_id: String,
-    /// The transaction signed by its `signer`, as base64 wire bytes.
-    pub signed_transaction_base64: String,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ProtocolInstancesArgs {
     /// Deployment id. Give this or `protocol`.
     #[serde(default)]
@@ -2711,7 +2691,7 @@ impl AreteMcp {
                           `problem`, members, threshold, `dashboardUrl`, `squadsUrl`, the \
                           `deploymentConfigSnippet` to copy and the deployments using it), \
                           plus `next`. With `multisig`, one attachment in detail with the \
-                          config proposals and step proposals Arete made.\n\n\
+                          step proposals Arete made and `squadsAppSteps` when not active.\n\n\
                           Guide the user in this order: declare the multisig as a resource of \
                           the protocol (never read it from the instance); ask whether they \
                           already have a Squads multisig and how its members sign; send them \
@@ -2719,10 +2699,12 @@ impl AreteMcp {
                           browser wallet including a Ledger) or, for an existing multisig, the \
                           Squads app (Members → Add member → paste the proposer → permission \
                           Initiate only → approve and execute); then put the active \
-                          multisig's address in the deployment config. Raw transactions \
-                          (squads_add_proposer) are only for hot wallets. Uses the a4 login / \
-                          ARETE_API_KEY (a secret key). Dev environments use their own \
-                          proposer (`a4 dev squads`), not this."
+                          multisig's address in the deployment config. Arete builds no \
+                          Squads transactions: for code or a hot-wallet script, install the \
+                          squads-v4 program SDK (`a4 install program squads-v4`) and use its \
+                          Arete setup helpers. Uses the a4 login / ARETE_API_KEY (a secret \
+                          key). Dev environments use their own proposer (`a4 dev squads`), \
+                          not this."
     )]
     async fn squads_status(
         &self,
@@ -2753,69 +2735,6 @@ impl AreteMcp {
         let result = self
             .protocols
             .account_squads_attach(&args.multisig, args.label.as_deref())
-            .await
-            .map_err(protocol_error)?;
-        shaped_result(&result)
-    }
-
-    #[tool(
-        description = "For hot wallets only: an unsigned transaction creating a Squads config \
-                          proposal that adds the account's proposer to an attached `multisig` \
-                          with the Initiate permission only. Offer the dashboard \
-                          (`dashboardUrl`, any browser wallet, Ledger included) and the \
-                          Squads-app steps (`squadsAppSteps`) first; they need no transaction \
-                          from here. Nothing is signed or sent: `member`, an existing member \
-                          with the Initiate permission, signs it and it is sent with \
-                          squads_submit (`transactionId`); then the members approve and \
-                          execute the proposal in Squads, and squads_status reports the \
-                          multisig `active`. Returns `transactionId`, `transactionBase64`, \
-                          `transactionFormat` (v0 by default), `signer`, `transactionIndex`, \
-                          `proposal`, `proposer` and `next`. Refusals carry a code and what to \
-                          do: `member_cannot_initiate`, `proposer_already_member`, \
-                          `proposer_permissions_invalid`, `squads_multisig_controlled`, \
-                          `protocol-squads-multisig-not-found` (attach it first)."
-    )]
-    async fn squads_add_proposer(
-        &self,
-        Parameters(args): Parameters<SquadsAddProposerArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        transaction_format(args.transaction_format.as_deref())?;
-        let result = self
-            .protocols
-            .account_squads_add_proposer(
-                &args.multisig,
-                &args.member,
-                args.transaction_format.as_deref(),
-            )
-            .await
-            .map_err(protocol_error)?;
-        shaped_result(&result)
-    }
-
-    #[tool(
-        description = "Send a transaction a squads tool prepared, after its `signer` signed it, \
-                          and wait (about 30 seconds) for it to confirm. Pass the \
-                          `transactionId` and the signed base64 wire bytes; the signed message \
-                          must be exactly the prepared one \
-                          (`protocol-squads-transaction-modified` otherwise). Returns \
-                          `status` (`confirmed`, `failed`, `pending`: submit the same again to \
-                          re-check, never sent twice; `expired`: prepare a new one), \
-                          `signature`, the refreshed `multisig` attachment and `next`. This \
-                          server never signs for a multisig member."
-    )]
-    async fn squads_submit(
-        &self,
-        Parameters(args): Parameters<SquadsSubmitArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        use base64::Engine as _;
-        let signed = base64::engine::general_purpose::STANDARD
-            .decode(args.signed_transaction_base64.trim())
-            .map_err(|_| {
-                McpError::invalid_params("`signed_transaction_base64` is not base64", None)
-            })?;
-        let result = self
-            .protocols
-            .account_squads_submit(&args.transaction_id, &signed)
             .await
             .map_err(protocol_error)?;
         shaped_result(&result)

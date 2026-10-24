@@ -6,23 +6,33 @@
 //! multisig is an `active` attachment of the account: Arete's proposer is
 //! an Initiate-only member. The dashboard page sets this up with any browser
 //! wallet, hardware wallets included; the Squads app's own "add member" flow
-//! works too. The prepared transactions here are for hot wallets, and are
-//! never signed by this server: a member signs them and
-//! [`ProtocolAgent::account_squads_submit`] sends and confirms them.
+//! works too. Arete builds no Squads transactions: code that creates a
+//! multisig or adds the proposer uses the squads-v4 program SDK
+//! (`a4 install program squads-v4`) and its Arete setup helpers.
 //!
-//! Dev environments keep their own proposer (`a4 dev squads`) and never use
-//! these routes.
+//! These calls only read the account's setup and attach a multisig by
+//! address. Dev environments keep their own proposer (`a4 dev squads`) and
+//! never use these routes.
 
-use anyhow::{anyhow, Result};
-use arete_sdk::protocol::{
-    squads_dashboard_url, ProtocolError, ProtocolTransactionFormat, SquadsClient,
-    SquadsClientOptions, SquadsCreateMember, SquadsCreateRequest, SQUADS_DASHBOARD_URL,
-};
-use arete_sdk::AuthConfig;
+use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 
-use super::{invalid, squads_multisig, ProtocolAgent};
-use crate::protocol_api::SquadsRefused;
+use super::{squads_multisig, ProtocolAgent};
+use crate::protocol_api::{path_segment, SquadsRefused};
+
+/// The dashboard's Squads page.
+pub const SQUADS_DASHBOARD_URL: &str = "https://app.arete.run/dashboard/squads";
+
+/// The dashboard page for one multisig, or the whole account.
+pub fn squads_dashboard_url(multisig: Option<&str>) -> String {
+    match multisig.map(str::trim).filter(|m| !m.is_empty()) {
+        Some(multisig) => format!("{SQUADS_DASHBOARD_URL}/{multisig}"),
+        None => SQUADS_DASHBOARD_URL.to_string(),
+    }
+}
+
+/// Where code that creates a multisig or adds the proposer goes.
+pub const SQUADS_PROGRAM_SDK_HINT: &str = "For code or a hot-wallet script, install the squads-v4 program SDK (`a4 install program squads-v4`) and use its Arete setup helpers; the member's wallet signs.";
 
 /// The Squads app steps that add the proposer without any transaction from
 /// Arete: what teams whose members sign with hardware wallets can follow.
@@ -34,53 +44,6 @@ pub fn squads_app_steps(proposer: &str) -> Vec<String> {
         "Permission: Initiate only (not Vote, not Execute); it does not count toward the threshold.".into(),
         "Create the proposal, then approve and execute it with enough members.".into(),
     ]
-}
-
-/// Map an account Squads failure: argument problems are [`super::InvalidArgs`],
-/// refusals carry their code and what to do ([`SquadsRefused`]).
-fn squads_error(error: ProtocolError) -> anyhow::Error {
-    match error {
-        ProtocolError::Request {
-            what,
-            status,
-            wire_code,
-            body,
-            message,
-        } => anyhow!(SquadsRefused {
-            what,
-            status,
-            code: wire_code.unwrap_or_default(),
-            body: body.unwrap_or_else(|| json!({ "error": message })),
-        }),
-        ProtocolError::InvalidInput(message) => invalid(message),
-        other => anyhow!(other),
-    }
-}
-
-fn transaction_format(format: Option<&str>) -> Result<Option<ProtocolTransactionFormat>> {
-    match format.map(str::trim) {
-        None | Some("") => Ok(None),
-        Some("v0") => Ok(Some(ProtocolTransactionFormat::V0)),
-        Some("v1") => Ok(Some(ProtocolTransactionFormat::V1)),
-        Some(other) => Err(invalid(format!(
-            "`transaction_format` must be `v0` or `v1`, got `{other}`"
-        ))),
-    }
-}
-
-fn member_pubkey(name: &str, value: &str) -> Result<String> {
-    let value = value.trim();
-    if super::is_pubkey(value) {
-        Ok(value.to_string())
-    } else {
-        Err(invalid(format!(
-            "`{name}` '{value}' is not a base58 public key"
-        )))
-    }
-}
-
-fn to_value<T: serde::Serialize>(value: &T) -> Value {
-    serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
 /// What a problem means, in words.
@@ -116,16 +79,16 @@ pub fn attachment_next(attachment: &Value, proposer: Option<&str>) -> String {
                 .unwrap_or_else(|| problem_text(problem).to_string());
             let fix = match problem {
                 Some("permissions_invalid") => format!(
-                    "Remove the proposer in the Squads app (or with remove-proposer), then add it back with Initiate only. Manage it at {dashboard}."
+                    "Remove the proposer in the Squads app, then add it back with Initiate only. Manage it at {dashboard}."
                 ),
                 Some("squads_multisig_missing") | Some("squads_multisig_invalid") => format!(
-                    "Check the address is the multisig account, not one of its vaults; forget this attachment if it is wrong ({dashboard})."
+                    "Check the address is the multisig account, not one of its vaults; forget this attachment on {dashboard} if it is wrong."
                 ),
                 Some("create_unconfirmed") => format!(
-                    "The creator signs and submits the create transaction again, or prepares a new one at {dashboard}."
+                    "The creator signs and sends the create transaction again, or creates the multisig at {dashboard}."
                 ),
                 _ => format!(
-                    "Ask the user how the multisig's members sign. With a hardware or browser wallet, send them to {dashboard} (it builds and signs there), or have them add {} in the Squads app: Members → Add member → paste the proposer → permission Initiate only → approve and execute. Only for a hot-wallet keypair, prepare the add-proposer transaction here.",
+                    "Ask the user how the multisig's members sign. Send them to {dashboard} (any browser wallet, Ledger included), or have them add {} in the Squads app: Members → Add member → paste the proposer → permission Initiate only → approve and execute. {SQUADS_PROGRAM_SDK_HINT}",
                     proposer.unwrap_or("Arete's proposer")
                 ),
             };
@@ -145,7 +108,7 @@ pub fn status_next(status: &Value) -> String {
     let proposer = status["proposer"]["pubkey"].as_str();
     match status["setup"].as_str() {
         Some("notStarted") => format!(
-            "No multisig is set up. Ask the user whether they already have a Squads multisig and how its members sign (hardware wallet, browser wallet or a hot-wallet keypair). Either way the easiest path is {dashboard}: it attaches an existing multisig or creates one, and signs with any browser wallet, Ledger included. An existing multisig can also be attached by address here (squads_attach) and the proposer added in the Squads app."
+            "No multisig is set up. Ask the user whether they already have a Squads multisig and how its members sign (hardware wallet, browser wallet or a hot-wallet keypair). The easiest path is {dashboard}: it attaches an existing multisig or creates one, and signs with any browser wallet, Ledger included. An existing multisig can also be attached by address here (squads_attach) and the proposer added in the Squads app. {SQUADS_PROGRAM_SDK_HINT}"
         ),
         Some("ready") => "Ready. Declare the multisig as a resource of each protocol with Squads steps and put an active multisig's address in its deployment config (`deploymentConfigSnippet`).".into(),
         _ => {
@@ -165,36 +128,83 @@ pub fn status_next(status: &Value) -> String {
 }
 
 impl ProtocolAgent {
-    /// The account Squads client for the hosted API and key.
-    fn account_squads(&self) -> Result<SquadsClient> {
+    /// One call to `<api>/account/squads<route>` with the account's secret
+    /// key; a non-2xx answer is a [`SquadsRefused`].
+    async fn account_squads_call(
+        &self,
+        method: reqwest::Method,
+        route: &str,
+        body: Option<Value>,
+        what: &str,
+    ) -> Result<Value> {
         let (origin, key) = self.hosted_origin()?;
         let key = key.ok_or_else(|| {
             anyhow!(
                 "No Arete API key found in ARETE_API_KEY or the a4 login. Run `a4 auth login`, or set ARETE_API_KEY to a secret key."
             )
         })?;
-        SquadsClient::new(
-            SquadsClientOptions::default()
-                .with_api_url(format!("{origin}/api"))
-                .with_auth(AuthConfig::default().with_secret_key(key))
-                .with_http_client(self.http.clone()),
-        )
-        .map_err(squads_error)
+        let url = format!("{origin}/api/account/squads{route}");
+        let mut request = self.http.request(method, &url).bearer_auth(&key);
+        if let Some(body) = body {
+            request = request.json(&body);
+        }
+        let response = request
+            .send()
+            .await
+            .with_context(|| format!("The Arete API is unreachable at {url}"))?;
+        let status = response.status();
+        let header_code = response
+            .headers()
+            .get("x-error-code")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let text = response.text().await.unwrap_or_default();
+        let body = if text.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_str(&text).unwrap_or(Value::String(text))
+        };
+        if !status.is_success() {
+            let code = header_code
+                .filter(|code| !code.trim().is_empty())
+                .or_else(|| body.get("code").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or_default();
+            return Err(anyhow!(SquadsRefused {
+                what: what.to_string(),
+                status: status.as_u16(),
+                code,
+                body,
+            }));
+        }
+        Ok(body)
     }
 
     /// `squads_status`: the account's setup and attachments, or one
     /// attachment in detail with `multisig`.
     pub async fn account_squads_status(&self, multisig: Option<&str>) -> Result<Value> {
-        let client = self.account_squads()?;
         match multisig.map(str::trim).filter(|m| !m.is_empty()) {
             None => {
-                let status = client.status().await.map_err(squads_error)?;
-                let mut body = to_value(&status);
+                let mut body = self
+                    .account_squads_call(
+                        reqwest::Method::GET,
+                        "",
+                        None,
+                        "Reading the account's Squads setup",
+                    )
+                    .await?;
                 // Attachments archived after being active: their
                 // deployments' proposals wait until the proposer is back.
-                if let Ok(notifications) = client.notifications().await {
+                if let Ok(Value::Array(notifications)) = self
+                    .account_squads_call(
+                        reqwest::Method::GET,
+                        "/notifications",
+                        None,
+                        "Reading the account's Squads notifications",
+                    )
+                    .await
+                {
                     if !notifications.is_empty() {
-                        body["notifications"] = to_value(&notifications);
+                        body["notifications"] = Value::Array(notifications);
                     }
                 }
                 body["next"] = json!(status_next(&body));
@@ -202,12 +212,20 @@ impl ProtocolAgent {
             }
             Some(multisig) => {
                 let multisig = squads_multisig(multisig)?;
-                let detail = client.get(&multisig).await.map_err(squads_error)?;
-                let mut body = to_value(&detail);
-                let proposer = Some(detail.proposer.clone()).filter(|p| !p.is_empty());
+                let mut body = self
+                    .account_squads_call(
+                        reqwest::Method::GET,
+                        &format!("/multisigs/{}", path_segment(&multisig)?),
+                        None,
+                        "Reading the Squads multisig",
+                    )
+                    .await?;
+                let proposer = body["proposer"]
+                    .as_str()
+                    .filter(|p| !p.is_empty())
+                    .map(str::to_string);
                 if let Some(proposer) = &proposer {
-                    if detail.attachment.state != arete_sdk::protocol::SquadsAttachmentState::Active
-                    {
+                    if body["state"] != "active" {
                         body["squadsAppSteps"] = json!(squads_app_steps(proposer));
                     }
                 }
@@ -220,199 +238,35 @@ impl ProtocolAgent {
     /// `squads_attach`: attach an existing multisig by address.
     pub async fn account_squads_attach(&self, address: &str, label: Option<&str>) -> Result<Value> {
         let address = squads_multisig(address)?;
-        let client = self.account_squads()?;
-        let attachment = client
-            .attach(&address, label.map(str::trim).filter(|l| !l.is_empty()))
-            .await
-            .map_err(squads_error)?;
-        let mut body = to_value(&attachment);
-        let proposer = client
-            .status()
+        let mut request = json!({ "address": address });
+        if let Some(label) = label.map(str::trim).filter(|l| !l.is_empty()) {
+            request["label"] = json!(label);
+        }
+        let mut body = self
+            .account_squads_call(
+                reqwest::Method::POST,
+                "/multisigs",
+                Some(request),
+                "Attaching the Squads multisig",
+            )
+            .await?;
+        let proposer = self
+            .account_squads_call(
+                reqwest::Method::GET,
+                "",
+                None,
+                "Reading the account's Squads setup",
+            )
             .await
             .ok()
-            .map(|status| status.proposer.pubkey);
+            .and_then(|status| status["proposer"]["pubkey"].as_str().map(str::to_string));
         if let Some(proposer) = &proposer {
             body["proposer"] = json!(proposer);
-            if attachment.state != arete_sdk::protocol::SquadsAttachmentState::Active {
+            if body["state"] != "active" {
                 body["squadsAppSteps"] = json!(squads_app_steps(proposer));
             }
         }
         body["next"] = json!(attachment_next(&body, proposer.as_deref()));
-        Ok(body)
-    }
-
-    /// `squads_add_proposer`: the unsigned config proposal adding the
-    /// proposer (Initiate only), for `member` (who can initiate) to sign.
-    /// The dashboard link and the Squads-app steps come first: they need no
-    /// transaction from here.
-    pub async fn account_squads_add_proposer(
-        &self,
-        multisig: &str,
-        member: &str,
-        format: Option<&str>,
-    ) -> Result<Value> {
-        let multisig = squads_multisig(multisig)?;
-        let member = member_pubkey("member", member)?;
-        let format = transaction_format(format)?;
-        let client = self.account_squads()?;
-        let prepared = client
-            .add_proposer(&multisig, &member, format)
-            .await
-            .map_err(squads_error)?;
-        let proposer = client
-            .status()
-            .await
-            .ok()
-            .map(|status| status.proposer.pubkey);
-        let mut body = to_value(&prepared);
-        body["dashboardUrl"] = json!(squads_dashboard_url(Some(&multisig)));
-        if let Some(proposer) = &proposer {
-            body["proposer"] = json!(proposer);
-            body["squadsAppSteps"] = json!(squads_app_steps(proposer));
-        }
-        body["next"] = json!(format!(
-            "Prefer {} (any browser wallet, Ledger included) or the Squads-app steps; they need nothing from here. Only a hot wallet signs this transaction: {member} signs it and submits it with squads_submit (`transactionId`), or `a4 squads add-proposer {multisig} --member {member} --keypair <file>` does both. Then the members approve and execute config proposal {} in Squads (or on the dashboard), and squads_status reports the multisig `active`.",
-            squads_dashboard_url(Some(&multisig)),
-            prepared
-                .transaction_index
-                .map(|index| index.to_string())
-                .unwrap_or_else(|| "?".into())
-        ));
-        Ok(body)
-    }
-
-    /// An unsigned `multisigCreateV2` with the proposer already an
-    /// Initiate-only member, for `creator` to sign and pay.
-    pub async fn account_squads_create(
-        &self,
-        members: Vec<(String, Vec<String>)>,
-        threshold: u16,
-        creator: &str,
-        label: Option<&str>,
-        format: Option<&str>,
-    ) -> Result<Value> {
-        if members.is_empty() {
-            return Err(invalid("create needs at least one member"));
-        }
-        let creator = member_pubkey("creator", creator)?;
-        let mut create_members = Vec::with_capacity(members.len());
-        for (pubkey, permissions) in members {
-            let pubkey = member_pubkey("member", &pubkey)?;
-            for permission in &permissions {
-                if !matches!(permission.as_str(), "initiate" | "vote" | "execute") {
-                    return Err(invalid(format!(
-                        "member permission `{permission}` must be `initiate`, `vote` or `execute`"
-                    )));
-                }
-            }
-            create_members.push(SquadsCreateMember::new(pubkey, permissions));
-        }
-        let request = SquadsCreateRequest {
-            members: create_members,
-            threshold,
-            creator: creator.clone(),
-            label: label
-                .map(str::trim)
-                .filter(|l| !l.is_empty())
-                .map(str::to_string),
-            transaction_format: transaction_format(format)?,
-        };
-        let client = self.account_squads()?;
-        let prepared = client.create(&request).await.map_err(squads_error)?;
-        let mut body = to_value(&prepared);
-        body["dashboardUrl"] = json!(SQUADS_DASHBOARD_URL);
-        body["next"] = json!(format!(
-            "{creator} signs and pays for this transaction (creation fee and rent) and submits it (squads_submit). Arete's proposer is a member from the start, so the multisig {} becomes active once it confirms. With a hardware wallet, create it on {SQUADS_DASHBOARD_URL} instead.",
-            prepared.multisig
-        ));
-        Ok(body)
-    }
-
-    /// An unsigned approval of config proposal `index`, for `member`.
-    pub async fn account_squads_approve(
-        &self,
-        multisig: &str,
-        index: u64,
-        member: &str,
-        format: Option<&str>,
-    ) -> Result<Value> {
-        let multisig = squads_multisig(multisig)?;
-        let member = member_pubkey("member", member)?;
-        let prepared = self
-            .account_squads()?
-            .approve(&multisig, index, &member, transaction_format(format)?)
-            .await
-            .map_err(squads_error)?;
-        Ok(to_value(&prepared))
-    }
-
-    /// An unsigned execution of approved config proposal `index`.
-    pub async fn account_squads_execute(
-        &self,
-        multisig: &str,
-        index: u64,
-        member: &str,
-        format: Option<&str>,
-    ) -> Result<Value> {
-        let multisig = squads_multisig(multisig)?;
-        let member = member_pubkey("member", member)?;
-        let prepared = self
-            .account_squads()?
-            .execute(&multisig, index, &member, transaction_format(format)?)
-            .await
-            .map_err(squads_error)?;
-        Ok(to_value(&prepared))
-    }
-
-    /// An unsigned config proposal removing the proposer.
-    pub async fn account_squads_remove_proposer(
-        &self,
-        multisig: &str,
-        member: &str,
-        format: Option<&str>,
-    ) -> Result<Value> {
-        let multisig = squads_multisig(multisig)?;
-        let member = member_pubkey("member", member)?;
-        let prepared = self
-            .account_squads()?
-            .remove_proposer(&multisig, &member, transaction_format(format)?)
-            .await
-            .map_err(squads_error)?;
-        Ok(to_value(&prepared))
-    }
-
-    /// Forget a `pending` or `archived` attachment.
-    pub async fn account_squads_forget(&self, multisig: &str) -> Result<Value> {
-        let multisig = squads_multisig(multisig)?;
-        self.account_squads()?
-            .forget(&multisig)
-            .await
-            .map_err(squads_error)?;
-        Ok(json!({ "multisig": multisig, "forgotten": true }))
-    }
-
-    /// `squads_submit`: send a prepared transaction a member signed, and
-    /// wait for it to confirm.
-    pub async fn account_squads_submit(
-        &self,
-        transaction_id: &str,
-        signed_transaction: &[u8],
-    ) -> Result<Value> {
-        let result = self
-            .account_squads()?
-            .submit(transaction_id, signed_transaction)
-            .await
-            .map_err(squads_error)?;
-        let mut body = to_value(&result);
-        body["next"] = json!(match body["status"].as_str() {
-            Some("confirmed") => match &body["multisig"] {
-                Value::Null => "Confirmed.".to_string(),
-                multisig => format!("Confirmed. {}", attachment_next(multisig, None)),
-            },
-            Some("pending") => "Sent, not confirmed yet. Submit the same transactionId and signed transaction again to re-check; it is never sent twice.".into(),
-            Some("expired") => "The blockhash expired before it confirmed. Prepare a new transaction and sign it again.".into(),
-            _ => "The transaction failed on chain; see `error`.".into(),
-        });
         Ok(body)
     }
 }
@@ -432,8 +286,8 @@ mod tests {
             .find("https://app.arete.run/dashboard/squads/Ms1")
             .unwrap();
         let app = next.find("Members → Add member").unwrap();
-        let raw = next.find("hot-wallet keypair").unwrap();
-        assert!(dashboard < raw && app < raw, "{next}");
+        let sdk = next.find("squads-v4 program SDK").unwrap();
+        assert!(dashboard < app && app < sdk, "{next}");
         assert!(next.contains("Initiate only"));
 
         let active = json!({ "address": "Ms1", "state": "active" });
@@ -454,19 +308,11 @@ mod tests {
     }
 
     #[test]
-    fn refusals_keep_their_code() {
-        let error = squads_error(ProtocolError::Request {
-            what: "Squads forget".into(),
-            status: 409,
-            wire_code: Some("protocol-squads-multisig-active".into()),
-            message: "active".into(),
-            body: Some(json!({ "error": "active", "code": "protocol-squads-multisig-active" })),
-        });
-        let refused = error.downcast_ref::<SquadsRefused>().unwrap();
-        assert_eq!(refused.normalized_code(), "protocol_squads_multisig_active");
-        assert!(error.to_string().contains("Remove the proposer"), "{error}");
-        assert!(squads_error(ProtocolError::InvalidInput("x".into()))
-            .downcast_ref::<super::super::InvalidArgs>()
-            .is_some());
+    fn dashboard_urls() {
+        assert_eq!(squads_dashboard_url(None), SQUADS_DASHBOARD_URL);
+        assert_eq!(
+            squads_dashboard_url(Some("Ms1")),
+            "https://app.arete.run/dashboard/squads/Ms1"
+        );
     }
 }

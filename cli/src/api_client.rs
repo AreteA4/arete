@@ -3931,6 +3931,9 @@ mod agent_tests {
             "{text}"
         );
         assert!(text.contains("a4 squads status Ms1"), "{text}");
+        assert!(text.contains("Members → Add member → Prop1"), "{text}");
+        assert!(!text.contains("add-proposer"), "{text}");
+        assert!(!text.contains("--keypair"), "{text}");
     }
 
     #[test]

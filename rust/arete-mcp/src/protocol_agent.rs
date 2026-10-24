@@ -1135,7 +1135,10 @@ pub fn has_dev_session(path: &Path) -> bool {
 }
 
 mod account_squads;
-pub use account_squads::{attachment_next, squads_app_steps, status_next as account_squads_next};
+pub use account_squads::{
+    attachment_next, squads_app_steps, squads_dashboard_url, status_next as account_squads_next,
+    SQUADS_DASHBOARD_URL, SQUADS_PROGRAM_SDK_HINT,
+};
 
 #[cfg(test)]
 mod tests;

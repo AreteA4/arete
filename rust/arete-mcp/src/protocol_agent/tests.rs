@@ -169,14 +169,6 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
                 "deploymentConfigSnippet": "multisig = \"...\"", "deployments": []
             })
         };
-        let prepared = |kind: &str, signer: &Value| {
-            json!({
-                "transactionId": format!("tx-{kind}"), "kind": kind,
-                "transactionBase64": b64(&[1, 2, 3]), "transactionFormat": "v0",
-                "signer": signer, "lastValidBlockHeight": 900, "multisig": multisig,
-                "transactionIndex": 3, "proposal": b58(&[65; 32]), "next": "approve it"
-            })
-        };
         return match (method, route) {
             ("GET", "") => (
                 200,
@@ -187,18 +179,14 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
                     "multisigs": [attachment("pending")]
                 }),
             ),
+            ("GET", "/notifications") => (200, json!([])),
             ("POST", "/multisigs") => (201, attachment("pending")),
-            ("POST", r) if r.ends_with("/add-proposer") => {
-                (200, prepared("addProposer", &body["member"]))
+            ("GET", r) if r == format!("/multisigs/{multisig}") => {
+                let mut detail = attachment("pending");
+                detail["proposer"] = json!(proposer);
+                detail["proposals"] = json!([]);
+                (200, detail)
             }
-            ("POST", "/multisigs/create") => (200, prepared("createMultisig", &body["creator"])),
-            ("POST", "/transactions") => (
-                200,
-                json!({
-                    "transactionId": body["transactionId"], "signature": "sig-1",
-                    "status": "confirmed", "error": null, "multisig": attachment("active")
-                }),
-            ),
             _ => (
                 404,
                 json!({ "error": "not attached", "code": "protocol-squads-multisig-not-found" }),
@@ -854,13 +842,15 @@ fn the_execute_tool_is_listed_only_with_a_signer() {
         "protocol_squads_add_proposer",
         "squads_status",
         "squads_attach",
-        "squads_add_proposer",
-        "squads_submit",
         "dev_actions",
     ] {
         assert!(listed.iter().any(|name| name == tool), "{tool} missing");
     }
     assert!(!listed.iter().any(|name| name == "protocol_execute"));
+    // Arete builds no account Squads transactions.
+    for gone in ["squads_add_proposer", "squads_submit", "squads_create"] {
+        assert!(!listed.iter().any(|name| name == gone), "{gone} listed");
+    }
 
     let dir = tempfile::tempdir().unwrap();
     let (signer, _) = signer(
@@ -1363,67 +1353,67 @@ fn the_squads_tools_take_a_target_a_multisig_and_a_member() {
 }
 
 #[tokio::test]
-async fn account_squads_tools_lead_with_the_dashboard_and_never_sign() {
+async fn account_squads_tools_read_and_attach_and_build_no_transactions() {
     let (origin, state) = mock_api();
     let agent = ProtocolAgent::new(None).with_api(&origin, "a4_sk_test");
     let multisig = b58(&[62; 32]);
-    let member = b58(&[67; 32]);
 
     let status = agent.account_squads_status(None).await.unwrap();
     assert_eq!(status["setup"], "needsAttention");
+    assert!(status.get("notifications").is_none());
     let next = status["next"].as_str().unwrap();
     assert!(next.contains(&format!(
         "https://app.arete.run/dashboard/squads/{multisig}"
     )));
     assert!(next.contains("Members → Add member"), "{next}");
+    assert!(next.contains("squads-v4 program SDK"), "{next}");
+
+    let detail = agent.account_squads_status(Some(&multisig)).await.unwrap();
+    assert_eq!(detail["proposer"], b58(&[61; 32]));
+    assert!(detail["squadsAppSteps"].as_array().unwrap().len() >= 4);
 
     let attached = agent
-        .account_squads_attach(&multisig, Some("Treasury"))
+        .account_squads_attach(&multisig, Some(" Treasury "))
         .await
         .unwrap();
     assert_eq!(attached["state"], "pending");
     assert_eq!(attached["proposer"], b58(&[61; 32]));
     assert!(attached["squadsAppSteps"].as_array().unwrap().len() >= 4);
 
-    let added = agent
-        .account_squads_add_proposer(&multisig, &member, None)
-        .await
-        .unwrap();
-    assert_eq!(added["transactionId"], "tx-addProposer");
-    assert_eq!(
-        added["dashboardUrl"],
-        format!("https://app.arete.run/dashboard/squads/{multisig}")
-    );
-    let next = added["next"].as_str().unwrap();
-    assert!(
-        next.starts_with("Prefer https://app.arete.run/dashboard/squads/"),
-        "{next}"
-    );
-
-    let sent = agent
-        .account_squads_submit("tx-addProposer", &[9, 9])
-        .await
-        .unwrap();
-    assert_eq!(sent["status"], "confirmed");
-    assert!(sent["next"].as_str().unwrap().contains("Active"));
-
     let error = agent
-        .account_squads_add_proposer("not-a-key", &member, None)
+        .account_squads_attach("not-a-key", None)
         .await
         .unwrap_err();
     assert!(error.downcast_ref::<InvalidArgs>().is_some(), "{error}");
 
-    // The key itself is the bearer: no protocol session is minted.
-    let seen = seen(&state);
-    assert!(seen.iter().all(|seen| seen.path != "/ws/sessions"));
-    let submit = seen
-        .iter()
-        .find(|seen| seen.path == "/api/account/squads/transactions")
+    let missing = agent
+        .account_squads_status(Some(&b58(&[70; 32])))
+        .await
+        .unwrap_err();
+    let refused = missing
+        .downcast_ref::<crate::protocol_api::SquadsRefused>()
         .unwrap();
     assert_eq!(
-        submit.body,
-        json!({ "transactionId": "tx-addProposer", "signedTransactionBase64": b64(&[9, 9]) })
+        refused.normalized_code(),
+        "protocol_squads_multisig_not_found"
     );
+
+    // The key itself is the bearer: no protocol session is minted, and only
+    // the read and attach routes are called.
+    let seen = seen(&state);
+    assert!(seen.iter().all(|seen| seen.path != "/ws/sessions"));
+    let attach = seen
+        .iter()
+        .find(|seen| seen.method == "POST" && seen.path == "/api/account/squads/multisigs")
+        .unwrap();
+    assert_eq!(
+        attach.body,
+        json!({ "address": multisig, "label": "Treasury" })
+    );
+    assert!(seen
+        .iter()
+        .filter(|seen| seen.path.starts_with("/api/account/squads"))
+        .all(|seen| seen.method == "GET" || seen.path == "/api/account/squads/multisigs"));
 }
 
 #[test]
@@ -1438,7 +1428,7 @@ fn setup_required_refusals_print_the_dashboard_link() {
             "details": {
                 "step": "finalize", "multisig": "Ms1", "state": "pending", "problem": "not_member",
                 "proposer": "Prop1", "setupUrl": "https://app.arete.run/dashboard/squads/Ms1",
-                "commands": { "status": "a4 squads status Ms1", "addProposer": "a4 squads add-proposer Ms1 --member <member>" }
+                "commands": { "status": "a4 squads status Ms1" }
             }
         }),
     };

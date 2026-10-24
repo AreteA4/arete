@@ -295,9 +295,7 @@ export interface ProtocolEventSubscription {
 /**
  * Squads onboarding. Admin steps are proposed to a team's Squads v4 multisig
  * by a proposer key that belongs to the calling account and may only
- * initiate. Arete never votes or executes. To attach, create and manage the
- * account's multisigs, use `createSquadsClient` or the dashboard
- * (`SQUADS_DASHBOARD_URL`).
+ * initiate. Arete never votes or executes.
  */
 export interface ProtocolSquadsClient {
   /** The calling account's proposer and the permission it needs. */
@@ -384,26 +382,22 @@ const STREAM_EVENT_TYPES = new Set(['transition', 'participant', 'observation'])
 const MAX_RECONNECT_DELAY_MS = 30_000;
 const DEFAULT_PROOF_TTL_SECONDS = 240;
 
-/** @internal */
-export function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** @internal */
-export function trimSlash(url: string): string {
+function trimSlash(url: string): string {
   return url.replace(/\/+$/, '');
 }
 
-/** @internal */
-export function segment(value: string, name: string): string {
+function segment(value: string, name: string): string {
   if (typeof value !== 'string' || value.length === 0) {
     throw new AreteError(`${name} must be a non-empty string`, 'INVALID_CONFIG');
   }
   return encodeURIComponent(value);
 }
 
-/** @internal */
-export function jsonBody(value: unknown): string {
+function jsonBody(value: unknown): string {
   return JSON.stringify(value, (_key, item: unknown) =>
     typeof item === 'bigint' ? item.toString(10) : item
   );
@@ -426,8 +420,7 @@ function randomId(): string {
 
 const BASE64_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-/** @internal */
-export function bytesToBase64(bytes: Uint8Array): string {
+function bytesToBase64(bytes: Uint8Array): string {
   let out = '';
   for (let i = 0; i < bytes.length; i += 3) {
     const a = bytes[i]!;
@@ -442,8 +435,7 @@ export function bytesToBase64(bytes: Uint8Array): string {
   return out;
 }
 
-/** @internal */
-export function resolveFetch(fetchImpl: typeof fetch | undefined): typeof fetch {
+function resolveFetch(fetchImpl: typeof fetch | undefined): typeof fetch {
   if (fetchImpl) return fetchImpl;
   if (typeof globalThis.fetch === 'function') return globalThis.fetch.bind(globalThis);
   throw new AreteError('A fetch implementation is required for protocol clients', 'INVALID_CONFIG');
@@ -475,8 +467,7 @@ function isRefreshCode(code: string | null | undefined): boolean {
     && shouldRefreshToken(parseErrorCode(code.trim().replace(/_/g, '-')));
 }
 
-/** @internal */
-export async function readJson(response: Response): Promise<unknown> {
+async function readJson(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) return undefined;
   try {
@@ -492,8 +483,7 @@ function wireCodeOf(response: Response, body: unknown): string | undefined {
   return isRecord(body) && typeof body['code'] === 'string' ? body['code'] : undefined;
 }
 
-/** @internal */
-export function responseError(what: string, response: Response, body: unknown): AreteError {
+function responseError(what: string, response: Response, body: unknown): AreteError {
   const wireErrorCode = wireCodeOf(response, body);
   const message = isRecord(body) && typeof body['error'] === 'string'
     ? body['error']

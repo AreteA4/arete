@@ -274,7 +274,7 @@ pub fn status_next(target: &SquadsTarget, status: &Value) -> String {
 }
 
 /// Load a Solana CLI keypair file (a JSON array of 64 bytes).
-pub(crate) fn load_keypair(path: &Path) -> Result<SigningKey> {
+fn load_keypair(path: &Path) -> Result<SigningKey> {
     let bytes: Vec<u8> = serde_json::from_slice(
         &std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?,
     )

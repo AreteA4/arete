@@ -8,7 +8,7 @@
 //! signed transactions, reads instances and participants, updates metadata,
 //! follows an instance's event stream, keeps an instance live
 //! ([`ProtocolClient::instance_handle`]), and onboards a team's Squads multisig
-//! ([`ProtocolClient::squads`]; account-level setup is [`SquadsClient`]). [`verify_webhook`] checks signed
+//! ([`ProtocolClient::squads`]). [`verify_webhook`] checks signed
 //! webhook deliveries of the protocol's events, and [`verify_receipt`] and
 //! [`verify_receipt_on_chain`] check execution receipts.
 //!
@@ -18,7 +18,6 @@ mod client;
 mod handle;
 mod metadata_proof;
 mod receipt;
-mod squads;
 pub mod sse;
 mod types;
 mod webhooks;
@@ -49,15 +48,6 @@ pub use receipt::{
     ProtocolReceiptSignature, ProtocolReceiptTransaction, ReceiptVerificationError,
     VerifiedReceipt, MEMO_PROGRAM_ID, MEMO_V2_PREFIX, PROTOCOL_EXECUTION_RECEIPT_SCHEMA_V1,
     PROTOCOL_RECEIPT_KEYS_SCHEMA_V1,
-};
-pub use squads::{
-    squads_dashboard_url, squads_setup_required, SquadsAccountProposer, SquadsAccountStatus,
-    SquadsAttachment, SquadsAttachmentDeployment, SquadsAttachmentDetail, SquadsAttachmentState,
-    SquadsClient, SquadsClientOptions, SquadsConfigProposal, SquadsCreateMember,
-    SquadsCreateRequest, SquadsMember, SquadsNotification, SquadsNotificationDeployment,
-    SquadsPreparedTransaction, SquadsSetup, SquadsSetupCommands, SquadsSetupRequired,
-    SquadsSetupRequiredDetails, SquadsStepProposal, SquadsSubmitResult, SquadsSubmitStatus,
-    SQUADS_DASHBOARD_URL, SQUADS_SETUP_REQUIRED_CODE,
 };
 pub use types::*;
 pub use webhooks::{
