@@ -106,3 +106,13 @@ export {
 // The values behind them (chain and client) stay out of this entry.
 export type { ChainClient, RawAccountInfo } from './chain';
 export type { ProgramInterface, TypedAccountReader } from './client';
+
+// Types an extension needs to make Arete API calls through a client the app
+// passes in (the client itself lives in the root entry).
+export type {
+  PlatformHttpClient,
+  PlatformHttpMethod,
+  PlatformHttpRequest,
+  PlatformHttpResponse,
+} from './platform-http';
+export type { AuthConfig, AuthTokenRequest, AuthTokenResult } from './types';

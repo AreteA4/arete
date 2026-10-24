@@ -110,6 +110,14 @@ export type {
 } from './chain';
 
 export { createHostedSolanaGatewayTransports } from './solana-gateway';
+export { createPlatformHttpClient } from './platform-http';
+export type {
+  PlatformHttpClient,
+  PlatformHttpClientOptions,
+  PlatformHttpMethod,
+  PlatformHttpRequest,
+  PlatformHttpResponse,
+} from './platform-http';
 export type {
   HostedSolanaGatewayTransportOptions,
   HostedSolanaGatewayTransports,
