@@ -345,7 +345,7 @@ pub fn automations_ts(name: &str, slug: &str) -> String {
  * `a4 dev up` runs this module (`[dev.automations]` in arete.toml) with dev
  * wallets as the supporters; schedules follow the dev environment's clock,
  * so `a4 dev warp +1d` runs the daily tips. For production,
- * `npx arete-automations add <cloudflare|vercel|node>` wires the same
+ * `npx @usearete/automations add <cloudflare|vercel|node>` wires the same
  * definition into a host. See README.md.
  */
 import {{ defineAutomations }} from "@usearete/automations";
@@ -502,11 +502,11 @@ signer, Postgres store and policy, read from the environment), and prints
 the remaining steps:
 
 ```sh
-npx arete-automations add cloudflare    # or: vercel, node (any container host)
+npx @usearete/automations add cloudflare    # or: vercel, node (any container host)
 ```
 
 Every host follows the same steps: install the published client
-(`a4 install --locked`), migrate the store (`npx arete-automations migrate`),
+(`a4 install --locked`), migrate the store (`npx @usearete/automations migrate`),
 set the secrets, deploy with the host's own CLI, then subscribe the webhook:
 
 ```sh
@@ -554,7 +554,7 @@ pub fn init(args: &InitArgs, json: bool) -> Result<()> {
         format!("cd {} && ", outcome.dir)
     };
     println!(
-        "  Automations: {AUTOMATIONS_ENTRY} (`a4 dev up` runs them; `npx arete-automations add <cloudflare|vercel|node>` deploys them)"
+        "  Automations: {AUTOMATIONS_ENTRY} (`a4 dev up` runs them; `npx @usearete/automations add <cloudflare|vercel|node>` deploys them)"
     );
     println!();
     println!("Next: {cd}npm install && npx arete-protocol check && a4 dev up");

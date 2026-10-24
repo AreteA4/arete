@@ -108,7 +108,7 @@ handlers on a runtime you configure, with
 
 ## Deploying
 
-`npx arete-automations add <cloudflare|vercel|node>` writes `runtime.ts`
+`npx @usearete/automations add <cloudflare|vercel|node>` writes `runtime.ts`
 beside the definition (the production client, signer, Postgres store and
 policy, from the host's environment) and a thin host entry over an adapter:
 
@@ -125,8 +125,8 @@ await serve(definition, runtime);                                  // @usearete/
 
 Each serves `POST …/webhook`, `GET|POST …/tick` (behind `CRON_SECRET`) and
 `GET …/health`, and refuses to start when `ARETE_CLUSTER` and the bundled
-client's cluster disagree. `npx arete-automations migrate` applies the store's
-migrations to `DATABASE_URL`; `npx arete-automations manifest` prints the
+client's cluster disagree. `npx @usearete/automations migrate` applies the store's
+migrations to `DATABASE_URL`; `npx @usearete/automations manifest` prints the
 events, schedules and sources a definition registers.
 
 ## Consent
@@ -229,10 +229,10 @@ await store.migrate();                        // once, from a deploy step, with 
 - Migrations never run at startup. Run `store.migrate()` (transactional,
   behind an advisory lock, so concurrent callers run one at a time), or
   export the SQL for your own tool:
-  `npx arete-automations migrations --out db/migrations`. A store whose
+  `npx @usearete/automations migrations --out db/migrations`. A store whose
   database is behind refuses to run (`SchemaVersionError`).
 - Use two roles: one that migrates, and a runtime role limited to rows.
-  `npx arete-automations grants --role app_runtime` prints its grants.
+  `npx @usearete/automations grants --role app_runtime` prints its grants.
 - A `pg.Pool` is detected; for another pool adapter pass
   `postgresStore(pool, { executor: 'pool' })`.
 - Pass a client instead of a pool to write inside your own transaction, for

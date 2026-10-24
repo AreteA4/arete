@@ -128,7 +128,7 @@ export function runtime(env: Env): RuntimeConfig {
       clusters: [text(env, 'ARETE_CLUSTER') === 'mainnet' ? 'mainnet' : 'dev'],
     }),
     simulator: rpcSimulator(need(env, 'RPC_URL')),
-    // Run \`npx arete-automations migrate\` once per release that changes the schema.
+    // Run \`npx @usearete/automations migrate\` once per release that changes the schema.
     store: postgresStore(pool),
     consent: { domain: text(env, 'APP_DOMAIN') ?? 'localhost' },
     onOutcome: (outcome) =>
