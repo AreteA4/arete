@@ -1,0 +1,169 @@
+---
+title: Govern steps with your Squads multisig
+description: Propose admin steps to your team's own Squads v4 multisig, for one protocol or several.
+---
+
+Some steps should never run on one person's say-so: moving a treasury,
+withdrawing a raise, changing a fee. Give those steps the `squadsProposer`
+authority and they are proposed to your team's Squads v4 multisig. Arete's
+proposer only proposes. Your members approve and execute in Squads, as they
+would any other transaction.
+
+## How it works
+
+- Your account has one **proposer**: a public key Arete signs proposals with.
+  Every protocol you deploy uses the same proposer.
+- You add the proposer to your multisig as a member with the **Initiate**
+  permission only. It can create proposals; it can never vote or execute.
+- The proposer pays the fee and rent of each proposal, so it needs a little
+  SOL.
+- When a reaction fires `proposeSquads`, Arete wraps the step's instructions
+  in a vault transaction and a proposal on your multisig. Your members approve
+  and execute it. The protocol's derive rules observe the result.
+
+## Point a step at your multisig
+
+Declare the multisig as a resource and read it in the step's authority:
+
+```ts
+const vault = 'pda("squads", "vault", resources.treasury.multisig, 0)';
+
+export default defineProtocol({
+  // ...
+  programs: { system, squads },
+  resources: {
+    treasury: {
+      schema: {
+        type: "object",
+        properties: { multisig: { type: "string", format: "pubkey" } },
+        required: ["multisig"],
+        additionalProperties: false,
+      },
+      description: "The team's Squads v4 multisig.",
+    },
+  },
+  steps: {
+    pay: {
+      scope: "instance",
+      title: "Pay the recipient from the team vault",
+      authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig" },
+      guards: { not_requested: 'instance.state == "requested"' },
+      transitions: [{ from: ["requested"], to: "proposed" }],
+      build: [
+        ix(system, "transfer", {
+          args: { lamports: "params.amount" },
+          accounts: { fundingAccount: vault, recipientAccount: "instance.roles.recipient" },
+        }),
+      ],
+    },
+  },
+  reactions: [{
+    id: "proposePayout",
+    trigger: { kind: "onTransition", machine: "instance", from: [], to: ["requested"] },
+    action: { kind: "proposeSquads", step: "pay" },
+  }],
+});
+```
+
+`squads` is the Squads v4 program
+(`a4 install program squads-multisig-program --as squads --ts`). Set the
+resource's value for each deployment in `arete.toml`:
+
+```toml
+[protocol.resources]
+treasury = "treasury.json"   # { "multisig": "<your multisig address>" }
+```
+
+A multisig that comes only from `resources` is fixed for the deployment, so
+Arete checks it when the deployment activates. A step can instead read the
+multisig from the instance (`instance.accounts.multisig`), for example when
+each instance creates its own multisig; that one is checked when the step is
+proposed.
+
+The step acts from vault 0 unless it sets `vaultIndex`. Use different vault
+indexes to keep protocols that share a multisig apart. The vault the step's
+instructions use must match, so change the `vault` expression too:
+
+```ts
+const vault = 'pda("squads", "vault", resources.treasury.multisig, 1)';
+
+// in the step
+authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig", vaultIndex: 1 },
+```
+
+## Onboard your multisig
+
+Do this once per multisig, before the first deploy activates. The commands
+take the deployment as their target, like `a4 protocol actions`; deploy with
+`--no-activate` first if the deployment does not exist yet.
+
+1. Find your proposer:
+
+   ```bash
+   a4 protocol squads proposer <deployment>
+   ```
+
+2. Build the transaction that adds it with the Initiate permission. A member
+   who can already initiate signs and sends it:
+
+   ```bash
+   a4 protocol squads add-proposer <deployment> --multisig <M> --member <member>
+   ```
+
+   It prints the unsigned transaction. Sign it with the member's wallet, or
+   pass `--keypair <file> --rpc-url <url>` to sign and send from the command
+   line. Then approve and execute the config proposal it created in Squads.
+
+3. Send the proposer a little SOL. One proposal needs about 0.01 SOL.
+
+4. Check:
+
+   ```bash
+   a4 protocol squads status <deployment> --multisig <M>
+   ```
+
+   `ready` means the proposer is an Initiate-only member and funded. Otherwise
+   `problem` says what is left: `not_member`, `permissions_invalid` or
+   `proposer_unfunded`.
+
+Then deploy (or activate) again. If you skip a step, activation refuses the
+deployment and its error names the proposer, the multisig and the commands to
+run.
+
+Agents can do the same through the MCP tools `protocol_squads_proposer`,
+`protocol_squads_status` and `protocol_squads_add_proposer`. They return the
+unsigned transaction for the member to sign; they never sign.
+
+## One multisig for several protocols
+
+The proposer is per account, so once it is a member of your multisig, every
+protocol you deploy can point its resource at that multisig with no further
+onboarding. Proposals from all of them land in the same Squads queue. Give
+each protocol its own `vaultIndex` if their funds should stay apart.
+
+## Try it in a dev environment
+
+The Squads app cannot see a dev environment, so `a4 dev squads` stands in for
+it with your dev wallets:
+
+```bash
+a4 dev squads create --members alice,bob --threshold 1      # prints the multisig and vault 0
+a4 protocol squads add-proposer --dev --multisig <M> --member alice --send
+a4 dev squads show --multisig <M>                           # the config proposal's index
+a4 dev squads approve --multisig <M> --index <n> --wallet alice
+a4 dev squads execute --multisig <M> --index <n> --wallet alice
+a4 dev fund <proposer> 1
+a4 protocol squads status --dev --multisig <M>
+```
+
+When a step is proposed, approve it the same way and run it with
+`a4 dev squads vault-execute --multisig <M> --index <n> --wallet alice`.
+
+## When a proposal waits
+
+If a step is proposed while the proposer is not a valid member (for a
+multisig read from the instance), nothing is signed. The proposal waits and
+retries for up to 24 hours, and the instance's event stream reports
+`arete.squads.proposerMissing` with the multisig, the proposer and the
+problem. Add the proposer and it goes through on the next retry; after 24
+hours it is dropped.
