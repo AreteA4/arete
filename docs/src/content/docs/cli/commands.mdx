@@ -109,7 +109,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 protocol request-listing`                                                 | Ask for your deployment to be listed                              |
 | `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
 | `a4 protocol webhook add\|list\|remove\|test`                                 | The webhook endpoints that receive your deployment's events       |
-| `a4 squads status\|list\|attach\|create\|add-proposer`                       | Your account's Squads multisigs (the dashboard does the same)     |
+| `a4 squads status\|list\|attach`                                             | Your account's Squads multisigs (set them up on the dashboard)    |
 | `a4 protocol squads proposer\|status\|add-proposer [target]`                  | Bring your own Squads multisig: proposer, status, add it          |
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
@@ -1243,36 +1243,27 @@ a4 protocol actions --dev --wallet default    # a dev wallet name or a pubkey
 A production deployment of a protocol with Squads steps is refused
 (`protocol-squads-setup-required`) unless the multisig in its deployment
 config is an `active` attachment of your account: Arete's proposer is a
-member with the Initiate permission only. The easiest way to set that up is
-the dashboard, [app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads),
-which works with any browser wallet (a Ledger too), or the Squads app
-(**Members → Add member**, the proposer, **Initiate** only, then approve and
-execute). `a4 squads` does the same for your account from a terminal. Every
-command prints the dashboard link first; commands that build a transaction
-print it unsigned for a hot wallet, and `--keypair` signs it locally and
-sends it through Arete. Arete never asks for a member key.
+member with the Initiate permission only. Set that up on the dashboard,
+[app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads),
+which works with any browser wallet (a Ledger too), or in the Squads app
+(**Members → Add member**, paste the proposer, **Initiate** only, then
+approve and execute). `a4 squads` reads your account's setup and attaches a
+multisig by address. Every command prints the dashboard link first and, for
+a `pending` multisig, the Squads-app steps. It builds no transactions: for
+scripts and hot wallets, use the Arete setup helpers of the Squads v4
+program SDK (`a4 install program squads-v4`).
 
 ```bash
 a4 squads status                      # setup, proposer, attached multisigs
 a4 squads status <M>                  # one multisig: members, deployments, proposals
 a4 squads list
 a4 squads attach <M> --label Treasury
-a4 squads add-proposer <M> --member <a member who can initiate> [--keypair member.json]
-a4 squads approve <M> --index <n> --member <voter> [--keypair voter.json]
-a4 squads execute <M> --index <n> --member <executor> [--keypair executor.json]
-a4 squads create --member <A> --member <B>:vote+execute --threshold 1 --creator <A> [--keypair a.json]
 ```
 
-| Flag                           | Description                                                                         |
-| ------------------------------ | ----------------------------------------------------------------------------------- |
-| `--member <pubkey>`            | `add-proposer`, `approve`, `execute`: the member who signs and pays                 |
-| `--member <pubkey[:perms]>`    | `create`, repeatable: a member and its permissions (`initiate+vote+execute` default) |
-| `--threshold <n>`, `--creator` | `create`: approvals needed, and the member who signs and pays                       |
-| `--index <n>`                  | `approve`, `execute`: the config proposal's transaction index                       |
-| `--keypair <file>`             | Sign with this keypair (it must be the signer) and send through Arete               |
-| `--transaction-format v0\|v1`  | The transaction format (default `v0`)                                               |
-| `--label <text>`               | `attach`, `create`: a label for the dashboard                                       |
-| `--json`                       | The answer as JSON                                                                  |
+| Flag             | Description                                     |
+| ---------------- | ----------------------------------------------- |
+| `--label <text>` | `attach`: a label for the dashboard (1 to 64)   |
+| `--json`         | The answer as JSON                              |
 
 Dev environments keep their own proposer: use `a4 protocol squads --dev` and
 [`a4 dev squads`](/cli/local-development/#squads-multisigs) there.

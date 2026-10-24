@@ -77,23 +77,13 @@ For protocols with multisig administration, the multisig in the deployment
 config must be attached to your account and active. Set it up on the
 dashboard ([app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads)),
 which works with any browser wallet, or in the Squads app (add the proposer as
-a member with the Initiate permission only). From code, `createSquadsClient`
-reads and manages the account's multisigs:
-
-```ts
-import { createSquadsClient, squadsSetupRequired } from "@usearete/sdk";
-
-const squads = createSquadsClient({ auth: { secretKey: process.env.ARETE_API_KEY } });
-const { setup, proposer, multisigs, dashboardUrl } = await squads.status();
-// For a hot wallet only: an unsigned add-proposer transaction to sign and submit.
-const prepared = await squads.addProposer(multisig, { member });
-await squads.submit({ transactionId: prepared.transactionId, signedTransaction });
-```
-
-`squadsSetupRequired(error)` reads a refused deployment's step, multisig and
-`setupUrl`. Per deployment, `client.squads.proposer()`, `addProposer` and
-`status(multisig)` report the proposer and whether it is an Initiate-only
-member.
+a member with the Initiate permission only). From code, use the Arete setup
+helpers of the Squads v4 program SDK (`a4 install program squads-v4`); the
+member's wallet signs. A deployment refused with
+`protocol-squads-setup-required` carries the multisig's dashboard link in
+`details.setupUrl`. Per deployment, `client.squads.proposer()`, `addProposer`
+and `status(multisig)` report the proposer and whether it is an
+Initiate-only member.
 
 Arete can propose the declared admin action; it does not vote or execute the
 multisig proposal. Handle missing-proposer events as an onboarding requirement,

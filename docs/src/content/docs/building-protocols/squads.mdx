@@ -143,36 +143,36 @@ Step 'finalize' proposes to Squads multisig <M>, which is not set up for your ac
 
 Add the proposer there (or in the Squads app), then deploy again.
 
-## From the command line (hot wallets)
+## From the command line
 
-The dashboard and the Squads app cover every wallet. When a member's key is
-a keypair file, `a4 squads` does the same from a terminal. Each command
-prints the dashboard link first, then the unsigned transaction; `--keypair`
-signs it locally and Arete sends and confirms it. Arete never asks for or
-holds a member key.
+`a4 squads` reads your account's setup and attaches a multisig by address.
+Each command prints the multisig's dashboard link first and, while it is
+`pending`, the Squads-app steps to add the proposer. It builds no
+transactions.
 
 ```bash
-a4 squads status                                    # setup, proposer, attached multisigs
-a4 squads attach <M> --label Treasury               # attach an existing multisig
-a4 squads add-proposer <M> --member <member> --keypair member.json
-a4 squads status <M>                                # members, config proposals, state
-a4 squads approve <M> --index <n> --member <voter> --keypair voter.json
-a4 squads execute <M> --index <n> --member <executor> --keypair executor.json
-
-# or create a multisig with the proposer already a member
-a4 squads create --member <A> --member <B>:vote+execute --threshold 1 --creator <A> --keypair a.json
+a4 squads status                        # setup, proposer, attached multisigs
+a4 squads status <M>                    # one multisig: members, deployments, proposals
+a4 squads list
+a4 squads attach <M> --label Treasury   # attach an existing multisig
 ```
 
-Without `--keypair` the transaction is printed for the signer's wallet. The
-same calls are in the SDKs: `createSquadsClient` in `@usearete/sdk`,
-`SquadsClient` in the Rust and Python SDKs (`status`, `get`, `attach`,
-`create`, `addProposer`, `approve`, `execute`, `removeProposer`, `forget`
-and `submit`), authenticated with a secret key.
+Agents use the MCP tools `squads_status` and `squads_attach`. They point the
+user to the dashboard or the Squads app and never sign for a member.
 
-Agents use the MCP tools `squads_status`, `squads_attach`,
-`squads_add_proposer` and `squads_submit`. They point the user to the
-dashboard or the Squads app first and return transactions for a hot wallet
-to sign; they never sign for a member.
+## From code (scripts and hot wallets)
+
+Arete builds no Squads transactions. To create a multisig with the proposer
+already a member, or to add the proposer to an existing one, from code,
+install the Squads v4 program SDK and use its Arete setup helpers:
+
+```bash
+a4 install program squads-v4
+```
+
+The member's own wallet signs, as for any other transaction; Arete never
+asks for or holds a member key. Then read the multisig again (`a4 squads
+status <M>` or the dashboard) to see it turn `active`.
 
 ## One multisig for several protocols
 

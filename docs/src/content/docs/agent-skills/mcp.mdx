@@ -456,15 +456,15 @@ have a Squads multisig and how its members sign; send them to the dashboard
 ([app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads),
 any browser wallet including a Ledger) or the Squads app (**Members → Add
 member** → the proposer → **Initiate** only → approve and execute); put the
-active multisig's address in the deployment config. Raw transactions are for
-hot wallets only, and these tools never sign for a member.
+active multisig's address in the deployment config; for code, use the Arete
+setup helpers of the Squads v4 program SDK (`a4 install program squads-v4`).
+Arete builds no Squads transactions, and these tools never sign for a
+member.
 
-| Tool                  | Arguments                                         | What it does                                                                                                                         |
-| --------------------- | ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `squads_status`       | `multisig?`                                       | `setup` (`notStarted`, `ready`, `needsAttention`), the proposer, each attachment's state, problem and dashboard link, and `next`     |
-| `squads_attach`       | `multisig`, `label?`                              | attaches an existing multisig (`active` when the proposer is already a member, else `pending`) and returns the Squads-app steps     |
-| `squads_add_proposer` | `multisig`, `member`, `transaction_format?`       | the dashboard link and Squads-app steps, then the unsigned add-proposer transaction for a hot-wallet member to sign                 |
-| `squads_submit`       | `transaction_id`, `signed_transaction_base64`     | sends a signed prepared transaction and waits for it to confirm                                                                      |
+| Tool            | Arguments            | What it does                                                                                                                     |
+| --------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `squads_status` | `multisig?`          | `setup` (`notStarted`, `ready`, `needsAttention`), the proposer, each attachment's state, problem and dashboard link, and `next` |
+| `squads_attach` | `multisig`, `label?` | attaches an existing multisig (`active` when the proposer is already a member, else `pending`) and returns the Squads-app steps |
 
 #### Squads onboarding tools (per deployment)
 
