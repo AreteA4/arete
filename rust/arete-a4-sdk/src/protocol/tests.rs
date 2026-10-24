@@ -1550,3 +1550,189 @@ async fn live_rows_clear_atomically_when_accounts_change_or_disappear() {
         .iter()
         .all(|(.., sender)| sender.is_closed()));
 }
+
+fn attachment(address: &str, state: &str) -> Value {
+    json!({
+        "address": address, "label": "Treasury", "state": state,
+        "problem": if state == "active" { Value::Null } else { json!("not_member") },
+        "createdVia": "page", "stateChangedAt": "2026-10-24T00:00:00Z",
+        "createdAt": "2026-10-24T00:00:00Z", "threshold": 2,
+        "members": [{ "pubkey": "Member1", "mask": 7, "permissions": ["initiate", "vote", "execute"] }],
+        "proposerMask": null, "vault": "Vault1",
+        "squadsUrl": "https://app.squads.so/squads/Vault1/home",
+        "dashboardUrl": format!("https://app.arete.run/dashboard/squads/{address}"),
+        "deploymentConfigSnippet": "[resources.treasury]\nmultisig = \"Ms1\"",
+        "problemDescription": if state == "active" { Value::Null } else { json!("Arete's proposer is not a member.") },
+        "deployments": [{
+            "id": "dep_1", "protocolId": "p1", "protocolName": "Token raise",
+            "protocolSlug": "token-raise", "status": "active", "steps": ["finalize"]
+        }]
+    })
+}
+
+fn prepared(kind: &str) -> Value {
+    json!({
+        "transactionId": format!("tx-{kind}"), "kind": kind, "transactionBase64": "AQID",
+        "transactionFormat": "v0", "signer": "Member1", "lastValidBlockHeight": 900,
+        "multisig": "Ms1", "transactionIndex": 4, "proposal": "Proposal1",
+        "next": "Approve and execute it"
+    })
+}
+
+#[tokio::test]
+async fn account_squads_client_calls_every_route_with_the_key() {
+    let (mock, base) = mock(|request, _| {
+        let path = request.path.trim_start_matches("/api/account/squads");
+        let (status, body) = match (request.method.as_str(), path) {
+            ("GET", "") => (
+                200,
+                json!({
+                    "setup": "needsAttention",
+                    "proposer": { "pubkey": "Prop1", "permissions": "initiate", "lamports": null },
+                    "dashboardUrl": "https://app.arete.run/dashboard/squads",
+                    "multisigs": [attachment("Ms1", "pending")]
+                }),
+            ),
+            ("GET", "/multisigs/Ms1") => {
+                let mut detail = attachment("Ms1", "active");
+                detail["configProposals"] = json!([{
+                    "kind": "addProposer", "transactionIndex": 4, "proposal": "Proposal1",
+                    "status": "executed", "approvals": ["Member1"], "threshold": 2,
+                    "squadsUrl": "https://app.squads.so/x"
+                }]);
+                detail["proposals"] = json!([]);
+                detail["proposer"] = json!("Prop1");
+                (200, detail)
+            }
+            ("POST", "/multisigs") => (201, attachment("Ms1", "pending")),
+            ("GET", "/notifications") => (
+                200,
+                json!([{
+                    "multisig": "Ms1", "problem": "not_member",
+                    "problemDescription": "The proposer was removed.",
+                    "deployments": [{ "id": "dep_1", "protocolName": "Token raise", "steps": ["finalize"] }],
+                    "since": "2026-10-24T18:00:00Z",
+                    "dashboardUrl": "https://app.arete.run/dashboard/squads/Ms1"
+                }]),
+            ),
+            ("POST", "/multisigs/create") => (200, prepared("createMultisig")),
+            ("POST", "/multisigs/Ms1/add-proposer") => (200, prepared("addProposer")),
+            ("POST", "/multisigs/Ms1/proposals/4/approve") => (200, prepared("approve")),
+            ("POST", "/multisigs/Ms1/proposals/4/execute") => (200, prepared("execute")),
+            ("POST", "/multisigs/Ms1/remove-proposer") => (200, prepared("removeProposer")),
+            ("DELETE", "/multisigs/Ms1") => return (204, vec![], String::new()),
+            ("DELETE", "/multisigs/Ms2") => (
+                409,
+                json!({ "error": "remove the proposer first", "code": "protocol-squads-multisig-active" }),
+            ),
+            ("POST", "/transactions") => (
+                200,
+                json!({
+                    "transactionId": "tx-addProposer", "signature": "Sig1",
+                    "status": "confirmed", "error": null, "multisig": attachment("Ms1", "active")
+                }),
+            ),
+            other => panic!("unexpected {other:?}"),
+        };
+        (status, vec![], body.to_string())
+    })
+    .await;
+    let client = SquadsClient::new(
+        SquadsClientOptions::default()
+            .with_api_url(format!("{base}/api"))
+            .with_auth(AuthConfig::default().with_secret_key("a4_sk_test")),
+    )
+    .unwrap();
+
+    let status = client.status().await.unwrap();
+    assert_eq!(status.setup, SquadsSetup::NeedsAttention);
+    assert_eq!(status.proposer.lamports, None);
+    assert_eq!(status.multisigs[0].state, SquadsAttachmentState::Pending);
+
+    let detail = client.get("Ms1").await.unwrap();
+    assert_eq!(detail.attachment.state, SquadsAttachmentState::Active);
+    assert_eq!(detail.config_proposals[0].status, "executed");
+    assert_eq!(detail.proposer, "Prop1");
+    assert_eq!(detail.attachment.deployments[0].steps, vec!["finalize"]);
+    assert_eq!(
+        status.multisigs[0].problem_description.as_deref(),
+        Some("Arete's proposer is not a member.")
+    );
+    let notifications = client.notifications().await.unwrap();
+    assert_eq!(notifications[0].deployments[0].steps, vec!["finalize"]);
+
+    let attached = client.attach("Ms1", Some("Treasury")).await.unwrap();
+    assert_eq!(attached.address, "Ms1");
+
+    let create = client
+        .create(&SquadsCreateRequest {
+            members: vec![SquadsCreateMember::new(
+                "Member1",
+                ["initiate", "vote", "execute"],
+            )],
+            threshold: 1,
+            creator: "Member1".into(),
+            label: Some("Treasury".into()),
+            transaction_format: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(create.kind, "createMultisig");
+
+    let add = client
+        .add_proposer("Ms1", "Member1", Some(ProtocolTransactionFormat::V0))
+        .await
+        .unwrap();
+    assert_eq!(add.transaction_bytes().unwrap(), vec![1, 2, 3]);
+    client.approve("Ms1", 4, "Member1", None).await.unwrap();
+    client.execute("Ms1", 4, "Member1", None).await.unwrap();
+    client
+        .remove_proposer("Ms1", "Member1", None)
+        .await
+        .unwrap();
+    client.forget("Ms1").await.unwrap();
+    let refused = client.forget("Ms2").await.unwrap_err();
+    assert_eq!(refused.status(), Some(409));
+    assert_eq!(refused.wire_code(), Some("protocol-squads-multisig-active"));
+
+    let sent = client.submit("tx-addProposer", &[9, 9]).await.unwrap();
+    assert_eq!(sent.status, SquadsSubmitStatus::Confirmed);
+    assert_eq!(sent.multisig.unwrap().state, SquadsAttachmentState::Active);
+
+    let requests = mock.requests();
+    assert!(requests
+        .iter()
+        .all(|request| request.header("authorization") == Some("Bearer a4_sk_test")));
+    assert!(mock.sessions().is_empty());
+    let body = |path: &str| {
+        requests
+            .iter()
+            .find(|request| request.path == format!("/api/account/squads{path}"))
+            .unwrap()
+            .body
+            .clone()
+    };
+    assert_eq!(
+        body("/multisigs"),
+        json!({ "address": "Ms1", "label": "Treasury" })
+    );
+    assert_eq!(
+        body("/multisigs/create"),
+        json!({
+            "members": [{ "pubkey": "Member1", "permissions": ["initiate", "vote", "execute"] }],
+            "threshold": 1, "creator": "Member1", "label": "Treasury"
+        })
+    );
+    assert_eq!(
+        body("/multisigs/Ms1/add-proposer"),
+        json!({ "member": "Member1", "transactionFormat": "v0" })
+    );
+    assert_eq!(
+        body("/multisigs/Ms1/proposals/4/approve"),
+        json!({ "member": "Member1" })
+    );
+    assert_eq!(
+        body("/transactions"),
+        json!({ "transactionId": "tx-addProposer", "signedTransactionBase64": "CQk=" })
+    );
+}

@@ -547,7 +547,7 @@ impl Http {
     }
 }
 
-fn parse_body(bytes: &[u8]) -> Option<Value> {
+pub(super) fn parse_body(bytes: &[u8]) -> Option<Value> {
     if bytes.is_empty() {
         return None;
     }
@@ -568,7 +568,7 @@ fn wire_code_of(header_code: Option<&str>, body: Option<&Value>) -> Option<Strin
         })
 }
 
-fn response_error(
+pub(super) fn response_error(
     what: &str,
     status: u16,
     header_code: Option<&str>,
@@ -600,7 +600,7 @@ fn response_error(
 }
 
 /// `encodeURIComponent`.
-fn segment(value: &str, name: &str) -> Result<String, ProtocolError> {
+pub(super) fn segment(value: &str, name: &str) -> Result<String, ProtocolError> {
     if value.is_empty() {
         return Err(ProtocolError::InvalidInput(format!(
             "{name} must be a non-empty string"
