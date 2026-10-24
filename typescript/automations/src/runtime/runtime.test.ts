@@ -193,6 +193,43 @@ describe('the step pipeline', () => {
     expect(h.errors).toHaveLength(0);
   });
 
+  // The API lists a participant step on the wallet's participant, not on the
+  // instance; a refund on a failed raise is one.
+  it('reads a participant step from the wallet participant', async () => {
+    const h = harness({ participantSteps: ['deposit'], participants: [ALICE] });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'deposit' });
+    expect(h.fake.participantCalls).toEqual([{ instance: 'inst-1', wallet: ALICE }]);
+    expect(h.fake.allowedCalls).toHaveLength(0);
+  });
+
+  it('rejects a participant step its participant may not run', async () => {
+    const h = harness({
+      participantSteps: ['deposit'],
+      participants: [ALICE],
+      allowed: (step) => ({ step, allowed: false, reason: 'raise_not_failed' }),
+    });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.rejected[0]).toMatchObject({ state: 'rejected', code: 'raise_not_failed' });
+    expect(h.fake.prepareCalls).toHaveLength(0);
+  });
+
+  it('lets prepare decide a participant step for a wallet that is not a participant yet', async () => {
+    const h = harness({ participantSteps: ['deposit'], participants: [] });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'deposit' });
+    expect(h.fake.prepareCalls).toHaveLength(1);
+  });
+
   it('records a prepare rejection', async () => {
     const h = harness({ rejectPrepare: () => 'insufficient_funds' });
     await h.grant(ALICE);
