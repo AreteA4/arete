@@ -1232,18 +1232,14 @@ fn deploy_settings(
     args: &UpArgs,
 ) -> Result<deploy::DeploySettings> {
     let config = crate::commands::protocol::load_protocol_config(project_root)?;
-    let mut resources: std::collections::BTreeMap<String, PathBuf> = config
+    let mut resources: std::collections::BTreeMap<_, _> = config
         .resources
         .iter()
-        .map(|(name, path)| (name.clone(), project_root.join(path)))
+        .map(|(name, source)| (name.clone(), source.relative_to(project_root)))
         .collect();
-    for entry in &args.resources {
-        let (name, path) = entry
-            .split_once('=')
-            .filter(|(name, path)| !name.is_empty() && !path.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("--resource expects NAME=FILE, got '{entry}'"))?;
-        resources.insert(name.to_string(), PathBuf::from(path));
-    }
+    resources.extend(crate::commands::protocol::parse_resource_flags(
+        &args.resources,
+    )?);
     if let Some(slug) = &config.slug {
         crate::commands::protocol::validate_slug(slug)?;
     }

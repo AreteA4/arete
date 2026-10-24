@@ -379,19 +379,63 @@ pub fn deploy(args: &DeployArgs, json: bool) -> Result<()> {
 
 /// The `[protocol]` table of the project's `arete.toml`. Paths are relative
 /// to the project directory.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProtocolConfig {
-    #[serde(default)]
     pub slug: Option<String>,
-    #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
     pub fee_policy: Option<PathBuf>,
-    #[serde(default)]
-    pub resources: BTreeMap<String, PathBuf>,
-    #[serde(default)]
+    pub resources: BTreeMap<String, ResourceSource>,
     pub access: Option<String>,
+}
+
+/// Where a resource value comes from: a JSON file, or the value itself
+/// written inline in `[protocol.resources]`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ResourceSource {
+    File(PathBuf),
+    Inline(Value),
+}
+
+impl ResourceSource {
+    /// Resolve a relative file path against `base`; inline values are kept.
+    pub fn relative_to(&self, base: &Path) -> Self {
+        match self {
+            Self::File(path) => Self::File(base.join(path)),
+            Self::Inline(value) => Self::Inline(value.clone()),
+        }
+    }
+
+    /// The resource value, checked as contract JSON.
+    pub fn read(&self, name: &str) -> Result<Value> {
+        match self {
+            Self::File(path) => read_contract_document(path, &format!("Resource {name}")),
+            Self::Inline(value) => Ok(value.clone()),
+        }
+    }
+}
+
+/// `--resource NAME=FILE` entries.
+pub fn parse_resource_flags(entries: &[String]) -> Result<Vec<(String, ResourceSource)>> {
+    entries
+        .iter()
+        .map(|entry| {
+            let (name, path) = entry
+                .split_once('=')
+                .filter(|(name, path)| !name.is_empty() && !path.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("--resource expects NAME=FILE, got '{entry}'"))?;
+            Ok((name.to_string(), ResourceSource::File(PathBuf::from(path))))
+        })
+        .collect()
+}
+
+/// The error for a resource the spec declares but nothing supplies.
+pub fn missing_resource_help(name: &str) -> String {
+    format!(
+        "The spec declares resource '{name}' but no value was given. Pass --resource {name}=<file.json>, \
+         or set it under [protocol.resources] in arete.toml, either as a path to a JSON file relative \
+         to the project ({name} = \"resources/{name}.json\") or as an inline TOML value \
+         ({name} = {{ someField = 1 }}). The value must match the resource's schema in the spec"
+    )
 }
 
 /// Read `[protocol]` from `<dir>/arete.toml`; absent file or table means
@@ -407,19 +451,51 @@ pub fn load_protocol_config(dir: &Path) -> Result<ProtocolConfig> {
             return Err(error).with_context(|| format!("Failed to read {}", path.display()))
         }
     };
-    parse_protocol_config(&source).with_context(|| format!("Invalid {}", path.display()))
+    // Errors print only their outermost message, so the cause goes into it.
+    parse_protocol_config(&source)
+        .map_err(|error| anyhow::anyhow!("Invalid {}: {error:#}", path.display()))
+}
+
+/// `arete.toml` as this command reads it: only the `[protocol]` table.
+#[derive(Deserialize)]
+struct ProtocolManifest {
+    #[serde(default)]
+    protocol: Option<RawProtocolConfig>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProtocolConfig {
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    fee_policy: Option<PathBuf>,
+    #[serde(default)]
+    resources: BTreeMap<String, toml::Value>,
+    #[serde(default)]
+    access: Option<String>,
 }
 
 fn parse_protocol_config(source: &str) -> Result<ProtocolConfig> {
-    let value: toml::Value = toml::from_str(source).context("Failed to parse TOML")?;
-    let Some(table) = value.get("protocol") else {
+    let manifest: ProtocolManifest = toml::from_str(source).map_err(|error| {
+        anyhow::anyhow!(
+            "{}\n[protocol] accepts the keys slug, name, fee_policy, resources and access",
+            error.to_string().trim_end()
+        )
+    })?;
+    let Some(raw) = manifest.protocol else {
         return Ok(ProtocolConfig::default());
     };
-    let config: ProtocolConfig = table
-        .clone()
-        .try_into()
-        .context("Invalid [protocol] section (keys: slug, name, fee_policy, resources, access)")?;
-    if let Some(access) = config.access.as_deref() {
+    let mut resources = BTreeMap::new();
+    for (name, value) in raw.resources {
+        let source = resource_source(&value).with_context(|| {
+            format!("[protocol.resources].{name} is not a valid resource value")
+        })?;
+        resources.insert(name, source);
+    }
+    if let Some(access) = raw.access.as_deref() {
         if access != "private" {
             bail!(
                 "[protocol].access = \"{access}\" is not supported: self-serve deployments are private. \
@@ -427,7 +503,50 @@ fn parse_protocol_config(source: &str) -> Result<ProtocolConfig> {
             );
         }
     }
-    Ok(config)
+    Ok(ProtocolConfig {
+        slug: raw.slug,
+        name: raw.name,
+        fee_policy: raw.fee_policy,
+        resources,
+        access: raw.access,
+    })
+}
+
+/// A string is a path to a JSON file; any other TOML value is the resource
+/// value itself.
+fn resource_source(value: &toml::Value) -> Result<ResourceSource> {
+    if let toml::Value::String(path) = value {
+        if path.is_empty() {
+            bail!("the file path is empty");
+        }
+        return Ok(ResourceSource::File(PathBuf::from(path)));
+    }
+    // Inline values follow the same JSON rules as a resource file.
+    let bytes = serde_json::to_vec(&toml_to_json(value)?)?;
+    Ok(ResourceSource::Inline(parse_contract_json(&bytes)?))
+}
+
+fn toml_to_json(value: &toml::Value) -> Result<Value> {
+    Ok(match value {
+        toml::Value::String(text) => Value::String(text.clone()),
+        toml::Value::Integer(number) => Value::from(*number),
+        toml::Value::Float(number) => serde_json::Number::from_f64(*number)
+            .map(Value::Number)
+            .ok_or_else(|| anyhow::anyhow!("{number} is not a finite number"))?,
+        toml::Value::Boolean(flag) => Value::Bool(*flag),
+        toml::Value::Datetime(datetime) => {
+            bail!("TOML dates are not JSON values; write it as a string (\"{datetime}\")")
+        }
+        toml::Value::Array(items) => {
+            Value::Array(items.iter().map(toml_to_json).collect::<Result<_>>()?)
+        }
+        toml::Value::Table(table) => Value::Object(
+            table
+                .iter()
+                .map(|(key, item)| Ok((key.clone(), toml_to_json(item)?)))
+                .collect::<Result<_>>()?,
+        ),
+    })
 }
 
 /// Flags over config; config paths resolve against the project directory,
@@ -437,7 +556,7 @@ struct Settings {
     slug: String,
     name: String,
     fee_policy: Option<PathBuf>,
-    resources: BTreeMap<String, PathBuf>,
+    resources: BTreeMap<String, ResourceSource>,
 }
 
 fn resolve_settings(
@@ -469,18 +588,12 @@ fn resolve_settings(
         .fee_policy
         .clone()
         .or_else(|| config.fee_policy.as_ref().map(|path| args.dir.join(path)));
-    let mut resources: BTreeMap<String, PathBuf> = config
+    let mut resources: BTreeMap<String, ResourceSource> = config
         .resources
         .iter()
-        .map(|(name, path)| (name.clone(), args.dir.join(path)))
+        .map(|(name, source)| (name.clone(), source.relative_to(&args.dir)))
         .collect();
-    for entry in &args.resources {
-        let (name, path) = entry
-            .split_once('=')
-            .filter(|(name, path)| !name.is_empty() && !path.is_empty())
-            .ok_or_else(|| anyhow::anyhow!("--resource expects NAME=FILE, got '{entry}'"))?;
-        resources.insert(name.to_string(), PathBuf::from(path));
-    }
+    resources.extend(parse_resource_flags(&args.resources)?);
     for name in resources.keys() {
         if !spec.resources.contains_key(name) {
             let declared = spec.resources.keys().cloned().collect::<Vec<_>>();
@@ -1477,15 +1590,11 @@ fn create_deployment(
     let fee_policy = read_contract_document(fee_policy_path, "Fee policy")?;
     let mut values = BTreeMap::new();
     for name in local.spec.resources.keys() {
-        let path = settings.resources.get(name).ok_or_else(|| {
-            anyhow::anyhow!(
-                "The spec declares resource '{name}': pass --resource {name}=<file> or set [protocol.resources].{name} in arete.toml (a JSON value matching its schema)"
-            )
-        })?;
-        values.insert(
-            name.clone(),
-            read_contract_document(path, &format!("Resource {name}"))?,
-        );
+        let source = settings
+            .resources
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!(missing_resource_help(name)))?;
+        values.insert(name.clone(), source.read(name)?);
     }
 
     let policy = client.create_protocol_fee_policy(protocol_id, &fee_policy)?;

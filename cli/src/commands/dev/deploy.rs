@@ -181,8 +181,8 @@ pub struct DeploySettings {
     pub name: Option<String>,
     /// Fee policy document; `None` means a zero-fee policy.
     pub fee_policy: Option<PathBuf>,
-    /// Resource name -> JSON value file.
-    pub resources: BTreeMap<String, PathBuf>,
+    /// Resource name -> JSON file or inline value.
+    pub resources: BTreeMap<String, crate::commands::protocol::ResourceSource>,
 }
 
 /// The fee policy a dev deployment uses when none is configured: no fees.
@@ -520,15 +520,10 @@ impl Deployer {
     ) -> Result<BTreeMap<String, i64>> {
         let mut values = BTreeMap::new();
         for name in build.spec.resources.keys() {
-            let path = self.settings.resources.get(name).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "The spec declares resource '{name}': pass --resource {name}=<file> or set [protocol.resources].{name} in arete.toml (a JSON value matching its schema)"
-                )
+            let source = self.settings.resources.get(name).ok_or_else(|| {
+                anyhow::anyhow!(crate::commands::protocol::missing_resource_help(name))
             })?;
-            values.insert(
-                name.clone(),
-                read_json_document(path, &format!("Resource {name}"))?,
-            );
+            values.insert(name.clone(), source.read(name)?);
         }
         let mut versions = BTreeMap::new();
         for (name, value) in &values {
@@ -714,8 +709,26 @@ mod tests {
         )
     }
 
+    async fn resource_version(State(api): Shared, Json(body): Json<Value>) -> impl IntoResponse {
+        note(&api, "resource-version", body);
+        (StatusCode::CREATED, Json(json!({ "version": 1 })))
+    }
+
+    async fn publish_resource(State(api): Shared, Json(body): Json<Value>) -> impl IntoResponse {
+        note(&api, "resource-publish", body);
+        (StatusCode::OK, Json(json!({ "version": 1 })))
+    }
+
     async fn serve(api: Arc<Api>) -> String {
         let app = Router::new()
+            .route(
+                "/api/protocols/:id/resources/:name/versions",
+                post(resource_version),
+            )
+            .route(
+                "/api/protocols/:id/resources/:name/versions/:version/publish",
+                post(publish_resource),
+            )
             .route("/api/protocols", post(create_protocol))
             .route("/api/protocols/:id/releases", post(release))
             .route("/api/protocols/:id/fee-policies", post(fee_policy))
@@ -941,7 +954,32 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(error.contains("--resource limits=<file>"), "{error}");
+        assert!(error.contains("--resource limits=<file.json>"), "{error}");
+        assert!(error.contains("[protocol.resources]"), "{error}");
+
+        // An inline value from arete.toml is published as is.
+        let mut settings = deployer.settings.clone();
+        settings.resources.insert(
+            "limits".into(),
+            crate::commands::protocol::ResourceSource::Inline(json!("tight")),
+        );
+        let deployer = Deployer {
+            settings,
+            ..deployer
+        };
+        deployer
+            .resources(&build, "p-1", "arete:h1:protocol-release:sha256:00")
+            .await
+            .unwrap();
+        let draft = api
+            .log
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(route, _)| route == "resource-version")
+            .cloned()
+            .unwrap();
+        assert_eq!(draft.1["value"], json!("tight"), "{draft:?}");
     }
 
     #[tokio::test]

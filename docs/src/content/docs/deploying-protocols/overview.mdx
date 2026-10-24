@@ -30,7 +30,12 @@ fee_policy = "fee-policy.json"
 
 [protocol.resources]
 launchDefaults = "launch-defaults.json"
+# or inline: launchDefaults = { tokenDecimals = 6 }
 ```
+
+A resource entry is either a path to a JSON file or the value itself as an
+inline TOML value. See
+[`a4 protocol deploy`](/cli/commands/#a4-protocol-deploy-dir) for the details.
 
 Only declare resources your spec actually uses. Fee policy and resource
 schemas are checked at deployment. Hosted platform fees apply alongside the

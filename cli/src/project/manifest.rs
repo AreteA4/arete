@@ -24,8 +24,13 @@ impl ProjectManifest {
             .with_context(|| format!("Failed to read project manifest {}", supplied.display()))?;
         let source = std::str::from_utf8(&bytes)
             .with_context(|| format!("Project manifest {} is not UTF-8", supplied.display()))?;
-        let value: toml::Value = toml::from_str(source)
-            .with_context(|| format!("Failed to parse project manifest {}", supplied.display()))?;
+        // Errors print only their outermost message, so the cause goes into it.
+        let value: toml::Value = toml::from_str(source).map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to parse project manifest {}: {error}",
+                supplied.display()
+            )
+        })?;
 
         let version = value
             .get("manifest_version")
@@ -48,9 +53,9 @@ impl ProjectManifest {
             ),
         }
 
-        let document: ManifestV1 = toml::from_str(source).with_context(|| {
-            format!(
-                "Failed to decode strict manifest_version = {MANIFEST_VERSION} document {}",
+        let document: ManifestV1 = toml::from_str(source).map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to decode strict manifest_version = {MANIFEST_VERSION} document {}: {error}",
                 supplied.display()
             )
         })?;
@@ -1632,5 +1637,23 @@ targets = []
             manifest.resolution_hash().unwrap(),
             reparsed.resolution_hash().unwrap()
         );
+    }
+
+    #[test]
+    fn load_errors_name_the_toml_problem() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("arete.toml");
+        std::fs::write(&path, "manifest_version = 1\n[project\n").unwrap();
+        let error = ProjectManifest::load(&path).unwrap_err().to_string();
+        assert!(
+            error.contains("Failed to parse project manifest"),
+            "{error}"
+        );
+        assert!(error.contains("line 2"), "{error}");
+
+        std::fs::write(&path, "manifest_version = 1\n[project]\nname = 5\n").unwrap();
+        let error = ProjectManifest::load(&path).unwrap_err().to_string();
+        assert!(error.contains("Failed to decode strict"), "{error}");
+        assert!(error.contains("invalid type"), "{error}");
     }
 }

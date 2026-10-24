@@ -475,10 +475,10 @@ fn activation_is_retried_while_the_server_prepares_the_deployment() {
 fn a_handler_release_reports_review_required_and_succeeds() {
     let dir = token_raise();
     fs::write(dir.path().join("fee.json"), fee_policy().to_string()).unwrap();
-    fs::write(dir.path().join("defaults.json"), r#"{"tokenDecimals":6}"#).unwrap();
+    // An inline resource value in arete.toml is sent as JSON.
     fs::write(
         dir.path().join("arete.toml"),
-        "[protocol]\nslug = \"my-raise\"\nfee_policy = \"fee.json\"\naccess = \"private\"\n\n[protocol.resources]\nlaunchDefaults = \"defaults.json\"\n",
+        "[protocol]\nslug = \"my-raise\"\nfee_policy = \"fee.json\"\naccess = \"private\"\n\n[protocol.resources]\nlaunchDefaults = { tokenDecimals = 6 }\n",
     )
     .unwrap();
     let server = responses(vec![
@@ -519,6 +519,7 @@ fn a_handler_release_reports_review_required_and_succeeds() {
         line(&requests[5]),
         format!("POST /api/protocols/{PROTOCOL_ID}/resources/launchDefaults/versions")
     );
+    assert_eq!(body(&requests[5])["value"], json!({ "tokenDecimals": 6 }));
     assert_eq!(
         line(&requests[6]),
         format!("POST /api/protocols/{PROTOCOL_ID}/resources/launchDefaults/versions/3/publish")
@@ -948,7 +949,9 @@ fn flags_override_the_protocol_config() {
     );
     assert_eq!(
         settings.resources.get("launchDefaults"),
-        Some(&PathBuf::from("proj/res/defaults.json"))
+        Some(&ResourceSource::File(PathBuf::from(
+            "proj/res/defaults.json"
+        )))
     );
 
     let flags = DeployArgs {
@@ -962,7 +965,7 @@ fn flags_override_the_protocol_config() {
     assert_eq!(settings.fee_policy, Some(PathBuf::from("other.json")));
     assert_eq!(
         settings.resources.get("launchDefaults"),
-        Some(&PathBuf::from("cli.json"))
+        Some(&ResourceSource::File(PathBuf::from("cli.json")))
     );
 
     let undeclared = DeployArgs {
@@ -978,6 +981,125 @@ fn flags_override_the_protocol_config() {
         ..base
     };
     assert!(resolve_settings(&bad_slug, &config, &spec).is_err());
+}
+
+#[test]
+fn protocol_resources_are_a_file_path_or_an_inline_value() {
+    let config = parse_protocol_config(
+        "[protocol.resources]\nfile = \"res/defaults.json\"\ntable = { tokenDecimals = 6, tiers = [1, 2], label = \"x\" }\nnumber = 5\n\n[protocol.resources.nested]\nenabled = true\n",
+    )
+    .unwrap();
+    assert_eq!(
+        config.resources["file"],
+        ResourceSource::File(PathBuf::from("res/defaults.json"))
+    );
+    let table = json!({ "tokenDecimals": 6, "tiers": [1, 2], "label": "x" });
+    assert_eq!(
+        config.resources["table"],
+        ResourceSource::Inline(table.clone())
+    );
+    assert_eq!(config.resources["number"], ResourceSource::Inline(json!(5)));
+    assert_eq!(
+        config.resources["nested"],
+        ResourceSource::Inline(json!({ "enabled": true }))
+    );
+
+    // File paths resolve against the project; inline values are kept.
+    let project = Path::new("proj");
+    assert_eq!(
+        config.resources["file"].relative_to(project),
+        ResourceSource::File(PathBuf::from("proj/res/defaults.json"))
+    );
+    assert_eq!(
+        config.resources["table"]
+            .relative_to(project)
+            .read("table")
+            .unwrap(),
+        table
+    );
+
+    // A file is read and checked as JSON.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("ok.json"), r#"{"tokenDecimals":6}"#).unwrap();
+    fs::write(dir.path().join("bad.json"), "{ not json").unwrap();
+    let file = ResourceSource::File(PathBuf::from("ok.json")).relative_to(dir.path());
+    assert_eq!(file.read("d").unwrap(), json!({ "tokenDecimals": 6 }));
+    let bad = ResourceSource::File(PathBuf::from("bad.json")).relative_to(dir.path());
+    let error = format!("{:#}", bad.read("d").unwrap_err());
+    assert!(
+        error.contains("Resource d") && error.contains("bad.json"),
+        "{error}"
+    );
+}
+
+#[test]
+fn invalid_protocol_config_reports_the_field_and_reason() {
+    let error = parse_protocol_config("[protocol.resources]\nwhen = 2026-10-23\n").unwrap_err();
+    let error = format!("{error:#}");
+    assert!(error.contains("[protocol.resources].when"), "{error}");
+    assert!(error.contains("TOML dates"), "{error}");
+    let error = parse_protocol_config("[protocol.resources]\nempty = \"\"\n").unwrap_err();
+    assert!(
+        format!("{error:#}").contains("[protocol.resources].empty"),
+        "{error:#}"
+    );
+
+    // The top-level handler prints only the outermost message, so it has to
+    // carry the cause.
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("arete.toml"),
+        "[protocol]\nfee_policy = 5\n",
+    )
+    .unwrap();
+    let error = load_protocol_config(dir.path()).unwrap_err().to_string();
+    assert!(error.contains("arete.toml"), "{error}");
+    assert!(error.contains("fee_policy"), "{error}");
+    assert!(error.contains("invalid type"), "{error}");
+    fs::write(
+        dir.path().join("arete.toml"),
+        "[protocol.resources]\nx = 2026-10-23\n",
+    )
+    .unwrap();
+    let error = load_protocol_config(dir.path()).unwrap_err().to_string();
+    assert!(error.contains("[protocol.resources].x"), "{error}");
+}
+
+#[test]
+fn a_missing_resource_names_both_config_forms() {
+    let help = missing_resource_help("launchDefaults");
+    assert!(
+        help.contains("--resource launchDefaults=<file.json>"),
+        "{help}"
+    );
+    assert!(
+        help.contains("launchDefaults = \"resources/launchDefaults.json\""),
+        "{help}"
+    );
+    assert!(
+        help.contains("launchDefaults = { someField = 1 }"),
+        "{help}"
+    );
+
+    let dir = token_raise();
+    let local = load_local_release(dir.path()).unwrap();
+    let settings = Settings {
+        slug: "token-raise".into(),
+        name: "Token Raise".into(),
+        fee_policy: Some(write_json(dir.path(), "fee.json", &fee_policy())),
+        resources: BTreeMap::new(),
+    };
+    let client = ApiClient::with_base_url("http://127.0.0.1:9");
+    let upload: ProtocolReleaseUpload =
+        serde_json::from_value(upload_json(TOKEN_RAISE_RELEASE, true, "passed", true)).unwrap();
+    let reporter = Reporter {
+        json: true,
+        warnings: Vec::new(),
+    };
+    let error = create_deployment(&client, PROTOCOL_ID, &upload, &local, &settings, &reporter)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, help);
 }
 
 #[test]
