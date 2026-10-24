@@ -302,7 +302,7 @@ export type AutomateError = OreProgramError;
  * Automation PDA seeds: ["automation", signer].
  * Miner PDA seeds: ["miner", signer].
  */
-export const automateInstruction = createInstructionHandler<AutomateParams, AutomateError>({
+export const automateInstruction = createInstructionHandler<AutomateParams, AutomateError, 'signer' | 'automation' | 'executor' | 'miner'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [0],
   args: [
@@ -339,7 +339,7 @@ export type CheckpointError = OreProgramError;
  * Settles miner rewards for a completed round.
  * Treasury PDA seeds: ["treasury"].
  */
-export const checkpointInstruction = createInstructionHandler<CheckpointParams, CheckpointError>({
+export const checkpointInstruction = createInstructionHandler<CheckpointParams, CheckpointError, 'signer' | 'authority' | 'automation' | 'board' | 'miner' | 'round' | 'treasury'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [2],
   args: [],
@@ -367,7 +367,7 @@ export type ClaimSolError = OreProgramError;
 /**
  * Claims SOL rewards from the miner account.
  */
-export const claimSolInstruction = createInstructionHandler<ClaimSolParams, ClaimSolError>({
+export const claimSolInstruction = createInstructionHandler<ClaimSolParams, ClaimSolError, 'signer' | 'board' | 'miner'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [3],
   args: [],
@@ -395,7 +395,7 @@ export type ClaimOreError = OreProgramError;
 /**
  * Claims ORE token rewards from the treasury vault.
  */
-export const claimOreInstruction = createInstructionHandler<ClaimOreParams, ClaimOreError>({
+export const claimOreInstruction = createInstructionHandler<ClaimOreParams, ClaimOreError, 'signer' | 'board' | 'miner' | 'recipient' | 'treasury' | 'treasuryTokens'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [4],
   args: [],
@@ -430,7 +430,7 @@ export type CloseError = OreProgramError;
  * Round PDA seeds: ["round", round_id].
  * Treasury PDA seeds: ["treasury"].
  */
-export const closeInstruction = createInstructionHandler<CloseParams, CloseError>({
+export const closeInstruction = createInstructionHandler<CloseParams, CloseError, 'signer' | 'board' | 'rentPayer' | 'round' | 'treasury'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [5],
   args: [],
@@ -469,7 +469,7 @@ export type DeployError = OreProgramError;
  * Miner PDA seeds: ["miner", authority].
  * Round PDA seeds: ["round", board.round_id].
  */
-export const deployInstruction = createInstructionHandler<DeployParams, DeployError>({
+export const deployInstruction = createInstructionHandler<DeployParams, DeployError, 'signer' | 'authority' | 'automation' | 'board' | 'config' | 'miner' | 'round' | 'treasury' | 'entropyVar' | 'entropyProgram'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [6],
   args: [
@@ -503,7 +503,7 @@ export type LogError = OreProgramError;
  * Emits an arbitrary log message from the board PDA.
  * Bytes following the discriminator are logged verbatim.
  */
-export const logInstruction = createInstructionHandler<LogParams, LogError>({
+export const logInstruction = createInstructionHandler<LogParams, LogError, 'signer'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [8],
   args: [],
@@ -535,7 +535,7 @@ export type ResetError = OreProgramError;
  * Treasury PDA seeds: ["treasury"].
  * Round PDA seeds: ["round", board.round_id] and ["round", board.round_id + 1].
  */
-export const resetInstruction = createInstructionHandler<ResetParams, ResetError>({
+export const resetInstruction = createInstructionHandler<ResetParams, ResetError, 'signer' | 'board' | 'config' | 'feeCollector' | 'round' | 'roundNext' | 'topMiner' | 'treasury' | 'treasuryTokens' | 'entropyVar' | 'mintAuthority'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [9],
   args: [],
@@ -581,7 +581,7 @@ export type BuryError = OreProgramError;
  * Burns ORE and distributes yield to stakers.
  * Treasury PDA seeds: ["treasury"].
  */
-export const buryInstruction = createInstructionHandler<BuryParams, BuryError>({
+export const buryInstruction = createInstructionHandler<BuryParams, BuryError, 'signer' | 'sender' | 'board' | 'treasury' | 'treasuryOre' | 'stakeTreasury' | 'stakeTreasuryTokens' | 'stakeVesting' | 'oreStakeProgram'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [24],
   args: [
@@ -622,7 +622,7 @@ export type BuybackError = OreProgramError;
  * Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
  * The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
  */
-export const buybackInstruction = createInstructionHandler<BuybackParams, BuybackError>({
+export const buybackInstruction = createInstructionHandler<BuybackParams, BuybackError, 'board' | 'config' | 'treasury' | 'treasuryOre' | 'treasurySol' | 'stakeTreasury' | 'stakeTreasuryOre' | 'stakeVesting' | 'oreStakeProgram'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [13],
   args: [],
@@ -657,7 +657,7 @@ export type WrapError = OreProgramError;
  * Wraps SOL held by the treasury into WSOL for swapping.
  * Treasury PDA seeds: ["treasury"].
  */
-export const wrapInstruction = createInstructionHandler<WrapParams, WrapError>({
+export const wrapInstruction = createInstructionHandler<WrapParams, WrapError, 'config' | 'treasury' | 'treasurySol'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [14],
   args: [
@@ -684,7 +684,7 @@ export type SetAdminError = OreProgramError;
 /**
  * Updates the program admin address.
  */
-export const setAdminInstruction = createInstructionHandler<SetAdminParams, SetAdminError>({
+export const setAdminInstruction = createInstructionHandler<SetAdminParams, SetAdminError, 'signer' | 'config'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [15],
   args: [
@@ -714,7 +714,7 @@ export type NewVarError = OreProgramError;
 /**
  * Creates a new entropy var account through the entropy program.
  */
-export const newVarInstruction = createInstructionHandler<NewVarParams, NewVarError>({
+export const newVarInstruction = createInstructionHandler<NewVarParams, NewVarError, 'signer' | 'board' | 'config' | 'provider' | 'var'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [17],
   args: [
@@ -742,7 +742,7 @@ export const newVarInstruction = createInstructionHandler<NewVarParams, NewVarEr
 export const ORE = {
   name: 'ore',
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:75e99231955dcf07697c59f98519cd93c4df803e1ffbf8c8af98513f75b843ba',
+  sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:ef9ffcad57827ba42287b07574960cc1967a8d9d984a970c01f840143e39743a',
   programSpecHash: 'arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72',
   idlContentHash: 'arete:h1:idl-content:sha256:7a14fb6c2c406d74ac61bf93ff14949da4677a5f6a3d53058e550f1fe86f7bf3',
   normalizedIdlHash: 'arete:h1:idl-normalized:sha256:b16f15a8d4ed1ce44127170eaf2050349573759961c33bd010a4cf59df787157',

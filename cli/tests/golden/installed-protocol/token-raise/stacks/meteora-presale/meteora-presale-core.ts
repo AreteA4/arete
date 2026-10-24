@@ -1425,7 +1425,7 @@ export type OreAutomateError = OreStreamOreProgramError;
  * Automation PDA seeds: ["automation", signer].
  * Miner PDA seeds: ["miner", signer].
  */
-export const oreAutomateInstruction = createInstructionHandler<OreAutomateParams, OreAutomateError>({
+export const oreAutomateInstruction = createInstructionHandler<OreAutomateParams, OreAutomateError, 'signer' | 'automation' | 'executor' | 'miner'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [0],
   args: [
@@ -1464,7 +1464,7 @@ export type OreCheckpointError = OreStreamOreProgramError;
  * Settles miner rewards for a completed round.
  * Treasury PDA seeds: ["treasury"].
  */
-export const oreCheckpointInstruction = createInstructionHandler<OreCheckpointParams, OreCheckpointError>({
+export const oreCheckpointInstruction = createInstructionHandler<OreCheckpointParams, OreCheckpointError, 'signer' | 'authority' | 'automation' | 'board' | 'miner' | 'round' | 'treasury'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [2],
   args: [],
@@ -1492,7 +1492,7 @@ export type OreClaimSolError = OreStreamOreProgramError;
 /**
  * Claims SOL rewards from the miner account.
  */
-export const oreClaimSolInstruction = createInstructionHandler<OreClaimSolParams, OreClaimSolError>({
+export const oreClaimSolInstruction = createInstructionHandler<OreClaimSolParams, OreClaimSolError, 'signer' | 'board' | 'miner'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [3],
   args: [],
@@ -1521,7 +1521,7 @@ export type OreClaimOreError = OreStreamOreProgramError;
 /**
  * Claims ORE token rewards from the treasury vault.
  */
-export const oreClaimOreInstruction = createInstructionHandler<OreClaimOreParams, OreClaimOreError>({
+export const oreClaimOreInstruction = createInstructionHandler<OreClaimOreParams, OreClaimOreError, 'signer' | 'board' | 'miner' | 'recipient' | 'treasury' | 'treasuryTokens'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [4],
   args: [],
@@ -1557,7 +1557,7 @@ export type OreCloseError = OreStreamOreProgramError;
  * Round PDA seeds: ["round", round_id].
  * Treasury PDA seeds: ["treasury"].
  */
-export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreCloseError>({
+export const oreCloseInstruction = createInstructionHandler<OreCloseParams, OreCloseError, 'signer' | 'board' | 'rentPayer' | 'round' | 'treasury'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [5],
   args: [],
@@ -1596,7 +1596,7 @@ export type OreDeployError = OreStreamOreProgramError;
  * Miner PDA seeds: ["miner", authority].
  * Round PDA seeds: ["round", board.round_id].
  */
-export const oreDeployInstruction = createInstructionHandler<OreDeployParams, OreDeployError>({
+export const oreDeployInstruction = createInstructionHandler<OreDeployParams, OreDeployError, 'signer' | 'authority' | 'automation' | 'board' | 'config' | 'miner' | 'round' | 'treasury' | 'entropyVar' | 'entropyProgram'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [6],
   args: [
@@ -1630,7 +1630,7 @@ export type OreLogError = OreStreamOreProgramError;
  * Emits an arbitrary log message from the board PDA.
  * Bytes following the discriminator are logged verbatim.
  */
-export const oreLogInstruction = createInstructionHandler<OreLogParams, OreLogError>({
+export const oreLogInstruction = createInstructionHandler<OreLogParams, OreLogError, 'signer'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [8],
   args: [],
@@ -1662,7 +1662,7 @@ export type OreResetError = OreStreamOreProgramError;
  * Treasury PDA seeds: ["treasury"].
  * Round PDA seeds: ["round", board.round_id] and ["round", board.round_id + 1].
  */
-export const oreResetInstruction = createInstructionHandler<OreResetParams, OreResetError>({
+export const oreResetInstruction = createInstructionHandler<OreResetParams, OreResetError, 'signer' | 'board' | 'config' | 'feeCollector' | 'round' | 'roundNext' | 'topMiner' | 'treasury' | 'treasuryTokens' | 'entropyVar' | 'mintAuthority'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [9],
   args: [],
@@ -1708,7 +1708,7 @@ export type OreBuryError = OreStreamOreProgramError;
  * Burns ORE and distributes yield to stakers.
  * Treasury PDA seeds: ["treasury"].
  */
-export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBuryError>({
+export const oreBuryInstruction = createInstructionHandler<OreBuryParams, OreBuryError, 'signer' | 'sender' | 'board' | 'treasury' | 'treasuryOre' | 'stakeTreasury' | 'stakeTreasuryTokens' | 'stakeVesting' | 'oreStakeProgram'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [24],
   args: [
@@ -1749,7 +1749,7 @@ export type OreBuybackError = OreStreamOreProgramError;
  * Swaps vaulted SOL to ORE through Jupiter, distributes staking yield, and burns the remainder.
  * The 13 declared accounts are followed by Jupiter route accounts, and raw Jupiter instruction data follows the discriminator.
  */
-export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, OreBuybackError>({
+export const oreBuybackInstruction = createInstructionHandler<OreBuybackParams, OreBuybackError, 'board' | 'config' | 'treasury' | 'treasuryOre' | 'treasurySol' | 'stakeTreasury' | 'stakeTreasuryOre' | 'stakeVesting' | 'oreStakeProgram'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [13],
   args: [],
@@ -1784,7 +1784,7 @@ export type OreWrapError = OreStreamOreProgramError;
  * Wraps SOL held by the treasury into WSOL for swapping.
  * Treasury PDA seeds: ["treasury"].
  */
-export const oreWrapInstruction = createInstructionHandler<OreWrapParams, OreWrapError>({
+export const oreWrapInstruction = createInstructionHandler<OreWrapParams, OreWrapError, 'config' | 'treasury' | 'treasurySol'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [14],
   args: [
@@ -1811,7 +1811,7 @@ export type OreSetAdminError = OreStreamOreProgramError;
 /**
  * Updates the program admin address.
  */
-export const oreSetAdminInstruction = createInstructionHandler<OreSetAdminParams, OreSetAdminError>({
+export const oreSetAdminInstruction = createInstructionHandler<OreSetAdminParams, OreSetAdminError, 'signer' | 'config'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [15],
   args: [
@@ -1841,7 +1841,7 @@ export type OreNewVarError = OreStreamOreProgramError;
 /**
  * Creates a new entropy var account through the entropy program.
  */
-export const oreNewVarInstruction = createInstructionHandler<OreNewVarParams, OreNewVarError>({
+export const oreNewVarInstruction = createInstructionHandler<OreNewVarParams, OreNewVarError, 'signer' | 'board' | 'config' | 'provider' | 'var'>({
   programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
   discriminator: [17],
   args: [
@@ -1879,7 +1879,7 @@ export type EntropyOpenError = OreStreamEntropyProgramError;
  * Creates a new entropy var account.
  * Var PDA seeds: ["var", authority, id].
  */
-export const entropyOpenInstruction = createInstructionHandler<EntropyOpenParams, EntropyOpenError>({
+export const entropyOpenInstruction = createInstructionHandler<EntropyOpenParams, EntropyOpenError, 'authority' | 'payer' | 'provider' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [0],
   args: [
@@ -1909,7 +1909,7 @@ export type EntropyCloseError = OreStreamEntropyProgramError;
 /**
  * Closes an entropy var account and returns rent to the authority.
  */
-export const entropyCloseInstruction = createInstructionHandler<EntropyCloseParams, EntropyCloseError>({
+export const entropyCloseInstruction = createInstructionHandler<EntropyCloseParams, EntropyCloseError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [1],
   args: [],
@@ -1933,7 +1933,7 @@ export type EntropyNextError = OreStreamEntropyProgramError;
  * Updates the var for the next random value sample.
  * Resets the commit to the previous seed and clears slot_hash, seed, and value.
  */
-export const entropyNextInstruction = createInstructionHandler<EntropyNextParams, EntropyNextError>({
+export const entropyNextInstruction = createInstructionHandler<EntropyNextParams, EntropyNextError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [2],
   args: [
@@ -1958,7 +1958,7 @@ export type EntropyRevealError = OreStreamEntropyProgramError;
  * Reveals the seed and finalizes the random value.
  * The seed must hash to the commit stored in the var account.
  */
-export const entropyRevealInstruction = createInstructionHandler<EntropyRevealParams, EntropyRevealError>({
+export const entropyRevealInstruction = createInstructionHandler<EntropyRevealParams, EntropyRevealError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [4],
   args: [
@@ -1982,7 +1982,7 @@ export type EntropySampleError = OreStreamEntropyProgramError;
  * Samples the slot hash at the end_at slot.
  * Must be called after the end_at slot has passed.
  */
-export const entropySampleInstruction = createInstructionHandler<EntropySampleParams, EntropySampleError>({
+export const entropySampleInstruction = createInstructionHandler<EntropySampleParams, EntropySampleError, 'signer' | 'var'>({
   programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
   discriminator: [5],
   args: [],
@@ -2115,7 +2115,7 @@ export const ORE_STREAM_STACK_CORE = {
     ore: {
       name: 'ore',
       programId: 'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:3a95deac1d7f17b08aaa8514c2e5c2dc3ea6d32b72fc07f0e645a0a3b252b751',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:a2c9ad5628e7bb92141329dcb0446a9460e8aac72dd2c0a9154e90725b7c488c',
       programSpecHash: 'arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72',
       idlContentHash: 'arete:h1:idl-content:sha256:7a14fb6c2c406d74ac61bf93ff14949da4677a5f6a3d53058e550f1fe86f7bf3',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:b16f15a8d4ed1ce44127170eaf2050349573759961c33bd010a4cf59df787157',
@@ -2286,7 +2286,7 @@ export const ORE_STREAM_STACK_CORE = {
     entropy: {
       name: 'entropy',
       programId: '3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X',
-      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:dd233fc8b7006e21ffbbf588239d0f94e128c02a186a8bb84352b456fc8f31f9',
+      sdkDefinitionHash: 'arete:h1:sdk-definition:sha256:d08f75658b0ba7751b1b30e1fa9b466474ad45b61fb4982113f62fc8e76c92ae',
       programSpecHash: 'arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b',
       idlContentHash: 'arete:h1:idl-content:sha256:2b5b3ed4de83cd3803bd6b82b33cfbea0e8b7c6a7ada7b138fcb57bb2fe1a01f',
       normalizedIdlHash: 'arete:h1:idl-normalized:sha256:adc67e46a2ffc5e26fcff489fa7e21d5aa0d6338243dc23330ab0e85c3e150fc',

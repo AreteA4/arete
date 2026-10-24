@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:674c2cfce4862afbea160e9dae663bb8f70023e8e04ad1f9a1cf3d40e40700a0"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:19ef9e2fe8a02646b76a34a922997242c529b51eab4c8bf9c09808fc8b055260",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:17f9df2733b5224530a2a12b91453c0df37eb6325ae8ec6b94f3464c479a8cd9",
   "extensions": null,
   "artifacts": [
     "vault_stream-core.ts",

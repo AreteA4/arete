@@ -41,6 +41,7 @@ export type { BuiltInstruction } from '../wallet/types';
 export interface InstructionHandler<
   TParams = Record<string, unknown>,
   TError = unknown,
+  TAccountName extends string = string,
 > {
   /** Instruction name, used in error messages. */
   name?: string;
@@ -71,6 +72,12 @@ export interface InstructionHandler<
   readonly _params?: TParams;
   /** Phantom: typed error union. */
   readonly _error?: TError;
+  /**
+   * Phantom: the keys of `TParams` that are accounts rather than arguments.
+   * `string` when the handler does not say, in which case no params key is
+   * treated as an account at the type level.
+   */
+  readonly _accountNames?: TAccountName;
 }
 
 /**
@@ -103,7 +110,8 @@ export interface InstructionHandlerConfig {
 export function createInstructionHandler<
   TParams = Record<string, unknown>,
   TError = unknown,
->(config: InstructionHandlerConfig): InstructionHandler<TParams, TError> {
+  TAccountName extends string = string,
+>(config: InstructionHandlerConfig): InstructionHandler<TParams, TError, TAccountName> {
   const discriminator =
     config.discriminator instanceof Uint8Array
       ? config.discriminator
@@ -220,12 +228,28 @@ export type AcceptedInstructionParams<TParams, TAccountKeys extends PropertyKey 
   >;
 
 /**
- * The account keys of an `options.accounts` map, when they are known
- * literally. A wide `Record<string, string>` names no account in particular.
+ * The params keys a handler declares as accounts (its third type parameter;
+ * generated program modules pass the union of their account params). A
+ * handler that does not declare them has none known, so no params key can be
+ * supplied through `options.accounts` instead: an argument must always be in
+ * params.
  */
-type SuppliedAccountKeys<TAccountKeys extends string> = string extends TAccountKeys
+type HandlerAccountNames<THandler> =
+  THandler extends InstructionHandler<any, any, infer TAccountName>
+    ? string extends TAccountName
+      ? never
+      : TAccountName
+    : never;
+
+/**
+ * The accounts of `THandler` named by an `options.accounts` map, when its keys
+ * are known literally. A wide `Record<string, string>` names no account in
+ * particular, and keys that are not accounts of the handler (arguments
+ * included) are never relaxed.
+ */
+type SuppliedAccountKeys<THandler, TAccountKeys extends string> = string extends TAccountKeys
   ? never
-  : TAccountKeys;
+  : Extract<TAccountKeys, HandlerAccountNames<THandler>>;
 
 /**
  * The params type {@link buildInstruction} checks a call against.
@@ -235,13 +259,13 @@ type SuppliedAccountKeys<TAccountKeys extends string> = string extends TAccountK
  * pass `params as unknown as Record<string, unknown>`. Anything else, object
  * literals included, is checked against the handler's
  * {@link InstructionParams}, with excess-property checks. Option arguments may
- * be omitted, and accounts passed through `options.accounts` (`TAccountKeys`)
- * need not be repeated in params.
+ * be omitted, and accounts of the handler passed through `options.accounts`
+ * (`TAccountKeys`) need not be repeated in params. Arguments stay required.
  */
 export type CheckedInstructionParams<THandler, TParams, TAccountKeys extends string = never> =
   string extends keyof TParams
     ? TParams
-    : AcceptedInstructionParams<InstructionParams<THandler>, SuppliedAccountKeys<TAccountKeys>>;
+    : AcceptedInstructionParams<InstructionParams<THandler>, SuppliedAccountKeys<THandler, TAccountKeys>>;
 
 /**
  * Build options whose `accounts` map is typed by its keys, so accounts given

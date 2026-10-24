@@ -4,7 +4,7 @@
     "kind": "program-spec",
     "hash": "arete:h1:program-spec:sha256:79425ade85e0a9614e3f5b9b43e32db349266dc2edd7e7840a4e17b4621b9e86"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:692e48c64e083add49b62f6952eeb7924450b0771ec9cdc0bcf6bca44d0ec115",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:6b7ffd4812189bd3a89c085e3ce4f3df034197c5d7afae6e2301458de2aa323f",
   "extensions": null,
   "artifacts": [
     "squads-v4-core.ts",

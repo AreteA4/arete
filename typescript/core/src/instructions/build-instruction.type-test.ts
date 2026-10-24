@@ -2,7 +2,7 @@
 //
 // `buildInstruction` checks its params against the handler's params type, the
 // way generated program modules declare it: `createInstructionHandler<Params,
-// Error>({...})`. Wrong, unknown or missing keys are compile errors, while
+// Error, AccountNames>({...})`. Wrong, unknown or missing keys are compile errors, while
 // untyped `Record<string, unknown>` params (as older generated modules pass
 // them) keep compiling.
 
@@ -31,7 +31,7 @@ interface InitializeMint2Params {
   freeze_authority: string | null;
   mint: string;
 }
-const InitializeMint2Instruction = createInstructionHandler<InitializeMint2Params, never>({
+const InitializeMint2Instruction = createInstructionHandler<InitializeMint2Params, never, 'mint'>({
   programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
   discriminator: [20],
   args: [
@@ -48,7 +48,7 @@ interface MintToParams {
   destination: string;
   authority: string;
 }
-const MintToInstruction = createInstructionHandler<MintToParams, never>({
+const MintToInstruction = createInstructionHandler<MintToParams, never, 'mint' | 'destination' | 'authority'>({
   programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
   discriminator: [7],
   args: [{ name: 'amount', type: 'u64' }],
@@ -70,7 +70,7 @@ interface DepositParams {
     poolIndex?: bigint;
   };
 }
-const DepositInstruction = createInstructionHandler<DepositParams, never>({
+const DepositInstruction = createInstructionHandler<DepositParams, never, 'tokenAccount' | 'vault' | 'referrer'>({
   programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
   discriminator: [1, 2, 3, 4, 5, 6, 7, 8],
   args: [{ name: 'maxAmount', type: 'u64' }],
@@ -203,7 +203,7 @@ interface OpaqueArgParams {
   data: unknown;
   owner: string;
 }
-const OpaqueArgInstruction = createInstructionHandler<OpaqueArgParams, never>({
+const OpaqueArgInstruction = createInstructionHandler<OpaqueArgParams, never, 'owner'>({
   programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
   discriminator: [10],
   args: [{ name: 'data', type: 'bytes' }],
@@ -220,7 +220,7 @@ interface CloseParams {
   rentPayer: string;
   round: string;
 }
-const CloseInstruction = createInstructionHandler<CloseParams, never>({
+const CloseInstruction = createInstructionHandler<CloseParams, never, 'signer' | 'board' | 'rentPayer' | 'round'>({
   programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
   discriminator: [5],
   args: [],
@@ -266,3 +266,36 @@ executor.build(CloseInstruction, {}, { accounts: { signer: MINT, rentPayer: MINT
 void executor.execute(InitializeMint2Instruction, { decimals: 6, mint_authority: MINT, mint: MINT });
 // @ts-expect-error `round` is missing
 executor.build(CloseInstruction, {}, { accounts: { signer: MINT, rentPayer: MINT } });
+
+// Only accounts can move to `options.accounts`: arguments are read from params
+// alone, so naming one there leaves it required.
+buildInstruction(
+  InitializeMint2Instruction,
+  // @ts-expect-error `mint_authority` is an arg, not an account
+  { decimals: 6, mint: MINT },
+  { accounts: { mint_authority: MINT } }
+);
+buildInstruction(
+  InitializeMint2Instruction,
+  { decimals: 6, mint_authority: MINT },
+  { accounts: { mint: MINT, mint_authority: MINT } }
+);
+// A handler that does not declare its account names has no params key
+// relaxed by `options.accounts`.
+const UndeclaredAccountsInstruction = createInstructionHandler<MintToParams, never>({
+  programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  discriminator: [7],
+  args: [{ name: 'amount', type: 'u64' }],
+  accounts: [
+    { name: 'mint', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'destination', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'authority', isSigner: true, isWritable: false, category: 'signer', signerKind: 'provided' },
+  ],
+});
+buildInstruction(UndeclaredAccountsInstruction, { amount: 1n, mint: MINT, destination: MINT, authority: MINT });
+buildInstruction(
+  UndeclaredAccountsInstruction,
+  // @ts-expect-error account names are not declared, so `destination` and `authority` stay required
+  { amount: 1n, mint: MINT },
+  { accounts: { destination: MINT, authority: MINT } }
+);
