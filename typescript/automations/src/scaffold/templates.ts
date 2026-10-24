@@ -154,6 +154,8 @@ export interface TargetTemplate {
   /** How to store one secret (`{name}`), and how to deploy. */
   readonly secretCommand: string;
   readonly deployCommand: string;
+  /** Hosts whose secrets reach only later deployments: deploy again after the webhook secret is stored. */
+  readonly redeployForSecrets?: boolean;
   readonly notes: readonly string[];
 }
 
@@ -255,6 +257,7 @@ export const { GET, POST } = toVercel(definition, runtime, { waitUntil });
         webhookUrl: 'https://<project>.vercel.app/api/arete/webhook',
         secretCommand: 'npx vercel env add {name} production',
         deployCommand: 'npx vercel deploy --prod',
+        redeployForSecrets: true,
         notes: [
           'Set ARETE_CLUSTER=mainnet and APP_DOMAIN as environment variables too.',
           'Per-minute crons need a Pro plan; on Hobby the cron runs once a day, so webhooks start jobs but retries and schedules wait for it.',
@@ -296,6 +299,9 @@ CMD ["npx", "tsx", "server.ts"]
             content: `node_modules
 .arete
 .git
+.env
+.env.*
+!.env.example
 `,
           },
         ],

@@ -349,6 +349,7 @@ export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   drain(options?: { maxJobs?: number }): Promise<number>;
   /** Run jobs in the background until `stop()`. */
   start(options?: { pollInterval?: Duration; concurrency?: number }): void;
+  /** Stop the workers and the live sources `use()` started. */
   stop(): Promise<void>;
 }
 
@@ -418,6 +419,8 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   const schedules = new Map<string, ScheduleEvery>();
   // List sources a definition registered for `tick()` to poll.
   const polled = new Map<string, ListSource>();
+  // Live sources a definition started, stopped with the workers.
+  const watched = new Set<SourceHandle>();
   const proofTtlMs = durationMs(options.consent?.proofTtl ?? 600_000);
 
   const report = (error: unknown, context: { jobId?: string; phase: string }) => {
@@ -1686,7 +1689,17 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
               polled.set(source.name, source);
               return { stop: async () => void polled.delete(source.name) };
             }
-          : startSource,
+          : (source, sourceOptions) => {
+              const handle = startSource(source, sourceOptions);
+              const tracked: SourceHandle = {
+                stop: async () => {
+                  watched.delete(tracked);
+                  await handle.stop();
+                },
+              };
+              watched.add(tracked);
+              return tracked;
+            },
         connect: useOptions.connect ?? connectStack,
       };
       await definition.setup(setup);
@@ -1730,7 +1743,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     },
     async stop() {
       running = false;
-      await Promise.all(loops);
+      await Promise.all([...loops, ...[...watched].map((handle) => handle.stop())]);
       loops = [];
     },
   };

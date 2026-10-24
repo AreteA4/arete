@@ -365,7 +365,8 @@ export default defineAutomations(
       return grants.flatMap((grant) => {{
         const amount = grant.params.amount;
         if (grant.instanceId === null || typeof amount !== "string") return [];
-        return [ctx.step("tip", {{ wallet: grant.wallet, instance: grant.instanceId, args: {{ amount }} }}, {{ cooldown: "20h" }})];
+        // The schedule dispatches once per day, so each jar is tipped once a day.
+        return [ctx.step("tip", {{ wallet: grant.wallet, instance: grant.instanceId, args: {{ amount }} }})];
       }});
     }});
 

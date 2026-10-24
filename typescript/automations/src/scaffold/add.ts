@@ -75,6 +75,9 @@ export function add(options: AddOptions): AddResult {
   }
   const entryDir = dirname(entryFile);
   const runtimeFile = entryDir === '.' ? 'runtime.ts' : `${entryDir}/runtime.ts`;
+  if (withoutExtension(entryFile) === withoutExtension(runtimeFile)) {
+    throw new Error(`${entryFile} is where runtime.ts is written: keep the definition in another file (automations/index.ts)`);
+  }
   const input = {
     entry: withoutExtension(entryFile),
     runtime: withoutExtension(runtimeFile),
@@ -113,7 +116,9 @@ export function add(options: AddOptions): AddResult {
     'DATABASE_URL=... npx arete-automations migrate',
     ...secrets.filter((line) => !line.startsWith('a4 protocol webhook')),
     template.deployCommand,
+    // The webhook needs the deployment's address, so its secret is stored after the first deploy.
     ...secrets.filter((line) => line.startsWith('a4 protocol webhook')),
+    ...(template.redeployForSecrets ? [`${template.deployCommand}                 # environment changes reach new deployments only`] : []),
   ];
   return {
     written,

@@ -179,4 +179,24 @@ describe('the Node server', () => {
     }
     expect(r.counts()).toEqual({ built: 1, disposed: 1 });
   });
+
+  it('releases what it built when it cannot start', async () => {
+    const first = runtime();
+    const running = await serve(definition, first.factory, { env, port: 0, hostname: '127.0.0.1', handleSignals: false, tickInterval: '1h' });
+    try {
+      const second = runtime();
+      await expect(
+        serve(definition, second.factory, { env, port: running.port, hostname: '127.0.0.1', handleSignals: false, tickInterval: '1h' }),
+      ).rejects.toThrow(/EADDRINUSE/);
+      expect(second.counts()).toEqual({ built: 1, disposed: 1 });
+
+      const mainnet = runtime();
+      await expect(serve(definition, mainnet.factory, { env: { ...env, ARETE_CLUSTER: 'mainnet' }, port: 0, handleSignals: false })).rejects.toThrow(
+        /a4 install --locked/,
+      );
+      expect(mainnet.counts()).toEqual({ built: 1, disposed: 1 });
+    } finally {
+      await running.close();
+    }
+  });
 });

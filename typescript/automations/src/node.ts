@@ -18,7 +18,7 @@
  * SIGTERM and SIGINT.
  */
 
-import { createServer, type IncomingMessage, type Server } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 
 import { type Automations, createAutomations } from './runtime/automations';
 import type { AutomationsDefinition } from './runtime/define';
@@ -75,20 +75,44 @@ export async function serve(
 ): Promise<RunningServer> {
   const env = options.env ?? (process.env as HostEnv);
   const config = await runtime(env);
-  checkCluster(env, config);
-  const automations = createAutomations(config);
-  await automations.use(definition);
-  automations.start({ concurrency: options.concurrency ?? 2 });
-
-  let ticking: Promise<unknown> = Promise.resolve();
+  let automations: Automations | undefined;
+  const timer: { ticker?: ReturnType<typeof setInterval> } = {};
+  // One tick at a time, so shutdown has a single one to wait for.
+  let ticking: Promise<unknown> | null = null;
   const tickNow = () => {
-    ticking = automations.tick({ poll: false, maxJobs: 0 }).catch((error: unknown) => config.onError?.(error, { phase: 'schedule' }));
+    ticking ??= automations!
+      .tick({ poll: false, maxJobs: 0 })
+      .catch((error: unknown) => config.onError?.(error, { phase: 'schedule' }))
+      .finally(() => (ticking = null));
   };
+  const shutdown = async () => {
+    clearInterval(timer.ticker);
+    await ticking;
+    await automations?.stop();
+    await config.dispose?.();
+  };
+  const server = createServer();
+  try {
+    checkCluster(env, config);
+    automations = createAutomations(config);
+    await automations.use(definition);
+    const port = options.port ?? Number(text(env, 'PORT') ?? 8787);
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(port, options.hostname ?? '0.0.0.0', () => resolve());
+    });
+  } catch (error) {
+    // Nothing started may outlive a failed start: sources, the pool.
+    await shutdown();
+    throw error;
+  }
+  const running = automations;
+  running.start({ concurrency: options.concurrency ?? 2 });
   tickNow();
-  const ticker = setInterval(tickNow, durationMs(options.tickInterval ?? '15s'));
+  timer.ticker = setInterval(tickNow, durationMs(options.tickInterval ?? '15s'));
 
   const maxBody = options.maxBodyBytes ?? 1024 * 1024;
-  const server = createServer(async (req, res) => {
+  server.on('request', async (req: IncomingMessage, res: ServerResponse) => {
     const send = (status: number, body: unknown) => {
       res.writeHead(status, { 'content-type': 'application/json' });
       res.end(JSON.stringify(body));
@@ -98,7 +122,7 @@ export async function serve(
       if (route === 'webhook' && req.method === 'POST') {
         const secret = text(env, 'ARETE_WEBHOOK_SECRET');
         if (!secret) return send(503, { error: 'ARETE_WEBHOOK_SECRET is not set' });
-        const result = await automations.acceptWebhook(await readBody(req, maxBody), req.headers, { secret });
+        const result = await running.acceptWebhook(await readBody(req, maxBody), req.headers, { secret });
         return send(result.status, result.body);
       }
       if (route === 'health' && req.method === 'GET') {
@@ -107,7 +131,7 @@ export async function serve(
       if (route === 'tick' && (req.method === 'GET' || req.method === 'POST')) {
         const secret = text(env, 'CRON_SECRET');
         if (!secret || !sameText(req.headers.authorization ?? '', `Bearer ${secret}`)) return send(secret ? 401 : 503, { error: secret ? 'unauthorized' : 'CRON_SECRET is not set' });
-        return send(200, await automations.tick({ maxJobs: 0 }));
+        return send(200, await running.tick({ maxJobs: 0 }));
       }
       return send(404, { error: 'not-found' });
     } catch (error) {
@@ -117,28 +141,20 @@ export async function serve(
     }
   });
 
-  const port = options.port ?? Number(text(env, 'PORT') ?? 8787);
-  await new Promise<void>((resolve, reject) => {
-    server.once('error', reject);
-    server.listen(port, options.hostname ?? '0.0.0.0', () => resolve());
-  });
   const bound = (server.address() as { port: number }).port;
 
   let closing: Promise<void> | null = null;
   const close = () =>
     (closing ??= (async () => {
-      clearInterval(ticker);
       await new Promise<void>((resolve) => server.close(() => resolve()));
-      await ticking;
-      await automations.stop();
-      await config.dispose?.();
+      await shutdown();
     })());
   if (options.handleSignals ?? true) {
     const stop = () => void close().then(() => process.exit(0));
     process.once('SIGTERM', stop);
     process.once('SIGINT', stop);
   }
-  return { automations, server, port: bound, close };
+  return { automations: running, server, port: bound, close };
 }
 
 export type { RuntimeConfig, RuntimeFactory } from './hosts/host';

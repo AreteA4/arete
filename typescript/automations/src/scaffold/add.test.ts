@@ -68,6 +68,21 @@ describe('arete-automations add', () => {
     expect(errors[0]).toContain('cloudflare, vercel, node');
   });
 
+  it('deploys Vercel again once the webhook secret is stored, and keeps env files out of images', () => {
+    const vercel = add({ root: project(), target: 'vercel' });
+    expect(vercel.next.at(-2)).toMatch(/^a4 protocol webhook add .*npx vercel env add ARETE_WEBHOOK_SECRET production$/);
+    expect(vercel.next.at(-1)).toMatch(/^npx vercel deploy --prod /);
+    const root = project();
+    add({ root, target: 'node' });
+    expect(read(root, '.dockerignore')).toContain('.env\n.env.*\n!.env.example\n');
+  });
+
+  it('refuses an entry where runtime.ts would be written', () => {
+    const root = project('automations/runtime.ts');
+    expect(() => add({ root, target: 'node' })).toThrow(/is where runtime.ts is written/);
+    expect(() => read(root, 'server.ts')).toThrow();
+  });
+
   it('computes import paths between project files', () => {
     expect(importPath('worker.ts', 'automations/index')).toBe('./automations/index');
     expect(importPath('automations/runtime', 'automations/index')).toBe('./index');

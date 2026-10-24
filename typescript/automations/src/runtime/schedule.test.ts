@@ -100,6 +100,16 @@ describe('poll-mode sources', () => {
     expect(await h.automations.tick({ now: MONDAY_NOON, poll: false, maxJobs: 0 })).toMatchObject({ polled: { delivered: 0 } });
   });
 
+  it('stops the live sources a definition started along with the workers', async () => {
+    const h = harness();
+    const { definition: live, view } = definition((rows) => rows.set({ id: 'kamino', apyBps: 500 }));
+    await h.automations.use(live as never);
+    for (let i = 0; i < 100 && view.open === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(view.open).toBe(1);
+    await h.automations.stop();
+    expect(view.open).toBe(0);
+  });
+
   it('refuses an append source, which needs a live subscription', async () => {
     const h = harness();
     const appendOnly = defineAutomations({ name: 'vault', deployment: {} } as never, (automations) => {
