@@ -274,7 +274,7 @@ pub fn status_next(target: &SquadsTarget, status: &Value) -> String {
 }
 
 /// Load a Solana CLI keypair file (a JSON array of 64 bytes).
-fn load_keypair(path: &Path) -> Result<SigningKey> {
+pub(crate) fn load_keypair(path: &Path) -> Result<SigningKey> {
     let bytes: Vec<u8> = serde_json::from_slice(
         &std::fs::read(path).with_context(|| format!("Failed to read {}", path.display()))?,
     )
@@ -405,8 +405,15 @@ pub async fn add_proposer(agent: &ProtocolAgent, args: &AddProposerArgs) -> Resu
         });
     } else {
         result["sent"] = json!(false);
+        let account = if args.target.is_dev() {
+            String::new()
+        } else {
+            format!(
+                " Production deployments need the multisig attached to your account: members with hardware or browser wallets can do all of this at https://app.arete.run/dashboard/squads/{multisig} (or `a4 squads attach {multisig}`)."
+            )
+        };
         result["next"] = json!(format!(
-            "{member} signs and sends this transaction (it pays the fee and the proposal's rent). Then your members approve and execute config proposal {index} in Squads, and `a4 protocol squads status{} --multisig {multisig}` reports ready.",
+            "{member} signs and sends this transaction (it pays the fee and the proposal's rent). Then your members approve and execute config proposal {index} in Squads, and `a4 protocol squads status{} --multisig {multisig}` reports ready.{account}",
             prefixed(&args.target.words())
         ));
     }

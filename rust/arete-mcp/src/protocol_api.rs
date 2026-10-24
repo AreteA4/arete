@@ -533,6 +533,9 @@ impl SquadsRefused {
 impl std::fmt::Display for SquadsRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let code = self.normalized_code();
+        if code == "protocol_squads_setup_required" {
+            return f.write_str(&squads_setup_required_text(&self.body));
+        }
         match squads_refusal_hint(&code) {
             Some(hint) => write!(
                 f,
@@ -543,6 +546,7 @@ impl std::fmt::Display for SquadsRefused {
                 let message = self
                     .body
                     .get("error")
+                    .or_else(|| self.body.get("message"))
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .unwrap_or_else(|| self.body.to_string());
@@ -576,8 +580,51 @@ pub fn squads_refusal_hint(code: &str) -> Option<&'static str> {
         "protocol_squads_not_used" => {
             "This deployment has no step whose authority is a Squads proposer, so it needs no proposer."
         }
+        "squads_multisig_invalid" => {
+            "That account is not a Squads v4 multisig. Pass the multisig account, not one of its vaults."
+        }
+        "protocol_squads_multisig_not_found" => {
+            "This multisig is not attached to your account. Attach it first (squads_attach, `a4 squads attach <multisig>`, or https://app.arete.run/dashboard/squads)."
+        }
+        "protocol_squads_multisig_active" => {
+            "This multisig is active (Arete's proposer is a member), so it cannot be forgotten. Remove the proposer first, then forget it."
+        }
+        "protocol_squads_transaction_modified" => {
+            "The signed transaction is not the one prepared (a wallet may have added instructions). Sign the prepared bytes as they are, or prepare a new transaction."
+        }
         _ => return None,
     })
+}
+
+/// The text of a `protocol-squads-setup-required` refusal (a production
+/// deployment whose Squads multisig is not an active attachment of the
+/// account): the server's message, then the dashboard link and the
+/// commands.
+pub fn squads_setup_required_text(body: &Value) -> String {
+    let details = &body["details"];
+    let message = body
+        .get("message")
+        .or_else(|| body.get("error"))
+        .and_then(Value::as_str)
+        .unwrap_or("A Squads step's multisig is not set up for your account.");
+    let multisig = details["multisig"].as_str();
+    let setup_url = details["setupUrl"]
+        .as_str()
+        .map(str::to_string)
+        .unwrap_or_else(|| arete_sdk::protocol::squads_dashboard_url(multisig));
+    let mut text = format!("{message}\n  Set it up: {setup_url}");
+    if let Some(proposer) = details["proposer"].as_str() {
+        text.push_str(&format!(
+            "\n  Or in the Squads app: Members → Add member → {proposer} → permission Initiate only → approve and execute"
+        ));
+    }
+    if let Some(command) = details["commands"]["addProposer"].as_str() {
+        text.push_str(&format!("\n  Hot wallet: {command} --keypair <file>"));
+    }
+    if let Some(command) = details["commands"]["status"].as_str() {
+        text.push_str(&format!("\n  Check: {command}"));
+    }
+    text
 }
 
 /// Whether an intent state is final.

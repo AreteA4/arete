@@ -154,6 +154,57 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
             json!({ "error": "no receipt", "code": "protocol-receipt-not-found" }),
         );
     }
+    if let Some(route) = path_only.strip_prefix("/api/account/squads") {
+        let proposer = b58(&[61; 32]);
+        let multisig = b58(&[62; 32]);
+        let attachment = |state: &str| {
+            json!({
+                "address": multisig, "label": "Treasury", "state": state,
+                "problem": if state == "active" { Value::Null } else { json!("not_member") },
+                "createdVia": "page", "stateChangedAt": "2026-10-24T00:00:00Z",
+                "createdAt": "2026-10-24T00:00:00Z", "threshold": 2, "members": null,
+                "proposerMask": null, "vault": b58(&[64; 32]),
+                "squadsUrl": "https://app.squads.so/x",
+                "dashboardUrl": format!("https://app.arete.run/dashboard/squads/{multisig}"),
+                "deploymentConfigSnippet": "multisig = \"...\"", "deployments": []
+            })
+        };
+        let prepared = |kind: &str, signer: &Value| {
+            json!({
+                "transactionId": format!("tx-{kind}"), "kind": kind,
+                "transactionBase64": b64(&[1, 2, 3]), "transactionFormat": "v0",
+                "signer": signer, "lastValidBlockHeight": 900, "multisig": multisig,
+                "transactionIndex": 3, "proposal": b58(&[65; 32]), "next": "approve it"
+            })
+        };
+        return match (method, route) {
+            ("GET", "") => (
+                200,
+                json!({
+                    "setup": "needsAttention",
+                    "proposer": { "pubkey": proposer, "permissions": "initiate", "lamports": 5 },
+                    "dashboardUrl": "https://app.arete.run/dashboard/squads",
+                    "multisigs": [attachment("pending")]
+                }),
+            ),
+            ("POST", "/multisigs") => (201, attachment("pending")),
+            ("POST", r) if r.ends_with("/add-proposer") => {
+                (200, prepared("addProposer", &body["member"]))
+            }
+            ("POST", "/multisigs/create") => (200, prepared("createMultisig", &body["creator"])),
+            ("POST", "/transactions") => (
+                200,
+                json!({
+                    "transactionId": body["transactionId"], "signature": "sig-1",
+                    "status": "confirmed", "error": null, "multisig": attachment("active")
+                }),
+            ),
+            _ => (
+                404,
+                json!({ "error": "not attached", "code": "protocol-squads-multisig-not-found" }),
+            ),
+        };
+    }
     if let Some(route) = path_only.strip_prefix("/api/protocol-deployments/d-1/squads/") {
         let proposer = b58(&[61; 32]);
         return match route {
@@ -801,6 +852,10 @@ fn the_execute_tool_is_listed_only_with_a_signer() {
         "protocol_squads_proposer",
         "protocol_squads_status",
         "protocol_squads_add_proposer",
+        "squads_status",
+        "squads_attach",
+        "squads_add_proposer",
+        "squads_submit",
         "dev_actions",
     ] {
         assert!(listed.iter().any(|name| name == tool), "{tool} missing");
@@ -1305,4 +1360,91 @@ fn the_squads_tools_take_a_target_a_multisig_and_a_member() {
         .as_deref()
         .unwrap()
         .contains("Nothing is signed or sent"));
+}
+
+#[tokio::test]
+async fn account_squads_tools_lead_with_the_dashboard_and_never_sign() {
+    let (origin, state) = mock_api();
+    let agent = ProtocolAgent::new(None).with_api(&origin, "a4_sk_test");
+    let multisig = b58(&[62; 32]);
+    let member = b58(&[67; 32]);
+
+    let status = agent.account_squads_status(None).await.unwrap();
+    assert_eq!(status["setup"], "needsAttention");
+    let next = status["next"].as_str().unwrap();
+    assert!(next.contains(&format!(
+        "https://app.arete.run/dashboard/squads/{multisig}"
+    )));
+    assert!(next.contains("Members → Add member"), "{next}");
+
+    let attached = agent
+        .account_squads_attach(&multisig, Some("Treasury"))
+        .await
+        .unwrap();
+    assert_eq!(attached["state"], "pending");
+    assert_eq!(attached["proposer"], b58(&[61; 32]));
+    assert!(attached["squadsAppSteps"].as_array().unwrap().len() >= 4);
+
+    let added = agent
+        .account_squads_add_proposer(&multisig, &member, None)
+        .await
+        .unwrap();
+    assert_eq!(added["transactionId"], "tx-addProposer");
+    assert_eq!(
+        added["dashboardUrl"],
+        format!("https://app.arete.run/dashboard/squads/{multisig}")
+    );
+    let next = added["next"].as_str().unwrap();
+    assert!(
+        next.starts_with("Prefer https://app.arete.run/dashboard/squads/"),
+        "{next}"
+    );
+
+    let sent = agent
+        .account_squads_submit("tx-addProposer", &[9, 9])
+        .await
+        .unwrap();
+    assert_eq!(sent["status"], "confirmed");
+    assert!(sent["next"].as_str().unwrap().contains("Active"));
+
+    let error = agent
+        .account_squads_add_proposer("not-a-key", &member, None)
+        .await
+        .unwrap_err();
+    assert!(error.downcast_ref::<InvalidArgs>().is_some(), "{error}");
+
+    // The key itself is the bearer: no protocol session is minted.
+    let seen = seen(&state);
+    assert!(seen.iter().all(|seen| seen.path != "/ws/sessions"));
+    let submit = seen
+        .iter()
+        .find(|seen| seen.path == "/api/account/squads/transactions")
+        .unwrap();
+    assert_eq!(
+        submit.body,
+        json!({ "transactionId": "tx-addProposer", "signedTransactionBase64": b64(&[9, 9]) })
+    );
+}
+
+#[test]
+fn setup_required_refusals_print_the_dashboard_link() {
+    let refused = crate::protocol_api::SquadsRefused {
+        what: "Creating the deployment".into(),
+        status: 409,
+        code: "protocol-squads-setup-required".into(),
+        body: json!({
+            "code": "protocol-squads-setup-required",
+            "message": "Step 'finalize' proposes to Squads multisig Ms1, which is not set up for your account (not_member).",
+            "details": {
+                "step": "finalize", "multisig": "Ms1", "state": "pending", "problem": "not_member",
+                "proposer": "Prop1", "setupUrl": "https://app.arete.run/dashboard/squads/Ms1",
+                "commands": { "status": "a4 squads status Ms1", "addProposer": "a4 squads add-proposer Ms1 --member <member>" }
+            }
+        }),
+    };
+    let text = refused.to_string();
+    assert!(text.starts_with("Step 'finalize'"), "{text}");
+    assert!(text.contains("Set it up: https://app.arete.run/dashboard/squads/Ms1"));
+    assert!(text.contains("Initiate only"));
+    assert!(text.contains("a4 squads status Ms1"));
 }

@@ -416,6 +416,12 @@ enum Commands {
     #[command(subcommand)]
     Protocol(commands::protocol::ProtocolCommands),
 
+    /// Set up the Squads v4 multisigs your account's protocols propose admin
+    /// steps to (the dashboard does this with any wallet:
+    /// https://app.arete.run/dashboard/squads)
+    #[command(subcommand)]
+    Squads(commands::squads::SquadsCommands),
+
     /// Build commands (advanced) - low-level build management
     #[command(subcommand, hide = true)]
     Build(BuildCommands),
@@ -1198,6 +1204,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Stack(_) => "stack",
         Commands::Program(_) => "program",
         Commands::Protocol(_) => "protocol",
+        Commands::Squads(_) => "squads",
         Commands::Build(_) => "build",
         Commands::Telemetry(_) => "telemetry",
         Commands::Idl(_) => "idl",
@@ -1891,6 +1898,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => commands::programs::promote(&user_program_id, make_idl_public, cli.json),
         },
         Commands::Protocol(command) => commands::protocol::run(command, cli.json),
+        Commands::Squads(command) => commands::squads::run(command, cli.json),
         Commands::Build(build_cmd) => match build_cmd {
             BuildCommands::List { limit, status } => {
                 commands::build::list(limit, status.as_deref(), cli.json)

@@ -1134,5 +1134,8 @@ pub fn has_dev_session(path: &Path) -> bool {
     DevProject::discover(Some(path)).is_ok()
 }
 
+mod account_squads;
+pub use account_squads::{attachment_next, squads_app_steps, status_next as account_squads_next};
+
 #[cfg(test)]
 mod tests;

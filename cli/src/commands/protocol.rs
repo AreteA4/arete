@@ -177,6 +177,10 @@ pub fn run(command: ProtocolCommands, json: bool) -> Result<()> {
 /// `commands.status`), as one line to print.
 fn squads_activation_commands(error: &anyhow::Error) -> Option<String> {
     let api_error = error.downcast_ref::<crate::api_client::ApiClientError>()?;
+    // The account setup refusal already prints its link and commands.
+    if api_error.problem.code.as_deref() == Some(crate::api_client::SQUADS_SETUP_REQUIRED) {
+        return None;
+    }
     let commands = api_error.problem.extra.get("commands")?;
     let add = commands["addProposer"].as_str();
     let status = commands["status"].as_str();

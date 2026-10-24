@@ -142,7 +142,7 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
 | Subscription | `subscribe`, `unsubscribe`, `list_subscriptions` | Per connection |
 | Cache | `get_entity`, `list_entities`, `get_recent`, `query_entities` | Per subscription |
-| Protocols | `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_squads_proposer`, `protocol_squads_status`, `protocol_squads_add_proposer`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
+| Protocols | `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_squads_proposer`, `protocol_squads_status`, `protocol_squads_add_proposer`, `squads_status`, `squads_attach`, `squads_add_proposer`, `squads_submit`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
 | Health | `ping` | None |
 
 ### Discovery
@@ -479,6 +479,16 @@ or a package reference `protocol`; `dev: true` targets the project's dev deploym
   `proposer_unfunded`) with its SOL balance, and the unsigned transaction
   that creates the config proposal adding it, for an existing member with
   Initiate to sign and send. Nothing is signed here.
+- `squads_status({ multisig? })`, `squads_attach({ multisig, label? })`,
+  `squads_add_proposer({ multisig, member, transaction_format? })` and
+  `squads_submit({ transaction_id, signed_transaction_base64 })` — the
+  account's Squads multisigs. A production deployment of a protocol with
+  Squads steps is refused (`protocol-squads-setup-required`) unless its
+  multisig is an `active` attachment. Answers lead with the dashboard
+  (https://app.arete.run/dashboard/squads, any browser wallet, Ledger
+  included) and the Squads-app steps (Members → Add member → the proposer →
+  Initiate only → approve and execute); prepared transactions are for hot
+  wallets. Nothing is signed here.
 - `protocol_execute(...)` — listed only when a signer is configured in the
   `[signer]` table of `~/.arete/mcp.toml` (or the file
   `ARETE_MCP_SIGNER_CONFIG` names): prepares, checks the signer's policy

@@ -14,6 +14,7 @@ pub mod protocol;
 pub mod protocol_bin;
 pub mod public_artifacts;
 pub mod sdk;
+pub mod squads;
 pub mod stack;
 pub mod status;
 pub mod stream;
