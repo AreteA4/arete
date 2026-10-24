@@ -49,12 +49,14 @@ authority: { kind: "role", role: "recipient" },
 ```
 
 An admin step can instead be proposed to a team's Squads v4 multisig. The
+multisig must come from the deployment config (a resource), never from the
+instance or the step's arguments. The
 optional `vaultIndex` (an integer from 0 to 255, default 0) picks which vault
 of that multisig the step acts from, so protocols that share a multisig can
 keep separate vaults.
 
 ```ts
-authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig", vaultIndex: 1 },
+authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig", vaultIndex: 1 },
 ```
 
 **Access** determines which credentials may prepare a wallet step. `public`

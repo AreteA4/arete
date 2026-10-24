@@ -66,7 +66,6 @@ TokenRaiseContributeResult = Union[ProtocolPrepared, ProtocolRejection[Union[Tok
 class TokenRaiseCreateArgs(TypedDict):
     deadline: ProtocolInteger
     hardCap: ProtocolInteger
-    members: List[str]
     quoteMint: str
     softCap: ProtocolInteger
     walletCap: ProtocolInteger
@@ -118,7 +117,7 @@ TOKEN_RAISE_PROTOCOL: ProtocolDefinition = ProtocolDefinition(
     version="1.0.0",
     package="token-raise",
     package_release_hash="arete:h1:package-release:sha256:9999999999999999999999999999999999999999999999999999999999999999",
-    protocol_spec_hash="arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb",
+    protocol_spec_hash="arete:h1:protocol-spec:sha256:7bf6fd4340857bf8c5b381a03b30b07eb42f9e52e5a461a1dd286147dbca08f4",
     protocol_release_hash="arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
     deployment=ProtocolDeployment(
         deployment_id="7d0c5a52-2f8e-4c1b-9a37-1b6f3c2a9e10",
@@ -130,7 +129,7 @@ TOKEN_RAISE_PROTOCOL: ProtocolDefinition = ProtocolDefinition(
     steps={
         "claim": ProtocolStepDefinition(scope="participant", access="public", guards=("raise_not_finalized",), args=()),
         "contribute": ProtocolStepDefinition(scope="participant", access="public", guards=("raise_not_open", "deadline_passed", "wallet_cap_exceeded", "hard_cap_exceeded"), args=("amount",)),
-        "create": ProtocolStepDefinition(scope="create", access="secret", guards=("soft_cap_above_hard_cap",), args=("deadline", "hardCap", "members", "quoteMint", "softCap", "walletCap")),
+        "create": ProtocolStepDefinition(scope="create", access="secret", guards=("soft_cap_above_hard_cap",), args=("deadline", "hardCap", "quoteMint", "softCap", "walletCap")),
         "refund": ProtocolStepDefinition(scope="participant", access="public", guards=("raise_not_failed",), args=()),
     },
     events={

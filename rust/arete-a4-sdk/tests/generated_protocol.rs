@@ -128,7 +128,6 @@ fn generated_names_round_trip() {
     let args = TokenRaiseCreateArgs {
         deadline: 1_790_000_000u64.into(),
         hard_cap: 1_000u64.into(),
-        members: vec!["m".into()],
         quote_mint: "q".into(),
         soft_cap: 10u64.into(),
         wallet_cap: u128::MAX.into(),
@@ -138,7 +137,6 @@ fn generated_names_round_trip() {
         json!({
             "deadline": "1790000000",
             "hardCap": "1000",
-            "members": ["m"],
             "quoteMint": "q",
             "softCap": "10",
             "walletCap": u128::MAX.to_string(),

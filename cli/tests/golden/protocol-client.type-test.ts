@@ -46,7 +46,7 @@ export async function accessIsTyped(): Promise<void> {
     auth: { publishableKey: 'a4_pk_example' },
   });
   // @ts-expect-error `create` is a secret step: a publishable-key client cannot call it.
-  await browser.steps.create.prepare({ wallet: 'wallet', deadline: '1', hardCap: '2', members: [], quoteMint: 'mint', softCap: '1', walletCap: '1' });
+  await browser.steps.create.prepare({ wallet: 'wallet', deadline: '1', hardCap: '2', quoteMint: 'mint', softCap: '1', walletCap: '1' });
   // @ts-expect-error u64 arguments are decimal strings or bigints.
   await browser.steps.contribute.prepare({ instance: 'i', wallet: 'w', amount: 1 });
 
@@ -54,7 +54,7 @@ export async function accessIsTyped(): Promise<void> {
     auth: { secretKey: 'a4_sk_example' },
   });
   await backend.steps.create.prepare(
-    { wallet: 'wallet', deadline: '1', hardCap: '2', members: [], quoteMint: 'mint', softCap: '1', walletCap: '1' },
+    { wallet: 'wallet', deadline: '1', hardCap: '2', quoteMint: 'mint', softCap: '1', walletCap: '1' },
     { transactionFormat: 'v0' },
   );
 }

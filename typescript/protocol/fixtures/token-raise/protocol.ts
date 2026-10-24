@@ -7,6 +7,7 @@ import { defineProtocol } from "@usearete/protocol";
 import { createLaunch } from "./handlers/createLaunch.js";
 
 const presale = "instance.accounts.presale";
+const vault = 'pda("squadsV4", "vault", resources.treasury.multisig, 0)';
 
 export default defineProtocol({
   name: "tokenRaise",
@@ -48,6 +49,15 @@ export default defineProtocol({
         additionalProperties: false,
       },
       description: "Publisher defaults for new launches.",
+    },
+    treasury: {
+      schema: {
+        type: "object",
+        properties: { multisig: { type: "string", format: "pubkey" } },
+        required: ["multisig"],
+        additionalProperties: false,
+      },
+      description: "The team's Squads v4 multisig. Raises are finalised from its vault 0.",
     },
   },
   instanceVisibility: "account",
@@ -105,7 +115,6 @@ export default defineProtocol({
         hardCap: "u64",
         walletCap: "u64",
         quoteMint: "pubkey",
-        members: { type: "array", items: { type: "string", format: "pubkey" }, maxItems: 10 },
       },
       guards: {
         soft_cap_above_hard_cap: {
@@ -113,16 +122,14 @@ export default defineProtocol({
           message: "The soft cap must not exceed the hard cap.",
         },
       },
-      ephemeral: ["mint", "presaleBase", "createKey"],
+      ephemeral: ["mint", "presaleBase"],
       handler: createLaunch,
       export: "createLaunch",
-      programs: ["meteoraPresale", "splToken", "squadsV4", "system"],
+      programs: ["meteoraPresale", "splToken", "system"],
       bind: {
         accounts: {
           mint: "ephemeral.mint",
           presale: 'pda("meteoraPresale", "presale", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)',
-          multisig: 'pda("squadsV4", "multisig", ephemeral.createKey)',
-          vault: 'pda("squadsV4", "vault", pda("squadsV4", "multisig", ephemeral.createKey), 0)',
         },
       },
     },
@@ -155,14 +162,14 @@ export default defineProtocol({
     finalize: {
       scope: "instance",
       title: "Finalise through Squads",
-      authority: { kind: "squadsProposer", multisig: "instance.accounts.multisig" },
+      authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig" },
       guards: { raise_not_succeeded: 'instance.state == "succeeded"' },
       transitions: [{ from: ["succeeded"], to: "awaiting_approval" }],
       build: [
         {
           program: "meteoraPresale",
           ix: "creator_withdraw",
-          accounts: { presale, owner: "instance.accounts.vault" },
+          accounts: { presale, owner: vault },
         },
       ],
     },

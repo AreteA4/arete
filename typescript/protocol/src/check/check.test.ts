@@ -57,6 +57,50 @@ describe("expression reference check", () => {
     ]);
   });
 
+  it("requires a Squads step's multisig to come from a resource", () => {
+    const spec = load("token-raise.protocol-spec.json") as ProtocolSpecV1;
+    const finalize = spec.steps.finalize!;
+    if (finalize.authority.kind !== "squadsProposer") throw new Error("finalize is a Squads step");
+    const findings = (multisig: string) => {
+      if (finalize.authority.kind === "squadsProposer") finalize.authority.multisig = multisig;
+      return checkSpecExpressions(spec);
+    };
+    expect(findings("resources.treasury.multisig")).toEqual([]);
+    expect(findings("instance.accounts.multisig")).toEqual([
+      {
+        code: "squads-multisig-not-from-resources",
+        path: "/steps/finalize/authority/multisig",
+        offset: 0,
+        length: 26,
+        message:
+          "a Squads step's multisig must come from the deployment config: declare it as a resource and read it with resources.<name>, not 'instance.accounts.multisig'",
+      },
+    ]);
+    expect(findings('if(params.softCap > 0, resources.treasury.multisig, wallet)').map((f) => [f.code, f.offset])).toEqual([
+      ["squads-multisig-not-from-resources", 3],
+      ["squads-multisig-not-from-resources", 52],
+    ]);
+    expect(findings("resources.tresury.multisig")).toEqual([
+      {
+        code: "unknown-reference",
+        path: "/steps/finalize/authority/multisig",
+        offset: 0,
+        length: 26,
+        message: "resource 'tresury' is not declared here",
+      },
+    ]);
+    expect(findings('"SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"')[0]?.code).toBe("squads-multisig-not-from-resources");
+    expect(findings("resources")).toEqual([
+      {
+        code: "unknown-reference",
+        path: "/steps/finalize/authority/multisig",
+        offset: 0,
+        length: 9,
+        message: "name a resource: resources.<name>",
+      },
+    ]);
+  });
+
   it("checks remaining account expressions like account expressions", () => {
     const spec = load("token-raise.protocol-spec.json") as ProtocolSpecV1;
     const finalize = spec.steps.finalize!.build;

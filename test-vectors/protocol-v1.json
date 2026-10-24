@@ -14,7 +14,7 @@
         "createdAt": 1760000000,
         "deployment": {
           "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
-          "releaseHash": "arete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415",
+          "releaseHash": "arete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511",
           "revision": 1
         },
         "executionId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
@@ -77,7 +77,7 @@
         "createdAt": 1760000000,
         "deployment": {
           "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
-          "releaseHash": "arete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415",
+          "releaseHash": "arete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511",
           "revision": 1
         },
         "executionId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
@@ -142,7 +142,7 @@
         "attestationPubkey": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
         "deployment": {
           "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
-          "releaseHash": "arete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415",
+          "releaseHash": "arete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511",
           "revision": 1,
           "shortId": "raise1"
         },
@@ -154,16 +154,16 @@
           "platform": "5000000"
         },
         "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
-        "intentHash": "arete:h1:execution-intent:sha256:624c67ad3c5970b075c3e4bfad2e48f1d27e3ddf86b97a6f6573293a332cf2eb",
+        "intentHash": "arete:h1:execution-intent:sha256:8daa49c7f1cd4098949715bccaf3be57681f3b8cb2500e0a9c9e489e478b892f",
         "issuedAt": 1760000100,
         "messageSha256": "6666666666666666666666666666666666666666666666666666666666666666",
-        "reviewHash": "arete:h1:protocol-release-review:sha256:b96474b6dfaaea519791846d128ca50840df725bb5ad50ac2891caec9db96e16",
+        "reviewHash": "arete:h1:protocol-release-review:sha256:c83629ee085ca938e7fad16e2f8c15ce70291076e8b2884308557e3f2ac7a4c2",
         "schema": "arete.protocol-execution-receipt/v1",
         "signature": "5VERv8NMvzbJMEkV8xnrLkEaWRtSz9CosKDYjCJjBRnbJLgp8uirBgmQpjKhoR4tjF3ZpRzrFmBV6UjKdiSZkQUW",
         "signatures": [
           {
             "keyId": "test-receipt-1",
-            "signature": "tQ62XdFgWgtEvF89uU02T3cWMwuTA1VTDMxMi/6XLl5SeMQWja+UUAa9NXb7NfyI83j2irt1TNsahqIGocu0Cg=="
+            "signature": "CktrG4jK8CV6NbhKgx35jUOSM7AdU5h7CUcZ6992vyriBvUhTIF0KIpwh39Vp2AJSxQFVlPqAp9nB3ioQm20Dg=="
           }
         ],
         "slot": "312000123",
@@ -859,6 +859,22 @@
               ],
               "type": "object"
             }
+          },
+          "treasury": {
+            "description": "The team's Squads v4 multisig. Raises are finalised from its vault 0.",
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "multisig": {
+                  "format": "pubkey",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "multisig"
+              ],
+              "type": "object"
+            }
           }
         },
         "roles": {},
@@ -1043,14 +1059,6 @@
                   "format": "u64",
                   "type": "string"
                 },
-                "members": {
-                  "items": {
-                    "format": "pubkey",
-                    "type": "string"
-                  },
-                  "maxItems": 10,
-                  "type": "array"
-                },
                 "quoteMint": {
                   "format": "pubkey",
                   "type": "string"
@@ -1067,7 +1075,6 @@
               "required": [
                 "deadline",
                 "hardCap",
-                "members",
                 "quoteMint",
                 "softCap",
                 "walletCap"
@@ -1080,9 +1087,7 @@
             "bind": {
               "accounts": {
                 "mint": "ephemeral.mint",
-                "multisig": "pda(\"squadsV4\", \"multisig\", ephemeral.createKey)",
-                "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)",
-                "vault": "pda(\"squadsV4\", \"vault\", pda(\"squadsV4\", \"multisig\", ephemeral.createKey), 0)"
+                "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)"
               },
               "roles": {}
             },
@@ -1092,14 +1097,12 @@
               "programs": [
                 "meteoraPresale",
                 "splToken",
-                "squadsV4",
                 "system"
               ]
             },
             "ephemeral": [
               "mint",
-              "presaleBase",
-              "createKey"
+              "presaleBase"
             ],
             "fee": {
               "kind": "none"
@@ -1129,13 +1132,13 @@
             },
             "authority": {
               "kind": "squadsProposer",
-              "multisig": "instance.accounts.multisig"
+              "multisig": "resources.treasury.multisig"
             },
             "build": {
               "instructions": [
                 {
                   "accounts": {
-                    "owner": "instance.accounts.vault",
+                    "owner": "pda(\"squadsV4\", \"vault\", resources.treasury.multisig, 0)",
                     "presale": "instance.accounts.presale"
                   },
                   "args": {},
@@ -1250,8 +1253,8 @@
         "lockfileSha256": "2222222222222222222222222222222222222222222222222222222222222222",
         "outputs": {
           "handlerBundleHash": "arete:h1:protocol-handler-bundle:sha256:3b17d6d7cc96ea2bb6d77d8bf25c83b93eb53ce5441f4ca8df26855221c200d7",
-          "releaseHash": "arete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415",
-          "specHash": "arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb",
+          "releaseHash": "arete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511",
+          "specHash": "arete:h1:protocol-spec:sha256:7bf6fd4340857bf8c5b381a03b30b07eb42f9e52e5a461a1dd286147dbca08f4",
           "stackSourceHash": "arete:h1:protocol-stack-source:sha256:940e7372114af0c64e0c37bbc82efbbcda4ac2f9875a185f115c3222fd138294"
         },
         "schema": "arete.protocol-build-receipt/v1",
@@ -1286,7 +1289,7 @@
         "handlerBundleHash": "arete:h1:protocol-handler-bundle:sha256:3b17d6d7cc96ea2bb6d77d8bf25c83b93eb53ce5441f4ca8df26855221c200d7",
         "protocol": "tokenRaise",
         "schema": "arete.protocol-release/v1",
-        "specHash": "arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb",
+        "specHash": "arete:h1:protocol-spec:sha256:7bf6fd4340857bf8c5b381a03b30b07eb42f9e52e5a461a1dd286147dbca08f4",
         "stackSourceHash": "arete:h1:protocol-stack-source:sha256:940e7372114af0c64e0c37bbc82efbbcda4ac2f9875a185f115c3222fd138294",
         "version": "1.0.0"
       },
@@ -1571,6 +1574,22 @@
               ],
               "type": "object"
             }
+          },
+          "treasury": {
+            "description": "The team's Squads v4 multisig. Raises are finalised from its vault 0.",
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "multisig": {
+                  "format": "pubkey",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "multisig"
+              ],
+              "type": "object"
+            }
           }
         },
         "roles": {},
@@ -1755,14 +1774,6 @@
                   "format": "u64",
                   "type": "string"
                 },
-                "members": {
-                  "items": {
-                    "format": "pubkey",
-                    "type": "string"
-                  },
-                  "maxItems": 10,
-                  "type": "array"
-                },
                 "quoteMint": {
                   "format": "pubkey",
                   "type": "string"
@@ -1779,7 +1790,6 @@
               "required": [
                 "deadline",
                 "hardCap",
-                "members",
                 "quoteMint",
                 "softCap",
                 "walletCap"
@@ -1792,9 +1802,7 @@
             "bind": {
               "accounts": {
                 "mint": "ephemeral.mint",
-                "multisig": "pda(\"squadsV4\", \"multisig\", ephemeral.createKey)",
-                "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)",
-                "vault": "pda(\"squadsV4\", \"vault\", pda(\"squadsV4\", \"multisig\", ephemeral.createKey), 0)"
+                "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)"
               },
               "roles": {}
             },
@@ -1804,14 +1812,12 @@
               "programs": [
                 "meteoraPresale",
                 "splToken",
-                "squadsV4",
                 "system"
               ]
             },
             "ephemeral": [
               "mint",
-              "presaleBase",
-              "createKey"
+              "presaleBase"
             ],
             "fee": {
               "kind": "none"
@@ -1841,13 +1847,13 @@
             },
             "authority": {
               "kind": "squadsProposer",
-              "multisig": "instance.accounts.multisig"
+              "multisig": "resources.treasury.multisig"
             },
             "build": {
               "instructions": [
                 {
                   "accounts": {
-                    "owner": "instance.accounts.vault",
+                    "owner": "pda(\"squadsV4\", \"vault\", resources.treasury.multisig, 0)",
                     "presale": "instance.accounts.presale"
                   },
                   "args": {},
@@ -1954,10 +1960,10 @@
     },
     "tokenRaiseReview": {
       "document": {
-        "releaseHash": "arete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415",
+        "releaseHash": "arete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511",
         "reviewKeyId": "test-review-1",
         "schema": "arete.protocol-release-review/v1",
-        "signature": "PYV4w7iuQnsABr+OA8PFC3SoVhvDCqSbWdsubpgU2snD9OMKtxUMR+njpZNigaWkbXEroSBMdqQ0iSpjF/TcAQ==",
+        "signature": "CxL/LESRp+D/J+rrn/RXTMbWZni8qS8ytIGCBNmu1HhyGoz9teXV9Q3ifZ3tB3sPTbgoZKX/J63dwSr0V5DqCA==",
         "trustTier": "reviewed"
       },
       "kind": "protocol-release-review"
@@ -2256,6 +2262,22 @@
               ],
               "type": "object"
             }
+          },
+          "treasury": {
+            "description": "The team's Squads v4 multisig. Raises are finalised from its vault 0.",
+            "schema": {
+              "additionalProperties": false,
+              "properties": {
+                "multisig": {
+                  "format": "pubkey",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "multisig"
+              ],
+              "type": "object"
+            }
           }
         },
         "roles": {},
@@ -2440,14 +2462,6 @@
                   "format": "u64",
                   "type": "string"
                 },
-                "members": {
-                  "items": {
-                    "format": "pubkey",
-                    "type": "string"
-                  },
-                  "maxItems": 10,
-                  "type": "array"
-                },
                 "quoteMint": {
                   "format": "pubkey",
                   "type": "string"
@@ -2464,7 +2478,6 @@
               "required": [
                 "deadline",
                 "hardCap",
-                "members",
                 "quoteMint",
                 "softCap",
                 "walletCap"
@@ -2477,9 +2490,7 @@
             "bind": {
               "accounts": {
                 "mint": "ephemeral.mint",
-                "multisig": "pda(\"squadsV4\", \"multisig\", ephemeral.createKey)",
-                "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)",
-                "vault": "pda(\"squadsV4\", \"vault\", pda(\"squadsV4\", \"multisig\", ephemeral.createKey), 0)"
+                "presale": "pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint)"
               },
               "roles": {}
             },
@@ -2489,14 +2500,12 @@
               "programs": [
                 "meteoraPresale",
                 "splToken",
-                "squadsV4",
                 "system"
               ]
             },
             "ephemeral": [
               "mint",
-              "presaleBase",
-              "createKey"
+              "presaleBase"
             ],
             "fee": {
               "kind": "none"
@@ -2526,14 +2535,14 @@
             },
             "authority": {
               "kind": "squadsProposer",
-              "multisig": "instance.accounts.multisig",
+              "multisig": "resources.treasury.multisig",
               "vaultIndex": 3
             },
             "build": {
               "instructions": [
                 {
                   "accounts": {
-                    "owner": "instance.accounts.vault",
+                    "owner": "pda(\"squadsV4\", \"vault\", resources.treasury.multisig, 0)",
                     "presale": "instance.accounts.presale"
                   },
                   "args": {},
@@ -2631,12 +2640,12 @@
         "attestationPubkey": "presSVxnf9UU8jMxhgSMqaRwNiT36qeBdNeTRKjTdbj",
         "deployment": {
           "deploymentId": "6f1c2b9a-1d3e-4f5a-8b7c-9d0e1f2a3b4c",
-          "releaseHash": "arete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415",
+          "releaseHash": "arete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511",
           "revision": 2,
           "shortId": "raise1"
         },
         "instanceId": "2d4f6a8c-0e1f-4a2b-9c3d-5e6f7a8b9c0d",
-        "intentHash": "arete:h1:execution-intent:sha256:624c67ad3c5970b075c3e4bfad2e48f1d27e3ddf86b97a6f6573293a332cf2eb",
+        "intentHash": "arete:h1:execution-intent:sha256:8daa49c7f1cd4098949715bccaf3be57681f3b8cb2500e0a9c9e489e478b892f",
         "issuedAt": 1760000100,
         "messageSha256": "6666666666666666666666666666666666666666666666666666666666666666",
         "participantId": "0b7d8f8e-5d0c-4a59-9a43-7a7f1d4e2c10",
@@ -2645,7 +2654,7 @@
         "signatures": [
           {
             "keyId": "test-receipt-1",
-            "signature": "BLQcOB7GJKI1IX7lDiAZQ1iJv1245f8iTb7LwKUHJObxIFZTgyDZiwYqNaslQoLpOGv+WV4DTXehNbwF9zD0Bw=="
+            "signature": "eGM5G4aHwaMWqw5ZQMqJUxdHqW0tQ8697DvRzIOib9X4lTHUGNGzj67pyVcZijjz6NQRKpOqRVZmM+KfCYS3DQ=="
           }
         ],
         "slot": "312000123",
@@ -4517,26 +4526,26 @@
       "publicKeyBase58": "GmaDrppBC7P5ARKV8g3djiwP89vz1jLK23V2GBjuAEGB",
       "review": "tokenRaiseReview",
       "reviewKeyId": "test-review-1",
-      "signingMessageUtf8": "arete.protocol-release-review/v1\ntest-review-1\nreviewed\narete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415"
+      "signingMessageUtf8": "arete.protocol-release-review/v1\ntest-review-1\nreviewed\narete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511"
     }
   ],
   "schema": "arete.protocol-test-vectors/v1",
   "validVectors": [
     {
       "document": "tokenRaise",
-      "hash": "arete:h1:protocol-spec:sha256:cf233c5f9ea3f93cc63d356093bf019e7d96d92741b7cfa59ebdcf2546fb04eb",
+      "hash": "arete:h1:protocol-spec:sha256:7bf6fd4340857bf8c5b381a03b30b07eb42f9e52e5a461a1dd286147dbca08f4",
       "kind": "protocol-spec",
       "name": "tokenRaise"
     },
     {
       "document": "tokenRaiseRemainingAccounts",
-      "hash": "arete:h1:protocol-spec:sha256:5a45b4b43847753efd58340466afa50b68db18824c2ff993e907296a53e87b12",
+      "hash": "arete:h1:protocol-spec:sha256:c45f03777090a72b49e55896a0f953a6ef4cc8d397bffbe3817cf8124ffc1405",
       "kind": "protocol-spec",
       "name": "tokenRaiseRemainingAccounts"
     },
     {
       "document": "tokenRaiseVaultIndex",
-      "hash": "arete:h1:protocol-spec:sha256:65eef2aac26e22469aa86e055d5ed1687105e23155d28cb360ff787369ea8950",
+      "hash": "arete:h1:protocol-spec:sha256:79dd01fcb66736430bf58f3e6980e5ccbf0b0b6eab2deb94082acf15f14b9881",
       "kind": "protocol-spec",
       "name": "tokenRaiseVaultIndex"
     },
@@ -4554,13 +4563,13 @@
     },
     {
       "document": "tokenRaiseRelease",
-      "hash": "arete:h1:protocol-release:sha256:e5c473e34f2ca27c8adabbec188f80411f0e1f2dab739895b1f7af49d9b97415",
+      "hash": "arete:h1:protocol-release:sha256:ce04bdf9ee7f117e522412a0435f8702e1a07ff51a4e0a4248d7b7f97f7dd511",
       "kind": "protocol-release",
       "name": "tokenRaiseRelease"
     },
     {
       "document": "tokenRaiseReview",
-      "hash": "arete:h1:protocol-release-review:sha256:b96474b6dfaaea519791846d128ca50840df725bb5ad50ac2891caec9db96e16",
+      "hash": "arete:h1:protocol-release-review:sha256:c83629ee085ca938e7fad16e2f8c15ce70291076e8b2884308557e3f2ac7a4c2",
       "kind": "protocol-release-review",
       "name": "tokenRaiseReview"
     },
@@ -4584,13 +4593,13 @@
     },
     {
       "document": "contributeIntent",
-      "hash": "arete:h1:execution-intent:sha256:624c67ad3c5970b075c3e4bfad2e48f1d27e3ddf86b97a6f6573293a332cf2eb",
+      "hash": "arete:h1:execution-intent:sha256:8daa49c7f1cd4098949715bccaf3be57681f3b8cb2500e0a9c9e489e478b892f",
       "kind": "execution-intent",
       "name": "contributeIntent"
     },
     {
       "document": "contributeIntentCapped",
-      "hash": "arete:h1:execution-intent:sha256:2dbe101cd26422fe5fafb2e5b951164d3fe57be3fc793de1b0925613688f36d7",
+      "hash": "arete:h1:execution-intent:sha256:e8efc5d65c4976bd4b57b97b425308329536205206e7f09b8ebfa9d3e1ef18e3",
       "kind": "execution-intent",
       "name": "contributeIntentCapped"
     },
