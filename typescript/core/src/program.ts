@@ -45,10 +45,61 @@ export {
 } from './stack-extensions';
 export type { ProgramOperationContext } from './stack-extensions';
 
-export { instructionOperation } from './program-instructions';
-export { createPreparedInstruction } from './operations';
+export {
+  createPublicKeySeed,
+  createSeed,
+  decodeBase58,
+  encodeBase58,
+  findProgramAddressSync,
+} from './instructions';
+export type { ResolvedAccount } from './instructions';
+
+export {
+  flowOperation,
+  instructionOperation,
+  transactionOperation,
+} from './program-instructions';
+export {
+  appendFlowTransactions,
+  appendTransactionInstructions,
+  createPreparedFlow,
+  createPreparedInstruction,
+  createPreparedTransaction,
+  createPreparedTransactionBody,
+  prependFlowTransactionInstructions,
+  prependTransactionInstructions,
+} from './operations';
+export type {
+  CreatePreparedFlowInput,
+  CreatePreparedInstructionInput,
+  CreatePreparedTransactionInput,
+  PreparedFlow,
+  PreparedInstruction,
+  PreparedOperation,
+  PreparedTransaction,
+  PreparedTransactionBody,
+} from './operations';
 export { withProgramIdentity, withProgramRead } from './program-sdk';
 export type { ProgramSdkIdentity } from './program-sdk';
-export { programAccountRead } from './read';
-export { resolveAmountToRaw, toRawAmount } from './amounts';
+export { ReadRequestError, programAccountRead } from './read';
+export {
+  formatRawToUi,
+  getMintDecimals,
+  parseUiAmountToRaw,
+  resolveAmountToRaw,
+  toRawAmount,
+} from './amounts';
 export type { AmountInput } from './amounts';
+export {
+  ASSOCIATED_TOKEN_PROGRAM_ADDRESS,
+  SPL_TOKEN_PROGRAM_ADDRESS,
+  SYSTEM_PROGRAM_ADDRESS,
+  TOKEN_2022_PROGRAM_ADDRESS,
+  deriveAssociatedTokenAccount,
+  resolveTokenProgramAddress,
+} from './spl';
+
+// Types only: an extension annotates reads and program surfaces with them.
+// The values behind them (chain and client) stay out of this entry.
+export type { ChainClient, RawAccountInfo } from './chain';
+export type { ProgramInterface, TypedAccountReader } from './client';

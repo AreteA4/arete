@@ -1,6 +1,7 @@
-import { withProgramIdentity, withProgramRead } from '@usearete/sdk/program';
+import { extendProgram, withProgramIdentity, withProgramRead } from '@usearete/sdk/program';
 
 import { VOTE_PROGRAM as VOTE_PROGRAM_CORE, VOTE_PROGRAM_READ as VOTE_PROGRAM_READ_CORE, VOTE_PROGRAM_INSTRUCTION_SHAPES } from './vote-core.js';
+import programExtensions from './vote-extensions.js';
 
 export * from './vote-core.js';
 export { VOTE_PROGRAM as VOTE_PROGRAM_CORE } from './vote-core.js';
@@ -14,7 +15,7 @@ export const VOTE_PROGRAM_INSTALL = {
 
 export const VOTE_PROGRAM = Object.assign(
   withProgramIdentity(
-    withProgramRead(VOTE_PROGRAM_CORE, VOTE_PROGRAM_READ_CORE),
+    withProgramRead(extendProgram(VOTE_PROGRAM_CORE, programExtensions), VOTE_PROGRAM_READ_CORE),
     { packageReleaseHash: 'arete:registry-package-release:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc' },
   ),
   { programInstall: VOTE_PROGRAM_INSTALL, instructionShapes: VOTE_PROGRAM_INSTRUCTION_SHAPES },
