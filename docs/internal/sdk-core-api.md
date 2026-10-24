@@ -282,7 +282,8 @@ Layered, lowest to highest; every layer is present in every SDK:
    (`u8…u128, i8…i128, f32/f64, bool, string, pubkey, bytes, vec, option, array,
    hashMap, struct, enum`). **Fail closed**: unknown param or missing non-option arg is
    an error. TS checks `params` against the handler's `Params` type at compile time
-   and, at run time, reports every missing arg/account and unknown key in one
+   (option args may be omitted; accounts passed in `options.accounts` need not be
+   repeated in `params`) and, at run time, reports every missing arg/account and unknown key in one
    `InstructionParamsError` (with case/underscore suggestions). Result: `BuiltInstruction { program_id, accounts: AccountMeta[], data }`.
    Escape hatch: the underlying `InstructionHandler`
    (programId + discriminator + account metas + arg schemas + error metadata) is

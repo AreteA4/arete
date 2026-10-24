@@ -186,3 +186,83 @@ const executor = createInstructionExecutor(wallet);
 executor.build(MintToInstruction, { amount: 1n, mint: MINT, destination: MINT, authority: MINT });
 // @ts-expect-error `destination` is missing
 executor.build(MintToInstruction, { amount: 1n, mint: MINT, authority: MINT });
+
+// --- Option args may be omitted; they encode as `None`. ---
+buildInstruction(InitializeMint2Instruction, { decimals: 6, mint_authority: MINT, mint: MINT });
+// @ts-expect-error `mint_authority` is required even when the option arg is omitted
+buildInstruction(InitializeMint2Instruction, { decimals: 6, mint: MINT });
+buildInstruction(InitializeMint2Instruction, {
+  decimals: 6,
+  mint_authority: MINT,
+  // @ts-expect-error option args take the inner type or null
+  freeze_authority: 1,
+  mint: MINT,
+});
+// An `unknown` typed arg is not mistaken for an option.
+interface OpaqueArgParams {
+  data: unknown;
+  owner: string;
+}
+const OpaqueArgInstruction = createInstructionHandler<OpaqueArgParams, never>({
+  programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  discriminator: [10],
+  args: [{ name: 'data', type: 'bytes' }],
+  accounts: [{ name: 'owner', isSigner: false, isWritable: false, category: 'userProvided' }],
+});
+// @ts-expect-error `data` is missing
+buildInstruction(OpaqueArgInstruction, { owner: MINT });
+
+// --- Accounts passed through `options.accounts` need not be in params. ---
+// Shaped like a generated Ore `close`: accounts only, no args.
+interface CloseParams {
+  signer: string;
+  board?: string;
+  rentPayer: string;
+  round: string;
+}
+const CloseInstruction = createInstructionHandler<CloseParams, never>({
+  programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  discriminator: [5],
+  args: [],
+  accounts: [
+    { name: 'signer', isSigner: true, isWritable: true, category: 'signer', signerKind: 'provided' },
+    {
+      name: 'board',
+      isSigner: false,
+      isWritable: true,
+      category: 'pda',
+      pdaConfig: { seeds: [{ type: 'literal', value: 'board' }] },
+    },
+    { name: 'rentPayer', isSigner: false, isWritable: true, category: 'userProvided' },
+    { name: 'round', isSigner: false, isWritable: true, category: 'userProvided' },
+  ],
+});
+buildInstruction(CloseInstruction, {}, { accounts: { signer: MINT, rentPayer: MINT, round: MINT } });
+buildInstruction(CloseInstruction, { signer: MINT }, { accounts: { rentPayer: MINT, round: MINT } });
+// @ts-expect-error `round` is neither in params nor in options.accounts
+buildInstruction(CloseInstruction, {}, { accounts: { signer: MINT, rentPayer: MINT } });
+buildInstruction(
+  CloseInstruction,
+  // @ts-expect-error unknown keys are still rejected when accounts come from options
+  { rent_payer: MINT },
+  { accounts: { signer: MINT, rentPayer: MINT, round: MINT } }
+);
+buildInstruction(MintToInstruction, { amount: 1n }, {
+  accounts: { mint: MINT, destination: MINT, authority: MINT },
+});
+// @ts-expect-error `amount` is an arg and still required
+buildInstruction(MintToInstruction, {}, { accounts: { mint: MINT, destination: MINT, authority: MINT } });
+// A wide accounts map names no account in particular, so params stay checked.
+declare const accountMap: Record<string, string>;
+// @ts-expect-error `destination` and `authority` are missing from params
+buildInstruction(MintToInstruction, { amount: 1n, mint: MINT }, { accounts: accountMap });
+void executeInstruction(CloseInstruction, {}, {
+  wallet,
+  accounts: { signer: MINT, rentPayer: MINT, round: MINT },
+});
+// @ts-expect-error `round` is missing
+void executeInstruction(CloseInstruction, {}, { wallet, accounts: { signer: MINT, rentPayer: MINT } });
+executor.build(CloseInstruction, {}, { accounts: { signer: MINT, rentPayer: MINT, round: MINT } });
+void executor.execute(InitializeMint2Instruction, { decimals: 6, mint_authority: MINT, mint: MINT });
+// @ts-expect-error `round` is missing
+executor.build(CloseInstruction, {}, { accounts: { signer: MINT, rentPayer: MINT } });
