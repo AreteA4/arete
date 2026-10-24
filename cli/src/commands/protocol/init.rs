@@ -42,7 +42,7 @@ use crate::project::manifest::InstallTarget;
 use crate::project::runtime::{lockstep_version, ZOD_RANGE};
 
 /// The `@usearete/protocol` range a new project depends on.
-pub const PROTOCOL_PACKAGE_RANGE: &str = "^0.2.2"; // x-release-please-version
+pub const PROTOCOL_PACKAGE_RANGE: &str = "^0.3.0"; // x-release-please-version
 
 /// The `tsx` range: `a4 dev up` runs the TypeScript automations with it.
 const TSX_RANGE: &str = "^4.19.0";

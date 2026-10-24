@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.45.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.44.3...arete-automations-v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **automations:** scaffold automations with protocol init and add host adapters ([81a09c5](https://github.com/AreteA4/arete/commit/81a09c540312f69b46edb21e447d6f7041f30432))
+* **automations:** scaffold automations with protocol init and add host adapters ([ba38557](https://github.com/AreteA4/arete/commit/ba38557ffe0737843d965f8644229bd82c2a75f7))
+
+
+### Bug Fixes
+
+* **automations:** address review on host adapters and scaffold ([b4304b4](https://github.com/AreteA4/arete/commit/b4304b4604226971d23603e2a4bc645a33007664))
+* **automations:** check a participant step's availability on the participant ([1b85c76](https://github.com/AreteA4/arete/commit/1b85c76fdae30ecf9d2f187ddde5abbdecf6f003))
+* **automations:** check a participant step's availability on the participant ([037eb8a](https://github.com/AreteA4/arete/commit/037eb8a0b4ec8e7f651fc77daa0a63033582d47e))
+* **automations:** disconnect a definition's stacks on stop; add @types/pg to host scaffolds ([2d291ce](https://github.com/AreteA4/arete/commit/2d291cebf8fbe35d3ebaa56e918218b81af5d7b1))
+* **automations:** report the startup error when cleanup also fails; format docs ([eb23903](https://github.com/AreteA4/arete/commit/eb23903fc7134b8df370c9f8f7e18515d50a7207))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.44.3 to ^0.45.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.44.3 to ^0.45.0
+
 ## [0.44.3](https://github.com/AreteA4/arete/compare/arete-automations-v0.44.2...arete-automations-v0.44.3) (2026-10-23)
 
 

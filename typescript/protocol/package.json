@@ -1,6 +1,6 @@
 {
   "name": "@usearete/protocol",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "type": "module",
   "description": "Arete Protocols: contracts, the handler ABI, defineProtocol and the arete-protocol compiler",
   "main": "./dist/index.cjs",

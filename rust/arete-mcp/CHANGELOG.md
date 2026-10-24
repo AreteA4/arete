@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.45.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.44.3...arete-mcp-v0.45.0) (2026-10-24)
+
+
+### Features
+
+* **cli,mcp:** bring-your-own Squads multisig onboarding ([ab5be0f](https://github.com/AreteA4/arete/commit/ab5be0f88a012da3d5d963447af5a86ae0a2482f))
+* **cli,mcp:** bring-your-own Squads multisig onboarding ([41dd7a2](https://github.com/AreteA4/arete/commit/41dd7a21c005d13529e00b67885ab34b6ef17fcb))
+
 ## [0.44.3](https://github.com/AreteA4/arete/compare/arete-mcp-v0.44.2...arete-mcp-v0.44.3) (2026-10-23)
 
 
