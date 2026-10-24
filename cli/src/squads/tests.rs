@@ -1,7 +1,7 @@
 use base64::Engine as _;
 use serde_json::Value;
 
-use super::tx::compile_legacy;
+use super::tx::{compile_legacy, compile_v0, LookupTable};
 use super::*;
 
 fn vectors() -> Value {
@@ -393,4 +393,83 @@ fn compute_budget_and_lookup_tables() {
         vec![[3; 32], [4; 32]]
     );
     assert!(lookup_table_addresses(&[0; 57]).is_err());
+}
+
+#[test]
+fn large_vault_execute_fits_through_lookup_tables() {
+    let multisig = [1u8; 32];
+    let member = [2u8; 32];
+    let table_key = [3u8; 32];
+    let program = [4u8; 32];
+    // 40 accounts loaded from one table: 1,280 bytes of addresses alone.
+    let addresses: Vec<Key> = (0..40u8).map(|index| [100 + index; 32]).collect();
+    let transaction = VaultTransaction {
+        multisig,
+        creator: member,
+        index: 7,
+        vault_index: 0,
+        ephemeral_signer_bumps: Vec::new(),
+        message: VaultMessage {
+            num_signers: 1,
+            num_writable_signers: 1,
+            num_writable_non_signers: 0,
+            account_keys: vec![vault_pda(&multisig, 0), program],
+            instructions: vec![CompiledInstruction {
+                program_id_index: 1,
+                account_indexes: (0..42).collect(),
+                data: vec![1],
+            }],
+            address_table_lookups: vec![TableLookup {
+                account_key: table_key,
+                writable_indexes: (0..20).collect(),
+                readonly_indexes: (20..40).collect(),
+            }],
+        },
+    };
+    let transaction_key = transaction_pda(&multisig, 7);
+    let remaining = vault_execute_accounts(
+        &transaction_key,
+        &transaction,
+        std::slice::from_ref(&addresses),
+    )
+    .unwrap();
+    let instructions = [
+        compute_unit_limit(400_000),
+        vault_transaction_execute(&multisig, &member, 7, remaining),
+    ];
+    let blockhash = [9u8; 32];
+    assert!(compile_legacy(&member, &instructions, &blockhash).is_err());
+
+    let tables = [LookupTable {
+        key: table_key,
+        addresses: addresses.clone(),
+    }];
+    let wire = compile_v0(&member, &instructions, &blockhash, &tables).unwrap();
+    assert!(wire.len() <= super::tx::MAX_TRANSACTION_BYTES);
+    let decoded = arete_mcp::prepared_summary::decode_transaction(&wire).unwrap();
+    assert_eq!(decoded.version, Some(0));
+    assert_eq!(decoded.required_signatures, 1);
+    assert_eq!(decoded.lookups.len(), 1);
+    assert_eq!(decoded.lookups[0].table, b58(&table_key));
+    assert_eq!(decoded.lookups[0].writable, (0..20).collect::<Vec<u8>>());
+    assert_eq!(decoded.lookups[0].readonly, (20..40).collect::<Vec<u8>>());
+    // Loaded accounts are never static; the table and programs stay static.
+    for address in &addresses {
+        assert!(!decoded.static_keys.contains(&b58(address)));
+    }
+    assert!(decoded.static_keys.contains(&b58(&table_key)));
+    // The execute instruction's accounts resolve to the same keys in order:
+    // static keys, then writable loads, then read-only loads.
+    let order: Vec<String> = decoded
+        .static_keys
+        .iter()
+        .cloned()
+        .chain(addresses.iter().map(b58))
+        .collect();
+    let execute = &decoded.instructions[1];
+    let expected = &instructions[1].accounts;
+    assert_eq!(execute.accounts.len(), expected.len());
+    for (index, meta) in execute.accounts.iter().zip(expected) {
+        assert_eq!(order[*index], b58(&meta.key));
+    }
 }

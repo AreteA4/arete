@@ -469,6 +469,25 @@ fn an_unfunded_proposer_is_reported_with_the_servers_balance_and_minimum() {
         ..SquadsTarget::default()
     };
     assert!(status_next(&dev, &result).contains(&format!("`a4 dev fund {PROPOSER}`")));
+    // A named project carries into the follow-up commands.
+    let project = SquadsTarget {
+        project: Some("../payout".into()),
+        ..SquadsTarget::default()
+    };
+    assert!(status_next(&project, &result)
+        .contains(&format!("`a4 dev fund --project ../payout {PROPOSER}`")));
+    let next = dev_config_next(&project, MULTISIG, &json!(2), "alice");
+    assert!(next.contains(&format!(
+        "`a4 dev squads approve --project ../payout --multisig {MULTISIG} --index 2 --wallet alice`"
+    )));
+    assert!(next.contains(&format!(
+        "`a4 dev squads execute --project ../payout --multisig {MULTISIG} --index 2 --wallet alice`"
+    )));
+    assert!(
+        dev_config_next(&dev, MULTISIG, &json!(2), "alice").contains(&format!(
+            "`a4 dev squads approve --multisig {MULTISIG} --index 2"
+        ))
+    );
     // Enough SOL by the server's minimum is fine even below the default.
     let mut funded = result.clone();
     funded["proposerLamports"] = json!(5_000_000u64);

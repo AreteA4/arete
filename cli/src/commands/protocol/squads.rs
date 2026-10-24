@@ -82,6 +82,15 @@ impl SquadsTarget {
         words.join(" ")
     }
 
+    /// ` --project DIR` when a project was named, for follow-up `a4 dev`
+    /// commands; empty otherwise.
+    fn project_flag(&self) -> String {
+        self.project
+            .as_deref()
+            .map(|project| format!(" --project {project}"))
+            .unwrap_or_default()
+    }
+
     fn dev_client(&self) -> Result<DevClient> {
         DevProject::discover(self.project.as_deref().map(Path::new)).and_then(DevClient::open)
     }
@@ -243,7 +252,8 @@ pub fn status_next(target: &SquadsTarget, status: &Value) -> String {
                 .unwrap_or_default();
             if target.is_dev() {
                 format!(
-                    "The proposer is a member but cannot pay for a proposal{needs}. Fund it with `a4 dev fund {proposer}`."
+                    "The proposer is a member but cannot pay for a proposal{needs}. Fund it with `a4 dev fund{} {proposer}`.",
+                    target.project_flag()
                 )
             } else {
                 format!(
@@ -386,10 +396,7 @@ pub async fn add_proposer(agent: &ProtocolAgent, args: &AddProposerArgs) -> Resu
         result["sent"] = json!(true);
         result["signature"] = json!(signature);
         result["next"] = json!(if dev.is_some() {
-            let wallet = args.member.trim();
-            format!(
-                "Config proposal {index} is open. Approve it with enough members (`a4 dev squads approve --multisig {multisig} --index {index} --wallet {wallet}`), then execute it (`a4 dev squads execute --multisig {multisig} --index {index} --wallet {wallet}`)."
-            )
+            dev_config_next(&args.target, &multisig, &index, args.member.trim())
         } else {
             format!(
                 "Config proposal {index} is open. Your members approve and execute it in Squads; then `a4 protocol squads status{} --multisig {multisig}` reports ready.",
@@ -404,6 +411,19 @@ pub async fn add_proposer(agent: &ProtocolAgent, args: &AddProposerArgs) -> Resu
         ));
     }
     Ok(result)
+}
+
+/// What to run after sending an add-proposer transaction with a dev wallet.
+pub fn dev_config_next(
+    target: &SquadsTarget,
+    multisig: &str,
+    index: &Value,
+    wallet: &str,
+) -> String {
+    let project = target.project_flag();
+    format!(
+        "Config proposal {index} is open. Approve it with enough members (`a4 dev squads approve{project} --multisig {multisig} --index {index} --wallet {wallet}`), then execute it (`a4 dev squads execute{project} --multisig {multisig} --index {index} --wallet {wallet}`)."
+    )
 }
 
 fn prefixed(words: &str) -> String {

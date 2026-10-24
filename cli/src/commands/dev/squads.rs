@@ -18,7 +18,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::{json, Value};
 
 use super::ProjectArgs;
-use crate::squads::tx::{compile_legacy, Chain};
+use crate::squads::tx::{compile_legacy, compile_v0, Chain, LookupTable};
 use crate::squads::{self as v4, b58, parse_key, Instruction, Key, ProposalStatus};
 
 /// Compute units for executing a vault transaction (the stored
@@ -147,16 +147,22 @@ async fn member(client: &DevClient, value: &str) -> Result<(Option<String>, Key)
     Ok((Some(value.to_string()), wallet.pubkey_bytes()))
 }
 
-/// Compile `instructions` paid by `payer`, sign with it and `extra`, send
-/// through the dev environment and wait for confirmation.
+/// Compile `instructions` paid by `payer` (a v0 transaction loading from
+/// `tables` when there are any), sign with it and `extra`, send through the
+/// dev environment and wait for confirmation.
 async fn send(
     chain: &Chain<'_>,
     payer: &DevWallet,
     instructions: &[Instruction],
     extra: &[&SigningKey],
+    tables: &[LookupTable],
 ) -> Result<String> {
     let blockhash = chain.latest_blockhash().await?;
-    let mut transaction = compile_legacy(&payer.pubkey_bytes(), instructions, &blockhash)?;
+    let mut transaction = if tables.is_empty() {
+        compile_legacy(&payer.pubkey_bytes(), instructions, &blockhash)?
+    } else {
+        compile_v0(&payer.pubkey_bytes(), instructions, &blockhash, tables)?
+    };
     transaction = payer.sign_transaction(&transaction)?;
     for key in extra {
         transaction = arete_mcp::dev::sign_transaction(&transaction, key)?;
@@ -243,7 +249,7 @@ async fn create(client: &DevClient, chain: &Chain<'_>, args: &CreateArgs) -> Res
         members: &keyed,
         time_lock: 0,
     });
-    let signature = send(chain, &payer, &[instruction], &[&create_key]).await?;
+    let signature = send(chain, &payer, &[instruction], &[&create_key], &[]).await?;
     let multisig = v4::multisig_pda(&create_key_bytes);
     let vault = v4::vault_pda(&multisig, 0);
     Ok(json!({
@@ -349,7 +355,7 @@ async fn approve(client: &DevClient, chain: &Chain<'_>, args: &ProposalArgs) -> 
         &wallet.pubkey_bytes(),
         args.index,
     ));
-    let signature = send(chain, &wallet, &instructions, &[]).await?;
+    let signature = send(chain, &wallet, &instructions, &[], &[]).await?;
     let after = proposal_account(chain, &multisig, args.index)
         .await?
         .ok_or_else(|| anyhow!("The proposal disappeared after the vote"))?;
@@ -413,13 +419,14 @@ async fn execute(
     let is_vault = data.starts_with(&v4::account_discriminator("VaultTransaction"));
     let is_config = data.starts_with(&v4::account_discriminator("ConfigTransaction"));
     let member = wallet.pubkey_bytes();
-    let (instructions, details) = match (vault, is_vault, is_config) {
+    let (instructions, details, lookup_tables) = match (vault, is_vault, is_config) {
         (false, _, true) => {
             let config = v4::ConfigTransaction::decode(&data)?;
             let actions: Vec<String> = config.actions.iter().map(|a| a.describe()).collect();
             (
                 vec![v4::config_transaction_execute(&multisig, &member, args.index)],
                 json!({ "kind": "config", "actions": actions }),
+                Vec::new(),
             )
         }
         (true, true, _) => {
@@ -435,6 +442,18 @@ async fn execute(
                 tables.push(v4::lookup_table_addresses(&table)?);
             }
             let remaining = v4::vault_execute_accounts(&transaction_key, &transaction, &tables)?;
+            // The outer transaction loads the proposal's accounts through the
+            // same tables, or a large proposal would not fit.
+            let lookup_tables: Vec<LookupTable> = transaction
+                .message
+                .address_table_lookups
+                .iter()
+                .zip(tables)
+                .map(|(lookup, addresses)| LookupTable {
+                    key: lookup.account_key,
+                    addresses,
+                })
+                .collect();
             (
                 vec![
                     v4::compute_unit_limit(VAULT_EXECUTE_UNITS),
@@ -445,6 +464,7 @@ async fn execute(
                     "vault": b58(&v4::vault_pda(&multisig, transaction.vault_index)),
                     "instructions": transaction.message.instructions.len(),
                 }),
+                lookup_tables,
             )
         }
         (false, true, _) => bail!(
@@ -460,7 +480,7 @@ async fn execute(
             args.index
         ),
     };
-    let signature = send(chain, &wallet, &instructions, &[]).await?;
+    let signature = send(chain, &wallet, &instructions, &[], &lookup_tables).await?;
     let mut result = json!({
         "multisig": args.multisig,
         "index": args.index,

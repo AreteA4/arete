@@ -1,4 +1,4 @@
-//! Legacy transactions for the Squads helpers, and the JSON-RPC calls that
+//! Legacy and v0 transactions for the Squads helpers, and the JSON-RPC calls that
 //! read accounts and send and confirm them.
 
 use std::time::{Duration, Instant};
@@ -79,6 +79,13 @@ fn compact_u16(out: &mut Vec<u8>, value: usize) {
     }
 }
 
+/// An address lookup table a v0 transaction may load accounts from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LookupTable {
+    pub key: Key,
+    pub addresses: Vec<Key>,
+}
+
 /// An unsigned legacy wire transaction (zeroed signature slots) paid by
 /// `payer`. Accounts are ordered writable signers (payer first), read-only
 /// signers, writable non-signers, read-only non-signers, each in first-use
@@ -87,6 +94,30 @@ pub fn compile_legacy(
     payer: &Key,
     instructions: &[Instruction],
     blockhash: &Key,
+) -> Result<Vec<u8>> {
+    compile(payer, instructions, blockhash, None)
+}
+
+/// An unsigned v0 wire transaction paid by `payer` that loads every
+/// non-signer account it can from `tables` (invoked programs stay static).
+/// The static accounts are ordered as in [`compile_legacy`].
+pub fn compile_v0(
+    payer: &Key,
+    instructions: &[Instruction],
+    blockhash: &Key,
+    tables: &[LookupTable],
+) -> Result<Vec<u8>> {
+    compile(payer, instructions, blockhash, Some(tables))
+}
+
+/// The (address index, key) pairs a transaction loads from one table.
+type Loads = Vec<(u8, Key)>;
+
+fn compile(
+    payer: &Key,
+    instructions: &[Instruction],
+    blockhash: &Key,
+    tables: Option<&[LookupTable]>,
 ) -> Result<Vec<u8>> {
     let mut keys: Vec<Meta> = vec![Meta::writable_signer(*payer)];
     let mut add = |meta: Meta| match keys.iter_mut().find(|known| known.key == meta.key) {
@@ -110,6 +141,34 @@ pub fn compile_legacy(
     };
     // A stable sort keeps the payer first and first-use order within groups.
     keys.sort_by_key(rank);
+    let versioned = tables.is_some();
+    let tables = tables.unwrap_or_default();
+    // Per table: the (address index, key) pairs loaded writable and read-only.
+    let mut loaded: Vec<(Loads, Loads)> = vec![Default::default(); tables.len()];
+    keys.retain(|meta| {
+        if meta.signer
+            || instructions
+                .iter()
+                .any(|instruction| instruction.program == meta.key)
+        {
+            return true;
+        }
+        for (table, found) in tables.iter().zip(loaded.iter_mut()) {
+            if let Some(index) = table.addresses.iter().position(|key| *key == meta.key) {
+                let Ok(index) = u8::try_from(index) else {
+                    continue;
+                };
+                let side = if meta.writable {
+                    &mut found.0
+                } else {
+                    &mut found.1
+                };
+                side.push((index, meta.key));
+                return false;
+            }
+        }
+        true
+    });
     let signers = keys.iter().filter(|meta| meta.signer).count();
     let readonly_signed = keys
         .iter()
@@ -119,19 +178,40 @@ pub fn compile_legacy(
         .iter()
         .filter(|meta| !meta.signer && !meta.writable)
         .count();
-    if keys.len() > u8::MAX as usize {
+    // Account indexes: static keys, then every table's writable loads, then
+    // every table's read-only loads.
+    let order: Vec<Key> = keys
+        .iter()
+        .map(|meta| meta.key)
+        .chain(
+            loaded
+                .iter()
+                .flat_map(|(writable, _)| writable.iter().map(|(_, key)| *key)),
+        )
+        .chain(
+            loaded
+                .iter()
+                .flat_map(|(_, readonly)| readonly.iter().map(|(_, key)| *key)),
+        )
+        .collect();
+    if order.len() > u8::MAX as usize {
         bail!("the transaction names more than 255 accounts");
     }
     let index_of = |key: &Key| -> u8 {
-        keys.iter()
-            .position(|meta| meta.key == *key)
+        order
+            .iter()
+            .position(|known| known == key)
             .expect("every account was added") as u8
     };
-    let mut message = vec![
+    let mut message = Vec::new();
+    if versioned {
+        message.push(0x80);
+    }
+    message.extend_from_slice(&[
         signers as u8,
         readonly_signed as u8,
         readonly_unsigned as u8,
-    ];
+    ]);
     compact_u16(&mut message, keys.len());
     for meta in &keys {
         message.extend_from_slice(&meta.key);
@@ -146,6 +226,21 @@ pub fn compile_legacy(
         }
         compact_u16(&mut message, instruction.data.len());
         message.extend_from_slice(&instruction.data);
+    }
+    if versioned {
+        let used: Vec<_> = tables
+            .iter()
+            .zip(&loaded)
+            .filter(|(_, (writable, readonly))| !writable.is_empty() || !readonly.is_empty())
+            .collect();
+        compact_u16(&mut message, used.len());
+        for (table, (writable, readonly)) in used {
+            message.extend_from_slice(&table.key);
+            compact_u16(&mut message, writable.len());
+            message.extend(writable.iter().map(|(index, _)| *index));
+            compact_u16(&mut message, readonly.len());
+            message.extend(readonly.iter().map(|(index, _)| *index));
+        }
     }
     let mut transaction = Vec::with_capacity(1 + 64 * signers + message.len());
     compact_u16(&mut transaction, signers);
