@@ -50,17 +50,19 @@ fn string_field(body: &Value, field: &str, what: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("{what} returned no {field}: {body}"))
 }
 
-/// The message of an API error body (`{error, code}`), with its code.
+/// The message of an API error body (`{error, code, errors?}`), with its
+/// code and one line per entry of `errors`.
 fn api_message(body: &Value) -> String {
     let message = body["error"]
         .as_str()
         .or(body["message"].as_str())
         .map(str::to_string)
         .unwrap_or_else(|| body.to_string());
-    match body["code"].as_str() {
+    let message = match body["code"].as_str() {
         Some(code) => format!("{message} ({code})"),
         None => message,
-    }
+    };
+    message + &crate::api_client::problem_error_lines(body.get("errors"))
 }
 
 impl DevApi {
@@ -352,4 +354,29 @@ pub fn env_stack(stack: &Value) -> Option<EnvStack> {
         ws_url: stack["websocketUrl"].as_str()?.to_string(),
         deployment_id: stack["deploymentId"].as_i64()?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::api_message;
+    use serde_json::json;
+
+    #[test]
+    fn api_messages_list_the_body_errors() {
+        let body = json!({
+            "error": "The spec's expressions do not type-check",
+            "code": "protocol-spec-check-failed",
+            "errors": [{
+                "code": "squads-multisig-not-from-resources",
+                "message": "declare it as a resource",
+                "path": "/steps/pay/authority/multisig"
+            }]
+        });
+        assert_eq!(
+            api_message(&body),
+            "The spec's expressions do not type-check (protocol-spec-check-failed)\n  \
+             - /steps/pay/authority/multisig: declare it as a resource (squads-multisig-not-from-resources)"
+        );
+        assert_eq!(api_message(&json!({ "error": "nope" })), "nope");
+    }
 }
