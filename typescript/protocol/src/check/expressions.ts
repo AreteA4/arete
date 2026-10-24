@@ -341,8 +341,12 @@ function checkSquadsMultisig(source: string, resources: ReadonlySet<string>, pat
       message: `a Squads step's multisig must come from the deployment config: declare it as a resource and read it with resources.<name>, not '${token.text}'`,
     });
   });
+  // Out-of-scope roots get the Squads finding above instead; every problem
+  // under `resources` (including a bare `resources`) keeps its own.
   const inScope = checkExpression(source, scope, path).filter(
-    (finding) => finding.code !== "unknown-reference" || source.startsWith("resources.", finding.offset),
+    (finding) =>
+      finding.code !== "unknown-reference" ||
+      source.slice(finding.offset, finding.offset + finding.length).split(".")[0] === "resources",
   );
   const findings = [...inScope, ...outside].sort((a, b) => a.offset - b.offset);
   if (findings.length === 0 && !readsResource) {

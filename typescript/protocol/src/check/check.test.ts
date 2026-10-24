@@ -90,6 +90,15 @@ describe("expression reference check", () => {
       },
     ]);
     expect(findings('"SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf"')[0]?.code).toBe("squads-multisig-not-from-resources");
+    expect(findings("resources")).toEqual([
+      {
+        code: "unknown-reference",
+        path: "/steps/finalize/authority/multisig",
+        offset: 0,
+        length: 9,
+        message: "name a resource: resources.<name>",
+      },
+    ]);
   });
 
   it("checks remaining account expressions like account expressions", () => {
