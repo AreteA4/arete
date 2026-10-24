@@ -85,8 +85,17 @@ signer, store and secrets:
 // automations.ts
 export default defineAutomations(TOKEN_RAISE_PROTOCOL, (automations) => {
   automations.on('raise.failed', async (event, ctx) => { /* ... */ });
+  automations.schedule('dailySweep', { every: 'day' });              // once per UTC day
+  automations.on('dailySweep', async (trigger, ctx) => { /* ... */ });
 }, { policy: { programs: [RAISE_PROGRAM_ID], maxSolPerTransaction: '0.001' } });
 ```
+
+A schedule runs once per slot of `every` (`minute` … `month`, or an interval
+such as `15m`), at the first `tick()` inside it. The library has no timer:
+`a4 dev up` ticks on the dev environment's clock (so `a4 dev warp` moves
+schedules), the Node adapter ticks itself, and serverless hosts tick from
+their cron. `tick()` also polls a definition's list sources registered with
+`use(definition, { sources: 'poll' })`, then runs jobs.
 
 `[dev.automations] entry = "automations.ts"` in the protocol project's
 arete.toml makes `a4 dev up` run it (`arete-automations dev`) against the
@@ -96,6 +105,29 @@ webhook deliveries. It restarts when the handlers or the generated client
 change. In production, `await automations.use(definition)` registers the same
 handlers on a runtime you configure, with
 `definePolicy({ ...definition.policy, deployments, clusters })`.
+
+## Deploying
+
+`npx arete-automations add <cloudflare|vercel|node>` writes `runtime.ts`
+beside the definition (the production client, signer, Postgres store and
+policy, from the host's environment) and a thin host entry over an adapter:
+
+```ts
+// worker.ts (Cloudflare Workers: fetch + cron trigger)
+export default toWorker(definition, runtime);                     // @usearete/automations/cloudflare
+
+// api/arete/[route].ts (Vercel Functions + vercel.json cron)
+export const { GET, POST } = toVercel(definition, runtime, { waitUntil }); // @usearete/automations/vercel
+
+// server.ts (any Node host: workers, schedules and live sources in-process)
+await serve(definition, runtime);                                  // @usearete/automations/node
+```
+
+Each serves `POST …/webhook`, `GET|POST …/tick` (behind `CRON_SECRET`) and
+`GET …/health`, and refuses to start when `ARETE_CLUSTER` and the bundled
+client's cluster disagree. `npx arete-automations migrate` applies the store's
+migrations to `DATABASE_URL`; `npx arete-automations manifest` prints the
+events, schedules and sources a definition registers.
 
 ## Consent
 

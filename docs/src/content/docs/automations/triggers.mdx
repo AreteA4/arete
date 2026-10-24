@@ -101,9 +101,37 @@ database outage does not lose it.
 
 ## Schedules
 
-The library has no scheduler of its own, so it runs anywhere, including
-serverless platforms. Your scheduler (Vercel cron, Workers cron triggers, a
-Kubernetes CronJob) dispatches a trigger:
+Declare a schedule in the definition and handle it like any trigger:
+
+```ts
+export default defineAutomations(PROTOCOL, (automations) => {
+  automations.schedule("weeklyBuy", { every: "week" });
+  automations.on("weeklyBuy", async (trigger, ctx) => {
+    // trigger: { schedule: "weeklyBuy", slot: "weeklyBuy:2026-W43", at }
+    const grants = await ctx.consents.list({ step: "buy" });
+    return grants.map((grant) => ctx.step("buy", { wallet: grant.wallet, args: { amount: grant.params.amount } }));
+  });
+});
+```
+
+`every` is a calendar period (`minute`, `hour`, `day`, `week` or `month`, in
+UTC) or an interval such as `15m` or `6h`. A schedule runs once per slot of
+that period, at the first tick inside it. Ticks come from wherever the
+automations run:
+
+- **`a4 dev up`** ticks every few seconds on the dev environment's clock, so
+  `a4 dev warp +7d` runs a weekly schedule.
+- **A long-running server** (`@usearete/automations/node`) ticks itself.
+- **A serverless host** ticks from its cron (a Workers cron trigger, a Vercel
+  cron) through the adapter's tick route, or by calling
+  `automations.tick()` yourself.
+
+A slot is accepted once, so a cron that fires twice in one week, or several
+replicas ticking at once, still runs the buys once. For each user's own day,
+schedule daily and filter on their settings, as in the fan-out example above.
+
+Without a definition, dispatch the trigger from your own scheduler with an
+id that names the slot:
 
 ```ts
 import { scheduleSlot } from "@usearete/automations";
@@ -111,11 +139,6 @@ import { scheduleSlot } from "@usearete/automations";
 await automations.dispatch("weeklyBuy", {}, { id: scheduleSlot("weekly-buy", "week") });
 // → id "weekly-buy:2026-W43"
 ```
-
-`dispatch` accepts an id once, and `scheduleSlot` gives the same id for the
-same period (`minute`, `hour`, `day`, `week` or `month`, in UTC). A cron that
-fires twice in one week still runs the buys once. For each user's own day,
-dispatch daily and filter on their settings, as in the fan-out example above.
 
 ## Live data
 
@@ -170,8 +193,12 @@ while before it counts, so one bad update (an oracle blip, a briefly
 mispriced market) does not fire. Put hysteresis, such as a minimum edge, in
 `derive`.
 
-On a serverless platform, poll from your scheduler instead of keeping a
-subscription open. Polling sees the same changes, but only at each poll:
+On a serverless platform, poll instead of keeping a subscription open.
+`automations.use(definition, { sources: "poll" })` registers the
+definition's list sources for `tick()`, which polls them on every cron run;
+the host adapters do this for you. Polling sees the same changes, but only at
+each poll. Append sources need a live subscription, so they run on a
+long-running server. A source outside a definition can be polled directly:
 
 ```ts
 export async function GET() {

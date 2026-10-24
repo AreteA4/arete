@@ -4,6 +4,7 @@ import type {
   ProtocolDefinition,
   ProtocolEventsOptions,
   ProtocolEventSubscription,
+  ProtocolInstanceDetail,
   ProtocolIntentState,
   ProtocolParticipantDetail,
   ProtocolPrepareOptions,
@@ -38,7 +39,15 @@ import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/v
 import { type AppendSource, type AppendTrigger, evaluateSignal, type ListSource, type ViewSource } from '../sources/view';
 import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
 import { type AutomationsDefinition, type AutomationsSetup, connectStack, type StackConnector } from './define';
-import { type Clock, type Duration, durationMs, systemClock } from './time';
+import {
+  checkScheduleEvery,
+  type Clock,
+  type Duration,
+  durationMs,
+  type ScheduleEvery,
+  scheduleSlotFor,
+  systemClock,
+} from './time';
 import {
   type Delivery,
   type DeliveryJob,
@@ -61,8 +70,14 @@ export interface AutomationClient<TTypes extends ProtocolTypeMap = ProtocolTypeM
   submit(intent: ExecutionIntentV1 | string, signedTransactions: readonly (string | Uint8Array)[]): Promise<ProtocolIntentState>;
   readonly intents: { get(executionId: string): Promise<ProtocolIntentState> };
   events?(instanceId: string, options: ProtocolEventsOptions<TTypes>): ProtocolEventSubscription;
-  /** Used to end instance-scoped consent when the instance is terminal. */
-  readonly instances?: { get(id: string): Promise<{ readonly terminal: boolean }> };
+  /**
+   * Used to end instance-scoped consent when the instance is terminal. A real
+   * client returns the whole instance, which handlers read too (its roles,
+   * params and state).
+   */
+  readonly instances?: {
+    get(id: string): Promise<{ readonly terminal: boolean } & Partial<ProtocolInstanceDetail<TTypes>>>;
+  };
   /** Present on a real client: a handler reads a participant's current state with it. */
   readonly participants?: {
     get(input: { instance: string; wallet: string; signal?: AbortSignal }): Promise<ProtocolParticipantDetail<TTypes>>;
@@ -189,6 +204,55 @@ export interface AutomationsOptions<TTypes extends ProtocolTypeMap = ProtocolTyp
   readonly onError?: (error: unknown, context: { jobId?: string; phase: string }) => void;
 }
 
+export interface ScheduleOptions {
+  /**
+   * A calendar period (`minute`, `hour`, `day`, `week`, `month`, in UTC) or
+   * an interval (`15m`, `6h`). The trigger is dispatched once per slot, at
+   * the first `tick()` that falls in it, so ticks need to come at least as
+   * often as the schedule.
+   */
+  readonly every: ScheduleEvery;
+}
+
+/** The payload of a scheduled trigger. */
+export interface ScheduledTrigger {
+  readonly schedule: string;
+  /** The slot's id: the same for every tick in one period. */
+  readonly slot: string;
+  /** When the tick that dispatched it ran, in milliseconds since the epoch. */
+  readonly at: number;
+}
+
+export interface TickOptions {
+  /** The time to evaluate schedules at. Defaults to the clock's. */
+  readonly now?: number;
+  /** Poll the list sources a definition registered with `sources: 'poll'`. Defaults to true. */
+  readonly poll?: boolean;
+  /** Run at most this many jobs afterwards; 0 runs none (a worker started with `start()` runs them). Defaults to no limit. */
+  readonly maxJobs?: number;
+}
+
+export interface TickResult {
+  /** Schedules dispatched for a new slot. */
+  readonly scheduled: readonly string[];
+  /** Triggers the polled sources delivered, and changes still waiting to hold for `stableFor`. */
+  readonly polled: { readonly delivered: number; readonly pending: number };
+  /** Jobs run. */
+  readonly ran: number;
+}
+
+export interface UseOptions {
+  /** Opens the stacks the definition's sources read; defaults to the SDK's own connection. */
+  readonly connect?: StackConnector;
+  /**
+   * `subscribe` (the default) watches each view source live, for a
+   * long-running worker. `poll` registers list sources for `tick()` instead,
+   * for serverless hosts; an append source then throws, since it needs a
+   * live subscription.
+   */
+  readonly sources?: 'subscribe' | 'poll';
+}
+
 export interface WebhookHandlerOptions {
   /** The endpoint's signing secret. */
   readonly secret: string | Uint8Array;
@@ -244,6 +308,18 @@ export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
    * same id is ignored. Resolves `false` for a duplicate.
    */
   dispatch(name: string, payload: unknown, options: { id: string }): Promise<boolean>;
+  /**
+   * Dispatch `name` once per slot of `every`, from `tick()`. The library has
+   * no timer: a host's cron (or `a4 dev`) calls `tick()`. The handler
+   * receives a {@link ScheduledTrigger}.
+   */
+  schedule(name: string, options: ScheduleOptions): this;
+  /**
+   * One pass for a cron: dispatch the schedules whose slot has not run,
+   * poll the definition's list sources in poll mode, then run jobs. Every
+   * part is idempotent, so overlapping or repeated ticks are harmless.
+   */
+  tick(options?: TickOptions): Promise<TickResult>;
   /** A fetch-standard webhook endpoint (Workers, Next.js, Hono, Bun). */
   webhookHandler(options: WebhookHandlerOptions): (request: Request) => Promise<Response>;
   /** An Express endpoint. Mount it behind `express.raw({ type: 'application/json' })`. */
@@ -264,7 +340,7 @@ export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
    * `defineAutomations`). `connect` opens the stacks its sources read;
    * it defaults to the SDK's own connection.
    */
-  use(definition: AutomationsDefinition<TTypes>, options?: { connect?: StackConnector }): Promise<this>;
+  use(definition: AutomationsDefinition<TTypes>, options?: UseOptions): Promise<this>;
   /** Read a list-view source's snapshot once and accept what changed (for a serverless cron). */
   poll(source: ListSource): Promise<{ delivered: number; pending: number }>;
   /** Claim and run one job. `false` when none was ready. */
@@ -339,6 +415,9 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   const reconcileMs = durationMs(options.reconcileInterval ?? 10_000);
   const formats = options.transactionFormats ?? DEFAULT_TRANSACTION_FORMATS;
   const handlers = new Map<string, Handler<any, TTypes>>();
+  const schedules = new Map<string, ScheduleEvery>();
+  // List sources a definition registered for `tick()` to poll.
+  const polled = new Map<string, ListSource>();
   const proofTtlMs = durationMs(options.consent?.proofTtl ?? 600_000);
 
   const report = (error: unknown, context: { jobId?: string; phase: string }) => {
@@ -1465,6 +1544,43 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     dispatch(name, payload, { id }) {
       return accept({ id: `dispatch:${id}`, name, source: 'dispatch', payload });
     },
+    schedule(name, scheduleOptions) {
+      checkScheduleEvery(scheduleOptions.every);
+      schedules.set(name, scheduleOptions.every);
+      return automations;
+    },
+    async tick(tickOptions = {}) {
+      const now = tickOptions.now ?? clock.now();
+      const scheduled: string[] = [];
+      for (const [name, every] of schedules) {
+        if (!handlers.has(name)) {
+          report(new Error(`schedule ${name} has no handler: register one with on('${name}', ...)`), { phase: 'schedule' });
+          continue;
+        }
+        const slot = scheduleSlotFor(name, every, now);
+        const trigger: ScheduledTrigger = { schedule: name, slot, at: now };
+        try {
+          if (await accept({ id: `schedule:${slot}`, name, source: 'dispatch', payload: trigger })) scheduled.push(name);
+        } catch (error) {
+          report(error, { phase: 'schedule' });
+        }
+      }
+      let delivered = 0;
+      let pending = 0;
+      if (tickOptions.poll ?? true) {
+        for (const source of polled.values()) {
+          try {
+            const result = await automations.poll(source);
+            delivered += result.delivered;
+            pending += result.pending;
+          } catch (error) {
+            report(error, { phase: 'source' });
+          }
+        }
+      }
+      const ran = tickOptions.maxJobs === 0 ? 0 : await automations.drain(tickOptions.maxJobs !== undefined ? { maxJobs: tickOptions.maxJobs } : {});
+      return { scheduled, polled: { delivered, pending }, ran };
+    },
     acceptWebhook,
     webhookHandler(webhook) {
       return async (request: Request) => {
@@ -1556,9 +1672,21 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       if (own !== undefined && definition.protocol.name !== own) {
         throw new Error(`the definition is for protocol ${definition.protocol.name}, but the client is for ${own}`);
       }
+      const pollSources = useOptions.sources === 'poll';
       const setup: AutomationsSetup<TTypes> = {
         on: ((name: string, handler: Handler<any, TTypes>) => automations.on(name, handler)) as never,
-        source: startSource,
+        schedule: (name, scheduleOptions) => void automations.schedule(name, scheduleOptions),
+        source: pollSources
+          ? (source) => {
+              if (source.kind !== 'list') {
+                throw new TypeError(
+                  `source ${source.name} reads an append view, which needs a live subscription: run it on a long-running worker (sources: 'subscribe')`,
+                );
+              }
+              polled.set(source.name, source);
+              return { stop: async () => void polled.delete(source.name) };
+            }
+          : startSource,
         connect: useOptions.connect ?? connectStack,
       };
       await definition.setup(setup);

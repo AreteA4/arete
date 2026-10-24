@@ -35,6 +35,9 @@ export default [
   ...library("src/testing.ts", "testing"),
   ...library("src/postgres.ts", "postgres"),
   ...library("src/privy.ts", "privy"),
+  ...library("src/cloudflare.ts", "cloudflare"),
+  ...library("src/vercel.ts", "vercel"),
+  ...library("src/node.ts", "node"),
   {
     input: "src/cli-bin.ts",
     external,

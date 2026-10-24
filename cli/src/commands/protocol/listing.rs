@@ -111,7 +111,7 @@ pub fn listing_status(args: &ListingArgs, json: bool) -> Result<()> {
     print_status(&status, json)
 }
 
-fn require_secret_key(client: &ApiClient, command: &str) -> Result<()> {
+pub(super) fn require_secret_key(client: &ApiClient, command: &str) -> Result<()> {
     if !client.has_api_key() {
         bail!(
             "`a4 protocol {command}` needs the deployment owner's secret API key. Run `a4 login`, or set ARETE_API_KEY."

@@ -11,7 +11,8 @@ import type { ConnectedArete, ProtocolDefinition, ProtocolTypeMap, StackDefiniti
 
 import type { PolicyInput } from '../policy/policy';
 import type { ViewSource } from '../sources/view';
-import type { Automations, SourceHandle } from './automations';
+import type { Automations, ScheduleOptions, SourceHandle } from './automations';
+import { checkScheduleEvery, type ScheduleEvery } from './time';
 
 /** Connects a stack's views: the dev environment's under `a4 dev`, the published stack in production. */
 export type StackConnector = <T extends StackDefinition>(stack: T) => Promise<ConnectedArete<T>>;
@@ -19,6 +20,11 @@ export type StackConnector = <T extends StackDefinition>(stack: T) => Promise<Co
 /** What a definition's setup registers handlers and sources on. */
 export interface AutomationsSetup<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   readonly on: Automations<TTypes>['on'];
+  /**
+   * Dispatch the trigger `name` once per slot of `every` (see
+   * `Automations.schedule`); register its handler with `on(name, ...)`.
+   */
+  schedule(name: string, options: ScheduleOptions): void;
   source(source: ViewSource, options?: { exclusive?: boolean }): SourceHandle;
   /** Connect a stack for its views, to build view sources from. */
   readonly connect: StackConnector;
@@ -66,3 +72,67 @@ export function isAutomationsDefinition(value: unknown): value is AutomationsDef
 
 /** Connects with the SDK's defaults: `ARETE_API_KEY` or the `a4` login. */
 export const connectStack: StackConnector = (stack) => Arete.connect(stack) as never;
+
+/** What a definition registers, without running it: for deploy configuration and tools. */
+export interface DefinitionManifest {
+  /** The protocol's name. */
+  readonly protocol: string;
+  /** Protocol events with a handler: the events a webhook endpoint subscribes to. */
+  readonly events: readonly string[];
+  /** Schedules, by name; a host's cron must tick at least as often as the shortest. */
+  readonly schedules: readonly { readonly name: string; readonly every: ScheduleEvery }[];
+  /** View sources: `list` sources can be polled from a cron; `append` sources need a long-running worker. */
+  readonly sources: readonly { readonly name: string; readonly kind: ViewSource['kind'] }[];
+  /** Handlers for triggers that are not events, schedules or sources: your own `dispatch` calls. */
+  readonly triggers: readonly string[];
+}
+
+/**
+ * A stand-in for a connected stack: any property path is another stand-in,
+ * so a definition can build its view sources without a connection.
+ */
+function stackStandIn(): unknown {
+  const target = () => undefined;
+  const proxy: unknown = new Proxy(target, {
+    get: (_target, key) => (key === 'then' ? undefined : proxy),
+    apply: () => proxy,
+  });
+  return proxy;
+}
+
+/**
+ * Run a definition's setup against a recorder and report what it registers.
+ * Nothing connects: stacks are stand-ins, so a definition that reads a view
+ * during setup (rather than in its sources and handlers) cannot be described.
+ */
+export async function describeDefinition(definition: AutomationsDefinition): Promise<DefinitionManifest> {
+  const handlers: string[] = [];
+  const schedules: { name: string; every: ScheduleEvery }[] = [];
+  const sources: { name: string; kind: ViewSource['kind'] }[] = [];
+  const setup: AutomationsSetup = {
+    on: ((name: string) => {
+      handlers.push(name);
+      return setup;
+    }) as never,
+    schedule(name, options) {
+      checkScheduleEvery(options.every);
+      schedules.push({ name, every: options.every });
+    },
+    source(source) {
+      sources.push({ name: source.name, kind: source.kind });
+      return { stop: async () => {} };
+    },
+    connect: (async () => stackStandIn()) as never,
+  };
+  await definition.setup(setup);
+  const declared = new Set(Object.keys((definition.protocol as { events?: object }).events ?? {}));
+  const dispatched = new Set([...schedules, ...sources].map((entry) => entry.name));
+  const unique = [...new Set(handlers)];
+  return {
+    protocol: definition.protocol.name,
+    events: unique.filter((name) => declared.has(name)),
+    schedules,
+    sources,
+    triggers: unique.filter((name) => !declared.has(name) && !dispatched.has(name)),
+  };
+}

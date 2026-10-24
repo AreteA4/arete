@@ -1,5 +1,5 @@
 //! Self-serve protocol endpoints: protocols, releases, resources, fee
-//! policies, deployments and registry listings.
+//! policies, deployments, webhook endpoints and registry listings.
 //!
 //! Every route needs a secret key, except the public listing search and
 //! lookup (`/api/registry/protocols`). Response types are lenient (unknown
@@ -123,6 +123,44 @@ pub struct ProtocolListingStatus {
     pub reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_at: Option<String>,
+}
+
+/// A webhook endpoint subscribed to a deployment's emitted events.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolWebhook {
+    pub id: String,
+    #[serde(default)]
+    pub deployment_id: Option<String>,
+    pub url: String,
+    /// `publisher` or `integrator`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<Value>,
+    #[serde(default)]
+    pub events: Vec<String>,
+    pub status: String,
+    /// The end of the signing secret, to tell endpoints apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret_hint: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+    /// The signing secret: returned once, when the endpoint is created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+}
+
+/// The result of sending a test delivery to a webhook endpoint.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolWebhookTest {
+    pub delivery_id: String,
+    pub delivered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_code: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Largest page of `GET /api/registry/protocols`.
@@ -267,6 +305,17 @@ impl ApiClient {
         Self::handle_response(response)
     }
 
+    fn protocol_delete<T: DeserializeOwned>(&self, path: &str, what: &str) -> Result<T> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .delete(format!("{}{path}", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .with_context(|| format!("Failed to send {what} request"))?;
+        Self::handle_response(response)
+    }
+
     fn protocol_post<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -390,6 +439,54 @@ impl ApiClient {
             &format!("/api/protocol-deployments/{deployment_id}/activate"),
             &json!({}),
             "activate protocol deployment",
+        )
+    }
+
+    /// Subscribe `url` to `events` of a deployment. The response carries the
+    /// signing secret, which the server never returns again.
+    pub fn create_protocol_webhook(
+        &self,
+        deployment_id: &str,
+        url: &str,
+        events: &[String],
+    ) -> Result<ProtocolWebhook> {
+        self.protocol_post(
+            &format!("/api/protocol-deployments/{deployment_id}/webhooks"),
+            &json!({ "url": url, "events": events }),
+            "create protocol webhook",
+        )
+    }
+
+    /// The caller's webhook endpoints on a deployment.
+    pub fn list_protocol_webhooks(&self, deployment_id: &str) -> Result<Vec<ProtocolWebhook>> {
+        self.protocol_get(
+            &format!("/api/protocol-deployments/{deployment_id}/webhooks"),
+            "list protocol webhooks",
+        )
+    }
+
+    /// Disable a webhook endpoint: it receives no further deliveries.
+    pub fn disable_protocol_webhook(
+        &self,
+        deployment_id: &str,
+        webhook_id: &str,
+    ) -> Result<ProtocolWebhook> {
+        self.protocol_delete(
+            &format!("/api/protocol-deployments/{deployment_id}/webhooks/{webhook_id}"),
+            "disable protocol webhook",
+        )
+    }
+
+    /// Send a signed test delivery to a webhook endpoint now.
+    pub fn test_protocol_webhook(
+        &self,
+        deployment_id: &str,
+        webhook_id: &str,
+    ) -> Result<ProtocolWebhookTest> {
+        self.protocol_post(
+            &format!("/api/protocol-deployments/{deployment_id}/webhooks/{webhook_id}/test"),
+            &json!({}),
+            "test protocol webhook",
         )
     }
 }

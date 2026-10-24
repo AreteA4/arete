@@ -11,7 +11,9 @@
  *   and spending survive the restarts that reload the handlers;
  * - the environment's protocol events, forwarded as signed webhook
  *   deliveries (dev environments send no webhooks);
- * - view sources on the environment's stack.
+ * - view sources on the environment's stack;
+ * - schedules, ticked on the environment's clock (so `a4 dev warp` moves
+ *   them too).
  *
  * With `forward` instead of an entry it only forwards the signed deliveries
  * to the app's own webhook route. `a4 dev up` restarts the process when the
@@ -37,6 +39,7 @@ import { type Automations, type AutomationOutcome, clientCluster, createAutomati
 import { type AutomationsDefinition, isAutomationsDefinition, type StackConnector } from '../runtime/define';
 import { type MemoryStoreState, memoryStore, memoryStoreState } from '../store/memory';
 import { type EventPump, type PumpClient, startEventPump } from './events';
+import { chainNow, type ScheduleTicker, startScheduleTicker } from './schedules';
 import { devWalletsSigner, readDevWallets } from './signer';
 
 /** What `a4 dev up` passes in the environment. */
@@ -282,6 +285,7 @@ export async function runDev(
   const saveCursors = () => writeFileSync(cursorsPath, JSON.stringify(Object.fromEntries(cursors), null, 2));
 
   let automations: Automations | null = null;
+  let ticker: ScheduleTicker | null = null;
   let pumpClient: PumpClient;
   let saveStore = () => {};
   let deliver: (body: string, headers: Record<string, string>) => Promise<void>;
@@ -333,6 +337,7 @@ export async function runDev(
     };
 
     const walletsDir = join(devDir, 'wallets');
+    const rpc = rpcSimulator(session.rpcUrl);
     const running = createAutomations({
       client,
       signer: devWalletsSigner(walletsDir),
@@ -342,7 +347,7 @@ export async function runDev(
         deployments: [client.deploymentId],
         clusters: ['dev'],
       }),
-      simulator: rpcSimulator(session.rpcUrl),
+      simulator: rpc,
       store,
       consent: { domain: 'localhost' },
       onOutcome: (outcome) => log(describe(outcome)),
@@ -353,6 +358,7 @@ export async function runDev(
       connect: devStackConnector(() => readJson<DevSessionFile | null>(sessionPath, null), config.apiKey, log),
     });
     running.start({ pollInterval: '1s' });
+    ticker = startScheduleTicker(running, () => chainNow(rpc), log);
     automations = running;
     pumpClient = client as unknown as PumpClient;
     deliver = async (body, headers) => {
@@ -420,7 +426,7 @@ export async function runDev(
         }
       };
       save();
-      await Promise.race([automations?.stop(), sleep(3000)]);
+      await Promise.race([Promise.all([ticker?.stop(), automations?.stop()]), sleep(3000)]);
       clearInterval(persist);
       save();
     },
