@@ -53,6 +53,11 @@ an application session.
 | `stacks`, `programs`                                          | Included definitions, or connected dependencies inside a session |
 | `close()`                                                     | Release the client's owned resources                             |
 
+The account's Squads multisigs are managed with `createSquadsClient` (Rust and
+Python: `SquadsClient`): `status`, `notifications`, `get`, `attach`, `create`,
+`addProposer`, `approve`, `execute`, `removeProposer`, `forget` and `submit`,
+with a secret key. See [Squads](/building-protocols/squads/).
+
 Secret-key clients expose client-callable steps; publishable-key clients are
 typed for public steps. Runtime access and authority checks still apply.
 Amounts use `ProtocolInteger` decimal strings. Prepare returns the discriminated
