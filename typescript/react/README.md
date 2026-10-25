@@ -186,6 +186,37 @@ How the provider manages the session:
 
 Under React StrictMode in development the provider opens, closes and reopens the session once on mount, like any effect.
 
+### Stacks in a session
+
+A stack member of the session (`session.stacks.<key>`) is a connected client of its own. Pass it to `useArete` for the same views, programs, reads and mutation hooks `useArete(stack)` gives, typed for that stack, without a second connection:
+
+```tsx
+import { AreteSessionProvider, useArete, useAreteSession } from '@usearete/react';
+import { ORE_STREAM_STACK } from './generated/ore-stack';
+
+const APP = { stacks: { ore: ORE_STREAM_STACK } };
+
+<AreteSessionProvider definition={APP} options={{ auth }} wallet={wallet}>
+  <Round />
+</AreteSessionProvider>;
+
+function Round() {
+  const { session } = useAreteSession<typeof APP>();
+  // `null` while the session opens: the stack definition gives the placeholders.
+  const ore = useArete(session?.stacks.ore, { stack: APP.stacks.ore });
+  const round = ore.views.OreRound.latest.use();
+  const deploy = ore.programs.ore.instructions.deploy.useMutation();
+  …
+}
+```
+
+- **One connection.** The hooks read the member's own connection and store; nothing connects again, and an enclosing `AreteProvider` opens nothing for it.
+- **The session owns it.** Unmounting never disconnects the member. The provider closes it with the session.
+- **While the session opens** the member is `null`, and the result is the one `useArete(stack)` gives before its client exists: `status: 'connecting'`, `client: null`, placeholder views and programs (addresses, PDAs and constants from the definition). Pass the stack definition as `stack` for this; TypeScript asks for it whenever the member can be `null` or `undefined`. If the session fails to open, `status` is `'error'` and `retry()` reopens it.
+- **A reopen** (new auth or options) gives a new member: the hooks drop the old one and subscribe on the new one, with nothing carried over.
+- **The wallet is the session's.** Mutations sign with the member's wallet, which the provider's `wallet` prop (`session.setWallet`) sets. `AreteProvider`'s `wallet` does not reach session members.
+- With a member that is never `null` (`useArete(session.stacks.ore)`, for a session the app opened), `stack` can be left out. Pass `transport: 'http'` for a member the session connects over HTTP, so mutations do not wait for a streamed slot.
+
 ## `useArete(stack?, options?)`
 
 `useArete` returns the connected React surface for a stack. With no arguments it resolves the provider's `stack`/`stackOptions`. Passing the same stack explicitly keeps the provider's `stackOptions`; per-call options override them, while another explicit stack is isolated from the provider stack's options. It throws a descriptive error when no stack is passed and no default is configured.

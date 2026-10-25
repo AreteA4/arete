@@ -11,7 +11,14 @@ export type {
   UseAreteSessionResult,
 } from './session-provider';
 export { useArete } from './stack';
-export type { UseAreteResult, AreteDefaultStackRegistry } from './stack';
+export type {
+  UseAreteResult,
+  AreteDefaultStackRegistry,
+  AnyStackClient,
+  MemberStackDefinition,
+  StackOfClient,
+  UseAreteMemberOptions,
+} from './stack';
 export { createAreteReact } from './bound-stack';
 export type { BoundAreteProviderProps } from './bound-stack';
 export { summarizeStatuses, summarizeViews } from './view-status';

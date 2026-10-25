@@ -284,6 +284,29 @@ The provider opens the session when it mounts and closes it when it unmounts. `o
 
 A `useOperationMutation` run without a `wallet` fails with `not-ready` before anything is prepared or signed; set `allowExecutorWallet: true` to sign with the session's own wallet instead. Failures are an `OperationMutationError` whose `kind` tells the wallet cases apart: `wallet-rejected` (declined), `wallet-feature-unsupported` (no `solana:signTransaction`), `wallet-chain-unsupported`, `wallet-version-unsupported` and `wallet-modified`. `useWalletStandardWallet`'s `error` is a `WalletStandardSignerError` with a `code` (`sign_transaction_unsupported`, `chain_unsupported`, `account_unavailable`). The [React SDK README](https://github.com/AreteA4/arete/tree/main/typescript/react#sessions-aretesessionprovider-and-usearetesession) has the full reference.
 
+### Stacks in a session
+
+A stack member of the session (`session.stacks.<key>`) is already connected. Pass it to `useArete` for the same typed views, programs, reads and mutations as `useArete(stack)`, over the member's connection:
+
+```tsx
+import { AreteSessionProvider, useArete, useAreteSession } from '@usearete/react';
+
+const APP = { stacks: { ore: ORE_STREAM_STACK } };
+
+<AreteSessionProvider definition={APP} options={{ auth }} wallet={wallet}>
+  <Round />
+</AreteSessionProvider>;
+
+function Round() {
+  const { session } = useAreteSession<typeof APP>();
+  const ore = useArete(session?.stacks.ore, { stack: APP.stacks.ore });
+  const round = ore.views.OreRound.latest.use();
+  …
+}
+```
+
+Nothing connects a second time, and unmounting never disconnects the member: the session closes it. While the session opens the member is `null` and the result is `useArete(stack)`'s connecting state, with placeholder views and programs from `stack` (required whenever the member can be `null`). A reopen gives a new member, and the hooks move to it. Mutations sign with the session's wallet (the provider's `wallet` prop).
+
 ## `useArete` result
 
 The hook returns:

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { StoreApi, UseBoundStore } from 'zustand';
 import { useAreteContext } from './provider';
+import { useOptionalAreteSession } from './session-provider';
 import { buildDisconnectedProgramHooks, buildProgramHookInterfaces, type BuildProgramInterface } from './program-hooks';
 import { buildReadInterfaces, type ReactReadInterface } from './read-hooks';
 import { createStateViewHook, createListViewHook } from './view-hooks';
@@ -147,6 +148,246 @@ export type UseAreteResult<
   retry: () => Promise<void>;
 };
 
+/**
+ * A connected stack client: a session member (`session.stacks.<key>` from
+ * `createSession`) or a client from `Arete.connect`.
+ */
+export type AnyStackClient = Pick<
+  AnyClient,
+  'getSubscriptionRegistry' | 'onConnectionStateChange' | 'onSocketIssue' | 'connectionState'
+>;
+
+/** The stack a connected client was connected for (with its attached programs). */
+export type StackOfClient<TClient> = NonNullable<TClient> extends ConnectedArete<infer TStack extends StackDefinition, infer _TExtensions>
+  ? TStack
+  : never;
+
+/**
+ * The definition of a member's stack, for `useArete(member, { stack })`: any
+ * stack definition with the member's views (the generated stack, before or
+ * after `programs` are attached).
+ */
+export type MemberStackDefinition<TStack extends StackDefinition> = StackDefinition
+  & Pick<TStack, 'views'>;
+
+/** Options for `useArete(member)`, where `member` is a client someone else connected. */
+export interface UseAreteMemberOptions<TStack extends StackDefinition = StackDefinition> {
+  /**
+   * The member's stack definition. Required while the member can be `null` or
+   * `undefined` (the session is still opening), so views, programs,
+   * addresses and constants exist before it opens; otherwise it comes from
+   * the member.
+   */
+  stack?: MemberStackDefinition<TStack>;
+  /**
+   * How the session connects this member. Mutations wait for the streamed
+   * slot they landed in only over `'ws'` (the default), as for
+   * `useArete(stack, { transport })`.
+   */
+  transport?: 'ws' | 'http';
+}
+
+function isStackClient(value: unknown): value is AnyClient {
+  return typeof value === 'object'
+    && value !== null
+    && typeof (value as Partial<AnyClient>).getSubscriptionRegistry === 'function'
+    && typeof (value as Partial<AnyClient>).onConnectionStateChange === 'function';
+}
+
+function isMemberOptions(value: unknown): value is UseAreteMemberOptions & { stack: StackDefinition } {
+  const stack = (value as { stack?: unknown } | null | undefined)?.stack;
+  return typeof stack === 'object' && stack !== null && 'views' in stack;
+}
+
+/**
+ * The stack definition a connected client holds: the one it was connected
+ * for, with any attached programs resolved. The client keeps it in its
+ * `stack` field (private to TypeScript, a plain property at runtime); the
+ * tests over real sessions hold this in place.
+ */
+function stackOfClient(client: AnyClient): StackDefinition | undefined {
+  const stack = (client as unknown as { stack?: unknown }).stack;
+  return typeof stack === 'object' && stack !== null && 'views' in stack
+    ? stack as StackDefinition
+    : undefined;
+}
+
+function zustandStoreOf(client: AnyClient | null): UseBoundStore<StoreApi<AreteStore>> | null {
+  return (client?.store as ZustandAdapter | undefined)?.store ?? null;
+}
+
+interface MemberConnection {
+  readonly client: AnyClient | null;
+  readonly state: ConnectionState;
+  readonly error: Error | null;
+  readonly socketIssue: SocketIssue | null;
+}
+
+/**
+ * `useArete` for a client the caller (usually a session) connected and
+ * owns. It reads the member's own connection and store: nothing connects,
+ * and nothing is disconnected when the component unmounts or the member is
+ * replaced. A `null` member reads as the connecting state `useArete(stack)`
+ * reports before its client exists.
+ */
+function useMemberArete(
+  member: AnyClient | null,
+  options: UseAreteMemberOptions | undefined
+): UseAreteResult<StackDefinition, ProgramMap> {
+  const client = member;
+  const stack = (client ? stackOfClient(client) : undefined) ?? options?.stack;
+  if (!stack) {
+    throw new Error(
+      'useArete(member) could not read the stack definition of the member it was given. '
+      + 'Pass it as useArete(member, { stack }).'
+    );
+  }
+  const transport = options?.transport;
+  const sessionContext = useOptionalAreteSession();
+
+  const [connection, setConnection] = useState<MemberConnection>(() => ({
+    client,
+    state: client?.connectionState ?? 'disconnected',
+    error: null,
+    socketIssue: null,
+  }));
+  // A new member (a reopened session) never shows the previous one's state.
+  const current: MemberConnection = connection.client === client
+    ? connection
+    : { client, state: client?.connectionState ?? 'disconnected', error: null, socketIssue: null };
+
+  useEffect(() => {
+    if (!client) {
+      setConnection((previous) => previous.client === null
+        ? previous
+        : { client: null, state: 'disconnected', error: null, socketIssue: null });
+      return undefined;
+    }
+    const update = (next: Partial<Omit<MemberConnection, 'client'>>) => {
+      setConnection((previous) => {
+        const base = previous.client === client
+          ? previous
+          : { client, state: client.connectionState, error: null, socketIssue: null };
+        return { ...base, ...next };
+      });
+    };
+    update({ state: client.connectionState });
+    const unsubscribeState = client.onConnectionStateChange((state, stateError) => {
+      if (state === 'error') {
+        update({ state, error: normalizeConnectionError(stateError, 'Arete connection entered an error state') });
+      } else if (state === 'connected') {
+        update({ state, error: null, socketIssue: null });
+      } else {
+        update({ state });
+      }
+    });
+    const unsubscribeIssue = client.onSocketIssue((socketIssue) => {
+      update({ socketIssue });
+    });
+    // Only listeners are removed: the member's connection is its owner's.
+    return () => {
+      unsubscribeIssue();
+      unsubscribeState();
+    };
+  }, [client]);
+
+  const views = useMemo(
+    () => buildViewHooks(stack, client as AnyClient | null),
+    [stack, client]
+  );
+
+  const programs = useMemo(() => {
+    if (!client) {
+      return buildDisconnectedProgramHooks(
+        stack.programs as Record<string, ProgramSdkDefinition> | undefined,
+      );
+    }
+    return buildProgramHookInterfaces(
+      client.programs as ProgramsInterface<Record<string, ProgramSdkDefinition>> | undefined,
+      client as ConnectedArete<ResolvedStack<StackDefinition, ProgramMap>> | null,
+      useInstructionMutation,
+      { defaultReconciliation: transport !== 'http' }
+    );
+  }, [client, stack, transport]);
+
+  const connectedRead = ((client as (ConnectedStack<StackDefinition, ProgramMap> & { read?: unknown }) | null)?.read ?? null) as
+    Record<string, (...args: never[]) => unknown> | null;
+  const readArgCounts = getStackRuntimeExtensions(stack)?.readArgCounts;
+  const read = useMemo(
+    () => buildReadInterfaces(
+      connectedRead,
+      readArgCounts as ReadArgumentCounts<Record<string, (...args: never[]) => unknown>> | undefined,
+    ),
+    [connectedRead, readArgCounts]
+  );
+
+  const sessionStatus = sessionContext?.status;
+  const sessionError = sessionContext?.error ?? null;
+  const sessionRetry = sessionContext?.retry;
+  const sessionFailed = !client && sessionStatus === 'error';
+  const retry = useCallback(async (): Promise<void> => {
+    // The member's connection belongs to its session: retrying reopens a
+    // session that failed to open, and does nothing otherwise.
+    if (sessionFailed) sessionRetry?.();
+  }, [sessionFailed, sessionRetry]);
+
+  const status: ConnectionState = client
+    ? current.error && current.state !== 'connected' ? 'error' : current.state
+    : sessionFailed ? 'error' : 'connecting';
+  const error = client ? current.error : sessionFailed ? sessionError : null;
+  const extension = (name: 'addresses' | 'constants' | 'defaults' | 'math') =>
+    (client as Record<string, unknown> | null)?.[name]
+      ?? (stack as StackDefinition & Record<string, unknown>)[name];
+
+  return {
+    views,
+    queries: client?.queries ?? {},
+    programs,
+    chain: client?.chain ?? null,
+    zustandStore: zustandStoreOf(client),
+    client,
+    read,
+    reads: read,
+    addresses: extension('addresses'),
+    constants: extension('constants'),
+    defaults: extension('defaults'),
+    math: extension('math'),
+    connectionState: client ? current.state : 'disconnected',
+    status,
+    isConnected: Boolean(client) && current.state === 'connected',
+    isLoading: !client && !sessionFailed,
+    canRetry: sessionFailed,
+    error,
+    socketIssue: client ? current.socketIssue : null,
+    retry,
+  } as unknown as UseAreteResult<StackDefinition, ProgramMap>;
+}
+
+function buildViewHooks(
+  stack: StackDefinition,
+  client: AnyClient | null
+): Record<string, Record<string, unknown>> {
+  const result: Record<string, Record<string, unknown>> = {};
+
+  for (const [viewName, viewGroup] of Object.entries(stack.views)) {
+    result[viewName] = {};
+
+    if (typeof viewGroup === 'object' && viewGroup !== null) {
+      for (const [subViewName, viewDef] of Object.entries(viewGroup)) {
+        if (!viewDef || typeof viewDef !== 'object' || !('mode' in viewDef)) continue;
+
+        if (viewDef.mode === 'state') {
+          result[viewName]![subViewName] = createStateViewHook(viewDef as ViewDef<unknown, 'state', unknown>, client);
+        } else if (viewDef.mode === 'list') {
+          result[viewName]![subViewName] = createListViewHook(viewDef as ViewDef<unknown, 'list'>, client);
+        }
+      }
+    }
+  }
+
+  return result;
+}
+
 function normalizeConnectionError(value: unknown, fallback: string): Error {
   if (value instanceof Error) return value;
   return new Error(typeof value === 'string' && value.length > 0 ? value : fallback);
@@ -182,8 +423,56 @@ export function useArete<
   stack: TStack,
   options?: UseAreteOptions<TPrograms>
 ): UseAreteResult<TStack, TPrograms>;
+/**
+ * The hooks for a stack client that is already connected, typically a
+ * session member: `useArete(session.stacks.ore)`. The hooks read the
+ * member's own connection and store, so nothing connects again, and the
+ * member's owner (the session) disconnects it; unmounting never does.
+ * Mutations sign with the member's wallet, which `session.setWallet` (or
+ * `AreteSessionProvider`'s `wallet`) sets.
+ *
+ * While the session opens, pass the member as it may be (`null` or
+ * `undefined`) together with its stack definition, and the result is the
+ * connecting state `useArete(stack)` reports before its client exists:
+ *
+ * ```tsx
+ * const { session } = useAreteSession<typeof APP>();
+ * const ore = useArete(session?.stacks.ore, { stack: APP.stacks.ore });
+ * ```
+ */
+export function useArete<TClient extends AnyStackClient>(
+  member: TClient,
+  options?: UseAreteMemberOptions<StackOfClient<TClient>>
+): UseAreteResult<StackOfClient<TClient>>;
+export function useArete<TClient extends AnyStackClient>(
+  member: TClient | null | undefined,
+  options: UseAreteMemberOptions<StackOfClient<TClient>> & {
+    stack: MemberStackDefinition<StackOfClient<TClient>>;
+  }
+): UseAreteResult<StackOfClient<TClient>>;
 export function useArete(
-  stack?: StackDefinition,
+  stackOrMember?: StackDefinition | AnyClient | null,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  options?: any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+): any {
+  // A call site keeps one form for its lifetime (a stack definition, or a
+  // session member that may be null while the session opens), so the hooks
+  // either branch calls stay in the same order.
+  if (isStackClient(stackOrMember)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- one form per call site
+    return useMemberArete(stackOrMember, options as UseAreteMemberOptions | undefined);
+  }
+  if (stackOrMember == null && isMemberOptions(options)) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- one form per call site
+    return useMemberArete(null, options);
+  }
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- one form per call site
+  return useStackArete((stackOrMember ?? undefined) as StackDefinition | undefined, options);
+}
+
+function useStackArete(
+  stack: StackDefinition | undefined,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   options?: any
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -373,27 +662,10 @@ export function useArete(
     return tracked;
   }, [lookupKey, lookupOptions, retryClient, resolvedStack]);
 
-  const views = useMemo(() => {
-    const result: Record<string, Record<string, unknown>> = {};
-
-    for (const [viewName, viewGroup] of Object.entries(resolvedStack.views)) {
-      result[viewName] = {};
-
-      if (typeof viewGroup === 'object' && viewGroup !== null) {
-        for (const [subViewName, viewDef] of Object.entries(viewGroup)) {
-          if (!viewDef || typeof viewDef !== 'object' || !('mode' in viewDef)) continue;
-
-          if (viewDef.mode === 'state') {
-            result[viewName]![subViewName] = createStateViewHook(viewDef as ViewDef<unknown, 'state', unknown>, client as AnyClient | null);
-          } else if (viewDef.mode === 'list') {
-            result[viewName]![subViewName] = createListViewHook(viewDef as ViewDef<unknown, 'list'>, client as AnyClient | null);
-          }
-        }
-      }
-    }
-
-    return result;
-  }, [resolvedStack, client]);
+  const views = useMemo(
+    () => buildViewHooks(resolvedStack, client as AnyClient | null),
+    [resolvedStack, client]
+  );
 
   const programs = useMemo(() => {
     if (!client) {
@@ -441,7 +713,7 @@ export function useArete(
     queries: (client?.queries ?? {}) as QueriesInterface<StackQueries<ResolvedStack<StackDefinition, ProgramMap>>>,
     programs: programs as BuildProgramInterface<StackPrograms<ResolvedStack<StackDefinition, ProgramMap>>, ConnectedStack<StackDefinition, ProgramMap>>,
     chain: client?.chain ?? null,
-    zustandStore: (client?.store as ZustandAdapter | undefined)?.store ?? null,
+    zustandStore: zustandStoreOf(client),
     client,
     read,
     reads: read as UseAreteResult<StackDefinition, ProgramMap>['reads'],
