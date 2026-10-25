@@ -220,6 +220,26 @@ describe('createWalletAdapter', () => {
     );
   });
 
+  it('reports signing then sending on a direct RPC send, and nothing after a build failure', async () => {
+    const onActivity = vi.fn();
+    const wallet = createWalletAdapter({
+      rpc: createRpcStub() as never,
+      rpcSubscriptions: {} as never,
+      signer: { address: 'primary-signer' } as never,
+      onActivity,
+    });
+
+    await wallet.signAndSend([makeInstruction(['primary-signer'])]);
+    expect(onActivity.mock.calls.map(([activity]) => activity)).toEqual([
+      { stage: 'signing' },
+      { stage: 'sending', signature: 'sig-kit' },
+    ]);
+
+    onActivity.mockClear();
+    await expect(wallet.signAndSend([makeInstruction(['missing-signer'])])).rejects.toThrow();
+    expect(onActivity).not.toHaveBeenCalled();
+  });
+
   it('publishes and uses all configured signer addresses without duplicates', async () => {
     const primary = { address: 'primary-signer' };
     const extra = { address: 'extra-signer' };

@@ -82,11 +82,57 @@ export class WalletStandardSignerError extends Error {
   }
 }
 
-export interface WalletStandardSignerConfig {
+/** What a wallet prompt is for: the account asked, and how many transactions it signs. */
+export interface WalletStandardPromptEvent {
+  readonly address: string;
+  readonly transactionCount: number;
+}
+
+/** How a wallet prompt ended. */
+export interface WalletStandardPromptCloseEvent extends WalletStandardPromptEvent {
+  /** `true` when the wallet handed signed bytes back. */
+  readonly signed: boolean;
+  /** What the wallet threw when it did not sign: declined, closed or failed. */
+  readonly error?: unknown;
+}
+
+/**
+ * Observes the wallet's approval prompt, so a UI can say "check your wallet".
+ * Called around the wallet's `solana:signTransaction` call only: a
+ * transaction refused before the wallet is reached (an unsupported version)
+ * opens no prompt. Errors thrown here are swallowed; they never change what
+ * the signer returns.
+ */
+export interface WalletStandardPromptCallbacks {
+  /** The wallet is being asked to sign: its prompt is about to open. */
+  readonly onPromptOpen?: (event: WalletStandardPromptEvent) => void;
+  /** The wallet answered: it signed, or the prompt was declined, closed or failed. */
+  readonly onPromptClose?: (event: WalletStandardPromptCloseEvent) => void;
+}
+
+export interface WalletStandardSignerConfig extends WalletStandardPromptCallbacks {
+  /**
+   * The Wallet Standard wallet. A `Wallet` from `@wallet-standard/base` (or
+   * the one behind a `@wallet-standard/react` `UiWallet`) is accepted as is.
+   */
   readonly wallet: WalletStandardWallet;
+  /**
+   * The wallet's own account object (`wallet.accounts[i]`). Wallets may
+   * compare it by identity, so pass the account the wallet gave you rather
+   * than a copy of its fields.
+   */
   readonly account: WalletStandardAccount;
   /** CAIP-2 chain forwarded to the wallet, e.g. `solana:devnet`. */
   readonly chain?: string;
+}
+
+function notify<T>(callback: ((event: T) => void) | undefined, event: T): void {
+  if (!callback) return;
+  try {
+    callback(event);
+  } catch {
+    // Prompt observers are observational and must not change signing.
+  }
 }
 
 function readSignTransactionFeature(
@@ -153,7 +199,16 @@ export function createWalletStandardSigner(
         };
       });
 
-      const outputs = await feature.signTransaction(...inputs);
+      const prompt = { address: config.account.address, transactionCount: inputs.length };
+      notify(config.onPromptOpen, prompt);
+      let outputs: readonly WalletStandardSignTransactionOutput[];
+      try {
+        outputs = await feature.signTransaction(...inputs);
+      } catch (error) {
+        notify(config.onPromptClose, { ...prompt, signed: false, error });
+        throw error;
+      }
+      notify(config.onPromptClose, { ...prompt, signed: true });
       if (outputs.length !== transactions.length) {
         throw new WalletStandardSignerError(
           'wallet_returned_invalid_transaction',

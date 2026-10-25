@@ -105,6 +105,23 @@ const signer = createWalletStandardSigner({ wallet, account, chain: 'solana:devn
 const adapter = createWalletAdapter({ transport: 'auto', signer });
 ```
 
+`createWalletStandardWalletAdapter` does both in one call, relays through the client's or session's transport (`transport: 'auto'` by default), and reports the wallet prompt so a UI can say "check your wallet":
+
+```ts
+import { createWalletStandardWalletAdapter } from '@usearete/adapter-kit';
+
+const wallet = createWalletStandardWalletAdapter({
+  wallet,                // a Wallet Standard `Wallet`, as the registry hands it out
+  account,               // one of `wallet.accounts`, not a copy of its fields
+  chain: 'solana:mainnet',
+  onPromptOpen: () => setStatus('Approve the request in your wallet'),
+  onPromptClose: ({ signed }) => setStatus(signed ? 'Sending' : 'Declined'),
+});
+const receipt = await session.execute(prepared, { wallet, signers: [createKey] });
+```
+
+Every adapter from `createWalletAdapter` also reports where a send is: `onActivity` in the config, or `adapter.onActivity(listener)` (returns the unsubscribe function), receives `{ stage: 'signing' }`, then `{ stage: 'sending', signature }`, then `{ stage: 'confirming', signature }` once the Arete relay acknowledged the submission (a direct RPC send confirms in the same step and reports `sending` only). Failures still reject as described under [Outcomes](#outcomes). In React, `useWalletStandardWallet` from `@usearete/react/wallet-standard` wraps this for a `@wallet-standard/react` account.
+
 The account must advertise `solana:signTransaction`, and that feature must advertise the version being signed. `solana:signAndSendTransaction` is never read as evidence of sign-only support: it cannot hand signed bytes back for Arete to relay. A wallet that advertises only `legacy`/`0` refuses a V1 transaction before the user is prompted. Returned bytes are decoded with kit's V1-capable codec and rejected if the wallet changed the message or omitted the account's signature.
 
 **External-wallet V1 is unverified against a released wallet.** As of Kit 8, the upstream Wallet Standard `signTransaction` feature still types `supportedTransactionVersions` as `legacy | 0`, and Anza's Phantom adapter advertises only `legacy`/`0`. The bridge is covered by controlled wallet fixtures and real codecs; a smoke test against an actual released wallet is tracked separately. Local keypair signers are verified end to end.
