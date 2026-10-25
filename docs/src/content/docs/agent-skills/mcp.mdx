@@ -445,6 +445,14 @@ reference `protocol`.
 See [Protocols for agents](/agent-skills/protocols/) for the flow, the
 summary and the signer config.
 
+`protocol_check` (arguments `dir?` or `spec?`) runs Arete's own upload
+checks on a built protocol release without uploading it: the expression type
+checks, and the template checks against the pinned program specs. It reads
+`<dir>/.arete/protocol/` (`protocol-spec.json`, plus `handlers.mjs` when a
+step has a handler) or takes an inline `spec`, and returns `passed`. A
+rejection lists `errors`, each with the spec `path` (a JSON pointer), `code`
+and `message`. It stores nothing and needs a secret key.
+
 #### Account Squads tools
 
 A production deployment of a protocol with Squads steps is refused

@@ -463,6 +463,80 @@ impl ProtocolApi {
         Ok(body)
     }
 
+    /// Run the upload's checks on a release body (the spec, plus the
+    /// handler bundle when a step has a handler) with the API key, storing
+    /// nothing. A rejection is an outcome:
+    /// `{passed: false, status, code, error, errors, templateCheck?}`; an
+    /// accepted release is the server's check body with `passed: true`. A
+    /// success without a release hash and template check status is an error,
+    /// never a pass.
+    pub async fn check_release(&self, spec: &Value, bundle_base64: Option<&str>) -> Result<Value> {
+        let mut body = json!({ "spec": spec });
+        if let Some(bundle) = bundle_base64 {
+            body["bundleBase64"] = json!(bundle);
+        }
+        let (status, mut response) = self
+            .api_json(
+                reqwest::Method::POST,
+                "/protocols/check",
+                &self.key,
+                Some(body),
+            )
+            .await?;
+        if status.is_success() {
+            let is_check_result = response
+                .get("releaseHash")
+                .and_then(Value::as_str)
+                .is_some_and(|hash| !hash.is_empty())
+                && matches!(
+                    response.get("templateCheck").and_then(Value::as_str),
+                    Some("passed" | "pending")
+                );
+            match response.as_object_mut() {
+                Some(object) if is_check_result => {
+                    object.insert("passed".into(), json!(true));
+                    return Ok(response);
+                }
+                _ => bail!(
+                    "The release check answered {status} without a release hash and template check status; check ARETE_API_URL"
+                ),
+            }
+        }
+        if status == reqwest::StatusCode::BAD_REQUEST && response.is_object() {
+            let errors = response
+                .get("errors")
+                .filter(|errors| errors.is_array())
+                .or_else(|| response.pointer("/templateCheck/errors"))
+                .cloned()
+                .unwrap_or_else(|| json!([]));
+            let mut outcome = json!({
+                "passed": false,
+                "status": status.as_u16(),
+                "code": response.get("code").cloned().unwrap_or(Value::Null),
+                "error": response.get("error").cloned().unwrap_or(Value::Null),
+                "errors": errors,
+            });
+            for detail in ["templateCheck", "document", "contractCode", "path"] {
+                if let Some(value) = response.get(detail) {
+                    outcome[detail] = value.clone();
+                }
+            }
+            return Ok(outcome);
+        }
+        if status == reqwest::StatusCode::NOT_FOUND && response.get("code").is_none() {
+            bail!("This Arete API has no release check route yet; upload the release to run its checks");
+        }
+        let message = response
+            .get("error")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| response.to_string());
+        match response.get("code").and_then(Value::as_str) {
+            Some(code) => bail!("The release check failed ({status}, {code}): {message}"),
+            None => bail!("The release check failed ({status}): {message}"),
+        }
+    }
+
     /// The calling account's Squads proposer for `deployment`:
     /// `{pubkey, permissions: "initiate", rootKeyId}`.
     pub async fn squads_proposer(&self, deployment: &str) -> Result<Value> {

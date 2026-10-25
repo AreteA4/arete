@@ -142,7 +142,7 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
 | Subscription | `subscribe`, `unsubscribe`, `list_subscriptions` | Per connection |
 | Cache | `get_entity`, `list_entities`, `get_recent`, `query_entities` | Per subscription |
-| Protocols | `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_squads_proposer`, `protocol_squads_status`, `squads_status`, `squads_attach`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
+| Protocols | `protocol_check`, `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_squads_proposer`, `protocol_squads_status`, `squads_status`, `squads_attach`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
 | Health | `ping` | None |
 
 ### Discovery
@@ -452,6 +452,11 @@ Act on a protocol deployment: find what a wallet can do, prepare a step,
 sign it outside the server, submit it. Name the deployment with `deployment`
 or a package reference `protocol`; `dev: true` targets the project's dev deployment.
 
+- `protocol_check({ dir? | spec? })` — runs Arete's upload checks (expression
+  types, templates against their pinned program specs) on a built release
+  without uploading it. `passed`, or the upload's `code` and `errors`, each
+  with the spec `path`, `code` and `message`. Stores nothing; needs a secret
+  key.
 - `protocol_actions({ wallet, deployment? | protocol?, instance?, cursor? })` —
   create steps and the instances the wallet relates to, each step with
   `allowed`, `reason`, `scope`, typed `args` and `argsDependent`.

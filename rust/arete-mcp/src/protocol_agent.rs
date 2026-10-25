@@ -315,6 +315,52 @@ impl ProtocolAgent {
     /// `protocol_squads_proposer`: the calling account's Squads proposer for
     /// the deployment, with its SOL balance when an RPC is available
     /// (`rpc_url`, else the target's).
+    /// `protocol_check`: the server's upload checks on a built release
+    /// (`<dir>/.arete/protocol/`) or an inline spec, storing nothing. Always
+    /// against Arete's API: a dev session has no separate checker.
+    pub async fn check(&self, dir: Option<&str>, spec: Option<Value>) -> Result<Value> {
+        let (spec, bundle, source) = match (spec, dir) {
+            (Some(_), Some(_)) => {
+                return Err(invalid("Pass `spec` or `dir`, not both."));
+            }
+            (Some(spec), None) => (spec, None, "spec".to_string()),
+            (None, dir) => {
+                let build = Path::new(dir.unwrap_or(".")).join(".arete/protocol");
+                let spec_path = build.join("protocol-spec.json");
+                let text = std::fs::read_to_string(&spec_path).map_err(|error| {
+                    invalid(format!(
+                        "Cannot read {} ({error}). Build the protocol first: `npx arete-protocol build` in the project, or pass `spec`.",
+                        spec_path.display()
+                    ))
+                })?;
+                let spec: Value = serde_json::from_str(&text)
+                    .with_context(|| format!("{} is not JSON", spec_path.display()))?;
+                let bundle = match std::fs::read(build.join("handlers.mjs")) {
+                    Ok(bytes) => Some(base64::engine::general_purpose::STANDARD.encode(bytes)),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error).context("Cannot read handlers.mjs"),
+                };
+                (spec, bundle, spec_path.display().to_string())
+            }
+        };
+        let target = self.target(&TargetArgs::default(), None)?;
+        let mut result = target.api.check_release(&spec, bundle.as_deref()).await?;
+        if let Some(object) = result.as_object_mut() {
+            object.insert("checked".into(), json!(source));
+            let next = if object.get("passed") == Some(&json!(true)) {
+                if object.get("templateCheck") == Some(&json!("pending")) {
+                    "The server accepts this release, but its template check is pending until the program specs in `missingProgramSpecs` reach Arete; activation waits for them."
+                } else {
+                    "The server accepts this release. Deploy it with `a4 protocol deploy`."
+                }
+            } else {
+                "The server would reject this release. Each entry of `errors` names the spec path (a JSON pointer), the code and the problem; fix them, rebuild and check again."
+            };
+            object.insert("next".into(), json!(next));
+        }
+        Ok(result)
+    }
+
     pub async fn squads_proposer(&self, args: &TargetArgs, rpc_url: Option<&str>) -> Result<Value> {
         let target = self.target(args, None)?;
         let deployment = self.deployment(&target, args, None).await?;

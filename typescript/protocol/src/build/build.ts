@@ -267,6 +267,23 @@ export async function checkProtocol(options: ProtocolBuildOptions): Promise<Chec
   };
 }
 
+/**
+ * What an upload (or the server's release check) takes for a checked
+ * protocol: the spec, plus the handler bundle as standard base64 when a step
+ * has a handler. The bundle is the one `buildProtocol` writes.
+ */
+export async function releaseUploadBody(
+  options: ProtocolBuildOptions,
+  checked: CheckResult,
+): Promise<{ spec: ProtocolSpecV1; bundleBase64?: string }> {
+  const spec = checked.lowered.spec;
+  if (Object.keys(checked.lowered.handlers).length === 0) return { spec };
+  const entry = resolve(options.entry);
+  const root = resolve(options.root ?? dirname(entry));
+  const bundle = await bundleHandlers(checked.lowered, entry, root, options.protocolModule ?? defaultProtocolModule());
+  return { spec, bundleBase64: Buffer.from(bundle.bytes).toString("base64") };
+}
+
 async function bundleHandlers(
   lowered: LoweredProtocol,
   entry: string,

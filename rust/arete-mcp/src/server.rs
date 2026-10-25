@@ -439,6 +439,19 @@ pub struct SquadsAttachArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProtocolCheckArgs {
+    /// Protocol project directory whose `.arete/protocol/` build to check
+    /// (default: the server's working directory). Give this or `spec`.
+    #[serde(default)]
+    pub dir: Option<String>,
+    /// A protocol spec (the built `protocol-spec.json` document) to check
+    /// instead of a project's build. Template-only specs only: a spec with
+    /// handler steps also needs its bundle, which `dir` reads.
+    #[serde(default)]
+    pub spec: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ProtocolInstancesArgs {
     /// Deployment id. Give this or `protocol`.
     #[serde(default)]
@@ -2609,6 +2622,30 @@ impl AreteMcp {
                 args.instance.as_deref(),
                 args.cursor.as_deref(),
             )
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Check a built protocol release against Arete's own checks without \
+                          uploading it: the expression type checks and the template checks \
+                          against the pinned program specs, exactly as an upload runs them. \
+                          Reads `dir`/.arete/protocol/ (protocol-spec.json, plus handlers.mjs \
+                          when a step has a handler), or takes an inline `spec`. Returns \
+                          `passed`; on rejection `code` and `errors`, each with the spec \
+                          `path` (a JSON pointer), `code` and `message`; when accepted, \
+                          the release hash an upload would derive and `templateCheck` \
+                          (`passed`, or `pending` with `missingProgramSpecs`). Stores \
+                          nothing. Needs a secret key (the a4 login or ARETE_API_KEY)."
+    )]
+    async fn protocol_check(
+        &self,
+        Parameters(args): Parameters<ProtocolCheckArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self
+            .protocols
+            .check(args.dir.as_deref(), args.spec)
             .await
             .map_err(protocol_error)?;
         shaped_result(&result)

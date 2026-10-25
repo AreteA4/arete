@@ -918,6 +918,8 @@ mod tests {
         let output = std::process::Command::new("node")
             .arg(&cli)
             .arg("check")
+            .arg("--offline")
+            .env_remove("ARETE_API_KEY")
             .current_dir(&root)
             .output()
             .unwrap();

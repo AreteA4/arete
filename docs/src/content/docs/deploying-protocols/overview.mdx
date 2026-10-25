@@ -19,6 +19,12 @@ npx arete-protocol build
 a4 protocol deploy --dry-run
 ```
 
+`arete-protocol check` alone checks syntax and names. With your login,
+`a4 protocol deploy --dry-run` runs Arete's own upload checks on the build
+(expression types, and templates against the pinned program specs) without
+uploading it. It fails with each error's spec path if Arete would reject the
+release.
+
 Choose resource values and a fee policy. Configure them with flags or the
 project's `arete.toml`:
 

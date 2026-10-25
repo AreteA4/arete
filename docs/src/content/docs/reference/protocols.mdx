@@ -28,6 +28,14 @@ npx arete-protocol build [protocol.ts] --out .arete/protocol
 
 Brackets indicate optional arguments, not literal shell syntax. `--server-release`
 selects server release derivation when needed for comparing release identities.
+
+`check` runs local checks for syntax and names. With a secret key in
+`ARETE_API_KEY`, it also runs Arete's own upload checks (expression types,
+and templates against their pinned program specs) without uploading
+anything. It prints each rejection's spec path, message and code. Pass
+`--remote` to require the server check, or `--offline` to skip it.
+`a4 protocol deploy --dry-run` runs the same server check with your `a4`
+login, and so does the MCP tool `protocol_check`.
 Normal development uses `a4 dev up`; production uses `a4 protocol deploy`.
 
 ## TypeScript protocol client
