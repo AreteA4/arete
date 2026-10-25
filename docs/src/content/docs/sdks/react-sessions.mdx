@@ -1,0 +1,569 @@
+---
+title: Compose a session in React
+description: One createSession session for a React app's stacks, programs, and protocols, with live views, program reads, Wallet Standard signing, and typed wallet errors.
+---
+
+A session ([`createSession`](/sdks/typescript/#create-a-session)) puts stacks,
+standalone programs, and protocols behind one auth and one wallet. This guide
+builds a React app on one session: a live view from its stack, a program
+account read, a transaction signed by a Wallet Standard wallet, and a protocol
+panel. Each snippet is one file of the app, named in its first line.
+
+## A session or `useArete(stack)`
+
+Use `useArete(stack)` under an `AreteProvider` on its own when the app reads
+one or more stacks and signs with the stacks' generated mutation hooks. The
+provider connects each stack the first time a component asks for it, and
+sibling calls share the connection. The [React SDK](/sdks/react/) page covers
+that path.
+
+Use a session when the app needs any of these:
+
+- a standalone program, or a protocol, next to its stacks;
+- one wallet for every member, set in one place;
+- operations run with `session.execute`, including flows and operations that
+  create their own signers;
+- the same session object outside React, for example in a data loader or a
+  test.
+
+A session's stacks are still read through `useArete`: pass the member
+(`session.stacks.<key>`) instead of the stack definition. The hooks are the
+same, and nothing connects a second time.
+
+## Install
+
+```bash
+npm install @usearete/react @usearete/sdk zod
+# Wallet Standard signing:
+npm install @usearete/adapter-kit @solana/kit \
+  @wallet-standard/react @wallet-standard/ui-registry
+```
+
+`@usearete/adapter-kit` and the Wallet Standard packages are optional peers of
+`@usearete/react`. Only the `@usearete/react/wallet-standard` entry point needs
+them. Keep `@usearete/react`, `@usearete/sdk`, and `@usearete/adapter-kit` on
+the same release.
+
+## Define the session
+
+Install the packages the app uses ([Install a stack](/using-stacks/installation/),
+[Integrate a protocol](/integrating-protocols/overview/)), then name each one
+in a session definition. Declare it at module level, so its identity never
+changes between renders:
+
+```ts
+// src/arete-session.ts
+import { ORE_STREAM_STACK } from "./generated/ore-stack";
+import { SQUADS_V4_PROGRAM } from "./generated/squads-v4";
+import TOKEN_RAISE from "./generated/typescript/protocols/token-raise/token-raise";
+
+// Module level, so its identity never changes between renders.
+export const APP = {
+  stacks: { ore: ORE_STREAM_STACK },
+  programs: { squads: SQUADS_V4_PROGRAM },
+  protocols: { raise: TOKEN_RAISE },
+};
+```
+
+The imports and keys are examples. Use the generated imports for the packages
+you installed. The keys become `session.stacks.ore`, `session.programs.squads`,
+and `session.protocols.raise`. Programs that a stack packages, such as ORE's
+`ore` program, are also promoted to `session.programs`. A protocol's own stacks
+and programs join `session.stacks` and `session.programs` too. See
+[Multiple stacks and programs](/sdks/typescript/#multiple-stacks-and-programs)
+for what happens when two of them claim one key.
+
+## Providers
+
+`AreteProvider` supplies `auth` and `fetch`. `AreteSessionProvider` opens the
+session with them and gives the session its wallet:
+
+```tsx
+// src/App.tsx
+import { useState } from "react";
+import type { UiWalletAccount } from "@wallet-standard/react";
+import { AreteProvider, AreteSessionProvider } from "@usearete/react";
+import { useWalletStandardWallet } from "@usearete/react/wallet-standard";
+import { APP } from "./arete-session";
+import { ClaimSol } from "./ClaimSol";
+import { LatestRound } from "./LatestRound";
+import { MinerAccount } from "./MinerAccount";
+import { RaisePanel } from "./RaisePanel";
+import { SessionBanner } from "./SessionBanner";
+import { WalletPicker, WalletProblem } from "./WalletPicker";
+
+const publishableKey = import.meta.env.VITE_ARETE_PUBLISHABLE_KEY;
+if (!publishableKey) throw new Error("VITE_ARETE_PUBLISHABLE_KEY is required");
+const auth = { publishableKey };
+
+export function App({ raiseId }: { raiseId: string }) {
+  const [account, setAccount] = useState<UiWalletAccount | null>(null);
+  const { wallet, address, isPromptOpen, error } = useWalletStandardWallet(
+    account,
+    { chain: "solana:mainnet" },
+  );
+
+  return (
+    <AreteProvider auth={auth}>
+      <AreteSessionProvider definition={APP} wallet={wallet}>
+        <WalletPicker onSelect={setAccount} />
+        {error && <WalletProblem error={error} />}
+        {isPromptOpen && <p>Approve the request in your wallet.</p>}
+        <SessionBanner />
+        <LatestRound />
+        <MinerAccount authority={address} />
+        <ClaimSol wallet={wallet} authority={address} />
+        <RaisePanel instanceId={raiseId} wallet={address} />
+      </AreteSessionProvider>
+    </AreteProvider>
+  );
+}
+```
+
+Browser code authenticates with an origin-bound publishable key; see
+[Connect](/using-stacks/connect/) for how to create one.
+
+How the session provider behaves:
+
+- **It owns the session.** It opens the session when it mounts and closes it
+  when it unmounts. Under React StrictMode in development it opens, closes, and
+  reopens once, like any effect.
+- **Auth comes from `AreteProvider`.** `options.auth` and `options.fetch`
+  default to the enclosing `AreteProvider`'s, so one `auth` drives both. Pass
+  `options` (the [`createSession` options](/sdks/typescript/#createsessiondefinition-options)
+  without `wallet`) for anything else, such as per-member overrides.
+  `AreteProvider` is optional: without one, put `auth` in `options`.
+- **A change reopens it.** A new definition or new options close the old
+  session at once and open a new one. `session` is `null` until the new one is
+  open. Options are compared by shape two levels deep, so an inline
+  `options={{ auth: { publishableKey } }}` does not reopen it on every render.
+  Functions such as `getToken` and `fetch` compare by identity, so keep them
+  stable.
+- **A shared session.** Pass `session={existing}` instead of `definition` to
+  share a session the app opened. The provider never closes it, and sets the
+  wallet on it only when you pass the `wallet` prop.
+
+### The wallet rules
+
+- The session provider's `wallet` prop is the session's wallet. Changing it
+  calls `session.setWallet`; it never reopens the session.
+- `AreteProvider`'s `wallet` prop does not reach session members. It is only
+  for stack clients that `AreteProvider` connects itself, through
+  `useArete(stack)`. Set the session's wallet on `AreteSessionProvider`.
+- Generated mutation hooks on a session stack sign with the session's wallet.
+- `useOperationMutation` signs only with the wallet you pass it. Without one, a
+  run fails with `not-ready` before anything is prepared. Set
+  `allowExecutorWallet: true` to sign with the session's wallet instead.
+
+## Connect a Wallet Standard wallet
+
+`useWalletStandardWallet(account, { chain })` turns the account a user
+connected with `@wallet-standard/react` into the wallet Arete signs with. It is
+sign-only: the wallet signs with `solana:signTransaction`, and Arete submits
+the signed bytes through the session's transaction transport. Wallets that
+implement Wallet Standard register themselves, so the app never imports
+wallet-specific adapters:
+
+```tsx
+// src/WalletPicker.tsx
+import {
+  useConnect,
+  useWallets,
+  type UiWallet,
+  type UiWalletAccount,
+} from "@wallet-standard/react";
+import type { WalletStandardSignerError } from "@usearete/react/wallet-standard";
+
+export function WalletPicker({
+  onSelect,
+}: {
+  onSelect: (account: UiWalletAccount) => void;
+}) {
+  const wallets = useWallets().filter((wallet) =>
+    wallet.chains.includes("solana:mainnet"),
+  );
+  return (
+    <ul>
+      {wallets.map((wallet) => (
+        <li key={wallet.name}>
+          <ConnectButton wallet={wallet} onSelect={onSelect} />
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function ConnectButton({
+  wallet,
+  onSelect,
+}: {
+  wallet: UiWallet;
+  onSelect: (account: UiWalletAccount) => void;
+}) {
+  const [isConnecting, connect] = useConnect(wallet);
+  const choose = async () => {
+    const [account] = await connect();
+    if (account) onSelect(account);
+  };
+  return (
+    <button disabled={isConnecting} onClick={() => void choose()}>
+      {wallet.name}
+    </button>
+  );
+}
+
+export function WalletProblem({ error }: { error: WalletStandardSignerError }) {
+  switch (error.code) {
+    case "sign_transaction_unsupported":
+      return <p>This wallet can't sign without sending. Choose another wallet.</p>;
+    case "chain_unsupported":
+      return <p>Switch your wallet to Solana mainnet.</p>;
+    case "account_unavailable":
+      return <p>The wallet account is no longer available. Connect it again.</p>;
+    default:
+      return <p>{error.message}</p>;
+  }
+}
+```
+
+The hook returns:
+
+- `wallet`: the sign-only adapter. It is `undefined` until an account is
+  connected, and when the account cannot sign for Arete. It stays the same
+  object while the account, chain, and transport stay the same.
+- `address`: the connected account's address, or `null`.
+- `isPromptOpen`: true while the wallet's approval prompt is open for the
+  current account.
+- `error`: why the account cannot sign, as a `WalletStandardSignerError`.
+
+| `error.code`                   | Meaning                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------- |
+| `sign_transaction_unsupported` | The wallet lacks `solana:signTransaction`; it only signs and sends in one step. |
+| `chain_unsupported`            | The account does not list `chain`, for example a devnet account.                |
+| `account_unavailable`          | The account could not be read, or its wallet is no longer registered.           |
+
+A declined prompt is not an `error` here. It fails that run with
+`wallet-rejected`, and the wallet stays usable. `useWalletStandardWallet` also
+accepts a raw `{ wallet, account }` pair from the Wallet Standard registry.
+Outside React, `createWalletStandardWalletAdapter` from `@usearete/adapter-kit`
+does the same; see the
+[adapter README](https://github.com/AreteA4/arete/tree/main/typescript/adapters/kit#external-wallets-wallet-standard).
+
+## Session status
+
+`useAreteSession()` returns `{ session, status, error, ready, retry }`:
+
+- `status` is `opening`, `open`, or `error`.
+- `session` is `null` until the session is open, after a failure, and while
+  it reopens.
+- `ready()` resolves with the session once it is open, waiting through a
+  reopen, and rejects when opening fails. It is stable, so it is safe in
+  callbacks and dependency arrays.
+- `retry()` opens the session again after a failure.
+
+```tsx
+// src/SessionBanner.tsx
+import { useAreteSession } from "@usearete/react";
+
+export function SessionBanner() {
+  const { status, error, retry } = useAreteSession();
+  if (status === "opening") return <p>Connecting…</p>;
+  if (status === "error") {
+    return (
+      <p role="alert">
+        Could not connect: {error?.message}{" "}
+        <button onClick={retry}>Try again</button>
+      </p>
+    );
+  }
+  return null;
+}
+```
+
+Pass the definition type for typed members: `useAreteSession<typeof APP>()`.
+`useAreteSession` throws outside an `AreteSessionProvider`.
+
+## Live views from a session stack
+
+Pass the stack member to `useArete`. While the session opens, the member is
+`undefined`, so pass the stack definition as `stack` too. It supplies the
+placeholder views, programs, addresses, and constants until the member exists:
+
+```tsx
+// src/LatestRound.tsx
+import { useArete, useAreteSession } from "@usearete/react";
+import { APP } from "./arete-session";
+
+export function LatestRound() {
+  const { session } = useAreteSession<typeof APP>();
+  // `session` is null while it opens; `stack` supplies the placeholders.
+  const ore = useArete(session?.stacks.ore, { stack: APP.stacks.ore });
+  const round = ore.views.OreRound.latest.useOne();
+
+  if (ore.status === "error") {
+    return <button onClick={() => void ore.retry()}>Reconnect</button>;
+  }
+  if (round.status !== "ready") return <p>Loading the round…</p>;
+  if (round.isEmpty) return <p>No round yet.</p>;
+  return <p>Round {round.data.id.roundId?.toString() ?? "unavailable"}</p>;
+}
+```
+
+The result is the same as `useArete(stack)`'s: `views`, `programs`, `read`,
+`queries`, `chain`, `status`, and `retry()`. The differences:
+
+- **One connection.** The hooks use the member's own connection and store.
+  An enclosing `AreteProvider` opens nothing for it.
+- **The session owns it.** Unmounting never disconnects the member; closing the
+  session does. If the session fails to open, `status` is `'error'` and
+  `retry()` reopens the session.
+- **A reopen gives a new member.** The hooks drop the old one and subscribe on
+  the new one.
+- **No connection options.** The hooks read the member's `stack` and
+  `transport`. Generated mutation hooks wait for the streamed slot they landed
+  in only when the member's `transport` is `'ws'`. To connect a member over
+  HTTP, set `transport` in the session options. TypeScript requires `stack`
+  whenever the member can be `null` or `undefined`, and leaves it optional for
+  a member that always exists.
+
+## Program reads with `useAsyncRead`
+
+Account readers such as `accounts.Miner.fetch` are async functions, not hooks.
+`useAsyncRead(key, read, options)` runs one for React: it reruns when the key
+changes, never shows data from a previous key, and aborts a superseded request.
+Read from `session.programs`, which holds standalone programs and the programs
+that stacks package:
+
+```tsx
+// src/MinerAccount.tsx
+import { useAreteSession, useAsyncRead } from "@usearete/react";
+import { APP } from "./arete-session";
+
+export function MinerAccount({ authority }: { authority: string | null }) {
+  const { session } = useAreteSession<typeof APP>();
+  const ore = session?.programs.ore;
+
+  const miner = useAsyncRead(
+    ["ore-miner", authority],
+    async () => {
+      if (!ore || !authority) return null;
+      return ore.accounts.Miner.fetch(ore.addresses.miner(authority));
+    },
+    {
+      enabled: Boolean(ore && authority),
+      disabledStatus: ore ? "disabled" : "connecting",
+    },
+  );
+
+  if (!authority) return <p>Connect a wallet to see your miner.</p>;
+  if (miner.status === "error") return <p role="alert">{miner.error?.message}</p>;
+  if (miner.isPending) return <p>Loading your miner…</p>;
+  if (miner.isEmpty) return <p>No miner account yet.</p>;
+  return <p>Unclaimed SOL (lamports): {miner.data?.rewardsSol.toString()}</p>;
+}
+```
+
+`enabled` holds the read until the session is open and a wallet is connected.
+`disabledStatus: "connecting"` reports a read that waits for the session as
+`connecting` rather than `disabled`. The result has `data`, `error`, `status`,
+`isPending`, `isReady`, `isEmpty`, and `refresh()`; call `refresh()` after a
+transaction changes the account. Stack extension reads already have hooks:
+`ore.read.<name>.use(...)` on the `useArete` result. See
+[Program Read](/using-programs/program-reads/) for the read surface.
+
+## Transactions with `useOperationMutation`
+
+`useOperationMutation(prepare, options)` runs any prepared instruction,
+transaction, or flow with `session.execute`, and reports where the run is.
+Inside an `AreteSessionProvider` it runs on the provider's session, waiting
+for it to open, so `executor` can be left out. Use `ready()` inside `prepare`
+to reach the open session:
+
+```tsx
+// src/ClaimSol.tsx
+import {
+  useAreteSession,
+  useOperationMutation,
+  type OperationMutationError,
+  type WalletAdapter,
+} from "@usearete/react";
+import { APP } from "./arete-session";
+
+export function ClaimSol({
+  wallet,
+  authority,
+}: {
+  wallet: WalletAdapter | undefined;
+  authority: string | null;
+}) {
+  const { ready } = useAreteSession<typeof APP>();
+  const claim = useOperationMutation(
+    async (input: { authority: string }) => {
+      const session = await ready();
+      return session.programs.ore.instructions.rewards.claimSol.prepare(input);
+    },
+    { wallet },
+  );
+
+  if (!authority) return null;
+  return (
+    <section>
+      <button
+        disabled={!wallet || claim.isBusy}
+        onClick={() => claim.mutate({ authority })}
+      >
+        Claim SOL
+      </button>
+      {claim.isAwaitingWallet && <p>Approve the request in your wallet.</p>}
+      {claim.status === "sending" && <p>Sending…</p>}
+      {claim.status === "confirming" && <p>Confirming…</p>}
+      {claim.status === "done" && <p>Claimed in {claim.signatures[0]}.</p>}
+      {claim.error && <p role="alert">{describe(claim.error)}</p>}
+    </section>
+  );
+}
+
+function describe(error: OperationMutationError): string {
+  switch (error.kind) {
+    case "not-ready":
+      return "Connect a wallet first.";
+    case "wallet-rejected":
+      return "You declined the request.";
+    case "wallet-feature-unsupported":
+      return "This wallet can't sign without sending. Choose another wallet.";
+    case "wallet-chain-unsupported":
+      return "Switch your wallet to Solana mainnet.";
+    case "wallet-version-unsupported":
+      return "This wallet doesn't support this transaction version.";
+    case "wallet-modified":
+      return "The wallet changed the transaction, so it was not sent.";
+    case "submitted-unknown":
+      return `Sent, but not confirmed yet. Check ${error.signature} before trying again.`;
+    case "chain-failed":
+      return error.programError?.message ?? "The transaction failed on chain.";
+    default:
+      return error.message;
+  }
+}
+```
+
+The `wallet` is the one `useWalletStandardWallet` returned, passed down from
+`App`. A run can also take one: `claim.run(input, { wallet })`.
+
+`status` walks `idle` → `preparing` → `signing` → `sending` → `confirming` →
+`done`, or ends in `error`. A flow walks `signing` → `sending` → `confirming`
+once per transaction (`transactionIndex` of `transactionCount`). The
+`@usearete/adapter-kit` adapters report `sending` and `confirming`; other
+wallets stay `signing` until the transaction confirms. `isAwaitingWallet` is
+true while a prompt can be open, and `isBusy` while a run is in progress. A
+second run while one is in progress fails with `busy`, so a double click never
+opens two prompts.
+
+`mutate()` keeps the failure in `error`. `run()` returns the receipt and
+rejects with the same error, for code that awaits the result. When `prepare`
+creates signers, such as a create key, return `{ operation, signers }`.
+
+| `error.kind`                 | Meaning                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| `busy`                       | A run of this hook is already in progress; nothing was started.            |
+| `not-ready`                  | No session or no wallet yet; nothing was prepared or signed.               |
+| `prepare-failed`             | `prepare` threw; nothing was signed.                                       |
+| `wallet-rejected`            | The user declined or closed the wallet prompt.                             |
+| `wallet-feature-unsupported` | The wallet cannot sign without sending (no `solana:signTransaction`).      |
+| `wallet-chain-unsupported`   | The wallet does not sign for the chain it was asked to.                    |
+| `wallet-version-unsupported` | The wallet signs, but not this transaction version.                        |
+| `wallet-modified`            | The wallet changed the transaction, so it was not sent.                    |
+| `not-submitted`              | Failed before anything reached the chain.                                  |
+| `submitted-unknown`          | Sent, but the confirmation did not arrive; check the chain before a retry. |
+| `chain-failed`               | Failed on chain; see `programError`.                                       |
+
+The error also carries `failure`, `signature`, `programError`, and
+`completedSignatures`, the signatures of a flow's transactions that confirmed
+before it failed. `toOperationMutationError(error)` classifies a failure from
+an imperative `session.execute` the same way.
+
+### Generated mutation hooks on a session stack
+
+`useArete(session?.stacks.ore, { stack })` also returns the stack's generated
+`.useMutation()` hooks, for example
+`ore.programs.ore.transactions.rewards.claimSolWithCheckpoint.useMutation()`.
+They sign with the session's wallet and reconcile with the live views after
+confirmation, as described in [Mutations](/sdks/react/#mutations). Use them for
+stack operations whose views should refresh. Use `useOperationMutation` for
+standalone programs, flows, operations that create signers, or when you want
+the typed error kinds above.
+
+## Protocols in the session
+
+Protocol hooks take a protocol client, and `session.protocols.<key>` is one. It
+is `undefined` while the session opens, and the hooks wait until it exists:
+
+```tsx
+// src/RaisePanel.tsx
+import {
+  useAllowedSteps,
+  useAreteSession,
+  useProtocolInstance,
+} from "@usearete/react";
+import { APP } from "./arete-session";
+
+export function RaisePanel({
+  instanceId,
+  wallet,
+}: {
+  instanceId: string;
+  wallet: string | null;
+}) {
+  const { session } = useAreteSession<typeof APP>();
+  // Undefined while the session opens; the hooks wait for it.
+  const raise = session?.protocols.raise;
+  const { instance, live, isLoading, error } = useProtocolInstance(
+    raise,
+    instanceId,
+    { wallet },
+  );
+  const steps = useAllowedSteps(
+    raise,
+    { instance: instanceId, wallet },
+    { refreshOnEvents: true },
+  );
+
+  if (error) return <p role="alert">{error.message}</p>;
+  if (!raise || isLoading) return <p>Loading the raise…</p>;
+  return (
+    <section>
+      <p>State: {instance?.state}</p>
+      {live !== undefined && <p>Live data connected.</p>}
+      {steps.error ? (
+        <p role="alert">Could not load actions: {steps.error.message}</p>
+      ) : (
+        <ul>
+          {steps.data?.map((step) => (
+            <li key={step.step}>
+              {step.step}: {step.allowed ? "available" : step.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
+  );
+}
+```
+
+In a session, `live` holds the protocol stack's row, because the session
+connects that stack. Protocol steps run through the protocol client's own
+prepare, sign, and submit flow, not `useOperationMutation`; see
+[Execute and track a step](/integrating-protocols/execution/). A
+publishable-key session has only the protocol's `public` steps. See
+[Build a protocol interface with React](/integrating-protocols/react/) for
+the other protocol hooks.
+
+## Next steps
+
+- [React SDK](/sdks/react/): `useArete`, views, reads, and generated mutations
+- [TypeScript SDK](/sdks/typescript/): `createSession` options and the session
+  surface
+- [Transactions](/using-stacks/transactions/): transports, inspection, and
+  failure outcomes
+- [React SDK README](https://github.com/AreteA4/arete/tree/main/typescript/react#sessions-aretesessionprovider-and-usearetesession):
+  the full hook reference
