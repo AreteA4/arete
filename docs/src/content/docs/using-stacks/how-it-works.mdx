@@ -43,7 +43,8 @@ The catalog lists programs and stacks along with their concepts, categories,
 verified SDK targets, and the modes each one supports:
 
 - `read` for typed program accounts and general chain state;
-- `build` for instructions, transactions, and flows; and
+- `build` for instructions, transactions, and flows (the package has
+  instruction builders; it says nothing about use in protocols); and
 - `subscribe` for hosted current-state and live views.
 
 A search result is not an SDK schema. Once the agent has a candidate,
@@ -63,6 +64,15 @@ A project can declare:
 - stacks containing live views and their programs;
 - more than one SDK target; and
 - local or workspace-authored artifacts where that makes sense.
+
+Each dependency is resolved for its own SDK targets: its `targets`, else the
+project's `[sdk] targets`. Not every package publishes every target. When a
+new dependency would need one its catalog entry doesn't list, `a4 install`
+stops before resolving anything and names the fix: install it with `--ts`,
+or set its `targets`. The catalog entry describes the package's current
+release, so this check applies when you install that release; a requested
+version it doesn't satisfy is left to the resolver. `a4 protocol init` sets `[sdk] targets = ["typescript"]`,
+since a protocol project is TypeScript.
 
 Generation is all-or-nothing. The outputs and the lockfile are committed
 together, and only after the complete set of dependencies validates.

@@ -332,6 +332,19 @@ fn add_to_manifest_and_install(
             ),
         }
     }
+    if existing.is_none() {
+        let targets = options
+            .target
+            .map(|target| vec![target])
+            .unwrap_or_else(|| manifest.sdk.targets.clone());
+        preflight_sdk_targets(
+            kind,
+            &package,
+            &alias,
+            supplied_requirement.as_deref(),
+            &targets,
+        )?;
+    }
     let requirement = match supplied_requirement {
         Some(requirement) => {
             semver::VersionReq::parse(&requirement)
@@ -350,6 +363,96 @@ fn add_to_manifest_and_install(
         DependencySourceV1::Registry(RegistrySourceV1 { registry: package }),
         Some(requirement),
         &options,
+    )
+}
+
+/// Before anything is resolved or written, check a new program or stack
+/// against the SDK targets its catalog entry publishes. Every package
+/// publishes TypeScript, so only a Rust or Python target is looked up. A
+/// package outside the public catalog, or a failed lookup, is left to the
+/// resolver. SDK targets belong to a release, and the entry describes its
+/// active release, so a requested version that release doesn't satisfy is
+/// left to the resolver too.
+fn preflight_sdk_targets(
+    kind: DependencyKind,
+    package: &str,
+    alias: &str,
+    requirement: Option<&str>,
+    targets: &[InstallTarget],
+) -> Result<()> {
+    if kind == DependencyKind::Protocol
+        || targets
+            .iter()
+            .all(|target| *target == InstallTarget::TypeScript)
+    {
+        return Ok(());
+    }
+    // An invalid requirement is reported after this check.
+    let requirement = match requirement.map(semver::VersionReq::parse) {
+        Some(Ok(requirement)) => Some(requirement),
+        Some(Err(_)) => return Ok(()),
+        None => None,
+    };
+    let Ok(entry) =
+        ApiClient::new().and_then(|client| client.catalog_entry(kind.as_str(), package))
+    else {
+        return Ok(());
+    };
+    check_catalog_sdk_targets(kind, package, alias, requirement.as_ref(), targets, &entry)
+}
+
+/// Refuse `targets` a catalog entry's `sdkTargets` doesn't list, naming the
+/// package, what it publishes and the fix. Only when the entry's release is
+/// the one the install would get: no `requirement`, or one its `version`
+/// satisfies.
+fn check_catalog_sdk_targets(
+    kind: DependencyKind,
+    package: &str,
+    alias: &str,
+    requirement: Option<&semver::VersionReq>,
+    targets: &[InstallTarget],
+    entry: &serde_json::Value,
+) -> Result<()> {
+    if let Some(requirement) = requirement {
+        let version = entry["version"]
+            .as_str()
+            .and_then(|version| semver::Version::parse(version).ok());
+        if !version.is_some_and(|version| requirement.matches(&version)) {
+            return Ok(());
+        }
+    }
+    let published: Vec<&str> = entry["sdkTargets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|target| {
+            target
+                .as_str()
+                .or_else(|| target.get("target").and_then(serde_json::Value::as_str))
+        })
+        .collect();
+    if published.is_empty() {
+        return Ok(());
+    }
+    let missing: Vec<&str> = targets
+        .iter()
+        .map(|target| target.as_str())
+        .filter(|target| !published.contains(target))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let available = published
+        .iter()
+        .map(|target| format!("\"{target}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    bail!(
+        "{kind} '{package}' publishes no {} SDK (it publishes {}); nothing was installed. \
+         Install it for the targets it has, for example `a4 install {kind} {package} --ts`, \
+         or set `targets = [{available}]` under [dependencies.{kind}s.{alias}] in arete.toml",
+        missing.join(" or "),
+        published.join(", "),
     )
 }
 
@@ -2980,16 +3083,44 @@ fn resolve_registry_requests(
     manifest: &ProjectManifest,
     registry_requests: Vec<RegistryDependencyRequest>,
 ) -> Result<Vec<ResolvedProjectDependency>> {
-    let responses = resolve_registry_batch(
-        manifest.document.manifest_version,
-        &manifest.document.sdk.targets,
-        &registry_requests,
-        None,
-    )?;
+    // Each dependency is resolved for its own targets: one batch per
+    // distinct target set, so a TypeScript-only dependency is never asked
+    // for the project's other targets. A dependency with no targets of its
+    // own (or none at all) asks for the project's.
+    let mut groups: Vec<(Vec<InstallTarget>, Vec<usize>)> = Vec::new();
+    for (index, request) in registry_requests.iter().enumerate() {
+        let dependency = manifest
+            .dependency(request.kind, &request.alias)
+            .expect("request came from manifest");
+        let mut targets = dependency.selected_targets(&manifest.document.sdk).to_vec();
+        if targets.is_empty() {
+            targets = manifest.document.sdk.targets.clone();
+        }
+        targets.sort();
+        targets.dedup();
+        match groups.iter_mut().find(|(group, _)| *group == targets) {
+            Some((_, indices)) => indices.push(index),
+            None => groups.push((targets, vec![index])),
+        }
+    }
+    let mut responses: Vec<Option<ResolvedRegistryDependency>> =
+        registry_requests.iter().map(|_| None).collect();
+    for (targets, indices) in groups {
+        let batch: Vec<RegistryDependencyRequest> = indices
+            .iter()
+            .map(|index| registry_requests[*index].clone())
+            .collect();
+        let resolved =
+            resolve_registry_batch(manifest.document.manifest_version, &targets, &batch, None)?;
+        for (index, response) in indices.into_iter().zip(resolved) {
+            responses[index] = Some(response);
+        }
+    }
     Ok(registry_requests
         .into_iter()
         .zip(responses)
         .map(|(request, response)| {
+            let response = response.expect("every request is in one resolved batch");
             let dependency = manifest
                 .dependency(request.kind, &request.alias)
                 .expect("request came from manifest");
@@ -9943,6 +10074,153 @@ targets = ["typescript"]
         )
     }
 
+    /// A catalog entry publishing `targets`.
+    fn catalog_entry(targets: &[&str]) -> (u16, String) {
+        (
+            200,
+            json!({
+                "kind": "program",
+                "slug": "save",
+                "version": "1.0.0",
+                "sdkTargets": targets
+                    .iter()
+                    .map(|target| json!({ "target": target }))
+                    .collect::<Vec<_>>(),
+            })
+            .to_string(),
+        )
+    }
+
+    #[test]
+    fn a_typescript_only_program_in_a_rust_project_fails_before_resolving() {
+        let sandbox = RegistrySandbox::new(vec![catalog_entry(&["typescript"])], false);
+        let manifest = two_target_project(&sandbox);
+        let before = fs::read(&manifest).unwrap();
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "save",
+            AddDependencyOptions::default(),
+        )
+        .expect_err("save publishes no Rust SDK");
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("program 'save' publishes no rust SDK"),
+            "{text}"
+        );
+        assert!(text.contains("a4 install program save --ts"), "{text}");
+        assert!(text.contains("[dependencies.programs.save]"), "{text}");
+        // Only the catalog entry was read: nothing resolved, nothing written.
+        let request = sandbox.request();
+        assert!(
+            request
+                .request_line
+                .starts_with("GET /api/registry/v1/catalog/entries/program/save "),
+            "{}",
+            request.request_line
+        );
+        assert_eq!(fs::read(&manifest).unwrap(), before);
+        assert!(!manifest.with_file_name("arete.lock").exists());
+
+        // --ts asks for TypeScript only, which needs no lookup.
+        assert!(check_catalog_sdk_targets(
+            DependencyKind::Program,
+            "save",
+            "save",
+            None,
+            &[InstallTarget::TypeScript],
+            &json!({ "sdkTargets": ["typescript"] }),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn the_preflight_checks_only_the_release_the_install_would_get() {
+        let entry = json!({ "version": "2.0.0", "sdkTargets": ["typescript"] });
+        let check = |requirement: Option<&str>, entry: &Value| {
+            check_catalog_sdk_targets(
+                DependencyKind::Program,
+                "save",
+                "save",
+                requirement
+                    .map(|requirement| semver::VersionReq::parse(requirement).unwrap())
+                    .as_ref(),
+                &[InstallTarget::TypeScript, InstallTarget::Rust],
+                entry,
+            )
+        };
+        // The active release is the one requested, or the latest.
+        assert!(check(None, &entry).is_err());
+        assert!(check(Some("^2"), &entry).is_err());
+        // An older release may publish Rust: the resolver decides.
+        assert!(check(Some("^1.0.0"), &entry).is_ok());
+        assert!(check(Some("=1.4.0"), &entry).is_ok());
+        // Without a version the entry can't be matched to the request.
+        assert!(check(Some("^2"), &json!({ "sdkTargets": ["typescript"] })).is_ok());
+    }
+
+    #[test]
+    fn an_older_release_is_left_to_the_resolver() {
+        // The catalog entry's active release is 1.0.0. Resolution is then
+        // refused by the sandbox, which shows the preflight let it through.
+        let sandbox = RegistrySandbox::new(
+            vec![
+                catalog_entry(&["typescript"]),
+                (500, json!({"error": "resolver reached"}).to_string()),
+            ],
+            false,
+        );
+        let manifest = two_target_project(&sandbox);
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "save@^0.9.0",
+            AddDependencyOptions::default(),
+        )
+        .expect_err("the sandbox refuses resolution");
+        let text = format!("{error:#}");
+        assert!(!text.contains("publishes no rust SDK"), "{text}");
+        assert!(text.contains("resolver reached"), "{text}");
+    }
+
+    #[test]
+    fn each_dependency_is_resolved_for_its_own_targets() {
+        let sandbox = RegistrySandbox::new(
+            vec![
+                (200, program_resolution("save", "save", "1.0.0", 'd')),
+                (200, program_resolution("vote", "vote", "0.1.0", 'c')),
+            ],
+            false,
+        );
+        let manifest = two_target_project(&sandbox);
+        let mut text = fs::read_to_string(&manifest).unwrap();
+        text.push_str(
+            "\n[dependencies.programs.vote]\nsource = { registry = \"vote\" }\nversion = \"^0.1.0\"\n\
+             \n[dependencies.programs.save]\nsource = { registry = \"save\" }\nversion = \"^1.0.0\"\ntargets = [\"typescript\"]\n",
+        );
+        fs::write(&manifest, text).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("install both");
+        let mut sent = Vec::new();
+        for _ in 0..2 {
+            let body: Value = serde_json::from_str(&sandbox.request().body).unwrap();
+            sent.push((
+                body["dependencies"][0]["alias"]
+                    .as_str()
+                    .unwrap()
+                    .to_string(),
+                body["targets"].clone(),
+            ));
+        }
+        sent.sort_by(|left, right| left.0.cmp(&right.0));
+        assert_eq!(
+            sent,
+            vec![
+                ("save".to_string(), json!(["typescript"])),
+                ("vote".to_string(), json!(["typescript", "rust"])),
+            ]
+        );
+    }
+
     /// `[sdk].targets` TypeScript and Rust, and no dependencies yet.
     fn two_target_project(sandbox: &RegistrySandbox) -> PathBuf {
         let root = sandbox.dir.path().join("retarget-project");
@@ -10010,7 +10288,15 @@ targets = ["typescript"]
 
     #[test]
     fn narrowing_sdk_targets_removes_the_owned_output_a_dependency_no_longer_inherits() {
-        let sandbox = RegistrySandbox::new((0..2).map(|_| hosted_ore()).collect(), false);
+        // The new stack inherits Rust, so its catalog entry is read first.
+        let sandbox = RegistrySandbox::new(
+            vec![
+                catalog_entry(&["typescript", "rust"]),
+                hosted_ore(),
+                hosted_ore(),
+            ],
+            false,
+        );
         let manifest = two_target_project(&sandbox);
         let root = manifest.parent().unwrap().to_path_buf();
         add_ore(&manifest, None, None);
