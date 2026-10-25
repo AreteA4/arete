@@ -83,6 +83,11 @@ export interface JobOutcome {
 export interface StepProgress {
   /** Increments when an expired intent is prepared again. */
   readonly generation: number;
+  /**
+   * The args the step was prepared with, as the API received them (integers
+   * as decimal strings). Saved when the step is prepared.
+   */
+  readonly args?: Readonly<Record<string, unknown>>;
   readonly format?: ProtocolTransactionFormat;
   readonly intent?: ExecutionIntentV1;
   readonly prepared?: readonly ProtocolPreparedTransaction[];
@@ -146,4 +151,15 @@ export function stepJobId(deliveryId: string, request: Pick<StepRequest, 'step' 
  */
 export function prepareIdempotencyKey(jobId: string, generation: number): string {
   return `step:${bytesToHex(sha256(utf8ToBytes(jobId)))}:${generation}`;
+}
+
+/**
+ * Step args as the protocol API receives them: a JSON copy with bigints as
+ * decimal strings, as the protocol client sends them. `undefined` fields are
+ * dropped.
+ */
+export function preparedArgs(args: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return JSON.parse(
+    JSON.stringify(args, (_key, item: unknown) => (typeof item === 'bigint' ? item.toString(10) : item)),
+  ) as Record<string, unknown>;
 }

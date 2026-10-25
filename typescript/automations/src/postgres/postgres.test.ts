@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import { runStoreConformance } from '../store/conformance';
 import { fakeProtocol, feeOnlySimulator, policy, fakeClock, DEPLOYMENT } from '../test-support/fake-protocol';
 import { ALICE, BOB, storedGrant, walletsSigner } from '../test-support/harness';
-import { createAutomations } from '../runtime/automations';
+import { type AutomationOutcome, createAutomations } from '../runtime/automations';
 import { LATEST_SCHEMA_VERSION, migrationFiles, runtimeRoleGrants } from './migrations';
 import { postgresStore, SchemaVersionError } from './store';
 
@@ -342,5 +342,40 @@ suite('postgresStore: transactions and concurrency', () => {
     expect(states.filter(([, outcome]) => outcome === 'consent_window')).toHaveLength(1);
     expect(await store.ledger.spent({ wallet: ALICE, deploymentId: DEPLOYMENT, asset: 'SOL', since: 0 })).toBe(15000n);
     expect(fake.submitCalls).toHaveLength(3);
+  });
+
+  it('reads an outcome back with its args after a restart', async () => {
+    const store = await migratedStore();
+    const fake = fakeProtocol();
+    const clock = fakeClock();
+    await store.consent.put(storedGrant(ALICE, clock.now()));
+    const live: AutomationOutcome[] = [];
+    const options = {
+      client: fake.client,
+      signer: walletsSigner(),
+      policy,
+      simulator: feeOnlySimulator,
+      cluster: 'dev' as const,
+      clock,
+      trackInterval: '1s' as const,
+    };
+    const automations = createAutomations({ ...options, store, onOutcome: (outcome) => void live.push(outcome) }).on(
+      'deposit',
+      (_payload, ctx) => [ctx.step('deposit', { wallet: ALICE, instance: 'inst-1', args: { amount: 25_000_000n } })],
+    );
+    await automations.dispatch('deposit', {}, { id: 'd' });
+    await automations.drain();
+    expect(live).toHaveLength(1);
+    expect(live[0]).toMatchObject({ state: 'completed', args: { amount: '25000000' } });
+
+    // A new process: its own pool, store and runtime over the same schema.
+    const restartedPool = new pg.Pool({ connectionString: url, max: 2 });
+    try {
+      const restarted = createAutomations({ ...options, store: postgresStore(restartedPool, { schema: store.schema }) });
+      expect(await restarted.outcomes.get(live[0]!.jobId)).toEqual(live[0]);
+      expect(await restarted.outcomes.list({ wallet: ALICE })).toEqual(live);
+    } finally {
+      await restartedPool.end();
+    }
   });
 });

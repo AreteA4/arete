@@ -1,15 +1,17 @@
-import { signWebhook } from '@usearete/sdk';
-import { describe, expect, it } from 'vitest';
+import { deserialize, serialize } from 'node:v8';
+
+import { type ProtocolInteger, type ProtocolTypeMap, signWebhook } from '@usearete/sdk';
+import { describe, expect, expectTypeOf, it } from 'vitest';
 
 import type { Simulator } from '../policy/simulator';
 import type { ProtocolSigner } from '../signer/signer';
 import { SignerRefusal } from '../signer/signer';
 import { runStoreConformance } from '../store/conformance';
-import { memoryStore } from '../store/memory';
+import { memoryStore, memoryStoreState } from '../store/memory';
 import type { AutomationStore } from '../store/store';
 import { DEPLOYMENT, fakeProtocol, feeOnlySimulator, policy, stepKeyPrefix } from '../test-support/fake-protocol';
 import { ALICE, BOB, harness, SECRET, storedGrant, walletsSigner } from '../test-support/harness';
-import { clientCluster, createAutomations } from './automations';
+import { type AutomationOutcome, clientCluster, createAutomations } from './automations';
 import { scheduleSlot } from './time';
 import { prepareIdempotencyKey, stepJobId } from './types';
 
@@ -846,5 +848,86 @@ describe('the worker loop', () => {
     }
     await h.automations.stop();
     expect(h.outcomes[0]).toMatchObject({ state: 'completed' });
+  });
+});
+
+describe('outcome args', () => {
+  it('carries the args a deposit was prepared with, amounts as decimal strings', async () => {
+    const h = harness();
+    await h.grant(ALICE);
+    await h.grant(BOB);
+    h.automations.on('deposits', (_payload, ctx) => [
+      ctx.step('deposit', { wallet: ALICE, instance: 'inst-1', args: { amount: '25000000' } }),
+      ctx.step('deposit', { wallet: BOB, instance: 'inst-1', args: { amount: 7_500_000n, note: undefined } }),
+    ]);
+    await h.automations.dispatch('deposits', {}, { id: 't' });
+    await h.automations.drain();
+    const [alice, bob] = h.outcomes;
+    expect(alice).toMatchObject({ state: 'completed', step: 'deposit', wallet: ALICE, args: { amount: '25000000' } });
+    expect(alice!.args!.amount).toBe(h.fake.prepareCalls[0]!.input.amount);
+    // A bigint amount is reported as the decimal string the API received.
+    expect(bob!.args).toEqual({ amount: '7500000' });
+  });
+
+  it('keeps args on a step the protocol rejected after prepare', async () => {
+    const h = harness({ rejectPrepare: () => 'insufficient_balance' });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.rejected[0]).toMatchObject({ code: 'insufficient_balance', args: { amount: '1000' } });
+    expect(await h.automations.outcomes.get(h.rejected[0]!.jobId)).toEqual(h.rejected[0]);
+  });
+
+  it('has null args when the job ended before it was prepared', async () => {
+    const h = harness();
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.outcomes[0]).toMatchObject({ state: 'skipped', code: 'no_consent', args: null });
+  });
+
+  it('reads outcomes back from the store, and from a dev file store after a restart', async () => {
+    const h = harness();
+    await h.grant(ALICE);
+    await h.grant(BOB);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE, BOB] }, { id: 't' });
+    await h.automations.drain();
+    expect(await h.automations.outcomes.list()).toEqual(h.outcomes);
+    expect(await h.automations.outcomes.list({ wallet: BOB })).toEqual([h.outcomes[1]]);
+    // `a4 dev` saves the memory store's state to a file between runs.
+    const restored = memoryStore({ state: deserialize(serialize(memoryStoreState(h.store as ReturnType<typeof memoryStore>))) });
+    const restarted = harness({}, { store: restored }).automations;
+    expect(await restarted.outcomes.get(h.outcomes[0]!.jobId)).toEqual(h.outcomes[0]);
+    expect((await restarted.outcomes.get(h.outcomes[0]!.jobId))!.args).toEqual({ amount: '1000' });
+  });
+
+  it('is null for a job that has not finished', async () => {
+    const h = harness();
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.runOnce(); // the delivery job only
+    const [job] = await h.stepJobs();
+    expect(job!.state).toBe('queued');
+    expect(await h.automations.outcomes.get(job!.id)).toBeNull();
+    expect(await h.automations.outcomes.get('missing')).toBeNull();
+  });
+
+  it('types args per step from the client type map', () => {
+    interface Types extends ProtocolTypeMap {
+      readonly steps: {
+        readonly deposit: { scope: 'instance'; access: 'secret'; args: { amount: ProtocolInteger; venues: ProtocolInteger[] }; guardCode: never };
+        readonly close: { scope: 'instance'; access: 'secret'; args: Record<string, never>; guardCode: never };
+      };
+    }
+    const render = (outcome: AutomationOutcome<Types>) => {
+      if (outcome.step === 'deposit' && outcome.args) {
+        expectTypeOf(outcome.args.amount).toEqualTypeOf<string | undefined>();
+        expectTypeOf(outcome.args.venues).toEqualTypeOf<readonly string[] | undefined>();
+      }
+    };
+    expect(render).toBeTypeOf('function');
   });
 });

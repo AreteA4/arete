@@ -164,6 +164,40 @@ Every step ends in one of these states, reported to `onOutcome`:
 carries the step, wallet, instance and a `code`. A readable `reason` is
 optional; fall back to `code` when it is missing.
 
+An outcome also carries `args`: the args the step was prepared with, as the
+API received them, so integers such as amounts are decimal strings even when
+the handler passed a `bigint`. It is `null` when the job ended before it was
+prepared (a `skipped` step, a refusal before prepare, or a `failed` job whose
+prepare never answered). With a typed client, checking `step` narrows `args`
+to that step's args, so you can tell the user what ran without keeping the
+amount yourself:
+
+```ts
+import type { AutomationOutcome } from "@usearete/automations";
+
+const USDC_DECIMALS = 6;
+
+// VaultProtocolTypes: the type map `a4 install protocol` generated for your protocol.
+function describe(outcome: AutomationOutcome<VaultProtocolTypes>): string {
+  if (outcome.step === "deposit" && outcome.args?.amount !== undefined) {
+    const usdc = Number(outcome.args.amount) / 10 ** USDC_DECIMALS;
+    if (outcome.state === "completed") return `Deposited ${usdc} USDC`;
+    return `Deposit of ${usdc} USDC ${outcome.state}: ${outcome.reason ?? outcome.code}`;
+  }
+  return `${outcome.step} ${outcome.state}: ${outcome.reason ?? outcome.code}`;
+}
+
+createAutomations({ /* ... */ onOutcome: (outcome) => notifyUser(outcome.wallet, describe(outcome)) });
+```
+
+A deposit of `"25000000"` base units renders as "Deposited 25 USDC".
+
+Outcomes are kept in the store with their job, so you can read them back
+after a restart, or from another process: `automations.outcomes.get(jobId)`
+returns one (`null` while the job is still running), and
+`automations.outcomes.list({ wallet })` returns every final outcome the store
+still keeps for a wallet. `store.jobs.prune` removes them with their jobs.
+
 ## Crashes and retries
 
 - **Duplicate triggers.** A trigger with an id already seen is ignored, so

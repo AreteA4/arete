@@ -136,6 +136,26 @@ export function runStoreConformance(
       expect(saved.lease?.worker).toBe('w1');
     });
 
+    it("keeps a step's prepared args with its final outcome", async () => {
+      const store = await createStore();
+      const [id] = await seedSteps(store, 'd1', [step('d1', 'alice')]);
+      await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      const args = { amount: '25000000', memo: null, route: { venues: ['a', 'b'], slippageBps: 50 } };
+      expect(
+        await store.jobs.transition(id!, {
+          worker: 'w1',
+          from: 'running',
+          to: 'rejected',
+          now: T0 + 1,
+          outcome: { code: 'insufficient_balance' },
+          progress: { args },
+        }),
+      ).toBe(true);
+      const saved = (await store.jobs.get(id!)) as StepJob;
+      expect(saved.progress.args).toEqual(args);
+      expect(saved.outcome).toEqual({ code: 'insufficient_balance' });
+    });
+
     it('completes a delivery and creates its step jobs in one step', async () => {
       const store = await createStore();
       await store.deliveries.accept(delivery('d1'), T0);

@@ -54,10 +54,12 @@ import {
   type Job,
   type JobOutcome,
   prepareIdempotencyKey,
+  preparedArgs,
   type StepJob,
   type StepJobState,
   type StepRequest,
   stepJobId,
+  TERMINAL_STEP_STATES,
   type TriggerSource,
 } from './types';
 
@@ -145,21 +147,44 @@ export type Handler<TPayload, TTypes extends ProtocolTypeMap> = (
   ctx: HandlerContext<TTypes>,
 ) => readonly StepRequest[] | void | Promise<readonly StepRequest[] | void>;
 
-/** Where a step job ended, for notifications. */
-export interface AutomationOutcome {
+/** A step's args as an outcome carries them: integers (`string | bigint` in the client) are decimal strings. */
+export type PreparedStepArgs<TArgs> = TArgs extends bigint
+  ? string
+  : TArgs extends readonly (infer TItem)[]
+    ? readonly PreparedStepArgs<TItem>[]
+    : TArgs extends object
+      ? { readonly [K in keyof TArgs]: PreparedStepArgs<TArgs[K]> }
+      : TArgs;
+
+/** The outcome of one step, `TStep`, whose args are `TArgs`. */
+export interface AutomationStepOutcome<TStep extends string = string, TArgs = Record<string, unknown>> {
   readonly jobId: string;
   readonly deliveryId: string;
   readonly deploymentId: string;
-  readonly step: string;
+  readonly step: TStep;
   readonly wallet: string;
   readonly instanceId: string | null;
   readonly state: StepJobState;
   readonly code: string;
   readonly reason?: string;
   readonly detail?: unknown;
+  /**
+   * The args the step was prepared with, as the API received them (amounts
+   * as decimal strings). `null` when the job ended before it was prepared:
+   * skipped, refused before prepare, or failed before prepare answered.
+   */
+  readonly args: (Partial<PreparedStepArgs<TArgs>> & Readonly<Record<string, unknown>>) | null;
   readonly executionId: string | null;
   readonly signatures: readonly (string | null)[];
 }
+
+/**
+ * Where a step job ended, for notifications. With a typed client, `step`
+ * narrows `args` to that step's args.
+ */
+export type AutomationOutcome<TTypes extends ProtocolTypeMap = ProtocolTypeMap> = {
+  [S in StepName<TTypes>]: AutomationStepOutcome<S, TTypes['steps'][S]['args']>;
+}[StepName<TTypes>];
 
 export interface AutomationsOptions<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   readonly client: AutomationClient<TTypes>;
@@ -196,11 +221,11 @@ export interface AutomationsOptions<TTypes extends ProtocolTypeMap = ProtocolTyp
     readonly proofTtl?: Duration;
   };
   /** Every step job that reaches a final state. */
-  readonly onOutcome?: (outcome: AutomationOutcome) => void | Promise<void>;
+  readonly onOutcome?: (outcome: AutomationOutcome<TTypes>) => void | Promise<void>;
   /** Step jobs refused by the policy or the signer checks. */
-  readonly onRefused?: (outcome: AutomationOutcome) => void | Promise<void>;
+  readonly onRefused?: (outcome: AutomationOutcome<TTypes>) => void | Promise<void>;
   /** Step jobs the protocol rejected (a guard, an access or a state code). */
-  readonly onRejected?: (outcome: AutomationOutcome) => void | Promise<void>;
+  readonly onRejected?: (outcome: AutomationOutcome<TTypes>) => void | Promise<void>;
   /** Errors the runtime recovers from by retrying, and hook failures. */
   readonly onError?: (error: unknown, context: { jobId?: string; phase: string }) => void;
 }
@@ -300,6 +325,13 @@ export interface WebhookResult {
 
 export interface Automations<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   readonly consent: ConsentApi;
+  /** Outcomes of step jobs that reached a final state, read from the store (so they survive restarts). */
+  readonly outcomes: {
+    /** One step job's outcome; `null` while it runs or when the store has no such job. */
+    get(jobId: string): Promise<AutomationOutcome<TTypes> | null>;
+    /** Every final outcome the store still keeps (see `store.jobs.prune`), optionally for one wallet. */
+    list(filter?: { wallet?: string }): Promise<AutomationOutcome<TTypes>[]>;
+  };
   /** Handle an emitted protocol event. */
   on<E extends EventName<TTypes>>(event: E, handler: Handler<AutomationEvent<E, EventState<TTypes, E>>, TTypes>): this;
   /** Handle a dispatched trigger (a cron tick, a view source). */
@@ -389,6 +421,30 @@ function message(error: unknown): string {
 }
 
 /** Where a client's deployment runs: `dev` when `a4 dev` generated it, else `mainnet`. */
+/**
+ * A step job's outcome, from the job as the store keeps it. `null` while the
+ * job has not reached a final state.
+ */
+export function stepOutcome<TTypes extends ProtocolTypeMap = ProtocolTypeMap>(job: StepJob): AutomationOutcome<TTypes> | null {
+  if (!TERMINAL_STEP_STATES.includes(job.state) || job.outcome === null) return null;
+  const { outcome } = job;
+  return {
+    jobId: job.id,
+    deliveryId: job.deliveryId,
+    deploymentId: job.deploymentId,
+    step: job.request.step,
+    wallet: job.request.wallet,
+    instanceId: job.request.instance ?? null,
+    state: job.state,
+    code: outcome.code,
+    ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
+    ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
+    args: job.progress.args ?? null,
+    executionId: job.progress.intent?.executionId ?? null,
+    signatures: job.progress.signatures ?? [],
+  } as AutomationOutcome<TTypes>;
+}
+
 export function clientCluster(client: Pick<AutomationClient, 'definition'>): Cluster {
   // Read structurally: SDKs before the field carry it untyped.
   const deployment = client.definition?.deployment as { readonly environment?: string } | undefined;
@@ -586,22 +642,11 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     return total;
   };
 
-  const outcomeOf = (job: StepJob, state: StepJobState, outcome: JobOutcome): AutomationOutcome => ({
-    jobId: job.id,
-    deliveryId: job.deliveryId,
-    deploymentId: job.deploymentId,
-    step: job.request.step,
-    wallet: job.request.wallet,
-    instanceId: job.request.instance ?? null,
-    state,
-    code: outcome.code,
-    ...(outcome.reason !== undefined ? { reason: outcome.reason } : {}),
-    ...(outcome.detail !== undefined ? { detail: outcome.detail } : {}),
-    executionId: job.progress.intent?.executionId ?? null,
-    signatures: job.progress.signatures ?? [],
-  });
+  // `finish` only moves jobs to final states, so there is always an outcome.
+  const outcomeOf = (job: StepJob, state: StepJobState, outcome: JobOutcome) =>
+    stepOutcome<TTypes>({ ...job, state, outcome })!;
 
-  const notify = async (outcome: AutomationOutcome) => {
+  const notify = async (outcome: AutomationOutcome<TTypes>) => {
     const hooks = [options.onOutcome];
     if (outcome.state === 'refused') hooks.push(options.onRefused);
     if (outcome.state === 'rejected') hooks.push(options.onRejected);
@@ -632,13 +677,15 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       // Spending counts against a window only when the intent landed.
       const landed = state === 'completed';
       const voiding = ledger;
+      // A job that ends right after prepare saves its args with the outcome.
+      const saved = progress ?? (job.progress.args !== undefined ? { args: job.progress.args } : undefined);
       const moved = await store.jobs.transition(job.id, {
         worker,
         from: job.state,
         to: state,
         now: clock.now(),
         outcome,
-        ...(progress ? { progress } : {}),
+        ...(saved ? { progress: saved } : {}),
         ...(landed ? {} : { ledger: voiding }),
       });
       if (!moved) throw new LostLease();
@@ -807,6 +854,8 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       if (!stepClient) {
         return finish(job, 'rejected', { code: 'step_not_client_callable', reason: `${request.step} cannot be prepared by this client` });
       }
+      // Kept with the job from here on, so its outcome can say what it ran with.
+      job = { ...job, progress: { ...job.progress, args: preparedArgs(request.args ?? {}) } };
       const result = await stepClient.prepare(
         { ...request.args, wallet, ...(request.instance !== undefined ? { instance: request.instance } : {}) },
         { transactionFormat: format, idempotencyKey: prepareIdempotencyKey(job.id, job.progress.generation) },
@@ -858,7 +907,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         index,
         amounts: Object.fromEntries([...amounts].map(([asset, amount]) => [asset, amount.toString()])),
       }));
-      const saved = await advance(job, 'signed', { format, intent, prepared: baseline, signed, outflows: perTransaction, signedAt: clock.now() }, {
+      const saved = await advance(job, 'signed', { args: job.progress.args, format, intent, prepared: baseline, signed, outflows: perTransaction, signedAt: clock.now() }, {
         record: [...outflows].map(([asset, amount]) => ({
           wallet,
           deploymentId: job.deploymentId,
@@ -1564,6 +1613,19 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
 
   const automations: Automations<TTypes> = {
     consent,
+    outcomes: {
+      async get(jobId) {
+        const job = await store.jobs.get(jobId);
+        return job?.kind === 'step' ? stepOutcome<TTypes>(job) : null;
+      },
+      async list(filter = {}) {
+        const jobs = (await store.jobs.list({ kind: 'step' })) as StepJob[];
+        return jobs
+          .filter((job) => filter.wallet === undefined || job.request.wallet === filter.wallet)
+          .map((job) => stepOutcome<TTypes>(job))
+          .filter((outcome): outcome is AutomationOutcome<TTypes> => outcome !== null);
+      },
+    },
     on(name: string, handler: Handler<any, TTypes>) {
       handlers.set(name, handler);
       return automations;

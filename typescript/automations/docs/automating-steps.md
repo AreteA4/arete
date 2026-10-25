@@ -50,8 +50,9 @@ your cron, live views ─────────►│  ├─ step jobs (one p
    consent's limits. Finally it signs, checks the signed bytes, saves them,
    submits, and tracks the intent.
 4. **Outcomes** (`completed`, `chain_failed`, `expired`, `skipped`,
-   `rejected`, `refused`, `failed`) reach your hooks, so your app can tell
-   the user.
+   `rejected`, `refused`, `failed`) reach your hooks with the args the step
+   was prepared with, so your app can tell the user what ran. The store
+   keeps them, and `automations.outcomes` reads them back.
 
 ## What you set up
 
