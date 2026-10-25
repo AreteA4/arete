@@ -15,8 +15,24 @@ export type { ReadHookOptions } from './read-hooks';
 export { ZustandAdapter } from './zustand-adapter';
 export type { AreteStore } from './zustand-adapter';
 
-export { useAsyncRead, useInstructionMutation } from './hooks';
+export {
+  OperationMutationError,
+  isWalletRejection,
+  toOperationMutationError,
+  useAsyncRead,
+  useInstructionMutation,
+  useOperationMutation,
+} from './hooks';
 export type {
+  OperationExecutor,
+  OperationExecutorSource,
+  OperationMutationErrorKind,
+  OperationMutationStatus,
+  OperationPrepareFn,
+  OperationRunOptions,
+  PreparedOperationWithSigners,
+  UseOperationMutationOptions,
+  UseOperationMutationResult,
   AsyncReadContext,
   AsyncReadKey,
   AsyncReadStatus,
@@ -34,6 +50,8 @@ export type {
   UseMutationOptions,
   UseMutationResult,
 } from './hooks';
+export { usePlatformHttpClient } from './platform-http-hooks';
+export type { UsePlatformHttpClientOptions } from './platform-http-hooks';
 export { useNativeBalance, useTokenBalance } from './chain-hooks';
 export type { BalanceHookOptions } from './chain-hooks';
 export {
@@ -71,6 +89,7 @@ export {
   FrameProcessor,
   MemoryAdapter,
   Arete,
+  createPlatformHttpClient,
   ReadRequestError,
   SubscriptionRegistry,
   QueryStore,
@@ -188,6 +207,10 @@ export type {
   WaitForProcessedSlotOptions,
   OperationTransactionReceipt,
   AuthConfig,
+  AuthTokenRequest,
+  PlatformHttpClient,
+  PlatformHttpRequest,
+  PlatformHttpResponse,
   SocketIssue,
   StringifiedBigints,
 } from '@usearete/sdk';

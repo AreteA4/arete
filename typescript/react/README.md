@@ -123,7 +123,7 @@ Supported props:
 - `autoConnect` — defaults to `true`; controls only whether the provider starts the initial connection
 - `autoReconnect` — defaults to `true`; controls only recovery after an established connection is lost
 - `wallet`
-- `auth`
+- `auth` (see [Signing users in with their Arete login](#signing-users-in-with-their-arete-login))
 - `fetch`
 - `validateFrames` — set `false` to suppress rejected-frame warnings; generated schemas still normalize and validate entities
 - `onFrameValidationError` — structured callback for frames that were not stored: schema rejections (`reason: 'schema'`) and patches for keys the client holds no entity for (`reason: 'unknown-key'`)
@@ -135,6 +135,21 @@ Supported props:
 These are provider-wide defaults. Per-call overrides stay on the hook call and always win. Connection settings are captured when a shared client is created; changing provider props does not mutate that client. `wallet` updates are synchronized in place. For other changed settings, call `retry()` to replace the shared client using the latest provider configuration.
 
 The lifecycle flags are intentionally independent. `autoConnect={false}` leaves initial connection ownership to the application. It does not disable automatic recovery for a connection the application establishes, but `canRetry` remains false because provider-owned replacement attempts would also stay disconnected; use the client lifecycle directly. `autoReconnect={false}` does not suppress the initial connection; it disables only automatic recovery after that connection is lost.
+
+### Signing users in with their Arete login
+
+An app whose users sign in to Arete (a dashboard built on the SDKs) passes their login as an API credential. The SDK sends it only to the Arete API and its session endpoint; stack, gateway and program read connections mint their own sessions with it:
+
+```tsx
+// Module level, so its identity is stable.
+const auth = { tokenKind: 'api', tokenEndpoint: '/api/arete-token', tokenEndpointCredentials: 'same-origin' } as const;
+
+<AreteProvider auth={auth}>
+  <App />
+</AreteProvider>;
+```
+
+`getToken` works the same (`{ tokenKind: 'api', getToken: async () => session.accessToken }`). `usePlatformHttpClient({ apiUrl })` returns a client for the Arete API's account routes with that same auth, to hand to SDK extensions that take an `http` client.
 
 ## `useArete(stack?, options?)`
 
@@ -314,6 +329,45 @@ errors in hook state and does not return a promise. Use the equivalent rejecting
 await or compose the result.
 
 Program and read hooks are safe to call while the client is still connecting: mutations throw "Arete client is not connected" if submitted early, and reads stay disabled.
+
+### Running an operation or flow: `useOperationMutation`
+
+`useOperationMutation(prepare, { executor, wallet?, signers? })` runs any prepared instruction, transaction or flow through anything with `execute(prepared, options)`: a connected client or a session, so it works without a stack. `prepare` returns the operation, or `{ operation, signers }` when it creates signers (a create key):
+
+```tsx
+import { generateKeyPairSigner } from '@solana/kit';
+import { useOperationMutation } from '@usearete/react';
+
+const create = useOperationMutation(
+  async (input: { members: string[]; threshold: number }) => {
+    const createKey = await generateKeyPairSigner();
+    const operation = await squads.flows.arete.createMultisig.prepare({ ...input, createKey: createKey.address });
+    return { operation, signers: [createKey] };
+  },
+  { executor: session, wallet },
+);
+
+<button disabled={create.isBusy} onClick={() => create.mutate(input)}>Create</button>;
+{create.isAwaitingWallet && <p>Approve the request in your wallet</p>}
+{create.error?.kind === 'wallet-rejected' && <p>You declined the request.</p>}
+```
+
+`status` walks `idle` → `preparing` → `signing` → `sending` → `confirming` → `done` (or `error`), once per transaction of a flow (`transactionIndex` of `transactionCount`). `sending` and `confirming` come from wallets that report their activity, as the `@usearete/adapter-kit` adapters do; any other wallet stays `signing` until it confirms. `prepared`, `artifacts`, `result` (the receipt) and `signatures` hold the latest run. `error` is an `OperationMutationError` whose `kind` is one of `busy`, `not-ready`, `prepare-failed`, `wallet-rejected`, `wallet-unsupported`, `wallet-modified`, `not-submitted`, `submitted-unknown` or `chain-failed`, with the transaction `failure`, `programError` and the signatures that confirmed before it. `executor` may be a function that resolves it (a session opened on first use). A second run while one is in progress is refused with `busy`, so a double click never opens two wallet prompts. `run()` rejects; `mutate()` keeps the error in state.
+
+### Wallet Standard wallets: `@usearete/react/wallet-standard`
+
+`useWalletStandardWallet(account, { chain })` turns the account a user connected with `@wallet-standard/react` into the wallet Arete signs with. Sign only: the wallet signs and Arete relays the bytes through the client's or session's transaction transport. It needs `@usearete/adapter-kit` (with `@solana/kit`) and `@wallet-standard/ui-registry`, optional peers of this package.
+
+```tsx
+import { useWalletStandardWallet } from '@usearete/react/wallet-standard';
+
+const account = connectedWallet?.accounts[0] ?? null; // a UiWalletAccount
+const { wallet, isPromptOpen, error } = useWalletStandardWallet(account, { chain: 'solana:mainnet' });
+
+<AreteProvider wallet={wallet}>…</AreteProvider>;
+```
+
+`wallet` is `undefined` until an account is connected, and when it cannot sign for Arete: `error` is then a `WalletStandardSignerError` (`sign_transaction_unsupported` for a wallet that only signs and sends). `isPromptOpen` is true while the wallet's approval prompt is open. A raw `{ wallet, account }` pair from the Wallet Standard registry is accepted too.
 
 ## Protocols
 
