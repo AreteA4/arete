@@ -637,7 +637,14 @@ export class Arete<TStack extends StackDefinition> {
   private readonly _programs: ProgramsInterface<TStack['programs']>;
   private readonly _chain: ChainClient;
   private readonly _transactions: TransactionTransport;
-  private readonly stack: TStack;
+  /** The stack definition this client was connected for, with any attached programs. */
+  readonly stack: TStack;
+  /**
+   * How this client was connected: `'ws'` opened the streaming WebSocket;
+   * `'http'` did not (see {@link ConnectOptions.transport}). A session member
+   * reports the transport its session connected it with.
+   */
+  readonly transport: 'ws' | 'http';
   private readonly httpBaseUrl: string | undefined;
   private readonly connectHttpUrl: string | undefined;
   private readonly programReadOverrides: Readonly<Record<string, ProgramReadOverride>>;
@@ -736,6 +743,7 @@ export class Arete<TStack extends StackDefinition> {
           this.authenticatedStackFetch(input, init, [scope], requirePreDispatchMarker)
       );
     this._programs = this.buildPrograms();
+    this.transport = url === null ? 'http' : 'ws';
   }
 
   private resolveFetchImpl(): typeof fetch {

@@ -1192,6 +1192,18 @@ describe('Arete transport: http', () => {
     programs: {},
   } as const;
 
+  it('reports the stack definition and the transport it was connected with', async () => {
+    const { Arete } = await import('./index');
+    const http = await Arete.connect(HTTP_STACK, { transport: 'http' });
+    expect(http.transport).toBe('http');
+    expect(http.stack.name).toBe('http-demo');
+    expect(http.stack.views).toBe(HTTP_STACK.views);
+
+    const ws = await Arete.connect(HTTP_STACK, { autoConnect: false });
+    expect(ws.transport).toBe('ws');
+    expect(ws.isConnected()).toBe(false);
+  });
+
   it('serves point reads and chain reads without opening a socket', async () => {
     const { Arete } = await import('./index');
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
