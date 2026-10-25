@@ -3039,7 +3039,7 @@ pub(crate) fn resolve_registry_batch(
             Some((kind, package, locked)) => {
                 describe_resolver_error(error, *kind, package, *locked)
             }
-            None => describe_resolver_batch_error(error, registry_requests),
+            None => describe_resolver_batch_error(error, registry_requests, json_output()),
         })?;
     if response.resolver_contract != RESOLVER_CONTRACT {
         bail!(
@@ -3692,9 +3692,12 @@ fn blamed_request<'a>(
 /// Describe a failure for a multi-dependency resolve. The server's code and
 /// message are always kept. A refusal is pinned on one dependency only when
 /// the server names it; otherwise the remedy is stated over the whole set.
+/// Under `--json` the API error stays in the chain, so the CLI prints its
+/// problem body on stdout.
 fn describe_resolver_batch_error(
     error: anyhow::Error,
     requests: &[RegistryDependencyRequest],
+    json: bool,
 ) -> anyhow::Error {
     let names = requests
         .iter()
@@ -3704,6 +3707,9 @@ fn describe_resolver_batch_error(
     let Some(http) = api_error_details(&error) else {
         return error.context(format!("Failed to resolve {names} through the registry"));
     };
+    if json {
+        return error.context(format!("Failed to resolve {names} through the registry"));
+    }
     let detail = server_detail(http.message, http.code);
     let blamed = blamed_request(requests, http.dependency, http.message);
     let subject = blamed.map(request_label).unwrap_or_else(|| names.clone());
@@ -7989,6 +7995,7 @@ version = "^1.0.0"
                 }),
             ),
             &mixed_batch(),
+            false,
         );
         let text = format!("{error:#}");
         assert!(text.contains("program 'save'"), "{text}");
@@ -8013,6 +8020,7 @@ version = "^1.0.0"
                 }),
             ),
             &mixed_batch(),
+            false,
         );
         let text = format!("{error:#}");
         assert!(text.contains("program 'save'"), "{text}");
@@ -8032,6 +8040,7 @@ version = "^1.0.0"
                 }),
             ),
             &mixed_batch(),
+            false,
         );
         let text = format!("{error:#}");
         assert!(text.contains("integrity failure"), "{text}");
@@ -8048,6 +8057,7 @@ version = "^1.0.0"
                 json!({"error": "Program package release is unavailable"}),
             ),
             &mixed_batch(),
+            false,
         );
         let text = format!("{error:#}");
         assert!(
@@ -8074,11 +8084,30 @@ version = "^1.0.0"
                 }),
             ),
             &requests,
+            false,
         );
         let text = format!("{error:#}");
         assert!(
             text.contains("stack 'shared', program 'shared', program 'save'"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn a_json_install_keeps_the_api_error_for_a_refusal() {
+        let error = describe_resolver_batch_error(
+            registry_problem(
+                409,
+                json!({"error": "no rust SDK", "code": "unsupported-sdk-target", "dependency": "save"}),
+            ),
+            &mixed_batch(),
+            true,
+        );
+        assert!(
+            error
+                .downcast_ref::<crate::api_client::ApiClientError>()
+                .is_some(),
+            "{error:#}"
         );
     }
 
@@ -8090,6 +8119,7 @@ version = "^1.0.0"
                 json!({"error": "Too many requests", "code": "rate-limited", "retryable": true}),
             ),
             &mixed_batch(),
+            false,
         );
         assert!(
             error
