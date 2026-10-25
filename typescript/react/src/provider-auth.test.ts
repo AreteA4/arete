@@ -140,7 +140,7 @@ describe('AreteProvider with tokenKind api', () => {
     expect(sentToSocket).not.toContain(CREDENTIAL);
     expect(connection).toBe('connected');
     if (_name === 'getToken') {
-      expect(getToken).toHaveBeenCalledWith({ scopes: [] });
+      expect(getToken).toHaveBeenCalledWith({ scopes: [], forceRefresh: false });
     } else {
       expect(requests[0]).toMatchObject({ url: '/api/account/api-token' });
     }
