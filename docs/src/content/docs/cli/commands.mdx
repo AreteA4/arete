@@ -271,32 +271,32 @@ With `--summary`, `checks` lists only the checks that need attention: `warn`,
 and `infoCount` (informational checks with nothing to do), which are left out;
 text output starts with the status line.
 
-| Check id                | What it verifies                                                                      | On failure                                                                                    |
-| ----------------------- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
-| `cli.version`           | Install receipt present; current version vs latest (2 s timeout)                      | `warn`: `a4 self update` (`info` when offline)                                                |
-| `cli.install`           | Receipt binary is the running executable; no `a4` shadowing it on PATH                | `warn` with the shadowing path                                                                |
-| `cli.path`              | Install directory is on PATH                                                          | `warn`: prints the `export PATH=…` line                                                       |
-| `project.manifest`      | `arete.toml` parses                                                                   | `fail`: `a4 init` / `a4 config validate`                                                      |
-| `project.lock`          | `arete.lock` is fresh                                                                 | `warn`: `a4 install`                                                                          |
-| `project.auth-profile`  | `.arete/auth.toml` selects only the restricted `agent` profile                        | `warn`/`fail`: `a4 doctor --fix`                                                              |
-| `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)                   | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch                 |
-| `auth.credentials`      | Key present for the active API URL                                                    | `info`: `a4 auth signup` (not needed to explore)                                              |
-| `auth.whoami`           | Credentials are accepted by the server                                                | `fail`: `a4 auth login --key …`                                                               |
-| `account.plan`          | The account's plan and dev environment tier                                           | `unknown` when the server cannot say                                                          |
-| `account.<surface>`     | One per surface the account can or can't use (see below)                              | `info` with the reason and the unlock; `warn` if `arete.toml` uses the surface                |
-| `probe.program-read`    | One Program Read existence check for the first registry program in `arete.toml`      | `warn` with the HTTP status and error code; retryable failures say so                         |
-| `probe.chain-read`      | One chain account read through the gateway for the same program                       | `warn` with the HTTP status and error code; retryable failures say so                         |
-| `net.api`               | `https://api.arete.run` reachable                                                     | `fail`                                                                                        |
-| `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                                | `warn`                                                                                        |
-| `tools.node`            | `npx` on PATH (skills only)                                                           | `info`                                                                                        |
-| `tools.rust`            | `cargo` on PATH (authoring only)                                                      | `info`; `warn` if `arete.toml` has `[authoring]`                                              |
-| `agents.detected`       | Detected agents                                                                       | `info`                                                                                        |
-| `agents.<id>.mcp`       | Both MCP servers present with the expected shape                                      | `warn`: `a4 doctor --fix`                                                                     |
-| `agents.<id>.skills`    | All six Arete workflow skills installed for that agent                                | `warn`: `npx skills add AreteA4/skills --agent <id>`                                          |
-| `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                                          | `warn`: `a4 doctor --fix`                                                                     |
-| `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                                   | `warn`                                                                                        |
-| `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)                      | `warn`                                                                                        |
-| `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                                | `info`                                                                                        |
+| Check id                | What it verifies                                                                | On failure                                                                     |
+| ----------------------- | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `cli.version`           | Install receipt present; current version vs latest (2 s timeout)                | `warn`: `a4 self update` (`info` when offline)                                 |
+| `cli.install`           | Receipt binary is the running executable; no `a4` shadowing it on PATH          | `warn` with the shadowing path                                                 |
+| `cli.path`              | Install directory is on PATH                                                    | `warn`: prints the `export PATH=…` line                                        |
+| `project.manifest`      | `arete.toml` parses                                                             | `fail`: `a4 init` / `a4 config validate`                                       |
+| `project.lock`          | `arete.lock` is fresh                                                           | `warn`: `a4 install`                                                           |
+| `project.auth-profile`  | `.arete/auth.toml` selects only the restricted `agent` profile                  | `warn`/`fail`: `a4 doctor --fix`                                               |
+| `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)             | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch  |
+| `auth.credentials`      | Key present for the active API URL                                              | `info`: `a4 auth signup` (not needed to explore)                               |
+| `auth.whoami`           | Credentials are accepted by the server                                          | `fail`: `a4 auth login --key …`                                                |
+| `account.plan`          | The account's plan and dev environment tier                                     | `unknown` when the server cannot say                                           |
+| `account.<surface>`     | One per surface the account can or can't use (see below)                        | `info` with the reason and the unlock; `warn` if `arete.toml` uses the surface |
+| `probe.program-read`    | One Program Read existence check for the first registry program in `arete.toml` | `warn` with the HTTP status and error code; retryable failures say so          |
+| `probe.chain-read`      | One chain account read through the gateway for the same program                 | `warn` with the HTTP status and error code; retryable failures say so          |
+| `net.api`               | `https://api.arete.run` reachable                                               | `fail`                                                                         |
+| `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                          | `warn`                                                                         |
+| `tools.node`            | `npx` on PATH (skills only)                                                     | `info`                                                                         |
+| `tools.rust`            | `cargo` on PATH (authoring only)                                                | `info`; `warn` if `arete.toml` has `[authoring]`                               |
+| `agents.detected`       | Detected agents                                                                 | `info`                                                                         |
+| `agents.<id>.mcp`       | Both MCP servers present with the expected shape                                | `warn`: `a4 doctor --fix`                                                      |
+| `agents.<id>.skills`    | All six Arete workflow skills installed for that agent                          | `warn`: `npx skills add AreteA4/skills --agent <id>`                           |
+| `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                                    | `warn`: `a4 doctor --fix`                                                      |
+| `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                             | `warn`                                                                         |
+| `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)                | `warn`                                                                         |
+| `agents.codex-trust`    | Project trusted in `~/.codex/config.toml` (Codex only)                          | `info`                                                                         |
 
 **`--json` output:**
 
