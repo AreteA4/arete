@@ -129,15 +129,16 @@ browser through the program's own session transports. Check for it and say
 what the app must configure:
 
 ```ts
-import { defineProgramExtensions } from '@usearete/sdk/program';
+import { AreteError, defineProgramExtensions } from '@usearete/sdk/program';
 
 export default defineProgramExtensions<typeof VAULT>()({
   createRead(context) {
     return {
       async watchedVaults() {
         if (!context.platform) {
-          throw new Error(
+          throw new AreteError(
             "read.watchedVaults calls the Arete API: use a secret key on a server or auth.tokenKind 'api'",
+            'PLATFORM_CLIENT_REQUIRED',
           );
         }
         // A hypothetical route, for illustration only.

@@ -422,7 +422,7 @@ Program Read, the Solana gateway and stack views.
 Check for it and fail with a message that says what the app must configure:
 
 ```typescript
-import { defineProgramExtensions } from "@usearete/sdk/program";
+import { AreteError, defineProgramExtensions } from "@usearete/sdk/program";
 import type { VAULT } from "./vault-core.js";
 
 interface Watchlist {
@@ -435,10 +435,11 @@ export default defineProgramExtensions<typeof VAULT>()({
       async watchedVaults() {
         const platform = context.platform;
         if (!platform) {
-          throw new Error(
+          throw new AreteError(
             "read.watchedVaults calls the Arete API: authenticate with a " +
               "secret key on a server, or auth.tokenKind 'api' for a signed-in " +
               "Arete user. A publishable key cannot call it.",
+            "PLATFORM_CLIENT_REQUIRED",
           );
         }
         // A hypothetical route, for illustration only.

@@ -116,3 +116,7 @@ export type {
   PlatformHttpResponse,
 } from './platform-http';
 export type { AuthConfig, AuthTokenRequest, AuthTokenResult } from './types';
+
+// The SDK's error, so an extension's own failures carry a code an app can
+// switch on.
+export { AreteError } from './types';
