@@ -4,7 +4,7 @@ import {
   ORE_STREAM_STACK,
   OreRoundSchema,
   OreTreasurySchema,
-} from './generated/ore-stack';
+} from './generated/ore-stack.js';
 
 type OreRoundWithId = z.infer<typeof OreRoundSchema>;
 type OreTreasuryWithId = z.infer<typeof OreTreasurySchema>;
