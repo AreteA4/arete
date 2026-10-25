@@ -1406,6 +1406,9 @@ impl Session<'_> {
             &format!("Changed: {}; rebuilding", names.join(", ")),
             json!({ "changed": names }),
         );
+        // This pass reports only its own work, never startup's or the last
+        // pass's (a failed build returns before the client is generated).
+        self.pass = PassReport::default();
         let result = async {
             if self.config.protocol {
                 self.redeploy(&names).await?;

@@ -282,13 +282,25 @@ pub fn build_diagnostics(output: &str) -> Vec<BuildDiagnostic> {
     output.lines().filter_map(parse_diagnostic).collect()
 }
 
+/// `<file>:<line>:<column>: <message> [<code>]`. The file may hold spaces
+/// and a Windows drive prefix (`C:\…`); it is everything before the first
+/// `:<line>:<column>: `, and must end in an extension, so prose such as
+/// `at 12:30:45: …` is not read as a location.
 fn parse_diagnostic(line: &str) -> Option<BuildDiagnostic> {
-    let mut parts = line.trim().splitn(4, ':');
-    let file = parts.next()?.trim();
-    let line_number = parts.next()?.parse().ok()?;
-    let column = parts.next()?.parse().ok()?;
-    let rest = parts.next()?.strip_prefix(' ')?.trim_end();
-    if file.is_empty() || file.contains(' ') || rest.is_empty() {
+    let line = line.trim();
+    let (file, line_number, column, rest) = line.match_indices(':').find_map(|(index, _)| {
+        let mut parts = line[index + 1..].splitn(3, ':');
+        let line_number: u32 = parts.next()?.parse().ok()?;
+        let column: u32 = parts.next()?.parse().ok()?;
+        let rest = parts.next()?.strip_prefix(' ')?.trim_end();
+        Some((line[..index].trim(), line_number, column, rest))
+    })?;
+    let has_extension = file.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && !extension.is_empty()
+            && extension.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    if !has_extension || rest.is_empty() {
         return None;
     }
     let (message, code) = match rest
@@ -641,6 +653,35 @@ mod tests {
                 },
             ]
         );
+        // Paths with spaces and Windows drive prefixes keep their findings;
+        // prose with a time in it is not a location.
+        let located = |line: &str| {
+            build_diagnostics(line)
+                .into_iter()
+                .map(|found| (found.file, found.line, found.column, found.message))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            located("handlers/my handler.ts:3:1: bad [code]"),
+            [(
+                "handlers/my handler.ts".to_string(),
+                3,
+                1,
+                "bad".to_string()
+            )]
+        );
+        assert_eq!(
+            located("C:\\project\\protocol.ts:3:1: bad [code]"),
+            [(
+                "C:\\project\\protocol.ts".to_string(),
+                3,
+                1,
+                "bad".to_string()
+            )]
+        );
+        assert!(located("retrying at 12:30:45: still down").is_empty());
+        assert!(located("protocol.ts:3:1:").is_empty());
+
         let error: anyhow::Error = BuildFailed {
             output: stderr.trim().into(),
             diagnostics: build_diagnostics(stderr),
