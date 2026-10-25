@@ -50,8 +50,8 @@ fn string_field(body: &Value, field: &str, what: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("{what} returned no {field}: {body}"))
 }
 
-/// The message of an API error body (`{error, code, errors?}`), with its
-/// code and one line per entry of `errors`.
+/// The message of an API error body (`{error, code, errors?, templateCheck?}`),
+/// with its code and one line per entry of `errors` and `templateCheck.errors`.
 fn api_message(body: &Value) -> String {
     let message = body["error"]
         .as_str()
@@ -62,7 +62,8 @@ fn api_message(body: &Value) -> String {
         Some(code) => format!("{message} ({code})"),
         None => message,
     };
-    message + &crate::api_client::problem_error_lines(body.get("errors"))
+    message
+        + &crate::api_client::problem_detail_lines(body.get("errors"), body.get("templateCheck"))
 }
 
 impl DevApi {
@@ -102,6 +103,9 @@ impl DevApi {
         } else {
             serde_json::from_str(&text).unwrap_or(Value::String(text))
         };
+        if !status.is_success() {
+            crate::api_client::report_verbose_problem(status, &format!("{method} {path}"), &value);
+        }
         Ok((status, value))
     }
 
@@ -378,5 +382,28 @@ mod tests {
              - /steps/pay/authority/multisig: declare it as a resource (squads-multisig-not-from-resources)"
         );
         assert_eq!(api_message(&json!({ "error": "nope" })), "nope");
+    }
+
+    #[test]
+    fn api_messages_list_the_template_check_errors() {
+        let entry = json!({
+            "code": "template_unknown_instruction",
+            "message": "'klend' has no instruction 'depositReserve'",
+            "path": "/steps/deposit/build/instructions/0/instruction"
+        });
+        let body = json!({
+            "error": "The spec's templates do not resolve against their pinned ProgramSpecs",
+            "code": "protocol-template-check-failed",
+            "templateCheck": { "errors": [entry.clone()] }
+        });
+        let expected = "The spec's templates do not resolve against their pinned ProgramSpecs \
+             (protocol-template-check-failed)\n  \
+             - /steps/deposit/build/instructions/0/instruction: 'klend' has no instruction \
+             'depositReserve' (template_unknown_instruction)";
+        assert_eq!(api_message(&body), expected);
+        // A server that also lists them at the top level prints each once.
+        let mut both = body.clone();
+        both["errors"] = json!([entry]);
+        assert_eq!(api_message(&both), expected);
     }
 }

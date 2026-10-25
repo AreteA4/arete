@@ -481,6 +481,16 @@ async fn stop_admission(worker: &mut Option<Child>) -> Result<()> {
     Ok(())
 }
 
+/// The admission worker's arguments. `--verbose` is passed on, since the
+/// worker's API errors reach the user through its stderr.
+fn admission_args(verbose: bool) -> Vec<&'static str> {
+    let mut args = vec!["dev", "__admit-local-programs"];
+    if verbose {
+        args.push("--verbose");
+    }
+    args
+}
+
 async fn admit_local_programs(
     request: AdmissionRequest,
     progress: Events,
@@ -488,8 +498,7 @@ async fn admit_local_programs(
 ) -> Result<bool> {
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .arg("dev")
-        .arg("__admit-local-programs")
+        .args(admission_args(crate::api_client::verbose_api_errors()))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
@@ -1346,6 +1355,18 @@ async fn terminated(_: &mut ()) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn admission_worker_gets_verbose_when_the_command_has_it() {
+        assert_eq!(
+            super::admission_args(false),
+            ["dev", "__admit-local-programs"]
+        );
+        assert_eq!(
+            super::admission_args(true),
+            ["dev", "__admit-local-programs", "--verbose"]
+        );
+    }
+
     // Run only in the subprocess below: an HTTP request that never replies.
     #[test]
     #[ignore]

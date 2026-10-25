@@ -62,7 +62,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Enable verbose output
+    /// Print the full JSON body of every API error response to stderr
     #[arg(long, global = true)]
     verbose: bool,
 
@@ -1063,6 +1063,7 @@ fn main() {
     }
     let json = cli.json;
     project::installer::set_json_output(json);
+    api_client::set_verbose_api_errors(cli.verbose);
 
     // `a4 mcp` owns stdout for MCP frames and must stay silent otherwise.
     if cmd_name != "mcp" {
