@@ -23,6 +23,7 @@ export type {
   MemberStackDefinition,
   StackOfClient,
   UseAreteMemberOptions,
+  UseAreteMemberPlaceholderOptions,
 } from './stack';
 export { createAreteReact } from './bound-stack';
 export type { BoundAreteProviderProps } from './bound-stack';

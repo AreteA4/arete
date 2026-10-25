@@ -179,7 +179,37 @@ export interface UseAreteMemberOptions<TStack extends StackDefinition = StackDef
    * member's own `stack` is used.
    */
   stack?: MemberStackDefinition<TStack>;
+  /**
+   * Programs the session attached to this member (its member options'
+   * `programs`), for the placeholders while the session opens: their
+   * addresses, PDAs and constants work before it opens, as with
+   * `useArete(stack, { programs })`. Once it has opened, the member's own
+   * programs are used. TypeScript asks for every attached program `stack`
+   * does not already have.
+   */
+  programs?: ProgramMap;
 }
+
+type ProgramKeysOf<TStack> = TStack extends { programs?: infer TPrograms }
+  ? TPrograms extends object ? keyof TPrograms & string : never
+  : never;
+
+/**
+ * Options for `useArete(member, options)` while the member may be missing:
+ * the placeholder `stack`, plus `programs` for each program the member has
+ * (one attached through the session's member options) that `stack` lacks.
+ */
+export type UseAreteMemberPlaceholderOptions<
+  TStack extends StackDefinition,
+  TPlaceholder extends MemberStackDefinition<TStack>,
+> = { stack: TPlaceholder } & (
+  [Exclude<ProgramKeysOf<TStack>, ProgramKeysOf<TPlaceholder>>] extends [never]
+    ? { programs?: ProgramMap }
+    : {
+      programs: ProgramMap
+        & Record<Exclude<ProgramKeysOf<TStack>, ProgramKeysOf<TPlaceholder>>, ProgramSdkDefinition>;
+    }
+);
 
 function isStackClient(value: unknown): value is AnyClient {
   return typeof value === 'object'
@@ -226,6 +256,7 @@ function useMemberArete(
   // Mutations wait for the streamed slot they landed in only when the member
   // was connected over the socket.
   const transport = client?.transport;
+  const placeholderPrograms = options?.programs as Record<string, ProgramSdkDefinition> | undefined;
   const sessionContext = useOptionalAreteSession();
 
   const [connection, setConnection] = useState<MemberConnection>(() => ({
@@ -283,6 +314,7 @@ function useMemberArete(
     if (!client) {
       return buildDisconnectedProgramHooks(
         stack.programs as Record<string, ProgramSdkDefinition> | undefined,
+        placeholderPrograms,
       );
     }
     return buildProgramHookInterfaces(
@@ -291,7 +323,7 @@ function useMemberArete(
       useInstructionMutation,
       { defaultReconciliation: transport !== 'http' }
     );
-  }, [client, stack, transport]);
+  }, [client, stack, transport, placeholderPrograms]);
 
   const connectedRead = ((client as (ConnectedStack<StackDefinition, ProgramMap> & { read?: unknown }) | null)?.read ?? null) as
     Record<string, (...args: never[]) => unknown> | null;
@@ -422,16 +454,22 @@ export function useArete<
  * const { session } = useAreteSession<typeof APP>();
  * const ore = useArete(session?.stacks.ore, { stack: APP.stacks.ore });
  * ```
+ *
+ * A member the session attached programs to (`createSession(APP, { stacks:
+ * { ore: { programs: { memo } } } })`) also takes them, so their helpers work
+ * while it opens: `useArete(session?.stacks.ore, { stack: APP.stacks.ore,
+ * programs: { memo } })`. TypeScript asks for any it is missing.
  */
 export function useArete<TClient extends AnyStackClient>(
   member: TClient,
   options?: UseAreteMemberOptions<StackOfClient<TClient>>
 ): UseAreteResult<StackOfClient<TClient>>;
-export function useArete<TClient extends AnyStackClient>(
+export function useArete<
+  TClient extends AnyStackClient,
+  TPlaceholder extends MemberStackDefinition<StackOfClient<TClient>>,
+>(
   member: TClient | null | undefined,
-  options: UseAreteMemberOptions<StackOfClient<TClient>> & {
-    stack: MemberStackDefinition<StackOfClient<TClient>>;
-  }
+  options: UseAreteMemberPlaceholderOptions<StackOfClient<TClient>, TPlaceholder>
 ): UseAreteResult<StackOfClient<TClient>>;
 export function useArete(
   stackOrMember?: StackDefinition | AnyClient | null,

@@ -289,6 +289,61 @@ describe('useArete(member)', () => {
     }
   });
 
+  it("serves an attached program's static helpers before the session opens", async () => {
+    const MEMO = {
+      name: 'memo',
+      programId: 'Memo111111111111111111111111111111111111111',
+      addresses: { someAddress: () => 'memo-address' },
+    } as const;
+    const attachedOptions = {
+      ...sessionOptions(ws),
+      stacks: { things: { autoReconnect: false, programs: { memo: MEMO } } },
+    };
+    type AttachedSession = Session<typeof DEFINITION, { things: { memo: typeof MEMO } }>;
+    const results: Array<{ memo: string; programId: string; open: boolean }> = [];
+    let missing: unknown;
+    let setSession!: (session: AttachedSession) => void;
+    function Member() {
+      const [session, set] = React.useState<AttachedSession | null>(null);
+      setSession = set;
+      const arete = useArete(session?.stacks.things, { stack: STACK, programs: { memo: MEMO } });
+      results.push({
+        memo: arete.programs.memo.addresses.someAddress(),
+        programId: arete.programs.memo.programId,
+        open: arete.client !== null,
+      });
+      return null;
+    }
+    // Without `programs`, the attached program is the throwing placeholder.
+    function WithoutPrograms() {
+      const arete = useArete(null as AttachedSession['stacks']['things'] | null, {
+        stack: STACK,
+      } as never) as unknown as { programs: { memo: { addresses: { someAddress(): string } } } };
+      try {
+        arete.programs.memo.addresses.someAddress();
+      } catch (error) {
+        missing = error;
+      }
+      return null;
+    }
+
+    const view = render(React.createElement(React.Fragment, null,
+      React.createElement(Member),
+      React.createElement(WithoutPrograms)));
+    expect(results[0]).toEqual({ memo: 'memo-address', programId: MEMO.programId, open: false });
+    expect(missing).toBeInstanceOf(Error);
+
+    const session = await createSession(DEFINITION, attachedOptions) as unknown as AttachedSession;
+    try {
+      act(() => setSession(session));
+      await until(() => results[results.length - 1]?.open === true);
+      expect(results[results.length - 1]).toEqual({ memo: 'memo-address', programId: MEMO.programId, open: true });
+    } finally {
+      view.unmount();
+      session.close();
+    }
+  });
+
   it('waits for the streamed slot only for a member its session connected over the socket', async () => {
     const buildPrograms = jest.spyOn(programHooks, 'buildProgramHookInterfaces');
     async function reconcilesOver(transport: 'ws' | 'http') {

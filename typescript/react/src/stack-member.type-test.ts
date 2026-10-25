@@ -5,6 +5,7 @@
 
 import {
   PROGRAM_OPERATION_EXTENSIONS,
+  withPrograms,
   type InstructionOperation,
   type Session,
   type ViewDef,
@@ -104,10 +105,27 @@ useArete(opening?.stacks.ore, { stack: { name: 'other', endpoints: { ws: '' }, v
 void member.views.Missing;
 
 // A member with programs attached through the session's member options keeps
-// them, and its generated stack still serves as the placeholder definition.
-declare const MEMO: { readonly name: 'memo'; readonly programId: 'memo-program' };
+// them. Its placeholders need those programs too, so their helpers work while
+// the session opens: the generated stack plus `programs`, or the stack with
+// them attached.
+declare const MEMO: {
+  readonly name: 'memo';
+  readonly programId: 'memo-program';
+  readonly addresses: { readonly someAddress: () => string };
+};
 declare const attached: Session<typeof DEFINITION, { ore: { memo: typeof MEMO } }> | null;
-const withMemo = useArete(attached?.stacks.ore, { stack: ORE });
+const withMemo = useArete(attached?.stacks.ore, { stack: ORE, programs: { memo: MEMO } });
+useArete(attached?.stacks.ore, { stack: withPrograms(ORE, { memo: MEMO }) });
+// @ts-expect-error the generated stack alone lacks the attached memo program
+useArete(attached?.stacks.ore, { stack: ORE });
+// @ts-expect-error `programs` must name every attached program the stack lacks
+useArete(attached?.stacks.ore, { stack: ORE, programs: { other: MEMO } });
+// A member without attached programs takes the generated stack alone.
+useArete(opening?.stacks.ore, { stack: ORE, programs: { memo: MEMO } });
+export type AttachedHelperIsTyped = Assert<Equal<
+  ReturnType<typeof withMemo.programs.memo.addresses.someAddress>,
+  string
+>>;
 const withMemoByStack = useArete(ORE, { programs: { memo: MEMO } });
 export type AttachedProgramIsTyped = Assert<Equal<
   typeof withMemo.programs.memo,

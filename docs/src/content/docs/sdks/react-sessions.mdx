@@ -327,6 +327,12 @@ The result is the same as `useArete(stack)`'s: `views`, `programs`, `read`,
   HTTP, set `transport` in the session options. TypeScript requires `stack`
   whenever the member can be `null` or `undefined`, and leaves it optional for
   a member that always exists.
+- **Attached programs need placeholders too.** Programs attached to a member
+  through the session options (`stacks.ore.programs`) are part of the member,
+  but not of its stack definition. Pass them as `programs` so their addresses,
+  PDAs and constants work while the session opens:
+  `useArete(session?.stacks.ore, { stack: APP.stacks.ore, programs: { memo } })`.
+  TypeScript asks for every attached program that `stack` lacks.
 
 ## Program reads with `useAsyncRead`
 
