@@ -150,8 +150,11 @@ describe('createWalletStandardWalletAdapter', () => {
     expect(failure).toBeInstanceOf(KitTransactionExecutionError);
     expect((failure as InstanceType<typeof KitTransactionExecutionError>).outcome)
       .toMatchObject({ status: 'not-submitted', phase: 'wallet' });
+    const cause = (failure as Error).cause;
+    expect(cause).toBeInstanceOf(WalletStandardSignerError);
+    expect(cause).toMatchObject({ code: 'user_rejected', cause: declined });
     expect(onPromptClose).toHaveBeenCalledWith(
-      expect.objectContaining({ signed: false, error: declined })
+      expect.objectContaining({ signed: false, error: cause })
     );
     expect(activity).toEqual([{ stage: 'signing' }]);
     expect(calls).not.toContain('send');
@@ -177,6 +180,13 @@ describe('createWalletStandardWalletAdapter', () => {
 
     expect(() => createWalletStandardWalletAdapter({ wallet, account }))
       .toThrow(WalletStandardSignerError);
+  });
+
+  it('refuses an account that does not sign for the chain asked', () => {
+    const { wallet, account } = fakeWallet();
+
+    expect(() => createWalletStandardWalletAdapter({ wallet, account, chain: 'solana:mainnet' }))
+      .toThrow(expect.objectContaining({ code: 'chain_unsupported' }));
   });
 
   it('ignores a throwing observer and stops calling an unsubscribed one', async () => {

@@ -1251,8 +1251,11 @@ export interface WalletStandardWalletAdapterConfig
  * so pass the result straight to `Arete.connect`, `createSession`,
  * `AreteProvider` or `execute(prepared, { wallet })`.
  *
- * Throws {@link WalletStandardSignerError} (`sign_transaction_unsupported`)
- * when the account cannot sign without sending. `onPromptOpen` and
+ * Throws {@link WalletStandardSignerError} when the account cannot be used:
+ * `sign_transaction_unsupported` when it cannot sign without sending,
+ * `chain_unsupported` when it does not list `chain`. A declined prompt makes
+ * `signAndSend` reject with a {@link KitTransactionExecutionError} whose
+ * `cause` is a `user_rejected` signer error. `onPromptOpen` and
  * `onPromptClose` report the wallet's approval prompt; `onActivity` (or
  * `adapter.onActivity`) reports signing, sending and confirming.
  */
@@ -1272,6 +1275,7 @@ export {
   SOLANA_SIGN_TRANSACTION,
   WalletStandardSignerError,
   createWalletStandardSigner,
+  isWalletStandardSignerError,
   type WalletStandardAccount,
   type WalletStandardPromptCallbacks,
   type WalletStandardPromptCloseEvent,

@@ -25,6 +25,7 @@ import {
   SOLANA_SIGN_TRANSACTION,
   WalletStandardSignerError,
   createWalletStandardSigner,
+  isWalletStandardSignerError,
   type WalletStandardAccount,
   type WalletStandardSignTransactionInput,
   type WalletStandardTransactionVersion,
@@ -58,6 +59,7 @@ async function transactionOfVersion(version: 'legacy' | 0 | 1): Promise<Transact
 interface FixtureOptions {
   supportedTransactionVersions?: readonly WalletStandardTransactionVersion[];
   features?: readonly string[];
+  chains?: readonly string[];
   /** Replace the bytes the wallet returns, to exercise validation. */
   respond?: (input: WalletStandardSignTransactionInput) => Promise<Uint8Array>;
 }
@@ -67,6 +69,7 @@ function walletFixture(options: FixtureOptions = {}) {
   const account: WalletStandardAccount = {
     address: keypair.address,
     features: options.features ?? [SOLANA_SIGN_TRANSACTION],
+    ...(options.chains ? { chains: options.chains } : {}),
   };
   const signTransactionSpy = vi.fn(
     async (...inputs: readonly WalletStandardSignTransactionInput[]) => Promise.all(
@@ -203,14 +206,16 @@ describe('createWalletStandardSigner', () => {
       .rejects.toMatchObject({ code: 'wallet_returned_invalid_transaction' });
   });
 
-  it('never calls a disconnected wallet more than the caller asked', async () => {
-    const rejection = new Error('User rejected the request');
+  it('turns a declined prompt into user_rejected, with the wallet error as its cause', async () => {
+    const rejection = Object.assign(new Error('User rejected the request'), { code: 4001 });
     const { account } = walletFixture();
     const signTransaction = vi.fn(async () => {
       throw rejection;
     });
+    const onPromptClose = vi.fn();
     const signer = createWalletStandardSigner({
       account,
+      onPromptClose,
       wallet: {
         features: {
           [SOLANA_SIGN_TRANSACTION]: {
@@ -222,8 +227,75 @@ describe('createWalletStandardSigner', () => {
       },
     });
 
-    await expect(signer.signTransactions([await transactionOfVersion(1)]))
-      .rejects.toThrow(rejection);
+    const failure = await signer.signTransactions([await transactionOfVersion(1)])
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(WalletStandardSignerError);
+    expect(failure).toMatchObject({ code: 'user_rejected', cause: rejection });
+    expect(isWalletStandardSignerError(failure, 'user_rejected')).toBe(true);
+    expect(onPromptClose).toHaveBeenCalledWith(expect.objectContaining({ signed: false, error: failure }));
+    // Never calls a disconnected wallet more than the caller asked.
     expect(signTransaction).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes any other wallet failure through as it is', async () => {
+    const broken = new Error('Wallet disconnected');
+    const { account } = walletFixture();
+    const signer = createWalletStandardSigner({
+      account,
+      wallet: {
+        features: {
+          [SOLANA_SIGN_TRANSACTION]: {
+            version: '1.0.0',
+            supportedTransactionVersions: ['legacy', 0, 1] as const,
+            signTransaction: async () => {
+              throw broken;
+            },
+          },
+        },
+      },
+    });
+
+    await expect(signer.signTransactions([await transactionOfVersion(1)])).rejects.toBe(broken);
+  });
+
+  it('refuses an account that does not list the chain it is asked for', () => {
+    const { wallet, account } = walletFixture({ chains: ['solana:devnet'] });
+
+    const refuse = () => createWalletStandardSigner({ wallet, account, chain: 'solana:mainnet' });
+    expect(refuse).toThrow(WalletStandardSignerError);
+    expect(refuse).toThrow(expect.objectContaining({ code: 'chain_unsupported' }));
+    expect(() => createWalletStandardSigner({ wallet, account, chain: 'solana:devnet' }))
+      .not.toThrow();
+  });
+
+  it("falls back to the wallet's chains, and accepts any chain when neither lists one", () => {
+    const { wallet, account } = walletFixture();
+
+    expect(() => createWalletStandardSigner({
+      wallet: { ...wallet, chains: ['solana:devnet'] },
+      account,
+      chain: 'solana:mainnet',
+    })).toThrow(expect.objectContaining({ code: 'chain_unsupported' }));
+    expect(() => createWalletStandardSigner({ wallet, account, chain: 'solana:mainnet' }))
+      .not.toThrow();
+  });
+
+  it('keeps the missing-feature refusal distinct from the chain refusal', () => {
+    const { wallet, account } = walletFixture({
+      features: [SOLANA_SIGN_AND_SEND_TRANSACTION],
+      chains: ['solana:devnet'],
+    });
+
+    expect(() => createWalletStandardSigner({ wallet, account, chain: 'solana:mainnet' }))
+      .toThrow(expect.objectContaining({ code: 'sign_transaction_unsupported' }));
+  });
+
+  it('recognizes signer errors by name across package copies', () => {
+    const foreign = Object.assign(new Error('x'), { name: 'WalletStandardSignerError', code: 'chain_unsupported' });
+
+    expect(isWalletStandardSignerError(foreign)).toBe(true);
+    expect(isWalletStandardSignerError(foreign, 'chain_unsupported')).toBe(true);
+    expect(isWalletStandardSignerError(foreign, 'user_rejected')).toBe(false);
+    expect(isWalletStandardSignerError(new Error('x'))).toBe(false);
   });
 });
