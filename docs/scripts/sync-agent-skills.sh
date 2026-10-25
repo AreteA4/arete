@@ -15,7 +15,7 @@ trap 'rm -rf "$tmp" ${staged:+"$staged"}' EXIT
 # replacement below is a rename, never a copy that can fail halfway.
 staged="$(mktemp -d "$docs/.agent-skills-staged.XXXXXX")"
 
-names=(arete arete-streams arete-programs arete-stack-authoring arete-deploy)
+names=(arete arete-streams arete-programs arete-stack-authoring arete-deploy arete-protocols)
 mkdir -p "$tmp/source"
 curl -fsSL "https://codeload.github.com/AreteA4/skills/tar.gz/$ref" |
   tar -xz -C "$tmp/source" --strip-components=1

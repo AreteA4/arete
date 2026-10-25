@@ -65,6 +65,10 @@ pub struct InitArgs {
     pub skills_ref: Option<String>,
 }
 
+/// Report warning whenever `init` writes MCP config: the host only loads
+/// MCP servers on restart, and the session can carry on with the CLI.
+pub const MCP_RESTART_WARNING: &str = "MCP servers load when the host restarts. Until then, use the `a4` CLI equivalents (`a4 get`, `a4 know`, `a4 explore`, `a4 protocol actions`, `a4 dev step`). Don't wait for a restart.";
+
 /// `--agents` value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
@@ -288,14 +292,19 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
         } else {
             Scope::Project
         };
+        let mut wrote_mcp = false;
         for id in &agent_ids {
             let (result, warning) = mcp_config::write(env, id, scope, &command, plan.dry_run);
+            wrote_mcp |= matches!(result.outcome, Outcome::Created | Outcome::Updated);
             results.push(result);
             if let Some(warning) = warning {
                 if !warnings.contains(&warning) {
                     warnings.push(warning);
                 }
             }
+        }
+        if wrote_mcp && !plan.dry_run {
+            warnings.push(MCP_RESTART_WARNING.to_string());
         }
     }
 
@@ -455,7 +464,10 @@ mod tests {
         assert!(report.selected.is_empty());
         assert_eq!(
             report.warnings,
-            vec!["No coding agent detected; wrote agent-independent files only."]
+            vec![
+                "No coding agent detected; wrote agent-independent files only.",
+                MCP_RESTART_WARNING
+            ]
         );
         let items: Vec<&str> = report.results.iter().map(|r| r.item.as_str()).collect();
         assert_eq!(

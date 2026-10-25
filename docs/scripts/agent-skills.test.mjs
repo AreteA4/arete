@@ -18,6 +18,7 @@ const SKILL_NAMES = [
   "arete-programs",
   "arete-stack-authoring",
   "arete-deploy",
+  "arete-protocols",
 ];
 
 test("well-known skill directories publish SKILL.md, not skill.md", async () => {

@@ -290,7 +290,7 @@ text output starts with the status line.
 | `tools.rust`            | `cargo` on PATH (authoring only)                                                      | `info`; `warn` if `arete.toml` has `[authoring]`                                              |
 | `agents.detected`       | Detected agents                                                                       | `info`                                                                                        |
 | `agents.<id>.mcp`       | Both MCP servers present with the expected shape                                      | `warn`: `a4 doctor --fix`                                                                     |
-| `agents.<id>.skills`    | All five Arete workflow skills installed for that agent                               | `warn`: `npx skills add AreteA4/skills --agent <id>`                                          |
+| `agents.<id>.skills`    | All six Arete workflow skills installed for that agent                                | `warn`: `npx skills add AreteA4/skills --agent <id>`                                          |
 | `agents.agents-md`      | `AGENTS.md` block present and current (`v2`)                                          | `warn`: `a4 doctor --fix`                                                                     |
 | `agents.claude-md`      | `CLAUDE.md` imports `@AGENTS.md` (Claude Code only)                                   | `warn`                                                                                        |
 | `agents.gemini-context` | Gemini `context.fileName` includes `AGENTS.md` (Gemini CLI only)                      | `warn`                                                                                        |

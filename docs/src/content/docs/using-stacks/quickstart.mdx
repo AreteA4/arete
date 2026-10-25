@@ -57,10 +57,11 @@ a4 doctor --json
 npx arete-protocol check
 ```
 
-The scaffold writes `protocol.ts`, project configuration, and an installed
-System Program SDK. It uses a local IDL fallback when the registry package is
-unavailable. `a4 init` adds coding-agent instructions, skills, and MCP setup;
-doctor reports configuration problems and fixes.
+The scaffold writes `protocol.ts`, project configuration, and the System
+Program SDK, installed from the registry. If the registry install fails, init
+stops with the error and the command to retry; it never substitutes a local
+IDL. `a4 init` adds coding-agent instructions, skills, and MCP setup; doctor
+reports configuration problems and fixes.
 
 Read `protocol.ts`. The `open` step transfers an amount from its caller to a
 recipient and creates an instance in state `open`, emitting `tipJar.opened`.

@@ -55,23 +55,24 @@ a4 doctor --json
 
 - `arete.toml` for project dependencies;
 - managed Arete instructions in `AGENTS.md`;
-- the five Arete skills;
+- the six Arete skills;
 - the local `arete` MCP server; and
 - the remote `arete-docs` MCP server.
 
 It is safe to run again. If doctor reports configuration that has drifted and
 can be repaired, run `a4 doctor --fix`.
 
-## The five skills
+## The six skills
 
 A skill is a set of instructions your agent loads when a task calls for it.
-Arete installs five:
+Arete installs six:
 
 | Skill                   | When the agent uses it                                                               |
 | ----------------------- | ------------------------------------------------------------------------------------ |
 | `arete`                 | Setup, capability discovery, exact descriptors, and project dependencies             |
 | `arete-streams`         | Live views, point-in-time view reads, filtering, subscriptions, and stream debugging |
 | `arete-programs`        | Program accounts, PDAs, instruction building, operations, transactions, and safety   |
+| `arete-protocols`       | Authoring protocols, developing them in `a4 dev`, deploying them, and calling them   |
 | `arete-stack-authoring` | Designing custom application read models and compiling portable artifacts            |
 | `arete-deploy`          | Publication and permission-aware hosted deployment operations                        |
 

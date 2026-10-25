@@ -206,7 +206,7 @@ lines.push(
   `- [Complete documentation](${SITE}/llms-full.txt): concatenates every documentation page`,
   `- [Agent bootstrap](${SITE}/agent.md): one-page setup instructions for coding agents`,
   `- [Legacy agent skill](${SITE}/skill.md): CLI-oriented operating guide for agents`,
-  `- [Agent skills index](${SITE}/.well-known/agent-skills): well-known v0.2 index of the five Arete product skills`,
+  `- [Agent skills index](${SITE}/.well-known/agent-skills): well-known v0.2 index of the six Arete product skills`,
   `- [Sitemap](${SITE}/sitemap.xml): XML sitemap of the HTML pages`,
   `- [OpenAPI spec](${SITE}/openapi.json): Arete documentation HTTP API for function calling`,
   `- [Arete developer portal](${SITE}/developers): API keys, quickstart, MCP, OpenAPI`,

@@ -1,9 +1,9 @@
 ---
 name: arete-deploy
-description: Publish Solana ProgramSpecs and plan, deploy, inspect, stop, archive, promote, or delete hosted Arete resources. Use for a4 program lifecycle, a4 up, deployment branches/previews, and hosted stack operations. This skill performs external mutations only when the user's request authorizes them; use arete-stack-authoring for local DSL and artifact work.
+description: Publish Solana ProgramSpecs and plan, deploy, inspect, stop, archive, promote, or delete hosted Arete resources. Use for a4 program lifecycle, a4 up, deployment branches/previews, hosted stack operations, and taking an Arete Protocol to a private hosted deployment with a4 protocol deploy (review, activation outcomes, the owner-private registry package). This skill performs external mutations only when the user's request authorizes them; use arete-stack-authoring for local DSL and artifact work and arete-protocols for protocol authoring and a4 dev.
 metadata:
-  version: "1.1.0"
-  min-cli: ">=0.23.0"
+  version: "1.3.0"
+  min-cli: ">=0.45.0"
 ---
 
 # Publish and Operate Hosted Arete Resources
@@ -85,12 +85,65 @@ a4 up <alias>
 
 After a healthy production deployment, `a4 up <alias>` also edits the project: it records the deployment's endpoints under that dependency in `arete.toml` and reinstalls, so the generated SDK connects to the new deployment. Treat that as part of the mutation the user authorized. Branch, preview, and `--json` deployments leave `arete.toml` unchanged. See [references/deployment-lifecycle.md](references/deployment-lifecycle.md#installed-stacks).
 
+## Protocol Deployment
+
+`a4 protocol deploy` takes a protocol project (authored with
+`arete-protocols`) to a private hosted deployment. It needs a secret key;
+publishable keys are refused. Preview first:
+
+```bash
+a4 protocol deploy --dry-run                 # builds; files, expected release hash, slug, create vs reuse, programs to push
+a4 protocol deploy --fee-policy fee-policy.json
+a4 protocol deploy --no-activate --json
+```
+
+A real run builds the project (`--no-build` uploads the existing build and
+refuses it when sources changed), registers each program installed from a
+local IDL as the user's private program when Arete doesn't have that exact
+ProgramSpec yet (and records it in `arete.lock`), uploads the release,
+creates or reuses a private deployment (a new one needs a fee policy), and
+activates it. All of that is one authorized mutation; a request to build,
+check or run locally is not authorization to deploy.
+
+| `status` | Meaning |
+|---|---|
+| `active` | Template-only protocol, private, trust tier `unreviewed`. Activation waited while the server prepared the deployment and its stack (`--wait-secs`). |
+| `review-required` | The release has handler code, which needs Arete's review before it can be activated. Report the printed release hash and deployment id; do not try to activate it another way. |
+| not active, with `pending` | The wait ran out while the server was still preparing; running deploy again resumes. |
+| `dry-run` | Nothing changed. |
+
+Public deployments are never self-serve. Present an `unreviewed` deployment
+as private and unreviewed, never as public or reviewed.
+
+On activation, Arete publishes an owner-private registry package of the
+protocol, reported as `registryPackage`:
+
+- `published` or `existing`: `a4 install protocol <slug> --ts` resolves it
+  for this account (others can't), and deploy reinstalls the project's own
+  client from it, so the client calls the new deployment.
+- `skipped`, with `code` and `message`: the deployment is still active, but
+  no package was published. For `package-version-immutable`, the spec
+  `version` already pins other content: bump it and deploy again (with the
+  user's go-ahead). Until a package exists, the project's client is
+  generated from the deployed build, and `a4 install --check` fails.
+
+Verify after deploying: the status, the deployment id and trust tier, the
+`registryPackage` outcome, any pushed programs (`a4 program list --json`),
+and that `arete.toml` and `arete.lock` changed only as deploy reported.
+
+A protocol's automations deploy to the app's own host (Cloudflare, Vercel or
+a Node container), not to Arete: `npx @usearete/automations add <host>` writes
+the files and prints the steps, and `a4 protocol webhook add` registers the
+endpoint. See the `arete-protocols` automations reference.
+
 ## Mutation Boundaries
 
 The following require explicit scope from the user:
 
 - agent signup or key creation;
 - program push, archive, or promotion;
+- protocol deploy (it may also push programs and publishes a private package), or deploying again after a version bump;
+- registering, testing or removing a protocol webhook endpoint (`a4 protocol webhook`), or deploying automations to a host;
 - live stack deployment or replacement;
 - branch/preview creation;
 - deployment stop;

@@ -10,12 +10,13 @@ use std::time::{Duration, Instant};
 use super::{display_path, find_on_path, read_optional, Env, ItemResult, Outcome};
 
 pub const SKILLS_SOURCE: &str = "AreteA4/skills";
-pub const SKILL_NAMES: [&str; 5] = [
+pub const SKILL_NAMES: [&str; 6] = [
     "arete",
     "arete-streams",
     "arete-programs",
     "arete-stack-authoring",
     "arete-deploy",
+    "arete-protocols",
 ];
 const LEGACY_SKILL_NAMES: [&str; 2] = ["arete-consume", "arete-build"];
 pub const SKILLS_TIMEOUT: Duration = Duration::from_secs(120);
@@ -673,6 +674,7 @@ fi
             "arete-streams",
             "arete-programs",
             "arete-stack-authoring",
+            "arete-protocols",
         ] {
             fs::create_dir_all(dir.path().join(".agents/skills").join(name)).unwrap();
             fs::write(

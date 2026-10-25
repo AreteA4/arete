@@ -27,14 +27,21 @@ Add a dependency with the exact kind and reference returned by exploration:
 ```bash
 a4 install stack <stack-ref> --ts
 a4 install program <program-ref> --ts
+a4 install protocol <protocol-ref> --ts
 ```
 
 Use `--alias` when the local name should differ. Use `--exact` when the project must save the exact selected version rather than a compatible requirement.
 
-Reproduce the manifest without changing resolution:
+Reproduce the manifest without changing resolution (this also restores published protocol clients that `a4 dev` regenerated from a local build):
 
 ```bash
 a4 install --locked
+```
+
+Check, without changing anything, that `arete.lock` is fresh and every generated protocol client is the published release it pins. Use it as the CI guard:
+
+```bash
+a4 install --check
 ```
 
 Preview the complete install graph without writing:

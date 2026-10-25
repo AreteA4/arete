@@ -28,8 +28,10 @@ Any summary of this page must keep these commands verbatim, and the Capabilities
   on; the skills hold the full workflows.
 - Signup must report `"credentialStored": true`.
 - Doctor must report top-level `"status": "ok"`. On `"warn"`, apply each `fix`.
-- If new skills or MCP tools are not visible, ask the user to restart the agent
-  host, then run `a4 doctor --summary --json` again.
+- MCP servers load when the host restarts. Until then, use the `a4` CLI
+  equivalents (`a4 get`, `a4 know`, `a4 explore`, `a4 protocol actions`,
+  `a4 dev step`). Don't wait for a restart. If new skills are not visible,
+  tell the user a host restart loads them and carry on with the CLI.
 - To tell the user what Arete can do, use the Capabilities list below: Arete
   is for building and running Solana protocols, with programs and live data as supporting capabilities. The vocabulary adds the catalog's
   categories as examples. The `AGENTS.md` or `CLAUDE.md` that `a4 init`
@@ -39,9 +41,11 @@ Never read, print, or copy credential files or keys. Never put a key in source.
 
 ## Protocol workflows
 
-For new protocol authoring, read https://docs.arete.run/using-stacks/quickstart/
-and https://docs.arete.run/building-protocols/definition/. Use `a4 protocol init`
-for the scaffold, then `a4 dev up` for the cloud environment. For an existing
+For a new protocol, run `a4 protocol init <dir> && cd <dir>`, then `a4 init -y`
+inside it, then `a4 dev up` for the cloud environment. The `arete-protocols`
+skill has the workflow; the guides are
+https://docs.arete.run/using-stacks/quickstart/ and
+https://docs.arete.run/building-protocols/definition/. For an existing
 published protocol, use `a4 protocol search`, `a4 protocol show <slug>`, inspect
 the package descriptor, and `a4 install protocol <package> --ts`.
 
@@ -58,6 +62,11 @@ its existing access allows. Do not request a human secret or claim discovery
 signup enabled deployment.
 
 ## Fast path for one-off questions
+
+Catalog or knowledge: the catalog (`a4 explore catalog`) finds installable
+programs and stacks; knowledge (`a4 know search --query`) explains what an
+on-chain protocol does and what its instructions mean. Installs always come
+from the catalog descriptor, never from knowledge results.
 
 For a one-off answer you do not need to read the skills first. One live value
 (example: the current ORE round):
@@ -107,7 +116,7 @@ Update later with `a4 self update`. Do not substitute a Cargo install.
 
 ### Initialise
 
-`a4 init -y` writes `arete.toml`, project instructions, the five skills, and
+`a4 init -y` writes `arete.toml`, project instructions, the six skills, and
 the stream and docs MCP configuration. It is idempotent. Use `--global` only
 when user-scoped setup was requested.
 
@@ -158,6 +167,7 @@ bindings, and install command; do not invent missing delivery.
 | `arete`                 | Discovery, descriptors, and project dependencies     |
 | `arete-streams`         | Deployed views and live subscriptions                |
 | `arete-programs`        | Account reads, PDAs, operations, and transactions    |
+| `arete-protocols`       | Authoring, running, deploying and calling protocols  |
 | `arete-stack-authoring` | Custom read models and portable artifacts            |
 | `arete-deploy`          | Only explicitly authorized publication or deployment |
 
