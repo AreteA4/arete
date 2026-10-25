@@ -313,8 +313,10 @@ any other detail fields) in the error details.
 A dev environment is a fork of mainnet. A program it never changed has its
 mainnet executable there, so Program Read verifies and decodes it with the
 installed release. Some programs differ on every fork from the start: the
-fork runtime ships its own builds of SPL Token and Token-2022. Program Read
-refuses those with `devenv-program-release-mismatch` like any changed program.
+fork runtime ships its own builds of SPL Token and Token-2022. Arete checks
+those builds against mainnet's (same account reads and writes) and serves
+them as the installed release; any other changed program is refused with
+`devenv-program-release-mismatch`.
 
 ## 7. Conformance
 
