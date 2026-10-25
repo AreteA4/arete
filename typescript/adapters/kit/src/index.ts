@@ -176,6 +176,13 @@ export interface KitSendOptions extends SendOptions {
   feePayer?: TransactionSigner;
   confirmationTimeoutMs?: number;
   statusPollIntervalMs?: number;
+  /**
+   * Receives the {@link KitWalletActivity} of this send only, after the
+   * adapter-wide listeners. Use it when several callers share one adapter
+   * and each needs its own transaction's progress; `adapter.onActivity`
+   * sees every send.
+   */
+  onActivity?: KitWalletActivityListener;
 }
 
 export interface KitTransactionInspectionOptions extends TransactionInspectionOptions {
@@ -216,7 +223,8 @@ export interface KitWalletAdapter extends WalletAdapter {
   ): Promise<KitTransactionInspectionResult>;
   /**
    * Observe {@link KitWalletActivity} of every `signAndSend` call. Returns the
-   * unsubscribe function. A listener that throws is ignored.
+   * unsubscribe function. A listener that throws is ignored. For one send's
+   * activity only, pass `onActivity` in that call's {@link KitSendOptions}.
    */
   onActivity(listener: KitWalletActivityListener): () => void;
 }
@@ -875,8 +883,8 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
   const signerAddresses = [signer.address, ...configuredLocalSigners.map(({ address }) => address)];
   const activityListeners = new Set<KitWalletActivityListener>();
   if (config.onActivity) activityListeners.add(config.onActivity);
-  const report = (activity: KitWalletActivity) => {
-    for (const listener of [...activityListeners]) {
+  const report = (activity: KitWalletActivity, ownListener?: KitWalletActivityListener) => {
+    for (const listener of ownListener ? [...activityListeners, ownListener] : [...activityListeners]) {
       try {
         listener(activity);
       } catch {
@@ -918,6 +926,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       const version = plan.transactionVersion;
 
       const sendOptions = options as KitSendOptions | undefined;
+      const reportSend = (activity: KitWalletActivity) => report(activity, sendOptions?.onActivity);
       const feePayer = sendOptions?.feePayer ?? signer;
       const commitment = toCommitment(options?.confirmationLevel, fallbackCommitment);
       let resolved: ResolvedTransport;
@@ -994,7 +1003,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       let signedTransaction;
       let signature: Signature;
       try {
-        report({ stage: 'signing' });
+        reportSend({ stage: 'signing' });
         signedTransaction = await signTransactionMessageWithSigners(message);
         assertIsTransactionWithBlockhashLifetime(signedTransaction);
         signature = getSignatureFromTransaction(signedTransaction);
@@ -1005,7 +1014,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
           cause,
         });
       }
-      report({ stage: 'sending', signature });
+      reportSend({ stage: 'sending', signature });
 
       if (resolved.kind === 'arete') {
         // One deadline over submission *and* confirmation: a relay that
@@ -1020,7 +1029,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
             { skipPreflight: options?.skipPreflight ?? false, preflightCommitment: commitment }
           ));
           reportSignatureMismatch(signature, sent.signature);
-          report({ stage: 'confirming', signature });
+          reportSend({ stage: 'confirming', signature });
         } catch (cause) {
           if (cause instanceof DeadlineExpiredError) {
             throw new KitTransactionExecutionError({

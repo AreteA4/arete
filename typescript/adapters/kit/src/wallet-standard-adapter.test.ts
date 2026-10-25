@@ -161,6 +161,51 @@ describe('createWalletStandardWalletAdapter', () => {
     unsubscribe();
   });
 
+  it('reports each send\'s activity to that send\'s own listener only', async () => {
+    const { wallet, account } = fakeWallet();
+    const { transport } = fakeRelay();
+    const every: KitWalletActivity[] = [];
+    const adapter = createWalletStandardWalletAdapter({ wallet, account });
+    const unsubscribe = adapter.onActivity((event) => every.push(event));
+    const first: KitWalletActivity[] = [];
+    const second: KitWalletActivity[] = [];
+    const otherMemo = { ...memo([keypair.address]), data: new Uint8Array([9]) };
+
+    const [one, two] = await Promise.all([
+      adapter.signAndSend(
+        [memo([keypair.address])],
+        { statusPollIntervalMs: 0, onActivity: (event) => first.push(event) },
+        { transactionTransport: transport }
+      ),
+      adapter.signAndSend(
+        [otherMemo],
+        {
+          statusPollIntervalMs: 0,
+          onActivity: (event) => {
+            second.push(event);
+            throw new Error('a throwing listener does not change the send');
+          },
+        },
+        { transactionTransport: transport }
+      ),
+    ]);
+
+    expect(one.signature).not.toBe(two.signature);
+    expect(first).toEqual([
+      { stage: 'signing' },
+      { stage: 'sending', signature: one.signature },
+      { stage: 'confirming', signature: one.signature },
+    ]);
+    expect(second).toEqual([
+      { stage: 'signing' },
+      { stage: 'sending', signature: two.signature },
+      { stage: 'confirming', signature: two.signature },
+    ]);
+    // The adapter-wide listener still sees both sends.
+    expect(every).toHaveLength(6);
+    unsubscribe();
+  });
+
   it('signs with extra local signers in the same prompt', async () => {
     const { wallet, account, signTransactionSpy } = fakeWallet();
     const { transport } = fakeRelay();
