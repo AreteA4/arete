@@ -55,30 +55,26 @@ accounts.
 
 The React surface exposes the same generated account readers on its connected
 program object. Account readers are asynchronous functions rather than React
-hooks, so call them from your application data layer, an effect, or a query
-library. Read-only calls do not require a wallet:
+hooks. `useAsyncRead(key, read, options)` from `@usearete/react` runs one for a
+component: it reruns when the key changes, never shows data from a previous
+key, and aborts a superseded request. Read-only calls do not require a wallet:
 
 ```tsx
-import { useEffect, useState } from "react";
+import { useArete, useAsyncRead } from "@usearete/react";
 
-const [position, setPosition] = useState<Position | null>();
 const arete = useArete(MY_STACK);
-
-useEffect(() => {
-  let active = true;
-  void arete.programs.myProgram.accounts.Position.fetch(positionAddress).then(
-    (value) => {
-      if (active) setPosition(value);
-    },
-  );
-  return () => {
-    active = false;
-  };
-}, [arete, positionAddress]);
+const position = useAsyncRead(
+  ["position", positionAddress],
+  () => arete.programs.myProgram.accounts.Position.fetch(positionAddress),
+  { enabled: arete.isConnected },
+);
 ```
 
-Inspect the generated declarations for the exact account name and result type.
-Handle missing data separately from loading and errors.
+`position` has `data`, `error`, `status`, `isPending`, `isEmpty`, and
+`refresh()`. Inspect the generated declarations for the exact account name and
+result type. Handle missing data separately from loading and errors. In a
+session, read from `session.programs` instead; see
+[Program reads with `useAsyncRead`](/sdks/react-sessions/#program-reads-with-useasyncread).
 
 ## Rust
 

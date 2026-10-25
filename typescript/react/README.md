@@ -186,6 +186,8 @@ How the provider manages the session:
 
 Under React StrictMode in development the provider opens, closes and reopens the session once on mount, like any effect.
 
+[Compose a session in React](https://docs.arete.run/sdks/react-sessions/) walks through a whole app on one session: providers, live views from a session stack, program reads with `useAsyncRead`, `useOperationMutation` with a Wallet Standard wallet, typed wallet errors and protocol hooks.
+
 ### Stacks in a session
 
 A stack member of the session (`session.stacks.<key>`) is a connected client of its own. Pass it to `useArete` for the same views, programs, reads and mutation hooks `useArete(stack)` gives, typed for that stack, without a second connection:
@@ -399,7 +401,7 @@ Program and read hooks are safe to call while the client is still connecting: mu
 
 ### Running an operation or flow: `useOperationMutation`
 
-`useOperationMutation(prepare, { executor?, wallet, signers? })` runs any prepared instruction, transaction or flow through anything with `execute(prepared, options)`: a connected client or a session, so it works without a stack. Inside an [`AreteSessionProvider`](#sessions-aretesessionprovider-and-usearetesession) `executor` can be left out: the hook runs on the provider's session, waiting for it to open. `prepare` returns the operation, or `{ operation, signers }` when it creates signers (a create key):
+`useOperationMutation(prepare, { wallet, executor?, signers?, allowExecutorWallet? })` runs any prepared instruction, transaction or flow through anything with `execute(prepared, options)`: a connected client or a session, so it works without a stack. Inside an [`AreteSessionProvider`](#sessions-aretesessionprovider-and-usearetesession) `executor` can be left out: the hook runs on the provider's session, waiting for it to open. `prepare` returns the operation, or `{ operation, signers }` when it creates signers (a create key):
 
 ```tsx
 import { generateKeyPairSigner } from '@solana/kit';

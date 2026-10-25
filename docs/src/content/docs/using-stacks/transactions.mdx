@@ -53,7 +53,7 @@ const session = await createSession(
 
 The connected client supplies its transport per invocation. This means one wallet can safely serve multiple clients connected to different stacks without mutable global transport state.
 
-In browser apps, connect Wallet Standard wallets rather than constructing the signer by hand: React apps use `useSolanaWalletAdapter()` from `@usearete/adapter-web3js/react` under `<WalletProvider wallets={[]}>`, and other apps use `createWalletStandardSigner` from `@usearete/adapter-kit`. See [Wallets](/sdks/react/#wallets).
+In browser apps, connect Wallet Standard wallets rather than constructing the signer by hand: React apps use `useSolanaWalletAdapter()` from `@usearete/adapter-web3js/react` under `<WalletProvider wallets={[]}>`, or `useWalletStandardWallet()` from `@usearete/react/wallet-standard` with `@wallet-standard/react`, and other apps use `createWalletStandardSigner` from `@usearete/adapter-kit`. See [Wallets](/sdks/react/#wallets) and [Connect a Wallet Standard wallet](/sdks/react-sessions/#connect-a-wallet-standard-wallet).
 
 There is no automatic Arete-to-direct fallback after an operation starts. In particular, a failed or ambiguous Arete submission is never retried through a direct RPC connection.
 
@@ -156,6 +156,8 @@ The boundary is intentionally narrow:
 Pass `reconcile: false` for confirmation-only behavior, `{ timeoutMs, refresh }` to customize the default, or a function to replace processed-slot reconciliation. HTTP-only mutations and results without a receipt slot skip the default.
 
 A mutation's `phase` walks `idle` → `preparing` → `awaiting-wallet` → `submitted` → `confirmed` → `reconciling` → `reconciled`, and otherwise ends in `confirmed-unreconciled`, `not-submitted`, `submitted-unknown`, or `chain-failed`. There is no separate signing or confirming phase: `awaiting-wallet` covers signing, sending, and confirmation. See [Mutation phases](/sdks/react/#mutation-phases).
+
+To run a prepared operation on a session, including standalone programs and flows that create their own signers, use `useOperationMutation` instead. Its `status` walks `idle` → `preparing` → `signing` → `sending` → `confirming` → `done`, and its failures have typed kinds such as `wallet-rejected`. See [Transactions with `useOperationMutation`](/sdks/react-sessions/#transactions-with-useoperationmutation).
 
 ## Raw instructions
 

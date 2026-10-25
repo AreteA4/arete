@@ -17,6 +17,11 @@ Create your client or session outside the render cycle, or memoize it for its
 authentication and deployment inputs. Close it when its owner is disposed.
 A changing client identity causes hooks to start new reads and subscriptions.
 
+In a session app, let `AreteSessionProvider` own the session and pass
+`session?.protocols.<key>` to the hooks. The hooks accept `null` or
+`undefined` and wait until the session is open. See
+[Protocols in the session](/sdks/react-sessions/#protocols-in-the-session).
+
 ## Follow an instance
 
 ```tsx
@@ -79,4 +84,5 @@ handler. An enabled button is not a guarantee that preparation will pass.
 Handle rejection, wallet cancellation, pending execution, and chain failure.
 
 [React SDK reference →](/sdks/react/) ·
+[Compose a session in React →](/sdks/react-sessions/) ·
 [Connect a frontend to the dev environment →](/development/application/)

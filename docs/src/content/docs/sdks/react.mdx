@@ -7,6 +7,8 @@ sidebar:
 
 `@usearete/react` adds provider-managed connections and React hooks to the framework-agnostic [`@usearete/sdk`](/sdks/typescript/) client.
 
+For an app that combines stacks, programs, and protocols in one session, start with [Compose a session in React](/sdks/react-sessions/).
+
 ## Protocol hooks
 
 Protocol hooks accept a protocol client directly, including a member of
@@ -119,7 +121,7 @@ require a publishable key as shown above.
 | `stackOptions`           | Default lookup options for the provider stack                                                               |
 | `autoConnect`            | Start the initial connection; defaults to `true`                                                            |
 | `autoReconnect`          | Recover an established connection after loss; defaults to `true`                                            |
-| `wallet`                 | Wallet adapter used by generated program operations                                                         |
+| `wallet`                 | Wallet adapter used by generated program operations; does not reach session members                         |
 | `auth`                   | Authentication options such as `publishableKey`                                                             |
 | `fetch`                  | Custom fetch implementation                                                                                 |
 | `validateFrames`         | Set false to silence rejected-frame warnings                                                                |
@@ -150,8 +152,8 @@ const arete = useArete();
 Passing that same stack explicitly also keeps its provider options, so local
 endpoint overrides still apply: `useArete(MY_STACK)`. Per-call options take
 precedence, and a different explicit stack does not inherit these defaults.
-Lookup options accept `url`, `httpUrl`, `transport`, `transactions`, and
-`programs`. Supply `transactions` when transaction inspection and submission
+Lookup options accept `url`, `httpUrl`, `transport`, `transactions`, `chain`,
+and `programs`. Supply `transactions` when transaction inspection and submission
 use a different service from the stack HTTP read endpoint.
 
 Register the stack type once so argument-less calls are typed:
@@ -173,7 +175,7 @@ const arete = useArete(MY_STACK, {
 });
 ```
 
-`useArete` options are `url`, `httpUrl`, `transport`, and `programs`. Keep a supplied `programs` object stable with a module constant or `useMemo`.
+`useArete(stack)` options are `url`, `httpUrl`, `transport`, `transactions`, `chain`, and `programs`. Keep a supplied `programs` object stable with a module constant or `useMemo`. A session member takes only `stack` (see [Stacks in a session](#stacks-in-a-session)).
 
 Attached `programs` follow the core [identity rule](/sdks/typescript/#multiple-stacks-and-programs). A program the stack already provides (the same object, or the same `packageReleaseHash`) resolves to the stack's own program. A program with the same `programSpecHash` that cannot be proven identical, such as one you extended with `extendProgram`, replaces the stack's under that key, and the SDK logs one warning. Any other program under one of the stack's keys fails the connection with `PROGRAM_KEY_CONFLICT`, reported through `arete.error`; attach it under a key the stack does not use.
 
@@ -245,6 +247,8 @@ export default function App() {
 
 Do not add wallet-specific adapter packages to `wallets`; Wallet Standard detection already covers wallets that support it. The web3.js adapter builds v0 transactions, so a wallet must support version `0`; see the [adapter README](https://github.com/AreteA4/arete/tree/main/typescript/adapters/web3js#peer-dependencies) for its peer-dependency matrix.
 
+React apps that use `@wallet-standard/react` instead of the Solana wallet adapter use `useWalletStandardWallet` from `@usearete/react/wallet-standard`; see [Connect a Wallet Standard wallet](/sdks/react-sessions/#connect-a-wallet-standard-wallet). Its wallet works with `AreteProvider` as well as with a session.
+
 Apps that do not use React or web3.js bridge a Wallet Standard account with `createWalletStandardSigner` from `@usearete/adapter-kit` and pass the signer to that package's `createWalletAdapter`:
 
 ```ts
@@ -254,58 +258,51 @@ const signer = createWalletStandardSigner({ wallet, account, chain: 'solana:main
 const arete = createWalletAdapter({ transport: 'auto', signer });
 ```
 
-## Sessions and wallet flows without a stack
+## Sessions
 
-For a [`createSession`](/sdks/typescript/) session, put an `AreteSessionProvider` above the components that use it, and run operations on it with `useOperationMutation`. `useWalletStandardWallet` from `@usearete/react/wallet-standard` (which needs `@usearete/adapter-kit`, `@solana/kit` and `@wallet-standard/ui-registry`) turns a `@wallet-standard/react` account into the sign-only wallet:
+Use a [`createSession`](/sdks/typescript/#create-a-session) session when the
+app combines stacks with standalone programs or protocols, or wants one wallet
+for all of them. [Compose a session in React](/sdks/react-sessions/) walks
+through a complete app. In short:
 
-```tsx
-import { AreteSessionProvider, useAreteSession, useOperationMutation } from '@usearete/react';
-import { useWalletStandardWallet } from '@usearete/react/wallet-standard';
-
-const SQUADS = { programs: { squads: SQUADS_V4_PROGRAM } };
-
-function Shell({ account, children }) {
-  const { wallet } = useWalletStandardWallet(account, { chain: 'solana:mainnet' });
-  return (
-    <AreteSessionProvider definition={SQUADS} options={{ auth }} wallet={wallet}>
-      {children}
-    </AreteSessionProvider>
-  );
-}
-
-function Propose({ wallet }) {
-  const { session } = useAreteSession<typeof SQUADS>(); // session?.programs.squads is typed
-  const propose = useOperationMutation(prepareProposal, { wallet }); // runs on the provider's session
-  …
-}
-```
-
-The provider opens the session when it mounts and closes it when it unmounts. `options.auth` and `options.fetch` default to the enclosing `AreteProvider`'s. Changing the definition or the options closes the session and opens a new one (`session` is `null` meanwhile); changing `wallet` only calls `session.setWallet`. Pass `session={existing}` instead of `definition` to share a session the app opened and closes.
-
-A `useOperationMutation` run without a `wallet` fails with `not-ready` before anything is prepared or signed; set `allowExecutorWallet: true` to sign with the session's own wallet instead. Failures are an `OperationMutationError` whose `kind` tells the wallet cases apart: `wallet-rejected` (declined), `wallet-feature-unsupported` (no `solana:signTransaction`), `wallet-chain-unsupported`, `wallet-version-unsupported` and `wallet-modified`. `useWalletStandardWallet`'s `error` is a `WalletStandardSignerError` with a `code` (`sign_transaction_unsupported`, `chain_unsupported`, `account_unavailable`). The [React SDK README](https://github.com/AreteA4/arete/tree/main/typescript/react#sessions-aretesessionprovider-and-usearetesession) has the full reference.
+- `AreteSessionProvider` opens the session (`definition`, plus `createSession`
+  `options` without `wallet`) when it mounts and closes it when it unmounts.
+  `options.auth` and `options.fetch` default to the enclosing
+  `AreteProvider`'s. A new definition or new options reopen it; a new `wallet`
+  prop only calls `session.setWallet`. Pass `session={existing}` instead of
+  `definition` to share a session the app opened.
+- `useAreteSession<typeof DEFINITION>()` returns
+  `{ session, status, error, ready, retry }`. `session` is `null` until
+  `status` is `open`.
+- `useOperationMutation(prepare, { wallet })` runs a prepared instruction,
+  transaction, or flow on the provider's session. A run without a wallet fails
+  with `not-ready` before anything is prepared; set `allowExecutorWallet: true`
+  to sign with the session's wallet. Failures are an `OperationMutationError`
+  with a typed `kind`, such as `wallet-rejected`, `wallet-feature-unsupported`,
+  `wallet-chain-unsupported`, `wallet-version-unsupported`, or
+  `wallet-modified`.
+- `useWalletStandardWallet(account, { chain })` from
+  `@usearete/react/wallet-standard` turns a `@wallet-standard/react` account
+  into a sign-only wallet. Its `error` is a `WalletStandardSignerError` whose
+  `code` is `sign_transaction_unsupported`, `chain_unsupported`, or
+  `account_unavailable`. This entry point needs `@usearete/adapter-kit`,
+  `@solana/kit`, and `@wallet-standard/ui-registry`.
+- `AreteProvider`'s `wallet` prop does not reach session members. Set the
+  session's wallet on `AreteSessionProvider`.
 
 ### Stacks in a session
 
 A stack member of the session (`session.stacks.<key>`) is already connected. Pass it to `useArete` for the same typed views, programs, reads and mutations as `useArete(stack)`, over the member's connection:
 
 ```tsx
-import { AreteSessionProvider, useArete, useAreteSession } from '@usearete/react';
-
-const APP = { stacks: { ore: ORE_STREAM_STACK } };
-
-<AreteSessionProvider definition={APP} options={{ auth }} wallet={wallet}>
-  <Round />
-</AreteSessionProvider>;
-
-function Round() {
-  const { session } = useAreteSession<typeof APP>();
-  const ore = useArete(session?.stacks.ore, { stack: APP.stacks.ore });
-  const round = ore.views.OreRound.latest.use();
-  …
-}
+const { session } = useAreteSession<typeof APP>();
+const ore = useArete(session?.stacks.ore, { stack: APP.stacks.ore });
+const round = ore.views.OreRound.latest.use();
 ```
 
-Nothing connects a second time, and unmounting never disconnects the member: the session closes it. While the session opens the member is `null` and the result is `useArete(stack)`'s connecting state, with placeholder views and programs from `stack` (required whenever the member can be `null`). A reopen gives a new member, and the hooks move to it. Mutations sign with the session's wallet (the provider's `wallet` prop), and wait for the streamed slot they landed in only when the session connected the member over the WebSocket: the hooks read the member's `transport` (`'ws'` or `'http'`) and its `stack`, so neither is an option once the member exists.
+Here `APP` is a session definition such as `{ stacks: { ore: ORE_STREAM_STACK } }`, declared at module level.
+
+Nothing connects a second time, and unmounting never disconnects the member: the session closes it. While the session opens the member is `undefined` and the result is `useArete(stack)`'s connecting state, with placeholder views and programs from `stack` (required whenever the member can be `null` or `undefined`). A reopen gives a new member, and the hooks move to it. Mutations sign with the session's wallet (the provider's `wallet` prop), and wait for the streamed slot they landed in only when the session connected the member over the WebSocket: the hooks read the member's `transport` (`'ws'` or `'http'`) and its `stack`, so neither is an option once the member exists. See [Live views from a session stack](/sdks/react-sessions/#live-views-from-a-session-stack).
 
 ## `useArete` result
 
@@ -598,4 +595,4 @@ ws.serve(subscription, [{ key: '1', data: round }]);
 
 ## Low-level exports
 
-`@usearete/react` exports `useConnectionState`, `useAreteContext`, `useAsyncRead`, `useInstructionMutation`, reconciliation helpers, and selected core SDK APIs and types. Generated view hooks are the supported React subscription API. The package is not a complete mirror of `@usearete/sdk`; import the core package directly for the full low-level surface.
+`@usearete/react` exports `useConnectionState`, `useAreteContext`, `useAsyncRead` (see [Program reads with `useAsyncRead`](/sdks/react-sessions/#program-reads-with-useasyncread)), `useInstructionMutation`, reconciliation helpers, and selected core SDK APIs and types. Generated view hooks are the supported React subscription API. The package is not a complete mirror of `@usearete/sdk`; import the core package directly for the full low-level surface.

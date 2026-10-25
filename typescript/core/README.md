@@ -498,12 +498,16 @@ Equivalent entrypoints:
 
 Session surface:
 
-- `session.stacks.<name>` - connected generated stacks
+- `session.stacks.<name>` - connected generated stacks; each exposes `stack` (its definition, with attached programs) and `transport` (`'ws'` when it opened the streaming WebSocket, `'http'` otherwise), as every connected client does
 - `session.programs.<name>` - connected packaged, attached, or standalone programs
+- `session.protocols.<name>` - protocol clients
 - `session.chain` - canonical generic chain reads
+- `session.wallet` and `session.setWallet(wallet)` - the shared wallet
 - `session.signerRegistry`
 - `session.transaction(...)`
 - `session.execute(...)`
+
+In React, `AreteSessionProvider` and `useAreteSession` from `@usearete/react` own the session; see [Compose a session in React](https://docs.arete.run/sdks/react-sessions/).
 
 Prefer these connected paths in application code. `Arete.connect(STACK, ...)` remains available when a direct single-stack client is more convenient.
 
