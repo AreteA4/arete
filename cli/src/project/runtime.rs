@@ -193,6 +193,31 @@ pub fn tsconfig_hiding_node_types(output: &Path) -> Option<PathBuf> {
     (!types.iter().any(|entry| entry.as_str() == Some("node"))).then_some(tsconfig)
 }
 
+/// Whether the nearest `tsconfig.json` at or above `output`, with what it
+/// inherits through `extends`, resolves modules the way a bundler does:
+/// `moduleResolution: "bundler"`, or `module: "preserve"`, which implies it.
+/// Next.js and Vite projects are set up this way. Such a project imports
+/// relative modules without an extension, and some bundlers it builds with
+/// (Turbopack) do not map a `./x.js` specifier to `./x.ts` the way `tsc`
+/// does, so generated TypeScript there is written extensionless. `false`
+/// without a `tsconfig.json`, or for `node16`/`nodenext`, which need the
+/// `.js`.
+pub fn tsconfig_resolves_like_a_bundler(output: &Path) -> bool {
+    let Some(tsconfig) = nearest_tsconfig(output) else {
+        return false;
+    };
+    let lowercase = |value: serde_json::Value| value.as_str().map(str::to_ascii_lowercase);
+    match compiler_option(&tsconfig, "moduleResolution", 0).and_then(lowercase) {
+        Some(resolution) => resolution == "bundler",
+        None => {
+            compiler_option(&tsconfig, "module", 0)
+                .and_then(lowercase)
+                .as_deref()
+                == Some("preserve")
+        }
+    }
+}
+
 /// `tsconfig.json` `module` settings under which `package.json` `"type"`
 /// decides whether a `.ts` file is an ES module or CommonJS. Under
 /// `commonjs` every file is CommonJS whatever `"type"` says.
@@ -651,6 +676,54 @@ mod tests {
             r#"{"name":"app","type":"module"}"#,
         );
         assert_eq!(commonjs_package_json_rejecting_imports(&output), None);
+    }
+
+    #[test]
+    fn bundler_resolution_is_read_from_the_nearest_tsconfig_and_its_extends() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let output = root.join("sdk/squads");
+        assert!(!tsconfig_resolves_like_a_bundler(&output), "no tsconfig");
+
+        for (tsconfig, bundler) in [
+            // What `create-next-app` and `create vite` write.
+            (
+                r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler"}}"#,
+                true,
+            ),
+            (
+                r#"{"compilerOptions":{"module":"ESNext","moduleResolution":"Bundler"}}"#,
+                true,
+            ),
+            (r#"{"compilerOptions":{"module":"preserve"}}"#, true),
+            (TSC_INIT_TSCONFIG, false),
+            (
+                r#"{"compilerOptions":{"module":"node16","moduleResolution":"node16"}}"#,
+                false,
+            ),
+            (r#"{"compilerOptions":{"moduleResolution":"node"}}"#, false),
+        ] {
+            write(&root.join("tsconfig.json"), tsconfig);
+            assert_eq!(
+                tsconfig_resolves_like_a_bundler(&output),
+                bundler,
+                "{tsconfig}"
+            );
+        }
+
+        write(
+            &root.join("tsconfig.base.json"),
+            r#"{"compilerOptions":{"moduleResolution":"bundler"}}"#,
+        );
+        write(
+            &root.join("tsconfig.json"),
+            r#"{"extends":"./tsconfig.base.json","compilerOptions":{"strict":true}}"#,
+        );
+        assert!(tsconfig_resolves_like_a_bundler(&output), "inherited");
+
+        // A nearer tsconfig wins.
+        write(&root.join("sdk/tsconfig.json"), TSC_INIT_TSCONFIG);
+        assert!(!tsconfig_resolves_like_a_bundler(&output), "nearest");
     }
 
     #[test]

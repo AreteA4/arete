@@ -15,7 +15,7 @@ from, and it is where to look when you want to understand or review what the
 agent wrote.
 
 :::tip[Using React?]
-If you're building a React application, use the [React SDK](/sdks/react/) instead. It provides hooks and providers built on top of this core SDK.
+If you're building a React application, use the [React SDK](/sdks/react/) instead. It provides hooks and providers built on top of this core SDK, including [`AreteSessionProvider`](/sdks/react-sessions/) for sessions.
 :::
 
 ---
@@ -1082,28 +1082,47 @@ Creates the console that connects generated stacks and standalone programs. Prog
 
 - `definition.stacks` — Named generated stack definitions (optional)
 - `definition.programs` — Named standalone program definitions (optional)
+- `definition.protocols` — Named generated protocol definitions, available at `session.protocols.<name>`; their stacks and programs join `session.stacks` and `session.programs` (optional)
+- `options.auth` — Authentication for every member, such as `{ publishableKey }` in a browser or `{ secretKey }` on a server (optional)
+- `options.fetch` — Custom fetch implementation (optional)
 - `options.wallet` — Shared wallet for execution (optional)
 - `options.signerRegistry` — Shared additional signers (optional)
+- `options.transport` — Default member transport, `'ws'` (the default) or `'http'` (optional)
+- `options.transactions` — Transaction transport override (optional)
 - `options.endpoints` — Shared HTTP and WebSocket fallback endpoints (optional)
-- `options.stacks` — Per-stack connection overrides (optional)
+- `options.stacks` — Per-stack connection overrides, including `url`, `httpUrl`, and `transport` (optional)
 - `options.stacks.<name>.autoConnect` — Per-stack initial connection control; defaults to `true` (optional)
 - `options.stacks.<name>.autoReconnect` — Per-stack post-connection recovery control; defaults to `true` (optional)
+- `options.protocols.<name>` — Per-protocol client options (optional)
 
-At least one stack or program is required.
+At least one stack, program, or protocol is required.
 
 **Returns:** `Promise<Session>`
+
+In React, `AreteSessionProvider` calls `createSession` for you. See
+[Compose a session in React](/sdks/react-sessions/).
 
 ### `session.stacks.<name>`
 
 Returns the connected generated stack inserted under that name. Use its `views`, `queries`, `programs`, `addresses`, `constants`, `defaults`, `math`, `read`, and `flows` namespaces when present.
 
+Every connected client, including a session member, also exposes `stack`, the stack definition it was connected for (with any attached programs), and `transport`: `'ws'` when it opened the streaming WebSocket, `'http'` when it did not. A member reports the transport its session connected it with. React's `useArete(session.stacks.<name>)` reads both.
+
 ### `session.programs.<name>`
 
 Returns a connected program packaged by a stack, attached to a stack, or declared standalone. The same program SDK reached several ways is one object; see [Multiple Stacks and Programs](#multiple-stacks-and-programs) for how a key claimed by two programs resolves. Program namespaces are `programId`, `schemas`, `pdas`, `addresses`, `accounts`, `queries`, `raw`, `instructions`, `transactions`, `flows`, `constants`, `defaults`, and `math`.
 
+### `session.protocols.<name>`
+
+Returns the protocol client registered under that name. It shares the session's auth; see [Integrate a protocol](/integrating-protocols/overview/).
+
 ### `session.chain`
 
 The session-wide generic Solana read surface.
+
+### `session.wallet` and `session.setWallet(wallet)`
+
+`session.wallet` is the wallet every member signs with, or `undefined`. `session.setWallet(wallet)` replaces it without reconnecting anything; pass `undefined` when the user disconnects.
 
 ### `session.execute(prepared, options?)`
 

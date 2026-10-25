@@ -9,8 +9,8 @@
  *
  * The capability check is a local fact about the wallet, not proof the
  * cluster has activated a version: the account must advertise
- * `solana:signTransaction`, and *that* feature must advertise the version
- * being signed. Sign-and-send support is never read as sign-only support —
+ * `solana:signTransaction` (and the chain asked for, when it lists its
+ * chains), and *that* feature must advertise the version being signed. Sign-and-send support is never read as sign-only support —
  * a wallet that can only sign-and-send cannot hand bytes back for Arete to
  * relay.
  *
@@ -42,6 +42,8 @@ export type WalletStandardTransactionVersion = 'legacy' | 0 | 1;
 export interface WalletStandardAccount {
   readonly address: string;
   readonly features: readonly string[];
+  /** CAIP-2 chains the account signs for (`solana:mainnet`, …). */
+  readonly chains?: readonly string[];
 }
 
 export interface WalletStandardSignTransactionInput {
@@ -64,29 +66,152 @@ export interface WalletStandardSignTransactionFeature {
 
 export interface WalletStandardWallet {
   readonly features: Readonly<Record<string, unknown>>;
+  /** CAIP-2 chains the wallet supports; read when the account lists none. */
+  readonly chains?: readonly string[];
 }
 
+/**
+ * Why a Wallet Standard wallet cannot be used, or did not sign:
+ *
+ * - `sign_transaction_unsupported`: the account or wallet lacks
+ *   `solana:signTransaction` (for example it only signs and sends in one
+ *   step), so it cannot hand signed bytes back for Arete to relay.
+ * - `chain_unsupported`: the account (or wallet) does not list the chain it
+ *   was asked to sign for, e.g. a devnet-only account asked for
+ *   `solana:mainnet`.
+ * - `transaction_version_unsupported`: the wallet signs, but not this
+ *   transaction version (a v0-only wallet and a V1 transaction).
+ * - `user_rejected`: the user declined or closed the wallet's prompt.
+ *   `cause` is what the wallet threw.
+ * - `wallet_returned_invalid_transaction`: the wallet changed the
+ *   transaction it was asked to sign, or returned no signature for it.
+ * - `account_unavailable`: the account could not be resolved to a
+ *   registered wallet, or read (integrations such as `@usearete/react`
+ *   raise this, for example for a UI handle whose wallet is gone).
+ */
 export type WalletStandardSignerErrorCode =
   | 'sign_transaction_unsupported'
+  | 'chain_unsupported'
   | 'transaction_version_unsupported'
-  | 'wallet_returned_invalid_transaction';
+  | 'user_rejected'
+  | 'wallet_returned_invalid_transaction'
+  | 'account_unavailable';
 
-/** Typed refusal from the Wallet Standard bridge. */
+/** Typed refusal from the Wallet Standard bridge; switch on `code`. */
 export class WalletStandardSignerError extends Error {
   readonly code: WalletStandardSignerErrorCode;
+  readonly cause?: unknown;
 
-  constructor(code: WalletStandardSignerErrorCode, message: string) {
+  constructor(
+    code: WalletStandardSignerErrorCode,
+    message: string,
+    options: { readonly cause?: unknown } = {}
+  ) {
     super(message);
     this.name = 'WalletStandardSignerError';
     this.code = code;
+    if ('cause' in options) this.cause = options.cause;
   }
 }
 
-export interface WalletStandardSignerConfig {
+/**
+ * Whether `error` is a {@link WalletStandardSignerError} (optionally with
+ * one of `codes`). Checks the name as well as the class, so it holds across
+ * duplicate copies of this package in a bundle.
+ */
+export function isWalletStandardSignerError(
+  error: unknown,
+  ...codes: readonly WalletStandardSignerErrorCode[]
+): error is WalletStandardSignerError {
+  if (
+    !(error instanceof WalletStandardSignerError)
+    && !(error instanceof Error && error.name === 'WalletStandardSignerError'
+      && typeof (error as { code?: unknown }).code === 'string')
+  ) {
+    return false;
+  }
+  return codes.length === 0
+    || codes.includes((error as WalletStandardSignerError).code);
+}
+
+/** Error codes wallets report a declined prompt with (EIP-1193 4001 and kin). */
+const USER_REJECTION_CODES: readonly unknown[] = [4001, 'ACTION_REJECTED', 'USER_REJECTED'];
+
+/**
+ * Whether what a wallet threw from `signTransaction` is the user declining
+ * (or closing) the prompt. Wallets report it as EIP-1193 code 4001
+ * (Phantom, Solflare), a `...RejectedError`, or only in the message.
+ */
+function isUserRejection(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false;
+  const { code, name, message } = error as { code?: unknown; name?: unknown; message?: unknown };
+  if (USER_REJECTION_CODES.includes(code)) return true;
+  if (typeof name === 'string' && /rejected/i.test(name)) return true;
+  return typeof message === 'string'
+    && /user (rejected|declined|denied|cancel)|rejected the request|request (was )?(rejected|declined)/i
+      .test(message);
+}
+
+/** What a wallet prompt is for: the account asked, and how many transactions it signs. */
+export interface WalletStandardPromptEvent {
+  readonly address: string;
+  readonly transactionCount: number;
+}
+
+/** How a wallet prompt ended. */
+export interface WalletStandardPromptCloseEvent extends WalletStandardPromptEvent {
+  /** `true` when the wallet handed signed bytes back. */
+  readonly signed: boolean;
+  /**
+   * Why it did not sign: what the signer rejects with. A declined or closed
+   * prompt is a {@link WalletStandardSignerError} with code `user_rejected`
+   * (the wallet's own error is its `cause`); anything else is what the
+   * wallet threw.
+   */
+  readonly error?: unknown;
+}
+
+/**
+ * Observes the wallet's approval prompt, so a UI can say "check your wallet".
+ * Called around the wallet's `solana:signTransaction` call only: a
+ * transaction refused before the wallet is reached (an unsupported version)
+ * opens no prompt. Errors thrown here are swallowed; they never change what
+ * the signer returns.
+ */
+export interface WalletStandardPromptCallbacks {
+  /** The wallet is being asked to sign: its prompt is about to open. */
+  readonly onPromptOpen?: (event: WalletStandardPromptEvent) => void;
+  /** The wallet answered: it signed, or the prompt was declined, closed or failed. */
+  readonly onPromptClose?: (event: WalletStandardPromptCloseEvent) => void;
+}
+
+export interface WalletStandardSignerConfig extends WalletStandardPromptCallbacks {
+  /**
+   * The Wallet Standard wallet. A `Wallet` from `@wallet-standard/base` (or
+   * the one behind a `@wallet-standard/react` `UiWallet`) is accepted as is.
+   */
   readonly wallet: WalletStandardWallet;
+  /**
+   * The wallet's own account object (`wallet.accounts[i]`). Wallets may
+   * compare it by identity, so pass the account the wallet gave you rather
+   * than a copy of its fields.
+   */
   readonly account: WalletStandardAccount;
-  /** CAIP-2 chain forwarded to the wallet, e.g. `solana:devnet`. */
+  /**
+   * CAIP-2 chain forwarded to the wallet, e.g. `solana:devnet`. When the
+   * account (or else the wallet) lists its chains and this is not one of
+   * them, the signer is refused with `chain_unsupported`.
+   */
   readonly chain?: string;
+}
+
+function notify<T>(callback: ((event: T) => void) | undefined, event: T): void {
+  if (!callback) return;
+  try {
+    callback(event);
+  } catch {
+    // Prompt observers are observational and must not change signing.
+  }
 }
 
 function readSignTransactionFeature(
@@ -115,19 +240,43 @@ function readSignTransactionFeature(
   return feature;
 }
 
+/** The chains the account signs for: its own list, else the wallet's; `null` when neither says. */
+function listedChains(config: WalletStandardSignerConfig): readonly string[] | null {
+  const accountChains = config.account.chains;
+  if (Array.isArray(accountChains) && accountChains.length > 0) return accountChains;
+  const walletChains = config.wallet.chains;
+  if (Array.isArray(walletChains) && walletChains.length > 0) return walletChains;
+  return null;
+}
+
+function assertChainSupported(config: WalletStandardSignerConfig): void {
+  if (config.chain === undefined) return;
+  const chains = listedChains(config);
+  if (chains && !chains.includes(config.chain)) {
+    throw new WalletStandardSignerError(
+      'chain_unsupported',
+      `Account ${config.account.address} does not support chain '${config.chain}' `
+      + `(supported: ${chains.join(', ')})`
+    );
+  }
+}
+
 /**
  * A kit {@link TransactionSigner} backed by a Wallet Standard account.
  *
- * The feature is resolved once, at creation, so a wallet that cannot sign at
- * all fails before any transaction is built. The per-version check happens
+ * The feature and the chain are checked once, at creation, so a wallet that
+ * cannot sign at all (`sign_transaction_unsupported`) or not for `chain`
+ * (`chain_unsupported`) fails before any transaction is built. The per-version check happens
  * per transaction, against the version decoded from the bytes about to be
  * handed over — so a v0-only wallet refuses a V1 transaction without ever
- * showing the user a prompt.
+ * showing the user a prompt. A declined prompt rejects with
+ * `user_rejected`.
  */
 export function createWalletStandardSigner(
   config: WalletStandardSignerConfig
 ): TransactionSigner {
   const feature = readSignTransactionFeature(config);
+  assertChainSupported(config);
   const address = config.account.address as Address;
 
   return {
@@ -153,7 +302,25 @@ export function createWalletStandardSigner(
         };
       });
 
-      const outputs = await feature.signTransaction(...inputs);
+      const prompt = { address: config.account.address, transactionCount: inputs.length };
+      notify(config.onPromptOpen, prompt);
+      let outputs: readonly WalletStandardSignTransactionOutput[];
+      try {
+        outputs = await feature.signTransaction(...inputs);
+      } catch (thrown) {
+        const error = isUserRejection(thrown)
+          ? new WalletStandardSignerError(
+            'user_rejected',
+            thrown instanceof Error && thrown.message
+              ? thrown.message
+              : 'The wallet request was declined',
+            { cause: thrown }
+          )
+          : thrown;
+        notify(config.onPromptClose, { ...prompt, signed: false, error });
+        throw error;
+      }
+      notify(config.onPromptClose, { ...prompt, signed: true });
       if (outputs.length !== transactions.length) {
         throw new WalletStandardSignerError(
           'wallet_returned_invalid_transaction',

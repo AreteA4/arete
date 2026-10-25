@@ -99,8 +99,10 @@ up to "run this whole flow". Pick the highest level that does the job.
 
 ### Read an account
 
-Use `program.accounts.<account>.fetch(address)` or `fetchMany(addresses)` when
-you need a decoded account that the installed program owns.
+Use `program.accounts.<Account>.fetch(address)` or `fetchMany(addresses)` when
+you need a decoded account that the installed program owns. In TypeScript the
+reader is keyed by the IDL's account name as written, such as
+`accounts.Miner` for ORE.
 
 [Program Read →](/using-programs/program-reads/)
 

@@ -22,3 +22,20 @@ export type {
   UseMutationOptions,
   UseMutationResult,
 } from './use-mutation';
+export {
+  OperationMutationError,
+  isWalletRejection,
+  toOperationMutationError,
+  useOperationMutation,
+} from './use-operation-mutation';
+export type {
+  OperationExecutor,
+  OperationExecutorSource,
+  OperationMutationErrorKind,
+  OperationMutationStatus,
+  OperationPrepareFn,
+  OperationRunOptions,
+  PreparedOperationWithSigners,
+  UseOperationMutationOptions,
+  UseOperationMutationResult,
+} from './use-operation-mutation';

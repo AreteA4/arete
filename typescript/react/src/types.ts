@@ -128,7 +128,15 @@ export interface AreteConfig {
    * holds no entity for (`reason: 'unknown-key'`).
    */
   onFrameValidationError?: CoreConnectOptions['onFrameValidationError'];
-  /** Authentication configuration */
+  /**
+   * Authentication configuration. An app whose users sign in to Arete (a
+   * dashboard) passes their login as an API credential:
+   * `{ tokenKind: 'api', tokenEndpoint: '/api/arete-token' }` or
+   * `{ tokenKind: 'api', getToken }`. Stack, gateway and program read
+   * connections then mint their sessions with it, and
+   * `usePlatformHttpClient()` calls the Arete API with it. A changed `auth`
+   * applies to clients created afterwards; call `retry()` to reconnect one.
+   */
   auth?: CoreAuthConfig;
 }
 

@@ -8,7 +8,7 @@ import {
   type AmountInput,
 } from '@usearete/sdk';
 
-import type { ORE_STREAM_STACK_CORE } from './ore-stack-core.js';
+import type { ORE_STREAM_STACK_CORE } from './ore-stack-core';
 import oreDevex, {
   BPS_DENOMINATOR,
   type Address,
@@ -24,7 +24,7 @@ import oreDevex, {
   type QuoteAutomationFundingInput,
   type QuoteManualDeploymentInput,
   type SolClaimPreview,
-} from './ore-devex.js';
+} from './ore-devex';
 
 const addresses = oreDevex.addresses;
 const constants = oreDevex.constants;

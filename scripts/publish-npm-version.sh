@@ -8,6 +8,7 @@ Publish the Arete npm packages for a specific version from the current checkout.
 
 Usage:
   ./scripts/publish-npm-version.sh <version> [--dry-run]
+  ./scripts/publish-npm-version.sh <version> --stage-only <empty-dir>
 
 Examples:
   ./scripts/publish-npm-version.sh 0.1.3
@@ -17,10 +18,12 @@ Examples:
 Notes:
   - Copies only the npm package directories into a temporary repo snapshot.
   - Rewrites the staged package metadata to the target version.
-  - Publishes in dependency order: hash -> protocol -> sdk -> react -> adapters -> automations -> a4 -> mcp.
+  - Publishes in dependency order: hash -> protocol -> sdk -> kit adapter -> react -> web3.js adapter -> automations -> a4 -> mcp.
   - Keeps the independently versioned hash and protocol packages at their
     checked-in versions.
   - Skips packages that are already published at that exact version.
+  - --stage-only writes the rewritten snapshot to <empty-dir> and stops
+    before contacting npm, so the staged manifests can be inspected.
 EOF
 }
 
@@ -32,20 +35,31 @@ if [[ -z "$VERSION" ]]; then
   exit 1
 fi
 
-if [[ -n "$DRY_RUN" && "$DRY_RUN" != "--dry-run" ]]; then
+STAGE_ONLY_DIR=""
+if [[ "$DRY_RUN" == "--stage-only" ]]; then
+  STAGE_ONLY_DIR="${3:-}"
+  if [[ -z "$STAGE_ONLY_DIR" || ! -d "$STAGE_ONLY_DIR" || -n "$(ls -A "$STAGE_ONLY_DIR")" ]]; then
+    echo "--stage-only needs an existing empty directory"
+    exit 1
+  fi
+elif [[ -n "$DRY_RUN" && "$DRY_RUN" != "--dry-run" ]]; then
   usage
   exit 1
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/arete-npm-publish-${VERSION}.XXXXXX")"
+if [[ -n "$STAGE_ONLY_DIR" ]]; then
+  STAGING_DIR="$(cd "$STAGE_ONLY_DIR" && pwd)"
+else
+  STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/arete-npm-publish-${VERSION}.XXXXXX")"
 
-cleanup() {
-  rm -rf "$STAGING_DIR"
-}
+  cleanup() {
+    rm -rf "$STAGING_DIR"
+  }
 
-trap cleanup EXIT
+  trap cleanup EXIT
+fi
 
 using_trusted_publishing() {
   local node_auth_token="${NODE_AUTH_TOKEN:-}"
@@ -57,7 +71,7 @@ using_trusted_publishing() {
     && ( -z "$node_auth_token" || "$node_auth_token" == "XXXXX-XXXXX-XXXXX-XXXXX" ) ]]
 }
 
-if [[ -n "${NPM_TOKEN:-}" ]]; then
+if [[ -n "${NPM_TOKEN:-}" && -z "$STAGE_ONLY_DIR" ]]; then
   cat >"$STAGING_DIR/.npmrc" <<EOF
 //registry.npmjs.org/:_authToken=${NPM_TOKEN}
 EOF
@@ -76,22 +90,30 @@ copy_package_dir() {
     "$source_dir/" "$destination_dir/"
 }
 
+# The npm packages released together at one version. A staged manifest or
+# lockfile that depends on one of them gets the release range, so a package
+# published here accepts the matching versions of its siblings (React's
+# @usearete/sdk and @usearete/adapter-kit peers, for example). The
+# independently versioned hash and protocol packages are not in this list.
+LINKED_NPM_PACKAGES="@usearete/sdk,@usearete/adapter-kit,@usearete/adapter-web3js,@usearete/react,@usearete/automations,@usearete/a4,@usearete/mcp"
+
 rewrite_package_json() {
   local file="$1"
   local version="$2"
-  local sdk_dependency="${3:-}"
+  local linked_range="${3:-}"
 
-  node - "$file" "$version" "$sdk_dependency" <<'EOF'
+  node - "$file" "$version" "$linked_range" "$LINKED_NPM_PACKAGES" <<'EOF'
 const fs = require('node:fs');
 
-const [file, version, sdkDependency] = process.argv.slice(2);
+const [file, version, linkedRange, linkedNames] = process.argv.slice(2);
+const linked = new Set(linkedNames.split(','));
 const pkg = JSON.parse(fs.readFileSync(file, 'utf8'));
 
 pkg.version = version;
 
 for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-  if (sdkDependency && pkg[section]?.['@usearete/sdk']) {
-    pkg[section]['@usearete/sdk'] = sdkDependency;
+  for (const name of Object.keys(pkg[section] ?? {})) {
+    if (linkedRange && linked.has(name)) pkg[section][name] = linkedRange;
   }
 }
 
@@ -102,28 +124,43 @@ EOF
 rewrite_package_lock() {
   local file="$1"
   local version="$2"
-  local sdk_dependency="${3:-}"
+  local linked_range="${3:-}"
 
   if [[ ! -f "$file" ]]; then
     return
   fi
 
-  node - "$file" "$version" "$sdk_dependency" <<'EOF'
+  node - "$file" "$version" "$linked_range" "$LINKED_NPM_PACKAGES" <<'EOF'
 const fs = require('node:fs');
 
-const [file, version, sdkDependency] = process.argv.slice(2);
+const [file, version, linkedRange, linkedNames] = process.argv.slice(2);
+const linked = new Set(linkedNames.split(','));
 const lock = JSON.parse(fs.readFileSync(file, 'utf8'));
+const sections = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
+
+function rewriteRanges(entry) {
+  if (!linkedRange) return;
+  for (const section of sections) {
+    for (const name of Object.keys(entry[section] ?? {})) {
+      if (linked.has(name)) entry[section][name] = linkedRange;
+    }
+  }
+}
 
 lock.version = version;
 
 if (lock.packages && lock.packages['']) {
   lock.packages[''].version = version;
+  rewriteRanges(lock.packages['']);
+}
 
-  for (const section of ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies']) {
-    if (sdkDependency && lock.packages[''][section]?.['@usearete/sdk']) {
-      lock.packages[''][section]['@usearete/sdk'] = sdkDependency;
-    }
-  }
+// Sibling packages linked from this checkout (for example React's
+// "../adapters/kit") are staged at the release version too.
+for (const [location, entry] of Object.entries(lock.packages ?? {})) {
+  if (location === '' || location.split('/').includes('node_modules')) continue;
+  if (!linkedRange || !linked.has(entry.name)) continue;
+  entry.version = version;
+  rewriteRanges(entry);
 }
 
 fs.writeFileSync(file, `${JSON.stringify(lock, null, 2)}\n`);
@@ -250,6 +287,11 @@ fi
 rewrite_package_json "$STAGING_DIR/packages/arete/package.json" "$VERSION"
 rewrite_package_json "$STAGING_DIR/packages/mcp/package.json" "$VERSION"
 
+if [[ -n "$STAGE_ONLY_DIR" ]]; then
+  echo "Staged npm packages in $STAGING_DIR"
+  exit 0
+fi
+
 if using_trusted_publishing; then
   echo "Using npm trusted publishing"
 elif npm_account="$(npm whoami 2>/dev/null)"; then
@@ -283,8 +325,12 @@ if [[ "$DRY_RUN" != "--dry-run" ]]; then
   wait_for_package "@usearete/sdk" "$VERSION"
 fi
 
-publish_package "$STAGING_DIR/typescript/react" "@usearete/react" "npm install ../core --no-save --package-lock=false"
 publish_package "$STAGING_DIR/typescript/adapters/kit" "@usearete/adapter-kit" "npm install ../../core --no-save --package-lock=false"
+# @usearete/react/wallet-standard compiles against the staged Kit adapter's
+# types. Staging drops dist, and neither the SDK nor the adapter is rebuilt
+# when it is already published, so build whichever is missing here.
+publish_package "$STAGING_DIR/typescript/react" "@usearete/react" \
+  "([ -d ../core/dist ] || (cd ../core && npm ci && npm run build)) && ([ -d ../adapters/kit/dist ] || (cd ../adapters/kit && npm ci && npm install ../../core --no-save --package-lock=false && npm run build)) && npm install ../core ../adapters/kit --no-save --package-lock=false"
 publish_package "$STAGING_DIR/typescript/adapters/web3js" "@usearete/adapter-web3js" "npm install ../../core --no-save --package-lock=false"
 if [[ -n "$AUTOMATIONS" ]]; then
   # Staging drops dist, and the SDK is not rebuilt when it is already

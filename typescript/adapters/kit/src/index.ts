@@ -66,6 +66,7 @@ import {
   resolveTransactionBuildOptions,
   toWireResourceOptions,
 } from '@usearete/sdk';
+import { createWalletStandardSigner, type WalletStandardSignerConfig } from './wallet-standard';
 
 /**
  * Kit 8 is the first release that constructs transaction V1 messages and
@@ -132,6 +133,26 @@ const LOOKUP_TABLE_OPTION_KEYS = [
 
 export type AdapterTransportSelection = 'auto' | 'direct' | TransactionTransport;
 
+/**
+ * Where a `signAndSend` call is, reported as it moves on:
+ *
+ * - `signing`: the transaction is built and the signers are being asked (a
+ *   Wallet Standard signer opens its prompt now).
+ * - `sending`: every signature is in; the signed bytes are being submitted.
+ * - `confirming`: the transport acknowledged the submission and the
+ *   adapter is waiting for the commitment. A direct RPC transport submits and
+ *   confirms in one step, so it reports `sending` only.
+ *
+ * A failure is not an activity: `signAndSend` rejects with a
+ * {@link KitTransactionExecutionError} as before.
+ */
+export type KitWalletActivity =
+  | { readonly stage: 'signing' }
+  | { readonly stage: 'sending'; readonly signature: string }
+  | { readonly stage: 'confirming'; readonly signature: string };
+
+export type KitWalletActivityListener = (activity: KitWalletActivity) => void;
+
 export interface KitAdapterConfig {
   /** A Solana RPC client (from `createSolanaRpc`). */
   rpc?: Rpc<SolanaRpcApi>;
@@ -144,6 +165,8 @@ export interface KitAdapterConfig {
   additionalSigners?: readonly TransactionSigner[];
   /** Default commitment used when the caller does not specify one. */
   defaultCommitment?: Commitment;
+  /** Receives every {@link KitWalletActivity}; same as `adapter.onActivity(listener)`. */
+  onActivity?: KitWalletActivityListener;
 }
 
 export interface KitSendOptions extends SendOptions {
@@ -153,6 +176,13 @@ export interface KitSendOptions extends SendOptions {
   feePayer?: TransactionSigner;
   confirmationTimeoutMs?: number;
   statusPollIntervalMs?: number;
+  /**
+   * Receives the {@link KitWalletActivity} of this send only, after the
+   * adapter-wide listeners. Use it when several callers share one adapter
+   * and each needs its own transaction's progress; `adapter.onActivity`
+   * sees every send.
+   */
+  onActivity?: KitWalletActivityListener;
 }
 
 export interface KitTransactionInspectionOptions extends TransactionInspectionOptions {
@@ -191,6 +221,12 @@ export interface KitWalletAdapter extends WalletAdapter {
     options?: KitTransactionInspectionOptions,
     context?: WalletExecutionContext
   ): Promise<KitTransactionInspectionResult>;
+  /**
+   * Observe {@link KitWalletActivity} of every `signAndSend` call. Returns the
+   * unsubscribe function. A listener that throws is ignored. For one send's
+   * activity only, pass `onActivity` in that call's {@link KitSendOptions}.
+   */
+  onActivity(listener: KitWalletActivityListener): () => void;
 }
 
 /** Structured adapter error consumed by the Arete transaction outcome APIs. */
@@ -845,9 +881,26 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
   const configuredLocalSigners = config.additionalSigners ?? [];
   const fallbackCommitment = config.defaultCommitment ?? 'confirmed';
   const signerAddresses = [signer.address, ...configuredLocalSigners.map(({ address }) => address)];
+  const activityListeners = new Set<KitWalletActivityListener>();
+  if (config.onActivity) activityListeners.add(config.onActivity);
+  const report = (activity: KitWalletActivity, ownListener?: KitWalletActivityListener) => {
+    for (const listener of ownListener ? [...activityListeners, ownListener] : [...activityListeners]) {
+      try {
+        listener(activity);
+      } catch {
+        // Activity listeners are observational and must not change the send.
+      }
+    }
+  };
 
   return {
     publicKey: signer.address,
+    onActivity(listener: KitWalletActivityListener) {
+      activityListeners.add(listener);
+      return () => {
+        activityListeners.delete(listener);
+      };
+    },
     signerAddresses: [...new Set(signerAddresses)],
     supportedTransactionVersions:
       CAPABILITY.supportedTransactionVersions as readonly ['legacy', 0, 1],
@@ -873,6 +926,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       const version = plan.transactionVersion;
 
       const sendOptions = options as KitSendOptions | undefined;
+      const reportSend = (activity: KitWalletActivity) => report(activity, sendOptions?.onActivity);
       const feePayer = sendOptions?.feePayer ?? signer;
       const commitment = toCommitment(options?.confirmationLevel, fallbackCommitment);
       let resolved: ResolvedTransport;
@@ -949,6 +1003,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
       let signedTransaction;
       let signature: Signature;
       try {
+        reportSend({ stage: 'signing' });
         signedTransaction = await signTransactionMessageWithSigners(message);
         assertIsTransactionWithBlockhashLifetime(signedTransaction);
         signature = getSignatureFromTransaction(signedTransaction);
@@ -959,6 +1014,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
           cause,
         });
       }
+      reportSend({ stage: 'sending', signature });
 
       if (resolved.kind === 'arete') {
         // One deadline over submission *and* confirmation: a relay that
@@ -973,6 +1029,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
             { skipPreflight: options?.skipPreflight ?? false, preflightCommitment: commitment }
           ));
           reportSignatureMismatch(signature, sent.signature);
+          reportSend({ stage: 'confirming', signature });
         } catch (cause) {
           if (cause instanceof DeadlineExpiredError) {
             throw new KitTransactionExecutionError({
@@ -1191,12 +1248,47 @@ export function createInspectOnlyWalletAdapter(
   };
 }
 
+export interface WalletStandardWalletAdapterConfig
+  extends WalletStandardSignerConfig,
+    Omit<KitAdapterConfig, 'signer'> {}
+
+/**
+ * A sign-only {@link KitWalletAdapter} for a connected Wallet Standard
+ * account: the wallet signs (`solana:signTransaction`), and the adapter
+ * submits the signed bytes itself. `transport` defaults to `'auto'`, the
+ * Arete client's or session's transaction transport (the managed gateway),
+ * so pass the result straight to `Arete.connect`, `createSession`,
+ * `AreteProvider` or `execute(prepared, { wallet })`.
+ *
+ * Throws {@link WalletStandardSignerError} when the account cannot be used:
+ * `sign_transaction_unsupported` when it cannot sign without sending,
+ * `chain_unsupported` when it does not list `chain`. A declined prompt makes
+ * `signAndSend` reject with a {@link KitTransactionExecutionError} whose
+ * `cause` is a `user_rejected` signer error. `onPromptOpen` and
+ * `onPromptClose` report the wallet's approval prompt; `onActivity` (or
+ * `adapter.onActivity`) reports signing, sending and confirming.
+ */
+export function createWalletStandardWalletAdapter(
+  config: WalletStandardWalletAdapterConfig,
+): KitWalletAdapter {
+  const { wallet, account, chain, onPromptOpen, onPromptClose, ...adapter } = config;
+  return createWalletAdapter({
+    ...adapter,
+    transport: adapter.transport ?? 'auto',
+    signer: createWalletStandardSigner({ wallet, account, chain, onPromptOpen, onPromptClose }),
+  });
+}
+
 export {
   SOLANA_SIGN_AND_SEND_TRANSACTION,
   SOLANA_SIGN_TRANSACTION,
   WalletStandardSignerError,
   createWalletStandardSigner,
+  isWalletStandardSignerError,
   type WalletStandardAccount,
+  type WalletStandardPromptCallbacks,
+  type WalletStandardPromptCloseEvent,
+  type WalletStandardPromptEvent,
   type WalletStandardSignTransactionFeature,
   type WalletStandardSignTransactionInput,
   type WalletStandardSignTransactionOutput,

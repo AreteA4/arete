@@ -79,7 +79,9 @@ The protocol's dependencies are promoted into `session.stacks` and
 `session.programs`, alongside other installed dependencies. A standalone
 protocol client exposes stack definitions; a session supplies the connected
 stack clients. Use a session when the app needs live data as well as protocol
-API reads. Close the client or session when its owner is done with it.
+API reads. Close the client or session when its owner is done with it. In
+React, `AreteSessionProvider` opens and closes it for you; see
+[Compose a session in React](/sdks/react-sessions/).
 
 ## Choose the next task
 

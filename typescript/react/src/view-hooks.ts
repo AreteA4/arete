@@ -128,12 +128,17 @@ function useQuery<T>(
       }
       return current;
     } catch (value) {
-      state.fallback = {
-        ...state.fallback,
-        isLoading: false,
-        isRefreshing: false,
-        error: queryError(value, 'Subscription snapshot failed'),
-      };
+      // A lease whose client was disconnected under it (its owner closed
+      // it) throws on every read: report the error once and keep returning
+      // the same snapshot, so React sees a stable value.
+      if (!state.fallback.error) {
+        state.fallback = {
+          ...state.fallback,
+          isLoading: false,
+          isRefreshing: false,
+          error: queryError(value, 'Subscription snapshot failed'),
+        };
+      }
       return state.fallback;
     }
   // state is replaced whenever either listed identity changes.

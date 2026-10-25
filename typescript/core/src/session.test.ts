@@ -970,6 +970,42 @@ describe('createSession', () => {
     expect(disconnect).toHaveBeenCalledTimes(1);
   });
 
+  it('reports the stack and the transport each member was connected with', async () => {
+    const wsSession = await createSession(
+      { stacks: { squads: SQUADS_STACK } },
+      {
+        stacks: { squads: { autoConnect: false } },
+        endpoints: { http: 'https://session.invalid' },
+        fetch: makeFetch() as typeof fetch,
+      }
+    );
+    expect(wsSession.stacks.squads.transport).toBe('ws');
+    expect(wsSession.stacks.squads.stack.name).toBe('squads-demo');
+    expect(wsSession.stacks.squads.stack.views).toBe(SQUADS_STACK.views);
+    wsSession.close();
+
+    const httpSession = await createSession(
+      { stacks: { squads: SQUADS_STACK } },
+      {
+        transport: 'http',
+        endpoints: { http: 'https://session.invalid' },
+        fetch: makeFetch() as typeof fetch,
+      }
+    );
+    expect(httpSession.stacks.squads.transport).toBe('http');
+    httpSession.close();
+
+    const memberOverride = await createSession(
+      { stacks: { squads: SQUADS_STACK } },
+      {
+        stacks: { squads: { transport: 'http' } },
+        fetch: makeFetch() as typeof fetch,
+      }
+    );
+    expect(memberOverride.stacks.squads.transport).toBe('http');
+    memberOverride.close();
+  });
+
   it('keeps views working on ws stack members and disabled on program members', async () => {
     const session = await createSession(
       { stacks: { squads: SQUADS_STACK }, programs: { ore: ORE_PROGRAM_SDK } },

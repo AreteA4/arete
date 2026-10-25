@@ -1,9 +1,9 @@
 import { extendPrograms, extendStack } from '@usearete/sdk';
 
-import { ORE_STREAM_STACK_CORE } from './ore-stack-core.js';
-import stackExtensions, { oreProgramExtensions } from './ore-stack-extensions.js';
+import { ORE_STREAM_STACK_CORE } from './ore-stack-core';
+import stackExtensions, { oreProgramExtensions } from './ore-stack-extensions';
 
-export * from './ore-stack-core.js';
+export * from './ore-stack-core';
 
 const CORE: Omit<typeof ORE_STREAM_STACK_CORE, 'programs'> & {
   readonly programs: ReturnType<typeof extendPrograms<typeof ORE_STREAM_STACK_CORE.programs, { ore: typeof oreProgramExtensions }>>;

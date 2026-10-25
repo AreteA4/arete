@@ -410,28 +410,20 @@ jobs:
           exit 1
         shell: bash
 
-      - name: Install React dependencies
-        if: needs.release-please.outputs.react_release_created == 'true'
-        run: npm install ../core --no-save --package-lock=false
-        working-directory: typescript/react
-
-      - name: Build react
-        if: needs.release-please.outputs.react_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/react
-
-      - name: Publish react
-        if: needs.release-please.outputs.react_release_created == 'true'
-        run: ../../scripts/publish-npm-package.sh .
-        working-directory: typescript/react
-
+      # `@usearete/react/wallet-standard` builds against the Kit adapter from
+      # this checkout, so the adapter is built (and, when released, published)
+      # before React.
       - name: Install Kit adapter dependencies
-        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        if: >-
+          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
+          needs.release-please.outputs.react_release_created == 'true'
         run: npm install ../../core --no-save --package-lock=false
         working-directory: typescript/adapters/kit
 
       - name: Build Kit adapter
-        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        if: >-
+          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
+          needs.release-please.outputs.react_release_created == 'true'
         run: npm run build
         working-directory: typescript/adapters/kit
 
@@ -462,6 +454,21 @@ jobs:
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
         run: node pack-smoke.mjs --registry
         working-directory: typescript/adapters/kit
+
+      - name: Install React dependencies
+        if: needs.release-please.outputs.react_release_created == 'true'
+        run: npm install ../core ../adapters/kit --no-save --package-lock=false
+        working-directory: typescript/react
+
+      - name: Build react
+        if: needs.release-please.outputs.react_release_created == 'true'
+        run: npm run build
+        working-directory: typescript/react
+
+      - name: Publish react
+        if: needs.release-please.outputs.react_release_created == 'true'
+        run: ../../scripts/publish-npm-package.sh .
+        working-directory: typescript/react
 
       - name: Install web3.js adapter dependencies
         if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
