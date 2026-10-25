@@ -750,6 +750,16 @@ pub async fn run(config: UpConfig) -> Result<()> {
     result
 }
 
+/// A signal during startup. A watching session just stops; `--once` fails,
+/// so a script never reads an interrupted deploy as a good one (the caller
+/// emits `failed` and exits non-zero).
+fn interrupted_start(once: bool) -> Result<()> {
+    if once {
+        anyhow::bail!("interrupted before the deploy finished");
+    }
+    Ok(())
+}
+
 /// An error as event fields: `error` (the whole message) and, for a failed
 /// protocol build, `diagnostics` (`[{file, line, column, message, code}]`)
 /// parsed from the compiler's findings.
@@ -1325,8 +1335,8 @@ impl Session<'_> {
         #[cfg(not(unix))]
         let mut terminate = ();
         tokio::select! {
-            _ = &mut ctrl_c => return Ok(()),
-            _ = terminated(&mut terminate) => return Ok(()),
+            _ = &mut ctrl_c => return interrupted_start(self.config.once),
+            _ = terminated(&mut terminate) => return interrupted_start(self.config.once),
             result = self.start(token) => result?,
         }
         if self.config.once {
@@ -1489,6 +1499,13 @@ mod tests {
             super::admission_args(true),
             ["dev", "__admit-local-programs", "--verbose"]
         );
+    }
+
+    #[test]
+    fn an_interrupted_start_fails_only_with_once() {
+        assert!(interrupted_start(false).is_ok());
+        let error = interrupted_start(true).unwrap_err();
+        assert!(format!("{error:#}").contains("interrupted before the deploy finished"));
     }
 
     // Run only in the subprocess below: an HTTP request that never replies.
