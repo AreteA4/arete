@@ -558,7 +558,10 @@ impl std::fmt::Display for ApiClientError {
         if let Some(code) = self.problem.code.as_deref() {
             write!(formatter, " ({code})")?;
         }
-        formatter.write_str(&problem_error_lines(self.problem.extra.get("errors")))
+        formatter.write_str(&problem_detail_lines(
+            self.problem.extra.get("errors"),
+            self.problem.extra.get("templateCheck"),
+        ))
     }
 }
 
@@ -567,14 +570,58 @@ impl std::error::Error for ApiClientError {}
 /// The most entries of a problem's `errors` list worth printing.
 const MAX_PROBLEM_ERRORS: usize = 20;
 
-/// A problem's `errors` list (for example a spec's failed expression checks),
-/// one indented line each: `path: message (code)`. Empty without a list.
+/// Whether `--verbose` asked for the full body of every API error response.
+static VERBOSE_API_ERRORS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Print the full body of every API error response to stderr (`--verbose`).
+pub(crate) fn set_verbose_api_errors(verbose: bool) {
+    VERBOSE_API_ERRORS.store(verbose, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Under `--verbose`, print an API error response's full problem body as JSON
+/// to stderr, labelled with its status and route. Silent otherwise.
+pub(crate) fn report_verbose_problem(
+    status: impl std::fmt::Display,
+    route: &str,
+    body: &impl Serialize,
+) {
+    if !VERBOSE_API_ERRORS.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
+    let body = serde_json::to_string_pretty(body).unwrap_or_else(|_| "null".to_string());
+    eprintln!("API error response ({status}, {route}):\n{body}");
+}
+
+/// A problem's error entries, one indented line each: `path: message (code)`.
+/// They come from its `errors` list (for example a spec's failed expression
+/// checks) and its `templateCheck.errors` (a release whose templates do not
+/// resolve). An entry in both lists prints once. Empty without either.
+pub(crate) fn problem_detail_lines(
+    errors: Option<&serde_json::Value>,
+    template_check: Option<&serde_json::Value>,
+) -> String {
+    let mut entries: Vec<&serde_json::Value> = Vec::new();
+    let lists = [errors, template_check.and_then(|check| check.get("errors"))];
+    for list in lists.into_iter().flatten() {
+        for entry in list.as_array().into_iter().flatten() {
+            if !entries.contains(&entry) {
+                entries.push(entry);
+            }
+        }
+    }
+    error_entry_lines(&entries)
+}
+
+/// A problem's `errors` list alone, as [`problem_detail_lines`] prints it.
+#[cfg(test)]
 pub(crate) fn problem_error_lines(errors: Option<&serde_json::Value>) -> String {
-    let Some(errors) = errors.and_then(serde_json::Value::as_array) else {
-        return String::new();
-    };
+    problem_detail_lines(errors, None)
+}
+
+fn error_entry_lines(errors: &[&serde_json::Value]) -> String {
     let mut lines = String::new();
-    for error in errors.iter().take(MAX_PROBLEM_ERRORS) {
+    for error in errors.iter().copied().take(MAX_PROBLEM_ERRORS) {
         let line = match error {
             serde_json::Value::String(message) => message.clone(),
             serde_json::Value::Object(_) => {
@@ -613,6 +660,8 @@ pub(crate) struct ApiErrorDetails<'a> {
     pub message: &'a str,
     pub code: Option<&'a str>,
     pub upgrade_command: Option<&'a str>,
+    /// The dependency alias a registry refusal names, when it names one.
+    pub dependency: Option<&'a str>,
 }
 
 pub(crate) fn api_error_details(error: &anyhow::Error) -> Option<ApiErrorDetails<'_>> {
@@ -626,6 +675,11 @@ pub(crate) fn api_error_details(error: &anyhow::Error) -> Option<ApiErrorDetails
                 .extra
                 .get("upgradeCommand")
                 .and_then(serde_json::Value::as_str),
+            dependency: error
+                .problem
+                .extra
+                .get("dependency")
+                .and_then(serde_json::Value::as_str),
         });
     }
     error
@@ -635,6 +689,7 @@ pub(crate) fn api_error_details(error: &anyhow::Error) -> Option<ApiErrorDetails
             message: &error.message,
             code: error.code.as_deref(),
             upgrade_command: error.upgrade_command.as_deref(),
+            dependency: None,
         })
 }
 
@@ -2445,6 +2500,7 @@ impl ApiClient {
     fn response_error(response: reqwest::blocking::Response) -> ApiClientError {
         let status = response.status();
         let headers = response.headers().clone();
+        let route = response.url().path().to_string();
         let body = response.text().unwrap_or_default();
         let problem = serde_json::from_str::<ApiProblemV1>(&body)
             .or_else(|_| problem_from_message(&body))
@@ -2467,6 +2523,10 @@ impl ApiClient {
                 }
             });
         let mut problem = problem;
+        match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(value) => report_verbose_problem(status, &route, &value),
+            Err(_) => report_verbose_problem(status, &route, &problem),
+        }
         if problem.code.as_deref() == Some(REGISTRY_KEY_REQUIRED) {
             problem.error = REGISTRY_KEY_REQUIRED_MESSAGE.to_string();
         }
@@ -4147,6 +4207,37 @@ mod tests {
         let lines = problem_error_lines(Some(&json!(many)));
         assert_eq!(lines.matches("\n  - ").count(), MAX_PROBLEM_ERRORS);
         assert!(lines.ends_with("\n  ... and 5 more"));
+    }
+
+    #[test]
+    fn api_errors_print_their_template_check_errors() {
+        let problem: ApiProblemV1 = serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "error": "The spec's templates do not resolve against their pinned ProgramSpecs",
+            "code": "protocol-template-check-failed",
+            "retryable": false,
+            "templateCheck": {"errors": [{
+                "code": "template_unknown_instruction",
+                "message": "'klend' has no instruction 'depositReserve'",
+                "path": "/steps/deposit/build/instructions/0/instruction"
+            }]}
+        }))
+        .unwrap();
+        let error = ApiClientError {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            headers: reqwest::header::HeaderMap::new(),
+            problem,
+        };
+        assert_eq!(
+            error.to_string(),
+            "API error (400 Bad Request): The spec's templates do not resolve against their pinned ProgramSpecs (protocol-template-check-failed)\n  \
+             - /steps/deposit/build/instructions/0/instruction: 'klend' has no instruction 'depositReserve' (template_unknown_instruction)"
+        );
+        // A pending check lists missing ProgramSpecs, not errors.
+        assert_eq!(
+            problem_detail_lines(None, Some(&json!({"missingProgramSpecs": []}))),
+            ""
+        );
     }
 
     #[test]

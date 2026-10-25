@@ -3626,9 +3626,67 @@ fn is_package_release_hash(value: &str) -> bool {
     })
 }
 
-/// Describe a failure for a multi-dependency resolve. The transport reports
-/// one status for the whole batch, so no single dependency can be blamed and
-/// the remedy is stated over the set that was actually requested.
+/// Refusal codes that mean an exact lock (or a release hash it pins) can no
+/// longer be honored. Only these are reported as an integrity failure.
+const LOCK_REFUSAL_CODES: &[&str] = &["locked-release-unavailable"];
+
+/// Whether a registry refusal is about an exact lock or release hash, rather
+/// than some other cause that happens to arrive with locked dependencies.
+fn is_lock_refusal(code: Option<&str>, message: &str) -> bool {
+    match code {
+        Some(code) => {
+            LOCK_REFUSAL_CODES.contains(&code)
+                || code.contains("lock")
+                || code.contains("release-hash")
+        }
+        // Older registries refuse a lock without a code.
+        None => message.contains("locked package"),
+    }
+}
+
+/// The server's message with its code: `message (code)`.
+fn server_detail(message: &str, code: Option<&str>) -> String {
+    match code {
+        Some(code) => format!("{message} ({code})"),
+        None => message.to_string(),
+    }
+}
+
+/// `kind 'package'`, with the alias when it differs from the package.
+fn request_label(request: &RegistryDependencyRequest) -> String {
+    if request.alias == request.package {
+        format!("{} '{}'", request.kind, request.package)
+    } else {
+        format!(
+            "{} '{}' (alias '{}')",
+            request.kind, request.package, request.alias
+        )
+    }
+}
+
+/// The one request a batch refusal is about: the alias its `dependency` field
+/// names, or else the only request whose alias or package the message quotes.
+fn blamed_request<'a>(
+    requests: &'a [RegistryDependencyRequest],
+    dependency: Option<&str>,
+    message: &str,
+) -> Option<&'a RegistryDependencyRequest> {
+    if let Some(alias) = dependency {
+        return requests.iter().find(|request| request.alias == alias);
+    }
+    let mut quoted = requests.iter().filter(|request| {
+        message.contains(&format!("'{}'", request.alias))
+            || message.contains(&format!("'{}'", request.package))
+    });
+    match (quoted.next(), quoted.next()) {
+        (Some(only), None) => Some(only),
+        _ => None,
+    }
+}
+
+/// Describe a failure for a multi-dependency resolve. The server's code and
+/// message are always kept. A refusal is pinned on one dependency only when
+/// the server names it; otherwise the remedy is stated over the whole set.
 fn describe_resolver_batch_error(
     error: anyhow::Error,
     requests: &[RegistryDependencyRequest],
@@ -3638,34 +3696,53 @@ fn describe_resolver_batch_error(
         .map(|request| format!("{} '{}'", request.kind, request.package))
         .collect::<Vec<_>>()
         .join(", ");
-    let locked = requests
-        .iter()
-        .filter(|request| request.locked_package_release_hash.is_some())
-        .map(|request| format!("{} '{}'", request.kind, request.package))
-        .collect::<Vec<_>>();
     let Some(http) = api_error_details(&error) else {
         return error.context(format!("Failed to resolve {names} through the registry"));
     };
+    let detail = server_detail(http.message, http.code);
+    let blamed = blamed_request(requests, http.dependency, http.message);
+    let subject = blamed.map(request_label).unwrap_or_else(|| names.clone());
     match http.status {
-        401 => {
-            anyhow::anyhow!("Resolving {names} requires a login; run `a4 auth login` and try again")
-        }
-        403 => anyhow::anyhow!("This account is not entitled to resolve one or more of {names}"),
-        404 => anyhow::anyhow!("One or more of {names} is unavailable to this account or unknown"),
+        401 => anyhow::anyhow!(
+            "Resolving {subject} requires a login; run `a4 auth login` and try again ({detail})"
+        ),
+        403 => anyhow::anyhow!("This account is not entitled to resolve {subject} ({detail})"),
+        404 => anyhow::anyhow!(
+            "{} unavailable to this account or unknown ({detail})",
+            match blamed {
+                Some(_) => format!("{subject} is"),
+                None => format!("One or more of {subject} is"),
+            }
+        ),
         409 if http.code == Some(DELIVERY_NOT_READY) => anyhow::anyhow!(
-            "A hosted stack among {names} is published but its live delivery is not currently \
-             ready; nothing was installed and arete.lock is unchanged. Retry shortly ({error})"
+            "A hosted stack among {subject} is published but its live delivery is not currently \
+             ready; nothing was installed and arete.lock is unchanged. Retry shortly ({detail})"
         ),
         409 if http.code == Some(STACK_VERSION_RETIRED) => anyhow::anyhow!(
-            "A stack version among {names} is no longer served; nothing was installed and \
-             arete.lock is unchanged.{} ({error})",
+            "A stack version among {subject} is no longer served; nothing was installed and \
+             arete.lock is unchanged.{} ({detail})",
             upgrade_hint(None, http.upgrade_command)
         ),
-        409 if !locked.is_empty() => anyhow::anyhow!(
-            "The registry could not honor the exact lock for one or more of {}; this is an \
-             integrity failure, so nothing was installed. Run `a4 update` for the affected \
-             dependency once you have confirmed the intended release.",
-            locked.join(", ")
+        409 if is_lock_refusal(http.code, http.message) => {
+            let locked = match blamed {
+                Some(request) => request_label(request),
+                None => requests
+                    .iter()
+                    .filter(|request| request.locked_package_release_hash.is_some())
+                    .map(request_label)
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            };
+            anyhow::anyhow!(
+                "The registry could not honor the exact lock for {}; this is an integrity \
+                 failure, so nothing was installed. Run `a4 update` for the affected dependency \
+                 once you have confirmed the intended release ({detail})",
+                if locked.is_empty() { &names } else { &locked }
+            )
+        }
+        status if (400..500).contains(&status) => anyhow::anyhow!(
+            "The registry refused {subject}: {detail}. Nothing was installed and arete.lock is \
+             unchanged"
         ),
         _ => error.context(format!("Failed to resolve {names} through the registry")),
     }
@@ -3703,7 +3780,7 @@ fn describe_resolver_error(
             "{kind} '{package}': this version is no longer served; nothing was installed and arete.lock is unchanged.{} ({error})",
             upgrade_hint(None, http.upgrade_command)
         ),
-        409 if locked => anyhow::anyhow!(
+        409 if locked && is_lock_refusal(http.code, http.message) => anyhow::anyhow!(
             "arete.lock integrity failure for {kind} '{package}': the locked release is no longer resolvable. Nothing was changed; run `a4 update {kind} <alias>` only if you intend to advance ({error})"
         ),
         409 => anyhow::anyhow!(
@@ -7857,6 +7934,119 @@ version = "^1.0.0"
         );
         let text = format!("{error:#}");
         assert!(text.contains("not currently ready"), "{text}");
+        assert!(!text.contains("integrity"), "{text}");
+    }
+
+    fn batch_request(
+        kind: DependencyKind,
+        alias: &str,
+        locked: bool,
+    ) -> crate::project::resolver::RegistryDependencyRequest {
+        crate::project::resolver::RegistryDependencyRequest {
+            kind,
+            alias: alias.into(),
+            package: alias.into(),
+            requirement: "*".into(),
+            locked_package_release_hash: locked.then(|| release_hash('a')),
+            locked_programs: Vec::new(),
+            locked_stacks: Vec::new(),
+        }
+    }
+
+    fn registry_problem(status: u16, body: Value) -> anyhow::Error {
+        crate::api_client::ApiClientError {
+            status: reqwest::StatusCode::from_u16(status).unwrap(),
+            headers: reqwest::header::HeaderMap::new(),
+            problem: serde_json::from_value(body).unwrap(),
+        }
+        .into()
+    }
+
+    fn mixed_batch() -> Vec<crate::project::resolver::RegistryDependencyRequest> {
+        vec![
+            batch_request(DependencyKind::Program, "klend", true),
+            batch_request(DependencyKind::Program, "system-program", true),
+            batch_request(DependencyKind::Program, "save", false),
+        ]
+    }
+
+    #[test]
+    fn a_batch_refusal_blames_only_the_named_dependency_with_the_server_detail() {
+        let error = describe_resolver_batch_error(
+            registry_problem(
+                409,
+                json!({
+                    "error": "program 'save' 1.0.0 does not provide a verified rust SDK target; available targets: typescript",
+                    "code": "unsupported-sdk-target",
+                    "dependency": "save"
+                }),
+            ),
+            &mixed_batch(),
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("program 'save'"), "{text}");
+        assert!(text.contains("unsupported-sdk-target"), "{text}");
+        assert!(
+            text.contains("does not provide a verified rust SDK target"),
+            "{text}"
+        );
+        assert!(!text.contains("integrity"), "{text}");
+        assert!(!text.contains("klend"), "{text}");
+        assert!(!text.contains("system-program"), "{text}");
+    }
+
+    #[test]
+    fn a_batch_refusal_without_a_dependency_field_blames_the_one_it_quotes() {
+        let error = describe_resolver_batch_error(
+            registry_problem(
+                409,
+                json!({
+                    "error": "program 'save' 1.0.0 does not provide a verified rust SDK target",
+                    "code": "unsupported-sdk-target"
+                }),
+            ),
+            &mixed_batch(),
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("program 'save'"), "{text}");
+        assert!(!text.contains("klend"), "{text}");
+        assert!(!text.contains("integrity"), "{text}");
+    }
+
+    #[test]
+    fn only_a_lock_refusal_is_an_integrity_failure_and_names_its_dependency() {
+        let error = describe_resolver_batch_error(
+            registry_problem(
+                409,
+                json!({
+                    "error": "Dependency 'klend': locked package release hash does not exist for this package",
+                    "code": "locked-release-unavailable",
+                    "dependency": "klend"
+                }),
+            ),
+            &mixed_batch(),
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("integrity failure"), "{text}");
+        assert!(text.contains("program 'klend'"), "{text}");
+        assert!(text.contains("locked-release-unavailable"), "{text}");
+        assert!(!text.contains("system-program"), "{text}");
+        assert!(!text.contains("'save'"), "{text}");
+
+        // An unattributed refusal names the whole set and keeps the server's
+        // words, without claiming a lock failure.
+        let error = describe_resolver_batch_error(
+            registry_problem(
+                409,
+                json!({"error": "Program package release is unavailable"}),
+            ),
+            &mixed_batch(),
+        );
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("Program package release is unavailable"),
+            "{text}"
+        );
         assert!(!text.contains("integrity"), "{text}");
     }
 
