@@ -1,9 +1,15 @@
 {
   "checkCodes": [
     {
-      "cause": "The expression does not parse, a function got the wrong number of arguments, or an argument that must be a literal is not one.",
+      "cause": "The expression does not parse, a function got the wrong number of arguments, an argument that must be a literal is not one, or an index is not an integer literal.",
       "code": "invalid-expression",
-      "fix": "Fix the syntax at the reported offset; check the function's arguments in this reference.",
+      "fix": "Fix the syntax at the reported offset; check the function's arguments in this reference. Index with a literal (resources.venues[1]), or use `in` to accept any value of a list.",
+      "stage": "expression"
+    },
+    {
+      "cause": "A literal index is at or past the array's maxItems, so it can never hold a value.",
+      "code": "index-out-of-range",
+      "fix": "Use an index below maxItems, or raise maxItems in the array's schema.",
       "stage": "expression"
     },
     {
@@ -1016,6 +1022,28 @@
         "returns": "the type of the left side",
         "summary": "Remainder.",
         "symbol": "%"
+      },
+      {
+        "precedence": 7,
+        "returns": "bool",
+        "summary": "Membership: `x in [a, b]` is `x == a || x == b`; `x in resources.allowed` checks every element of an array value. Element types must match (a string literal can stand for a public key). Protocols only.",
+        "symbol": "in"
+      }
+    ],
+    "postfix": [
+      {
+        "example": "resources.allowedMints[0]",
+        "form": "x[<integer literal>]",
+        "precedence": 13,
+        "returns": "the array's item type",
+        "summary": "One item of an array. The index must be an integer literal (an index computed from args fails the check: use a literal index, or `in` for membership), and an index at or past the array's maxItems fails as index-out-of-range. Missing items are null."
+      },
+      {
+        "example": "resources.venues[1].reserve",
+        "form": "x[<integer literal>].<field>",
+        "precedence": 13,
+        "returns": "the field's schema type",
+        "summary": "A field of an indexed item, typed from the array's item schema (items.properties)."
       }
     ],
     "prefix": [

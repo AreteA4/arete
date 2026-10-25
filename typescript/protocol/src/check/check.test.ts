@@ -234,6 +234,44 @@ describe("expression reference check", () => {
       { code: "invalid-expression", path: "", offset: 9, length: 1, message: "unexpected character '@'" },
     ]);
   });
+
+  it("accepts literal indexes, item fields and the in operator", () => {
+    const scope: ExpressionScope = {
+      now: true,
+      wallet: true,
+      params: new Set(),
+      args: new Set(["mint", "in"]),
+      participant: false,
+      ephemeral: new Set(),
+      reads: new Set(),
+      resources: new Set(["venues", "allowedMints"]),
+    };
+    for (const source of [
+      "resources.venues[1].reserve",
+      "resources.venues[0].config.weight + 1 > 2",
+      "args.mint in resources.allowedMints",
+      'args.mint in ["So11111111111111111111111111111111111111112", resources.venues[0].mint] && args.in == 1',
+      "(args.mint) in resources.allowedMints",
+    ]) {
+      expect(checkExpression(source, scope), source).toEqual([]);
+    }
+    // References inside indexes and lists are still checked.
+    expect(checkExpression("args.mint in resources.allowedMint", scope)).toEqual([
+      {
+        code: "unknown-reference",
+        path: "",
+        offset: 13,
+        length: 21,
+        message: "resource 'allowedMint' is not declared here",
+      },
+    ]);
+    // `in` with no operand before it is a name, and a field needs an index.
+    expect(checkExpression("in resources.allowedMints", scope)[0]).toMatchObject({ code: "unknown-reference", offset: 0 });
+    expect(checkExpression("if(true, args.mint, args.mint).x", scope)[0]).toMatchObject({
+      code: "invalid-expression",
+      offset: 30,
+    });
+  });
 });
 
 describe("static handler check", () => {
