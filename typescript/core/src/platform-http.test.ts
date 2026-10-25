@@ -77,7 +77,7 @@ describe('createPlatformHttpClient', () => {
     const { calls, fetch } = fakeFetch(() => json(200, []));
     const client = createPlatformHttpClient({ auth: { getToken, tokenKind: 'api' }, fetch });
     await client.request({ path: '/account/squads/notifications' });
-    expect(getToken).toHaveBeenCalledWith({ scopes: [] });
+    expect(getToken).toHaveBeenCalledWith({ scopes: [], forceRefresh: false });
     expect(new Headers(calls[0]!.init.headers).get('authorization')).toBe('Bearer login');
   });
 

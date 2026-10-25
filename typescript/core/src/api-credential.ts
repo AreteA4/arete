@@ -95,16 +95,16 @@ export function createApiBearerSource(
   if (auth?.getToken || auth?.tokenEndpoint) {
     let cached: { token: string; expiresAt?: number } | undefined;
     let inFlight: Promise<string> | undefined;
-    const mint = async (): Promise<string> => {
+    const mint = async (forceRefresh: boolean): Promise<string> => {
       let result: AuthTokenResult;
       if (auth.getToken) {
-        result = normalize(await auth.getToken({ scopes: [] }), 'auth.getToken');
+        result = normalize(await auth.getToken({ scopes: [], forceRefresh }), 'auth.getToken');
       } else {
         const response = await fetchImpl(auth.tokenEndpoint!, {
           method: 'POST',
           headers: { ...(auth.tokenEndpointHeaders ?? {}), 'Content-Type': 'application/json' },
           credentials: auth.tokenEndpointCredentials,
-          body: JSON.stringify({ scopes: [] }),
+          body: JSON.stringify({ scopes: [], forceRefresh }),
         });
         const text = await response.text();
         let body: unknown = text;
@@ -132,7 +132,10 @@ export function createApiBearerSource(
         const fresh = cached
           && (cached.expiresAt === undefined || cached.expiresAt - REFRESH_BUFFER_MS > Date.now());
         if (!forceRefresh && fresh) return cached!.token;
-        inFlight ??= mint().finally(() => {
+        // A provider's cached credential is stale once ours was refused or
+        // expired.
+        const stale = forceRefresh || cached !== undefined;
+        inFlight ??= mint(stale).finally(() => {
           inFlight = undefined;
         });
         return inFlight;
@@ -144,4 +147,27 @@ export function createApiBearerSource(
     return { refreshable: false, get: async () => key };
   }
   return { refreshable: false, get: async () => undefined };
+}
+
+/** The credential source a session shares with every client it builds. */
+const SHARED_API_CREDENTIAL: unique symbol = Symbol('arete.sharedApiCredential');
+
+type SharedAuthConfig = AuthConfig & { [SHARED_API_CREDENTIAL]?: ApiBearerSource };
+
+/** The shared source {@link shareApiCredential} attached to `auth`, if any. */
+export function sharedApiCredential(auth: AuthConfig | undefined): ApiBearerSource | undefined {
+  return (auth as SharedAuthConfig | undefined)?.[SHARED_API_CREDENTIAL];
+}
+
+/**
+ * `auth` carrying one {@link ApiBearerSource} for its API credential
+ * (`tokenKind: 'api'`), so every connection, transport and API client built
+ * from it fetches the credential once per expiry and refreshes it once
+ * after a refusal. Other auth is returned unchanged. Idempotent; the source
+ * survives object spreads.
+ */
+export function shareApiCredential(auth: AuthConfig | undefined, fetchImpl: typeof fetch): AuthConfig | undefined {
+  if (!isApiCredentialAuth(auth) || sharedApiCredential(auth)) return auth;
+  const shared: SharedAuthConfig = { ...auth, [SHARED_API_CREDENTIAL]: createApiBearerSource(auth, fetchImpl) };
+  return shared;
 }

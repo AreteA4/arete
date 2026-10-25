@@ -431,6 +431,7 @@ describe('protocol client sessions', () => {
       targetKind: 'protocol-deployment',
       targetId: DEPLOYMENT_ID,
       scopes: ['protocol:read'],
+      forceRefresh: false,
     });
     expect(mock.requests()[0]!.headers.get('authorization')).toBe('Bearer provided');
   });

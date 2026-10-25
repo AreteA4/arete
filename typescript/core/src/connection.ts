@@ -3,6 +3,7 @@ import {
   createApiBearerSource,
   isApiCredentialAuth,
   sessionMintEndpoint,
+  sharedApiCredential,
   type ApiBearerSource,
 } from './api-credential';
 import {
@@ -465,7 +466,8 @@ export class ConnectionManager {
       return globalThis.fetch(input, init);
     });
     if (isApiCredentialAuth(this.authConfig)) {
-      this.apiBearer = createApiBearerSource(this.authConfig, this.authFetch);
+      this.apiBearer = sharedApiCredential(this.authConfig)
+        ?? createApiBearerSource(this.authConfig, this.authFetch);
     }
 
     if (config.initialSubscriptions) {
@@ -586,11 +588,15 @@ export class ConnectionManager {
       );
     }
 
+    // A provider's cached token is stale once this one was refused, expired
+    // or did not cover the scopes.
+    const freshNeeded = forceRefresh || this.currentToken !== undefined;
     let request!: Promise<string | undefined>;
     request = Promise.resolve().then(() =>
       this.fetchAuthToken(
         normalizeScopes([...this.tokenScopes, ...this.requestedScopes]),
-        () => this.tokenRequestInFlight === request
+        () => this.tokenRequestInFlight === request,
+        freshNeeded
       )
     );
     this.tokenRequestInFlight = request;
@@ -612,10 +618,12 @@ export class ConnectionManager {
 
   private async fetchAuthToken(
     scopes: readonly string[],
-    isCurrent: () => boolean
+    isCurrent: () => boolean,
+    forceRefresh: boolean
   ): Promise<string | undefined> {
     const request: AuthTokenRequest = {
       scopes: normalizeScopes(scopes),
+      forceRefresh,
       ...(this.release
         ? {
             stackManifestHash: this.release.stackManifestHash,
@@ -732,10 +740,14 @@ export class ConnectionManager {
     }
 
     const tokenState = state;
+    const targetedRequest = {
+      ...request,
+      forceRefresh: forceRefresh || tokenState.token !== undefined,
+    } as AuthTokenRequest & AuthTokenTarget;
     let inFlight!: Promise<string | undefined>;
     inFlight = Promise.resolve().then(async () => {
       const result = await this.requestAuthToken(
-        request,
+        targetedRequest,
         () => this.httpAuthTokenStates.get(identity) === tokenState
           && tokenState.inFlight === inFlight
       );

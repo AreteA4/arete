@@ -496,12 +496,13 @@ describe('ConnectionManager auth', () => {
     await manager.getHttpAuthToken(programReadTarget());
 
     expect(getToken.mock.calls.map(([request]) => request)).toEqual([
-      { scopes: ['read'], stackManifestHash: STACK_MANIFEST_HASH, liveAlias: 'live' },
+      { scopes: ['read'], forceRefresh: false, stackManifestHash: STACK_MANIFEST_HASH, liveAlias: 'live' },
       {
         targetKind: 'program-read-binding',
         targetId: PROGRAM_READ_BINDING_1,
         programReleaseHash: 'release-1',
         scopes: ['read'],
+        forceRefresh: false,
       },
     ]);
     manager.disconnect();
@@ -826,6 +827,7 @@ describe('ConnectionManager auth', () => {
       targetId: PROGRAM_READ_BINDING_1,
       programReleaseHash: 'release-1',
       scopes: ['read'],
+      forceRefresh: false,
     });
   });
 
@@ -1008,9 +1010,11 @@ describe('ConnectionManager auth', () => {
         targetId: PROGRAM_READ_BINDING_1,
         programReleaseHash: 'release-1',
         scopes: ['read'],
+        forceRefresh: false,
       },
-      { scopes: ['read'] },
-      { scopes: ['read', 'transaction:send'] },
+      { scopes: ['read'], forceRefresh: false },
+      // The session token did not cover the new scope, so it is stale.
+      { scopes: ['read', 'transaction:send'], forceRefresh: true },
     ]);
     manager.disconnect();
   });

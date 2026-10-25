@@ -176,16 +176,18 @@ describe('hosted Solana gateway transports', () => {
       .resolves.toEqual({ signature: 'signature' });
 
     expect(tokenRequests).toEqual([
-      { targetKind: 'solana-gateway-binding', targetId: GATEWAY_ID, scopes: ['read'] },
+      { targetKind: 'solana-gateway-binding', targetId: GATEWAY_ID, scopes: ['read'], forceRefresh: false },
       {
         targetKind: 'solana-gateway-binding',
         targetId: GATEWAY_ID,
         scopes: ['transaction:inspect'],
+        forceRefresh: false,
       },
       {
         targetKind: 'solana-gateway-binding',
         targetId: GATEWAY_ID,
         scopes: ['transaction:send'],
+        forceRefresh: false,
       },
     ]);
     expect(gatewayRequests.map(({ url }) => url)).toEqual([
@@ -344,7 +346,7 @@ describe('hosted Solana gateway transports with an API credential (tokenKind: ap
 
     await transports.chain.exists('account');
 
-    expect(requests).toEqual([{ scopes: [] }, { scopes: [] }]);
+    expect(requests).toEqual([{ scopes: [], forceRefresh: false }, { scopes: [], forceRefresh: true }]);
     expect(mints.map(({ authorization }) => authorization)).toEqual(['Bearer login-1', 'Bearer login-2']);
     expect(gateway.map(({ authorization }) => authorization)).toEqual(['Bearer gateway-session:read']);
   });

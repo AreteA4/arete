@@ -403,10 +403,16 @@ export type AuthTokenRequest =
       readonly stackManifestHash?: string;
       /** Live alias paired with `stackManifestHash`, forwarded as `liveAlias`. */
       readonly liveAlias?: string;
+      /**
+       * True when the SDK needs a fresh token: the previous one was refused
+       * or is about to expire. A provider with its own cache should bypass
+       * it. Set on every request the SDK makes.
+       */
+      readonly forceRefresh?: boolean;
     }
-  | ({ readonly scopes: readonly string[] } & ProgramReadBindingAuthTarget)
-  | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget)
-  | ({ readonly scopes: readonly string[] } & ProtocolDeploymentAuthTarget);
+  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & ProgramReadBindingAuthTarget)
+  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & SolanaGatewayBindingAuthTarget)
+  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & ProtocolDeploymentAuthTarget);
 
 export interface WebSocketFactoryInit {
   headers?: Record<string, string>;

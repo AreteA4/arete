@@ -1,3 +1,4 @@
+import type { PlatformHttpClient } from './platform-http';
 import type { ChainClient } from './chain';
 import type { Arete, ProgramInterface } from './client';
 import type {
@@ -154,6 +155,13 @@ export interface ProgramOperationContext<
   readonly chain: ChainClient;
   readonly wallet: WalletAdapter | undefined;
   readonly program: ProgramInterface<TProgram>;
+  /**
+   * The client's authenticated Arete API client, when its auth carries an
+   * API credential (a secret key, or `tokenKind: 'api'`); `undefined`
+   * otherwise. Extensions make account API calls through it instead of
+   * handling credentials or `fetch` themselves.
+   */
+  readonly platform?: PlatformHttpClient;
 }
 
 export interface ProgramRuntimeExtensions<

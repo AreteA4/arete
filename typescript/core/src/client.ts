@@ -1,3 +1,6 @@
+import { isApiCredentialAuth, shareApiCredential } from './api-credential';
+import { resolveAuthConfig } from './auth-keys';
+import { createPlatformHttpClient, type PlatformHttpClient } from './platform-http';
 import { managedAddress, managedContext, managedDiscovery, managedPage, type Contextual, type ManagedReadOptions, type NativePositionQuery, type NativePositionPage } from './managed-solana';
 import type {
   ConnectionState,
@@ -439,6 +442,17 @@ export interface ConnectOptions<
   transactions?: TransactionTransport;
   /** Default semantic-operation execution settings. */
   execution?: OperationExecutionOptions<any>;
+  /**
+   * Arete API origin for the client's platform calls (`context.platform` in
+   * SDK extensions). Defaults to `https://api.arete.run`.
+   */
+  apiUrl?: string;
+  /**
+   * The authenticated Arete API client SDK extensions use. Defaults to one
+   * built from `auth` when it carries an API credential (a secret key, or
+   * `tokenKind: 'api'`); sessions pass theirs.
+   */
+  platform?: PlatformHttpClient;
 }
 
 /** @deprecated Use ConnectOptions instead */
@@ -454,6 +468,17 @@ export interface AreteOptionsWithStorage<TStack extends StackDefinition> extends
   chain?: ChainClient;
   transactions?: TransactionTransport;
   onFrameValidationError?: (diagnostic: FrameValidationDiagnostic) => void;
+  /**
+   * Arete API origin for the client's platform calls (`context.platform` in
+   * SDK extensions). Defaults to `https://api.arete.run`.
+   */
+  apiUrl?: string;
+  /**
+   * The authenticated Arete API client SDK extensions use. Defaults to one
+   * built from `auth` when it carries an API credential (a secret key, or
+   * `tokenKind: 'api'`); sessions pass theirs.
+   */
+  platform?: PlatformHttpClient;
 }
 
 export interface TransactionOptions<TSigner = unknown> {
@@ -618,6 +643,9 @@ export class Arete<TStack extends StackDefinition> {
   private readonly fetchImpl: typeof fetch;
   private readonly auth: import('./types').AuthConfig | undefined;
   private readonly executionDefaults?: OperationExecutionOptions<any>;
+  private readonly apiUrl?: string;
+  private platformClient?: PlatformHttpClient;
+  private platformResolved = false;
   private _wallet?: WalletAdapter;
   private _aggregatedErrors?: ErrorMetadata[];
 
@@ -634,8 +662,15 @@ export class Arete<TStack extends StackDefinition> {
     this.httpBaseUrl = httpBaseUrl;
     this.connectHttpUrl = connectHttpUrl;
     this.programReadOverrides = programReadOverrides;
-    this.auth = options.auth;
     this.fetchImpl = options.fetch ?? this.resolveFetchImpl();
+    // One credential source for every connection, transport and API client
+    // this client builds (sessions hand theirs in).
+    this.auth = shareApiCredential(resolveAuthConfig(options.auth), this.fetchImpl);
+    this.apiUrl = options.apiUrl;
+    if (options.platform) {
+      this.platformClient = options.platform;
+      this.platformResolved = true;
+    }
     this.storage = new SortedStorageDecorator(options.storage ?? new MemoryAdapter());
     this.queryStore = new QueryStore(this.storage);
     this.processor = new FrameProcessor(this.storage, {
@@ -652,7 +687,7 @@ export class Arete<TStack extends StackDefinition> {
       autoReconnect: options.autoReconnect,
       reconnectIntervals: options.reconnectIntervals,
       maxReconnectAttempts: options.maxReconnectAttempts,
-      auth: options.auth,
+      auth: this.auth,
       fetch: this.fetchImpl,
       // The release names the version served at the generated endpoint. A
       // different `url` points somewhere the generator knew nothing about.
@@ -673,7 +708,7 @@ export class Arete<TStack extends StackDefinition> {
     const hostedGateway = this.stack.gateway
       && (options.chain === undefined || options.transactions === undefined)
       ? createHostedSolanaGatewayTransports(this.stack.gateway, {
-          auth: options.auth,
+          auth: this.auth,
           fetch: this.fetchImpl,
         })
       : undefined;
@@ -772,6 +807,9 @@ export class Arete<TStack extends StackDefinition> {
         chain: this._chain,
         get wallet() {
           return client._wallet;
+        },
+        get platform() {
+          return client.platform;
         },
         program: connectedProgram,
       };
@@ -1053,6 +1091,8 @@ export class Arete<TStack extends StackDefinition> {
       execution: options?.execution,
       chain: options?.chain,
       transactions: options?.transactions,
+      apiUrl: options?.apiUrl,
+      platform: options?.platform,
     };
 
     const client = new Arete(
@@ -1091,6 +1131,24 @@ export class Arete<TStack extends StackDefinition> {
 
   get transactions(): TransactionTransport {
     return this._transactions;
+  }
+
+  /**
+   * The authenticated Arete API client, when the auth carries an API
+   * credential (a secret key, or `tokenKind: 'api'`); `undefined` otherwise.
+   */
+  get platform(): PlatformHttpClient | undefined {
+    if (!this.platformResolved) {
+      this.platformResolved = true;
+      if (this.auth?.secretKey !== undefined || isApiCredentialAuth(this.auth)) {
+        this.platformClient = createPlatformHttpClient({
+          apiUrl: this.apiUrl,
+          auth: this.auth,
+          fetch: this.fetchImpl,
+        });
+      }
+    }
+    return this.platformClient;
   }
 
   /** The default wallet adapter, if one was configured. */

@@ -17,7 +17,7 @@
  */
 
 import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
-import { createApiBearerSource } from './api-credential';
+import { createApiBearerSource, sharedApiCredential } from './api-credential';
 import { DEFAULT_A4_API_URL } from './a4-profile';
 import { AreteError, parseApiProblem, parseErrorCode, type AuthConfig } from './types';
 
@@ -112,7 +112,7 @@ export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}
     && auth.token === undefined && !auth.getToken && !auth.tokenEndpoint
     ? { ...auth, secretKey: tokenEndpointApiKey(auth, base) }
     : auth;
-  const source = createApiBearerSource(credentialAuth, fetchImpl);
+  const source = sharedApiCredential(credentialAuth) ?? createApiBearerSource(credentialAuth, fetchImpl);
   if (credentialAuth?.secretKey === undefined && credentialAuth?.token === undefined
     && !credentialAuth?.getToken && !credentialAuth?.tokenEndpoint) {
     throw new AreteError(
