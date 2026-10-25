@@ -3664,22 +3664,27 @@ fn request_label(request: &RegistryDependencyRequest) -> String {
     }
 }
 
-/// The one request a batch refusal is about: the alias its `dependency` field
-/// names, or else the only request whose alias or package the message quotes.
+/// The one request a batch refusal is about: the only request with the alias
+/// its `dependency` field names, or else the only request whose alias or
+/// package the message quotes. `None` when that is not exactly one request
+/// (a stack and a program may share an alias).
 fn blamed_request<'a>(
     requests: &'a [RegistryDependencyRequest],
     dependency: Option<&str>,
     message: &str,
 ) -> Option<&'a RegistryDependencyRequest> {
-    if let Some(alias) = dependency {
-        return requests.iter().find(|request| request.alias == alias);
-    }
-    let mut quoted = requests.iter().filter(|request| {
-        message.contains(&format!("'{}'", request.alias))
-            || message.contains(&format!("'{}'", request.package))
-    });
-    match (quoted.next(), quoted.next()) {
-        (Some(only), None) => Some(only),
+    let matching: Vec<&RegistryDependencyRequest> = requests
+        .iter()
+        .filter(|request| match dependency {
+            Some(alias) => request.alias == alias,
+            None => {
+                message.contains(&format!("'{}'", request.alias))
+                    || message.contains(&format!("'{}'", request.package))
+            }
+        })
+        .collect();
+    match matching.as_slice() {
+        [only] => Some(only),
         _ => None,
     }
 }
@@ -3740,7 +3745,9 @@ fn describe_resolver_batch_error(
                 if locked.is_empty() { &names } else { &locked }
             )
         }
-        status if (400..500).contains(&status) => anyhow::anyhow!(
+        // 429 keeps the API error in the chain (the `_` arm), so the CLI
+        // still prints its retry delay and exits 75.
+        status if (400..500).contains(&status) && status != 429 => anyhow::anyhow!(
             "The registry refused {subject}: {detail}. Nothing was installed and arete.lock is \
              unchanged"
         ),
@@ -8048,6 +8055,48 @@ version = "^1.0.0"
             "{text}"
         );
         assert!(!text.contains("integrity"), "{text}");
+    }
+
+    #[test]
+    fn a_batch_refusal_naming_a_shared_alias_names_the_whole_set() {
+        let requests = vec![
+            batch_request(DependencyKind::Stack, "shared", false),
+            batch_request(DependencyKind::Program, "shared", false),
+            batch_request(DependencyKind::Program, "save", false),
+        ];
+        let error = describe_resolver_batch_error(
+            registry_problem(
+                409,
+                json!({
+                    "error": "does not provide a verified rust SDK target",
+                    "code": "unsupported-sdk-target",
+                    "dependency": "shared"
+                }),
+            ),
+            &requests,
+        );
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("stack 'shared', program 'shared', program 'save'"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_rate_limited_batch_keeps_the_api_error() {
+        let error = describe_resolver_batch_error(
+            registry_problem(
+                429,
+                json!({"error": "Too many requests", "code": "rate-limited", "retryable": true}),
+            ),
+            &mixed_batch(),
+        );
+        assert!(
+            error
+                .downcast_ref::<crate::api_client::ApiClientError>()
+                .is_some(),
+            "{error:#}"
+        );
     }
 
     #[test]

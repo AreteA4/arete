@@ -579,6 +579,12 @@ pub(crate) fn set_verbose_api_errors(verbose: bool) {
     VERBOSE_API_ERRORS.store(verbose, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Whether `--verbose` asked for full API error bodies, so child `a4`
+/// processes can be started with it too.
+pub(crate) fn verbose_api_errors() -> bool {
+    VERBOSE_API_ERRORS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Under `--verbose`, print an API error response's full problem body as JSON
 /// to stderr, labelled with its status and route. Silent otherwise.
 pub(crate) fn report_verbose_problem(
@@ -586,7 +592,7 @@ pub(crate) fn report_verbose_problem(
     route: &str,
     body: &impl Serialize,
 ) {
-    if !VERBOSE_API_ERRORS.load(std::sync::atomic::Ordering::Relaxed) {
+    if !verbose_api_errors() {
         return;
     }
     let body = serde_json::to_string_pretty(body).unwrap_or_else(|_| "null".to_string());
@@ -602,10 +608,13 @@ pub(crate) fn problem_detail_lines(
     template_check: Option<&serde_json::Value>,
 ) -> String {
     let mut entries: Vec<&serde_json::Value> = Vec::new();
+    // Seen entries by their JSON text: `Value` is not `Hash`, and a linear
+    // scan per entry is quadratic on large reports.
+    let mut seen = std::collections::HashSet::new();
     let lists = [errors, template_check.and_then(|check| check.get("errors"))];
     for list in lists.into_iter().flatten() {
         for entry in list.as_array().into_iter().flatten() {
-            if !entries.contains(&entry) {
+            if seen.insert(entry.to_string()) {
                 entries.push(entry);
             }
         }
