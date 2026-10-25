@@ -1,0 +1,1203 @@
+{
+  "version": 1,
+  "description": "The switch: option, variables, session file and secret key in; the mode, or an error, out. `devInputsRead: false` means the implementation must not read ARETE_DEV_URL, ARETE_DEV_ENV or the session file to reach that answer.",
+  "cases": [
+    {
+      "name": "nothing set is production",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "production explicitly",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "production"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "an empty switch is unset",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": ""
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "production ignores every dev input",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "production",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911",
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": {
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "dev inputs alone do not switch",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_DEV_URL": "http://127.0.0.1:8911",
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": {
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "dev through the edge from ARETE_DEV_URL",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:8911"
+      }
+    },
+    {
+      "name": "an edge URL loses its trailing slash",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911/"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:8911"
+      }
+    },
+    {
+      "name": "localhost is a loopback edge",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://localhost:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://localhost:8911"
+      }
+    },
+    {
+      "name": "IPv6 loopback is a loopback edge",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://[::1]:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://[::1]:8911"
+      }
+    },
+    {
+      "name": "https on loopback is an edge",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "https://127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "https://127.0.0.1:8911"
+      }
+    },
+    {
+      "name": "dev direct from ARETE_DEV_ENV with a secret key",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "direct",
+        "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+      }
+    },
+    {
+      "name": "dev direct by environment name",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "my-env"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "direct",
+        "environment": "my-env"
+      }
+    },
+    {
+      "name": "ARETE_DEV_URL beats ARETE_DEV_ENV",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911",
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:8911"
+      }
+    },
+    {
+      "name": "the session file's edge when nothing else is set",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev"
+        },
+        "sessionFile": {
+          "edgeUrl": "http://127.0.0.1:9000"
+        },
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:9000"
+      }
+    },
+    {
+      "name": "ARETE_DEV_ENV beats the session file",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": {
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "direct",
+        "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+      }
+    },
+    {
+      "name": "ARETE_DEV_URL beats the session file",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:9000"
+        },
+        "sessionFile": {
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:9000"
+      }
+    },
+    {
+      "name": "dev with no target",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "devenv-not-configured"
+        }
+      }
+    },
+    {
+      "name": "dev direct without a secret key",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "devenv-not-configured"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"Production\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "Production"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"PRODUCTION\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "PRODUCTION"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"prod\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "prod"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"dev \"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev "
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \" dev\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": " dev"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"development\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "development"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"staging\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "staging"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"mainnet\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "mainnet"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"denv_01jabcdefghjkmnpqrstvwxyz0\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"http://127.0.0.1:8911\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "http://127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "unknown switch value \"true\"",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "true"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "the option production beats the variable",
+      "input": {
+        "browser": false,
+        "option": "production",
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "the option dev takes the target from the variables",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev"
+        },
+        "variables": {
+          "ARETE_DEV_URL": "http://127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:8911"
+      }
+    },
+    {
+      "name": "the option dev with no variable switch",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev"
+        },
+        "variables": {
+          "ARETE_ENVIRONMENT": "production",
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "direct",
+        "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+      }
+    },
+    {
+      "name": "the option's env beats ARETE_DEV_URL",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev",
+          "env": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "variables": {
+          "ARETE_DEV_URL": "http://127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "direct",
+        "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+      }
+    },
+    {
+      "name": "the option's url beats the option's env",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev",
+          "url": "http://127.0.0.1:9000",
+          "env": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:9000"
+      }
+    },
+    {
+      "name": "the option's url beats ARETE_DEV_ENV",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev",
+          "url": "http://127.0.0.1:8911"
+        },
+        "variables": {
+          "ARETE_DEV_ENV": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:8911"
+      }
+    },
+    {
+      "name": "the option dev with no target",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev"
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "devenv-not-configured"
+        }
+      }
+    },
+    {
+      "name": "the string dev is not an option value",
+      "input": {
+        "browser": false,
+        "option": "dev",
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "an unknown option kind",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "staging"
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "an unknown option member",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev",
+          "url": "http://127.0.0.1:8911",
+          "token": "x"
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "a non-string option url",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev",
+          "url": 8911
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "browser: variables are never read",
+      "input": {
+        "browser": true,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911"
+        },
+        "sessionFile": {
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "browser: the option's edge",
+      "input": {
+        "browser": true,
+        "option": {
+          "kind": "dev",
+          "url": "http://127.0.0.1:8911"
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "dev",
+        "via": "edge",
+        "edgeUrl": "http://127.0.0.1:8911"
+      }
+    },
+    {
+      "name": "browser: direct mode never runs in a browser",
+      "input": {
+        "browser": true,
+        "option": {
+          "kind": "dev",
+          "env": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "devenv-not-configured"
+        }
+      }
+    },
+    {
+      "name": "browser: the session file is never read",
+      "input": {
+        "browser": true,
+        "option": {
+          "kind": "dev"
+        },
+        "variables": {},
+        "sessionFile": {
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "devenv-not-configured"
+        }
+      }
+    },
+    {
+      "name": "browser: the option production",
+      "input": {
+        "browser": true,
+        "option": "production",
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "mode": "production",
+        "devInputsRead": false
+      }
+    },
+    {
+      "name": "edge URL \"https://example.com\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "https://example.com"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://example.com:8911\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://example.com:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://127.0.0.1\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://127.0.0.1:8911/edge\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911/edge"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://127.0.0.1:8911/?x=1\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911/?x=1"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://127.0.0.1:8911/#a\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1:8911/#a"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"ws://127.0.0.1:8911\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "ws://127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://user@127.0.0.1:8911\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://user@127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://127.0.0.2:8911\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.2:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://127.0.0.1.nip.io:8911\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://127.0.0.1.nip.io:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"http://localhost.example.com:8911\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "http://localhost.example.com:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"127.0.0.1:8911\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": "127.0.0.1:8911"
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "edge URL \"\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_URL": ""
+        },
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "a non-loopback edge in the session file is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev"
+        },
+        "sessionFile": {
+          "edgeUrl": "https://example.com"
+        },
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "a non-loopback edge in the option is refused",
+      "input": {
+        "browser": false,
+        "option": {
+          "kind": "dev",
+          "url": "https://devenv.arete.run"
+        },
+        "variables": {},
+        "sessionFile": null,
+        "secretKey": false
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "environment reference \"Denv_01jabcdefghjkmnpqrstvwxyz0\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "Denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "environment reference \"denv_01JABCDEFGHJKMNPQRSTVWXYZ0\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "denv_01JABCDEFGHJKMNPQRSTVWXYZ0"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "environment reference \"denv_short\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "denv_short"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "environment reference \"my env\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "my env"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "environment reference \"MyEnv\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "MyEnv"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "environment reference \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    },
+    {
+      "name": "environment reference \"env/../x\" is refused",
+      "input": {
+        "browser": false,
+        "option": null,
+        "variables": {
+          "ARETE_ENVIRONMENT": "dev",
+          "ARETE_DEV_ENV": "env/../x"
+        },
+        "sessionFile": null,
+        "secretKey": true
+      },
+      "expect": {
+        "error": {
+          "code": "INVALID_CONFIG"
+        }
+      }
+    }
+  ]
+}

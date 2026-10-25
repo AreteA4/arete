@@ -1,0 +1,1193 @@
+{
+  "version": 1,
+  "description": "Installed descriptors and the switch's mode (plus, in direct mode, the resolve answer) in; the endpoint, token request and session endpoint each surface must use out. `tokenRequest: null` means no token is minted and no Authorization header is sent. `pathReleaseHash` is the release hash in the Program Read request path.",
+  "installed": {
+    "default": {
+      "gateway": {
+        "chain": {
+          "endpoint": "https://solana.arete.run",
+          "authPolicy": "signed-session",
+          "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef",
+          "cluster": "mainnet-beta",
+          "region": "us-west-1",
+          "auth": {
+            "required": true,
+            "mode": "signed-session",
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "jwksUrl": "https://api.arete.run/ws/.well-known/jwks.json",
+            "tokenTransport": "bearer",
+            "audience": "arete:solana-gateway",
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ],
+            "acceptedKeyClasses": [
+              "secret",
+              "publishable"
+            ],
+            "transactionEntitlementRequired": false
+          }
+        },
+        "transactions": {
+          "endpoint": "https://solana.arete.run",
+          "authPolicy": "signed-session",
+          "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef",
+          "cluster": "mainnet-beta",
+          "region": "us-west-1",
+          "auth": {
+            "required": true,
+            "mode": "signed-session",
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "jwksUrl": "https://api.arete.run/ws/.well-known/jwks.json",
+            "tokenTransport": "bearer",
+            "audience": "arete:solana-gateway",
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ],
+            "acceptedKeyClasses": [
+              "secret",
+              "publishable"
+            ],
+            "transactionEntitlementRequired": true
+          }
+        }
+      },
+      "programs": {
+        "klend": {
+          "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        }
+      },
+      "programReads": {
+        "klend": {
+          "release": {
+            "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "programSpecHash": "arete:h1:program-spec:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "transport": {
+            "kind": "hosted-binding",
+            "binding": {
+              "endpoint": "https://programs.arete.run",
+              "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+              "auth": {
+                "required": true,
+                "mode": "signed-session",
+                "sessionEndpoint": "https://api.arete.run/ws/sessions",
+                "targetKind": "program-read-binding",
+                "targetId": "prb_0123456789abcdef0123456789abcdef",
+                "scopes": [
+                  "read"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "stack": {
+        "name": "klend",
+        "endpoints": {
+          "ws": "wss://klend.stack.arete.run"
+        },
+        "release": {
+          "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "liveAlias": "default"
+        }
+      },
+      "protocol": {
+        "package": "token-raise",
+        "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "deployment": {
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "access": "private",
+          "apiUrl": "https://api.arete.run/api",
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        }
+      }
+    },
+    "unpublished-protocol": {
+      "gateway": {
+        "chain": {
+          "endpoint": "https://solana.arete.run",
+          "authPolicy": "signed-session",
+          "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef",
+          "cluster": "mainnet-beta",
+          "region": "us-west-1",
+          "auth": {
+            "required": true,
+            "mode": "signed-session",
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "jwksUrl": "https://api.arete.run/ws/.well-known/jwks.json",
+            "tokenTransport": "bearer",
+            "audience": "arete:solana-gateway",
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ],
+            "acceptedKeyClasses": [
+              "secret",
+              "publishable"
+            ],
+            "transactionEntitlementRequired": false
+          }
+        },
+        "transactions": {
+          "endpoint": "https://solana.arete.run",
+          "authPolicy": "signed-session",
+          "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef",
+          "cluster": "mainnet-beta",
+          "region": "us-west-1",
+          "auth": {
+            "required": true,
+            "mode": "signed-session",
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "jwksUrl": "https://api.arete.run/ws/.well-known/jwks.json",
+            "tokenTransport": "bearer",
+            "audience": "arete:solana-gateway",
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ],
+            "acceptedKeyClasses": [
+              "secret",
+              "publishable"
+            ],
+            "transactionEntitlementRequired": true
+          }
+        }
+      },
+      "programs": {
+        "klend": {
+          "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        }
+      },
+      "programReads": {
+        "klend": {
+          "release": {
+            "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "programSpecHash": "arete:h1:program-spec:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "transport": {
+            "kind": "hosted-binding",
+            "binding": {
+              "endpoint": "https://programs.arete.run",
+              "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+              "auth": {
+                "required": true,
+                "mode": "signed-session",
+                "sessionEndpoint": "https://api.arete.run/ws/sessions",
+                "targetKind": "program-read-binding",
+                "targetId": "prb_0123456789abcdef0123456789abcdef",
+                "scopes": [
+                  "read"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "stack": {
+        "name": "klend",
+        "endpoints": {
+          "ws": "wss://klend.stack.arete.run"
+        },
+        "release": {
+          "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "liveAlias": "default"
+        }
+      },
+      "protocol": {
+        "package": "token-raise",
+        "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "deployment": null
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "production uses the generated descriptors unchanged",
+      "input": {
+        "mode": {
+          "mode": "production",
+          "devInputsRead": false
+        },
+        "installed": "default",
+        "resolveResponse": null
+      },
+      "expect": {
+        "resolveRequest": null,
+        "chain": {
+          "endpoint": "https://solana.arete.run",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ]
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "transactions": {
+          "endpoint": "https://solana.arete.run",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ]
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "https://programs.arete.run",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": {
+              "targetKind": "program-read-binding",
+              "targetId": "prb_0123456789abcdef0123456789abcdef",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "scopes": [
+                "read"
+              ]
+            },
+            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          }
+        },
+        "stack": {
+          "websocketUrl": "wss://klend.stack.arete.run",
+          "sessionRequired": true,
+          "sessionRequest": {
+            "websocket_url": "wss://klend.stack.arete.run",
+            "scopes": [
+              "read"
+            ],
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "liveAlias": "default"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "protocol": {
+          "apiUrl": "https://api.arete.run/api",
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+        }
+      }
+    },
+    {
+      "name": "edge: every surface goes to the edge without credentials",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "installed": "default",
+        "resolveResponse": null
+      },
+      "expect": {
+        "resolveRequest": null,
+        "chain": {
+          "endpoint": "http://127.0.0.1:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "transactions": {
+          "endpoint": "http://127.0.0.1:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "http://127.0.0.1:8911",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": null,
+            "sessionEndpoint": null
+          }
+        },
+        "stack": {
+          "websocketUrl": "ws://127.0.0.1:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sessionRequired": false,
+          "sessionRequest": null,
+          "sessionEndpoint": null
+        },
+        "protocol": {
+          "apiUrl": "http://127.0.0.1:8911/api",
+          "sessionEndpoint": null,
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+        }
+      }
+    },
+    {
+      "name": "edge on localhost",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://localhost:8911"
+        },
+        "installed": "default",
+        "resolveResponse": null
+      },
+      "expect": {
+        "resolveRequest": null,
+        "chain": {
+          "endpoint": "http://localhost:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "transactions": {
+          "endpoint": "http://localhost:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "http://localhost:8911",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": null,
+            "sessionEndpoint": null
+          }
+        },
+        "stack": {
+          "websocketUrl": "ws://localhost:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sessionRequired": false,
+          "sessionRequest": null,
+          "sessionEndpoint": null
+        },
+        "protocol": {
+          "apiUrl": "http://localhost:8911/api",
+          "sessionEndpoint": null,
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+        }
+      }
+    },
+    {
+      "name": "edge on IPv6 loopback over https",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "https://[::1]:8911"
+        },
+        "installed": "default",
+        "resolveResponse": null
+      },
+      "expect": {
+        "resolveRequest": null,
+        "chain": {
+          "endpoint": "https://[::1]:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "transactions": {
+          "endpoint": "https://[::1]:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "https://[::1]:8911",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": null,
+            "sessionEndpoint": null
+          }
+        },
+        "stack": {
+          "websocketUrl": "wss://[::1]:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sessionRequired": false,
+          "sessionRequest": null,
+          "sessionEndpoint": null
+        },
+        "protocol": {
+          "apiUrl": "https://[::1]:8911/api",
+          "sessionEndpoint": null,
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+        }
+      }
+    },
+    {
+      "name": "direct: same releases",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "resolveRequest": {
+          "url": "https://api.arete.run/api/dev/environments/denv_01jabcdefghjkmnpqrstvwxyz0/resolve",
+          "authorization": "secret-key",
+          "body": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "programReads": [
+              {
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "stacks": [
+              {
+                "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "liveAlias": "default"
+              }
+            ],
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+              }
+            ]
+          }
+        },
+        "chain": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "transactions": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "https://devenv.arete.run",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": {
+              "targetKind": "program-read-binding",
+              "targetId": "prb_0123456789abcdef0123456789abcdef",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "scopes": [
+                "read"
+              ],
+              "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+            },
+            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          }
+        },
+        "stack": {
+          "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "sessionRequired": true,
+          "sessionRequest": {
+            "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+            "scopes": [
+              "read"
+            ],
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "liveAlias": "default",
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "protocol": {
+          "apiUrl": "https://api.arete.run/api",
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+        }
+      }
+    },
+    {
+      "name": "direct: a program release override reads the served release, authenticates with the installed one",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "releaseDiffers": true
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "resolveRequest": {
+          "url": "https://api.arete.run/api/dev/environments/denv_01jabcdefghjkmnpqrstvwxyz0/resolve",
+          "authorization": "secret-key",
+          "body": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "programReads": [
+              {
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "stacks": [
+              {
+                "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "liveAlias": "default"
+              }
+            ],
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+              }
+            ]
+          }
+        },
+        "chain": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "transactions": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "https://devenv.arete.run",
+            "pathReleaseHash": "arete:h1:program-release:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "tokenRequest": {
+              "targetKind": "program-read-binding",
+              "targetId": "prb_0123456789abcdef0123456789abcdef",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "scopes": [
+                "read"
+              ],
+              "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+            },
+            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          }
+        },
+        "stack": {
+          "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "sessionRequired": true,
+          "sessionRequest": {
+            "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+            "scopes": [
+              "read"
+            ],
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "liveAlias": "default",
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "protocol": {
+          "apiUrl": "https://api.arete.run/api",
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+        }
+      }
+    },
+    {
+      "name": "direct: a project stack loaded under the dependency's alias",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0fedcba987654321-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+              "releaseDiffers": true,
+              "source": "override",
+              "loadedAtSlot": 412345678
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "resolveRequest": {
+          "url": "https://api.arete.run/api/dev/environments/denv_01jabcdefghjkmnpqrstvwxyz0/resolve",
+          "authorization": "secret-key",
+          "body": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "programReads": [
+              {
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "stacks": [
+              {
+                "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "liveAlias": "default"
+              }
+            ],
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+              }
+            ]
+          }
+        },
+        "chain": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "transactions": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "https://devenv.arete.run",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": {
+              "targetKind": "program-read-binding",
+              "targetId": "prb_0123456789abcdef0123456789abcdef",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "scopes": [
+                "read"
+              ],
+              "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+            },
+            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          }
+        },
+        "stack": {
+          "websocketUrl": "wss://s0fedcba987654321-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "sessionRequired": true,
+          "sessionRequest": {
+            "websocket_url": "wss://s0fedcba987654321-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+            "scopes": [
+              "read"
+            ],
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "liveAlias": "default",
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "protocol": {
+          "apiUrl": "https://api.arete.run/api",
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+        }
+      }
+    },
+    {
+      "name": "direct: a locally built protocol release",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "releaseDiffers": true
+            }
+          ]
+        }
+      },
+      "expect": {
+        "resolveRequest": {
+          "url": "https://api.arete.run/api/dev/environments/denv_01jabcdefghjkmnpqrstvwxyz0/resolve",
+          "authorization": "secret-key",
+          "body": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "programReads": [
+              {
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "stacks": [
+              {
+                "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "liveAlias": "default"
+              }
+            ],
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+              }
+            ]
+          }
+        },
+        "chain": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "transactions": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "https://devenv.arete.run",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": {
+              "targetKind": "program-read-binding",
+              "targetId": "prb_0123456789abcdef0123456789abcdef",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "scopes": [
+                "read"
+              ],
+              "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+            },
+            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          }
+        },
+        "stack": {
+          "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "sessionRequired": true,
+          "sessionRequest": {
+            "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+            "scopes": [
+              "read"
+            ],
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "liveAlias": "default",
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "protocol": {
+          "apiUrl": "https://api.arete.run/api",
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+        }
+      }
+    },
+    {
+      "name": "direct: a protocol before its first publish is resolved by package",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "unpublished-protocol",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "resolveRequest": {
+          "url": "https://api.arete.run/api/dev/environments/denv_01jabcdefghjkmnpqrstvwxyz0/resolve",
+          "authorization": "secret-key",
+          "body": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            },
+            "programReads": [
+              {
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            ],
+            "stacks": [
+              {
+                "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "liveAlias": "default"
+              }
+            ],
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+              }
+            ]
+          }
+        },
+        "chain": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "read"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "transactions": {
+          "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
+          "tokenRequest": {
+            "targetKind": "solana-gateway-binding",
+            "targetId": "sgb_0123456789abcdef0123456789abcdef",
+            "scopes": [
+              "transaction:inspect",
+              "transaction:send"
+            ],
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "https://devenv.arete.run",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": {
+              "targetKind": "program-read-binding",
+              "targetId": "prb_0123456789abcdef0123456789abcdef",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "scopes": [
+                "read"
+              ],
+              "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+            },
+            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          }
+        },
+        "stack": {
+          "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "sessionRequired": true,
+          "sessionRequest": {
+            "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+            "scopes": [
+              "read"
+            ],
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            "liveAlias": "default",
+            "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+        },
+        "protocol": {
+          "apiUrl": "https://api.arete.run/api",
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+        }
+      }
+    },
+    {
+      "name": "edge: a protocol before its first publish keeps no deployment id; the edge resolves it",
+      "input": {
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "installed": "unpublished-protocol",
+        "resolveResponse": null
+      },
+      "expect": {
+        "resolveRequest": null,
+        "chain": {
+          "endpoint": "http://127.0.0.1:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "transactions": {
+          "endpoint": "http://127.0.0.1:8911",
+          "tokenRequest": null,
+          "sessionEndpoint": null
+        },
+        "programReads": {
+          "klend": {
+            "endpoint": "http://127.0.0.1:8911",
+            "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tokenRequest": null,
+            "sessionEndpoint": null
+          }
+        },
+        "stack": {
+          "websocketUrl": "ws://127.0.0.1:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "sessionRequired": false,
+          "sessionRequest": null,
+          "sessionEndpoint": null
+        },
+        "protocol": {
+          "apiUrl": "http://127.0.0.1:8911/api",
+          "sessionEndpoint": null,
+          "deploymentId": null
+        }
+      }
+    }
+  ]
+}
