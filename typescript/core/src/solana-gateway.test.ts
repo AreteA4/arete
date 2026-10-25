@@ -24,7 +24,7 @@ function binding(
     auth: {
       required: true,
       mode: 'signed_session',
-      sessionEndpoint: 'https://api.example.test/ws/sessions',
+      sessionEndpoint: 'https://api.arete.run/ws/sessions',
       jwksUrl: 'https://api.example.test/.well-known/jwks.json',
       tokenTransport: 'bearer',
       audience: 'arete:solana-gateway',
@@ -264,7 +264,7 @@ describe('hosted Solana gateway transports', () => {
 });
 
 describe('hosted Solana gateway transports with an API credential (tokenKind: api)', () => {
-  const SESSION_ENDPOINT = 'https://api.example.test/ws/sessions';
+  const SESSION_ENDPOINT = 'https://api.arete.run/ws/sessions';
 
   function gatewayFetch(options: { rejectFirstMint?: boolean } = {}) {
     const mints: Array<{ authorization: string | null; body: Record<string, unknown> }> = [];

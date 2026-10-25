@@ -83,8 +83,7 @@ a session endpoint refuses the credential with a 401, it drops it, fetches the
 credential again once and retries; other requests wait for the new one, and a
 late 401 for a credential already replaced does not fetch again. With no
 `token`, `getToken` or `tokenEndpoint` the credential falls back to
-`ARETE_API_KEY`, then the `a4` login, whose key goes only to the Arete API it
-was stored for. `getToken` is called as `getToken({ scopes: [],
+`ARETE_API_KEY`, then the `a4` login. `getToken` is called as `getToken({ scopes: [],
 forceRefresh })`; `tokenEndpoint` is POSTed `{"scopes": [], "forceRefresh":
 false}` and answers with the credential as a string or `{ token, expiresAt }`.
 
@@ -97,12 +96,34 @@ new token (the last was refused, expired or did not cover the scopes). A
 provider with its own cache must bypass that cache when it is set. With
 `tokenKind: 'api'`, `tokenEndpoint` bodies carry it too.
 
+### Where account credentials go
+
+An account credential (a secret or agent key from `auth.secretKey`,
+`ARETE_API_KEY` or the `a4` login, or any `tokenKind: 'api'` token) is sent
+only to trusted Arete API origins, however it was supplied:
+`https://api.arete.run`, the `ARETE_API_URL` origin (outside browsers), and the
+origin of an `apiUrl` you set in code. An explicit `apiUrl` covers only
+credentials you pass in `auth`. An `ARETE_API_KEY` key goes to
+`https://api.arete.run` and `ARETE_API_URL`, and an `a4` login key goes only to
+`https://api.arete.run`.
+
+A session endpoint named by a stack, binding or generated descriptor, or by a
+`sessionEndpoint` override, is never trusted for being named, even with
+`apiUrl` set. It must be on a trusted origin itself. Otherwise nothing is
+sent, and the call rejects with an `AreteError` whose code is
+`UNTRUSTED_CREDENTIAL_DESTINATION`; its `details` carry `destination`,
+`credential` and `trustedOrigins`. To use an API you run, set `apiUrl` (or
+`ARETE_API_URL`) to its origin. Publishable keys and Arete session tokens are
+not account credentials and are unaffected.
+
 ### Arete API client
 
 `session.platform` and `client.platform` are an authenticated Arete API client
 when `auth` carries an API credential (a secret key, or `tokenKind: 'api'`),
-and `undefined` otherwise (also when the only credential is an `a4` login key
-and `apiUrl` names another API). `createSession` and `Arete.connect` options take
+and `undefined` otherwise. If that credential may not go to `apiUrl` (an
+`ARETE_API_KEY` or `a4` login key with `apiUrl` on another origin), the client
+still exists and each request rejects with `UNTRUSTED_CREDENTIAL_DESTINATION`;
+`createPlatformHttpClient` throws it instead. `createSession` and `Arete.connect` options take
 `apiUrl` (default `https://api.arete.run`) and `platform` (a client to use
 instead). To call the API without a session:
 

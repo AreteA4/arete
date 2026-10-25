@@ -24,24 +24,6 @@
 /** API URL whose key the SDK may use: its default token endpoint's origin. */
 export const DEFAULT_A4_API_URL = 'https://api.arete.run';
 
-/**
- * True when `url` is on the API the `a4` login key was stored for. A key
- * found in the login is only ever sent there, never to an endpoint a stack
- * names on another host.
- */
-export function isA4LoginKeyDestination(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase().replace(/\.+$/, '');
-    return parsed.protocol === 'https:'
-      && host === new URL(DEFAULT_A4_API_URL).hostname
-      && (parsed.port === '' || parsed.port === '443')
-      && parsed.username === ''
-      && parsed.password === '';
-  } catch {
-    return false;
-  }
-}
 const PROFILE_ENV = 'ARETE_PROFILE';
 const CREDENTIALS_PATH_ENV = 'ARETE_CREDENTIALS_PATH';
 const AGENT_PROFILE = 'agent';

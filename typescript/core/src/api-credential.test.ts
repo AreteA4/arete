@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createApiBearerSource, shareApiCredential } from './api-credential';
+import { AreteError } from './types';
 import { resolveAuthConfig } from './auth-keys';
 import { createPlatformHttpClient } from './platform-http';
 import { createHostedSolanaGatewayTransports } from './solana-gateway';
@@ -79,7 +80,7 @@ function gatewayNetwork() {
   return { fetch: fetchMock as typeof fetch, calls };
 }
 
-async function gatewayCallsFor(sessionEndpoint: string, auth: Parameters<typeof createHostedSolanaGatewayTransports>[1]['auth']) {
+function gatewayFor(sessionEndpoint: string, auth: Parameters<typeof createHostedSolanaGatewayTransports>[1]['auth']) {
   const { fetch, calls } = gatewayNetwork();
   const transports = createHostedSolanaGatewayTransports(
     {
@@ -88,45 +89,112 @@ async function gatewayCallsFor(sessionEndpoint: string, auth: Parameters<typeof 
     },
     { auth, fetch }
   );
+  return { transports, calls };
+}
+
+async function gatewayCallsFor(sessionEndpoint: string, auth: Parameters<typeof createHostedSolanaGatewayTransports>[1]['auth']) {
+  const { transports, calls } = gatewayFor(sessionEndpoint, auth);
   await transports.chain.exists('account');
   return calls;
 }
 
-describe('API credential destinations', () => {
-  it('sends a saved a4 login only to the Arete API, never to a foreign session endpoint', async () => {
-    useSavedLogin();
-    const foreign = await gatewayCallsFor(FOREIGN_SESSIONS, { tokenKind: 'api' });
-    expect(foreign.map((call) => call.authorization)).toEqual([null, 'Bearer gateway-session']);
+const UNTRUSTED = { code: 'UNTRUSTED_CREDENTIAL_DESTINATION' };
 
-    const arete = await gatewayCallsFor(ARETE_SESSIONS, { tokenKind: 'api' });
-    expect(arete.map((call) => call.authorization)).toEqual([`Bearer ${SAVED}`, 'Bearer gateway-session']);
+type GatewayAuth = Parameters<typeof createHostedSolanaGatewayTransports>[1]['auth'];
+
+/** Every way to supply an account credential, set up as the app would. */
+const ACCOUNT_CREDENTIALS: [string, () => GatewayAuth, string][] = [
+  ['an explicit secret key', () => ({ secretKey: 'a4_sk_explicit' }), 'a4_sk_explicit'],
+  ['an explicit key with tokenKind api', () => ({ tokenKind: 'api', secretKey: 'a4_ak_explicit' }), 'a4_ak_explicit'],
+  ['an api token', () => ({ tokenKind: 'api', token: 'dashboard-login' }), 'dashboard-login'],
+  ['an api getToken', () => ({ tokenKind: 'api', getToken: async () => 'provided-login' }), 'provided-login'],
+  ['ARETE_API_KEY', () => {
+    vi.stubEnv('ARETE_API_KEY', ENV_KEY);
+    return undefined;
+  }, ENV_KEY],
+  ['a saved a4 login', () => {
+    useSavedLogin();
+    return undefined;
+  }, SAVED],
+];
+
+describe('account credential destinations', () => {
+  it.each(ACCOUNT_CREDENTIALS)('refuses %s for a foreign session endpoint, sending nothing', async (_name, setup) => {
+    const auth = setup();
+    const { transports, calls } = gatewayFor(FOREIGN_SESSIONS, auth);
+    await expect(transports.chain.exists('account')).rejects.toMatchObject(UNTRUSTED);
+    expect(calls).toEqual([]);
   });
 
-  it('keeps the existing rule for explicit and ARETE_API_KEY keys: they go where configured', async () => {
-    const explicit = await gatewayCallsFor(FOREIGN_SESSIONS, { tokenKind: 'api', secretKey: 'a4_sk_explicit' });
+  it.each(ACCOUNT_CREDENTIALS)('sends %s to the Arete API session endpoint', async (_name, setup, bearer) => {
+    const calls = await gatewayCallsFor(ARETE_SESSIONS, setup());
+    expect(calls.map((call) => call.authorization)).toEqual([`Bearer ${bearer}`, 'Bearer gateway-session']);
+  });
+
+  it('names the destination, the credential and how to allow it', async () => {
+    const { transports, calls } = gatewayFor(FOREIGN_SESSIONS, { secretKey: 'a4_sk_explicit' });
+    const error = await transports.chain.exists('account').catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AreteError);
+    expect(error).toMatchObject({
+      ...UNTRUSTED,
+      details: {
+        destination: 'https://sessions.example.test',
+        credential: 'auth.secretKey',
+        trustedOrigins: ['https://api.arete.run'],
+      },
+    });
+    const message = (error as AreteError).message;
+    expect(message).toContain('https://sessions.example.test');
+    expect(message).toContain('set apiUrl');
+    expect(message).not.toContain('a4_sk_explicit');
+  });
+
+  it('trusts ARETE_API_URL for explicit and ARETE_API_KEY keys, never for the a4 login', async () => {
+    vi.stubEnv('ARETE_API_URL', 'https://sessions.example.test');
+    const explicit = await gatewayCallsFor(FOREIGN_SESSIONS, { secretKey: 'a4_sk_explicit' });
     expect(explicit[0]!.authorization).toBe('Bearer a4_sk_explicit');
 
     vi.stubEnv('ARETE_API_KEY', ENV_KEY);
-    const environment = await gatewayCallsFor(FOREIGN_SESSIONS, { tokenKind: 'api' });
+    const environment = await gatewayCallsFor(FOREIGN_SESSIONS, undefined);
     expect(environment[0]!.authorization).toBe(`Bearer ${ENV_KEY}`);
+
+    vi.stubEnv('ARETE_API_KEY', '');
+    useSavedLogin();
+    await expect(gatewayCallsFor(FOREIGN_SESSIONS, { tokenKind: 'api' })).rejects.toMatchObject({
+      ...UNTRUSTED,
+      details: { credential: 'a4 login' },
+    });
   });
 
-  it('hands out a saved login key per destination, even from a shared source', async () => {
-    useSavedLogin();
-    const fetchMock = vi.fn() as unknown as typeof fetch;
-    const auth = shareApiCredential(resolveAuthConfig({ tokenKind: 'api' }), fetchMock);
-    const source = createApiBearerSource(auth, fetchMock);
-    await expect(source.get(ARETE_SESSIONS)).resolves.toBe(SAVED);
-    await expect(source.get('https://api.arete.run.example.test/ws/sessions')).resolves.toBeUndefined();
-    await expect(source.get(FOREIGN_SESSIONS)).resolves.toBeUndefined();
+  it('trusts an explicit apiUrl for an explicit credential only', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) as unknown as typeof fetch;
+    const explicit = createPlatformHttpClient({ apiUrl: 'http://localhost:3000', auth: { secretKey: 'a4_sk_local' }, fetch: fetchMock });
+    await expect(explicit.request({ path: '/account' })).resolves.toEqual({ status: 200, body: { ok: true } });
 
-    // The platform client built from the session's shared auth refuses a
-    // foreign API rather than sending the saved key there.
-    expect(() => createPlatformHttpClient({ apiUrl: 'https://api.example.test', auth, fetch: fetchMock }))
-      .toThrow('No Arete credential');
-    const arete = createPlatformHttpClient({ auth, fetch: fetchMock });
-    expect(arete.apiUrl).toBe('https://api.arete.run/api');
-    expect(fetchMock).not.toHaveBeenCalled();
+    vi.stubEnv('ARETE_API_KEY', ENV_KEY);
+    expect(() => createPlatformHttpClient({ apiUrl: 'http://localhost:3000', fetch: fetchMock }))
+      .toThrow(expect.objectContaining({ ...UNTRUSTED, details: expect.objectContaining({ credential: 'ARETE_API_KEY' }) }));
+    vi.stubEnv('ARETE_API_KEY', '');
+    useSavedLogin();
+    const shared = shareApiCredential(resolveAuthConfig({ tokenKind: 'api' }), fetchMock);
+    expect(() => createPlatformHttpClient({ apiUrl: 'https://api.example.test', auth: shared, fetch: fetchMock }))
+      .toThrow(expect.objectContaining(UNTRUSTED));
+    expect(createPlatformHttpClient({ auth: shared, fetch: fetchMock }).apiUrl).toBe('https://api.arete.run/api');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves publishable keys and session tokens alone', async () => {
+    const publishable = await gatewayCallsFor(FOREIGN_SESSIONS, { publishableKey: 'a4_pk_browser' });
+    expect(publishable.map((call) => call.authorization)).toEqual(['Bearer a4_pk_browser', 'Bearer gateway-session']);
+    // A secret-class key put in publishableKey is still an account credential.
+    await expect(gatewayCallsFor(FOREIGN_SESSIONS, { publishableKey: 'a4_sk_misplaced' })).rejects.toMatchObject({
+      ...UNTRUSTED,
+      details: { credential: 'auth.publishableKey' },
+    });
+
+    const { transports, calls } = gatewayFor(FOREIGN_SESSIONS, { getToken: async () => ({ token: 'minted-session', scopes: ['read'] }) });
+    await expect(transports.chain.exists('account')).resolves.toBe(true);
+    expect(calls.map((call) => call.authorization)).toEqual(['Bearer minted-session']);
   });
 });
 
@@ -153,10 +221,10 @@ describe('API credential refresh', () => {
     });
     const source = createApiBearerSource({ tokenKind: 'api', getToken }, vi.fn() as unknown as typeof fetch);
 
-    await expect(source.get(ARETE_SESSIONS)).resolves.toBe('login-1');
-    const refreshing = source.get(ARETE_SESSIONS, 'login-1');
+    await expect(source.get()).resolves.toBe('login-1');
+    const refreshing = source.get('login-1');
     // Another transport asks while the refresh is running.
-    const waiting = source.get(ARETE_SESSIONS);
+    const waiting = source.get();
     refresh.resolve('login-2');
     await expect(refreshing).resolves.toBe('login-2');
     await expect(waiting).resolves.toBe('login-2');
@@ -169,21 +237,21 @@ describe('API credential refresh', () => {
     const getToken = vi.fn(async () => `login-${++issued}`);
     const source = createApiBearerSource({ tokenKind: 'api', getToken }, vi.fn() as unknown as typeof fetch);
 
-    await source.get(ARETE_SESSIONS);
+    await source.get();
     // Two refusals of login-1 at once share one refresh.
     await expect(Promise.all([
-      source.get(ARETE_SESSIONS, 'login-1'),
-      source.get(ARETE_SESSIONS, 'login-1'),
+      source.get('login-1'),
+      source.get('login-1'),
     ])).resolves.toEqual(['login-2', 'login-2']);
     // A refusal of login-1 arriving after the refresh finished.
-    await expect(source.get(ARETE_SESSIONS, 'login-1')).resolves.toBe('login-2');
+    await expect(source.get('login-1')).resolves.toBe('login-2');
     expect(getToken).toHaveBeenCalledTimes(2);
     expect(getToken.mock.calls.map(([request]) => request)).toEqual([
       { scopes: [], forceRefresh: false },
       { scopes: [], forceRefresh: true },
     ]);
     // Refusing the current credential refreshes it.
-    await expect(source.get(ARETE_SESSIONS, 'login-2')).resolves.toBe('login-3');
+    await expect(source.get('login-2')).resolves.toBe('login-3');
   });
 
   it('refreshes once when concurrent platform calls are refused with the same credential', async () => {

@@ -16,9 +16,15 @@
  * host global.
  */
 
-import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
+import { resolveAuthConfig } from './auth-keys';
 import { createApiBearerSource, isApiCredentialAuth, sharedApiCredential } from './api-credential';
 import { DEFAULT_A4_API_URL } from './a4-profile';
+import {
+  accountCredentialSource,
+  assertCredentialDestination,
+  UNTRUSTED_CREDENTIAL_DESTINATION,
+  withTrustedApiUrl,
+} from './credential-destination';
 import { AreteError, parseApiProblem, parseErrorCode, type AuthConfig } from './types';
 
 export type PlatformHttpMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -50,12 +56,17 @@ export interface PlatformHttpClient {
 }
 
 export interface PlatformHttpClientOptions {
-  /** API origin, with or without `/api`. Defaults to `https://api.arete.run`. */
+  /**
+   * API origin, with or without `/api`. Defaults to `https://api.arete.run`.
+   * Setting it trusts that origin for a credential passed in `auth`.
+   */
   readonly apiUrl?: string;
   /**
    * `secretKey`, `token`, `getToken` or `tokenEndpoint`. Outside browsers an
-   * unset auth falls back to `ARETE_API_KEY`, then the `a4` login (sent only
-   * to the Arete API it was stored for). Publishable keys are refused.
+   * unset auth falls back to `ARETE_API_KEY`, then the `a4` login. Account
+   * credentials go only to trusted Arete API origins: an `apiUrl` they may
+   * not reach throws `UNTRUSTED_CREDENTIAL_DESTINATION`. Publishable keys are
+   * refused.
    */
   readonly auth?: AuthConfig;
   readonly fetch?: typeof fetch;
@@ -89,34 +100,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * True when `auth` holds a credential that may be sent to the Arete API at
- * `base`: a token, provider or token endpoint, or a key. A key taken from the
- * `a4` login only counts for the Arete API it was stored for.
- */
-function platformCredentialAvailable(auth: AuthConfig | undefined, base: string): boolean {
-  if (auth?.token !== undefined || auth?.getToken || auth?.tokenEndpoint) return true;
-  return auth?.secretKey !== undefined && tokenEndpointApiKey(auth, base) !== undefined;
-}
-
-/**
  * The platform client a client or session builds for itself: one when `auth`
- * carries an API credential (a secret key, or `tokenKind: 'api'`) that may
- * reach the Arete API at `apiUrl`, otherwise `undefined`.
+ * carries an API credential (a secret key, or `tokenKind: 'api'`), otherwise
+ * `undefined`. When that credential may not be sent to `apiUrl` (an `a4`
+ * login or `ARETE_API_KEY` key with an `apiUrl` on another origin), the
+ * client still exists and every request rejects with
+ * `UNTRUSTED_CREDENTIAL_DESTINATION` before anything is sent, so the error
+ * names the cause where the call is made.
  */
 export function defaultPlatformHttpClient(
   options: PlatformHttpClientOptions
 ): PlatformHttpClient | undefined {
   const { auth } = options;
   if (auth?.secretKey === undefined && !isApiCredentialAuth(auth)) return undefined;
-  if (!platformCredentialAvailable(auth, apiBase(options.apiUrl))) return undefined;
-  return createPlatformHttpClient(options);
+  if (accountCredentialSource(auth, true) === undefined) return undefined;
+  try {
+    return createPlatformHttpClient(options);
+  } catch (error) {
+    if (!(error instanceof AreteError) || error.code !== UNTRUSTED_CREDENTIAL_DESTINATION) throw error;
+    const apiUrl = apiBase(options.apiUrl);
+    return {
+      apiUrl,
+      request: async () => {
+        throw error;
+      },
+    };
+  }
 }
 
 /** Create a {@link PlatformHttpClient}. */
 export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}): PlatformHttpClient {
   const fetchImpl = resolveFetch(options.fetch);
   const base = apiBase(options.apiUrl);
-  const auth = resolveAuthConfig(options.auth);
+  const auth = withTrustedApiUrl(resolveAuthConfig(options.auth), options.apiUrl);
   if (auth?.publishableKey !== undefined && auth.secretKey === undefined
     && auth.token === undefined && !auth.getToken && !auth.tokenEndpoint) {
     throw new AreteError(
@@ -131,13 +147,16 @@ export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}
       'INVALID_CONFIG'
     );
   }
-  const source = sharedApiCredential(auth) ?? createApiBearerSource(auth, fetchImpl);
-  if (!platformCredentialAvailable(auth, base)) {
+  const credential = accountCredentialSource(auth, true);
+  if (credential === undefined) {
     throw new AreteError(
       'No Arete credential: pass auth.secretKey, auth.token, auth.getToken or auth.tokenEndpoint',
       'AUTH_REQUIRED'
     );
   }
+  // Account credentials go only to trusted Arete API origins.
+  assertCredentialDestination(auth, base, credential);
+  const source = sharedApiCredential(auth) ?? createApiBearerSource(auth, fetchImpl);
   const refreshable = source.refreshable;
 
   return {
@@ -147,7 +166,7 @@ export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}
       const body = request.body === undefined ? undefined : JSON.stringify(request.body);
       let sent: string | undefined;
       const attempt = async (refused?: string) => {
-        const token = await source.get(base, refused);
+        const token = await source.get(refused);
         sent = token;
         const headers = new Headers({ Accept: 'application/json' });
         if (token) headers.set('Authorization', `Bearer ${token}`);

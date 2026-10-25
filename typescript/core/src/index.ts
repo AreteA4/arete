@@ -182,6 +182,11 @@ export type {
 
 export { ARETE_API_KEY_ENV, classifyApiKey } from './auth-keys';
 export type { ApiKeyClass } from './auth-keys';
+export { UNTRUSTED_CREDENTIAL_DESTINATION } from './credential-destination';
+export type {
+  AccountCredentialSource,
+  UntrustedCredentialDestinationDetails,
+} from './credential-destination';
 
 export {
   ConnectionManager,

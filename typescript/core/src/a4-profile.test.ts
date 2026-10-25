@@ -2,13 +2,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   type A4ProfileHost,
-  isA4LoginKeyDestination,
   lookupA4Credentials,
   parseSimpleToml,
   readA4ProfileKey,
   systemProfileHost,
 } from './a4-profile';
 import { resetAuthKeyWarningsForTesting, resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
+import { credentialOrigin } from './credential-destination';
 
 const AGENT = 'a4_ak_agentkey';
 const HUMAN = 'a4_sk_humankey';
@@ -196,34 +196,39 @@ describe('resolveAuthConfig credential chain', () => {
     expect(getBuiltinModule).not.toHaveBeenCalled();
   });
 
-  it('sends an a4 login key only to the Arete API', () => {
+  it('sends an a4 login key only to the Arete API, refusing anywhere else', () => {
     const auth = resolveAuthConfig(undefined, profileKey);
     expect(tokenEndpointApiKey(auth, 'https://api.arete.run/ws/sessions')).toBe(AGENT);
     expect(tokenEndpointApiKey(auth, 'https://API.arete.run.:443/x')).toBe(AGENT);
-    // A stack-provided session endpoint on another host gets no key, even
+    // A stack-provided session endpoint on another host is refused, even
     // after the config is copied, as binding paths do.
     const copied = { ...auth, tokenEndpoint: 'https://evil.example/ws/sessions' };
-    expect(tokenEndpointApiKey(copied, 'https://evil.example/ws/sessions')).toBeUndefined();
-    // Explicit and environment keys are unaffected.
-    expect(tokenEndpointApiKey({ secretKey: HUMAN }, 'https://evil.example/s')).toBe(HUMAN);
+    expect(() => tokenEndpointApiKey(copied, 'https://evil.example/ws/sessions'))
+      .toThrow(expect.objectContaining({ code: 'UNTRUSTED_CREDENTIAL_DESTINATION' }));
+    // ARETE_API_URL does not widen the login key: it is stored for the default API.
+    vi.stubEnv('ARETE_API_URL', 'https://evil.example');
+    expect(() => tokenEndpointApiKey(copied, 'https://evil.example/ws/sessions')).toThrow(/a4 login/);
   });
 
-  it('restricts only the config whose key came from the a4 login', () => {
+  it('tells the found key from the same key passed explicitly', () => {
     const custom = 'https://auth.example.com/token';
     const discovered = resolveAuthConfig(undefined, profileKey);
-    // The same key, passed explicitly by another client in the same process.
-    const explicit = resolveAuthConfig({ secretKey: AGENT, tokenEndpoint: custom }, profileKey);
-    expect(tokenEndpointApiKey(explicit, custom)).toBe(AGENT);
-    expect(tokenEndpointApiKey(discovered, custom)).toBeUndefined();
-    // A copy of the discovered config given its own key is no longer restricted.
-    expect(tokenEndpointApiKey({ ...discovered, secretKey: HUMAN }, custom)).toBe(HUMAN);
-    // ARETE_API_KEY keys are not restricted either.
-    vi.stubEnv('ARETE_API_KEY', AGENT);
-    expect(tokenEndpointApiKey(resolveAuthConfig(undefined, profileKey), custom)).toBe(AGENT);
+    // A copy of the discovered config given its own key is explicit; an
+    // explicit key still needs a trusted origin.
+    const explicit = { ...discovered, secretKey: HUMAN };
+    expect(() => tokenEndpointApiKey(explicit, custom)).toThrow(/auth\.secretKey/);
+    vi.stubEnv('ARETE_API_URL', 'https://auth.example.com');
+    expect(tokenEndpointApiKey(explicit, custom)).toBe(HUMAN);
+    expect(() => tokenEndpointApiKey(discovered, custom)).toThrow(/a4 login/);
   });
 
-  it('recognises only the Arete API as the login key destination', () => {
-    expect(isA4LoginKeyDestination('https://api.arete.run/ws/sessions')).toBe(true);
+  it('matches destinations by origin', () => {
+    expect(credentialOrigin('https://API.arete.run.:443/ws/sessions')).toBe('https://api.arete.run');
+    expect(credentialOrigin('http://localhost:3000/api')).toBe('http://localhost:3000');
+    for (const url of ['https://user@api.arete.run/', 'ftp://api.arete.run/', 'not a url']) {
+      expect(credentialOrigin(url), url).toBeUndefined();
+    }
+    const auth = resolveAuthConfig(undefined, profileKey);
     for (const url of [
       'http://api.arete.run/ws/sessions',
       'https://api.arete.run:8443/ws/sessions',
@@ -232,7 +237,9 @@ describe('resolveAuthConfig credential chain', () => {
       'https://other.arete.run/',
       'not a url',
     ]) {
-      expect(isA4LoginKeyDestination(url), url).toBe(false);
+      expect(() => tokenEndpointApiKey(auth, url), url).toThrow(expect.objectContaining({
+        code: 'UNTRUSTED_CREDENTIAL_DESTINATION',
+      }));
     }
   });
 

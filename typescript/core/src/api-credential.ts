@@ -7,10 +7,11 @@
  * protocol endpoint. The SDK sends that credential only to Arete API routes
  * and to the session endpoints that mint the binding-scoped sessions it
  * needs; it never sends it to a stack, gateway or program read endpoint.
+ * Like every account credential, it goes only to trusted Arete API origins:
+ * callers check the destination with `assertCredentialDestination` (see
+ * `credential-destination.ts`) before asking this source for it.
  */
 
-import { isA4LoginKeyDestination } from './a4-profile';
-import { secretKeyFromA4Login } from './auth-keys';
 import { AreteError, parseApiProblem, parseErrorCode, type AuthConfig, type AuthTokenResult } from './types';
 
 /** `auth.tokenKind` when it is `'api'`. */
@@ -42,9 +43,9 @@ export interface ApiBearerSource {
   /** Whether a fresh credential can be fetched (after a 401). */
   readonly refreshable: boolean;
   /**
-   * The bearer to send to `destination`, or `undefined` when the auth
-   * carries no API credential for it. A key taken from the `a4` login is
-   * only handed out for the Arete API it was stored for.
+   * The bearer, or `undefined` when the auth carries no API credential.
+   * Callers check where it is going first (`assertCredentialDestination`),
+   * so an untrusted destination never even fetches it.
    *
    * After a 401, pass the credential that request actually sent as
    * `refused`: if it is still the current one it is dropped and a fresh one
@@ -52,7 +53,7 @@ export interface ApiBearerSource {
    * already replaced, the replacement is returned without another fetch.
    * While a fetch is running every caller waits for it.
    */
-  get(destination: string, refused?: string): Promise<string | undefined>;
+  get(refused?: string): Promise<string | undefined>;
 }
 
 const REFRESH_BUFFER_MS = 30_000;
@@ -144,7 +145,7 @@ export function createApiBearerSource(
     };
     return {
       refreshable: true,
-      async get(_destination, refused) {
+      async get(refused) {
         if (refused !== undefined && cached?.token === refused) {
           // Drop it now, so no other request sends it while the fresh one is
           // fetched.
@@ -169,14 +170,7 @@ export function createApiBearerSource(
   }
   if (auth?.secretKey !== undefined) {
     const key = auth.secretKey;
-    // A key from the a4 login only goes to the Arete API it was stored for,
-    // never to a session endpoint a stack or binding names on another host.
-    const fromLogin = secretKeyFromA4Login(auth);
-    return {
-      refreshable: false,
-      get: async (destination) =>
-        fromLogin && !isA4LoginKeyDestination(destination) ? undefined : key,
-    };
+    return { refreshable: false, get: async () => key };
   }
   return { refreshable: false, get: async () => undefined };
 }

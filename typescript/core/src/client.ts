@@ -1,5 +1,6 @@
 import { shareApiCredential } from './api-credential';
 import { resolveAuthConfig } from './auth-keys';
+import { withTrustedApiUrl } from './credential-destination';
 import { defaultPlatformHttpClient, type PlatformHttpClient } from './platform-http';
 import { managedAddress, managedContext, managedDiscovery, managedPage, type Contextual, type ManagedReadOptions, type NativePositionQuery, type NativePositionPage } from './managed-solana';
 import type {
@@ -665,7 +666,11 @@ export class Arete<TStack extends StackDefinition> {
     this.fetchImpl = options.fetch ?? this.resolveFetchImpl();
     // One credential source for every connection, transport and API client
     // this client builds (sessions hand theirs in).
-    this.auth = shareApiCredential(resolveAuthConfig(options.auth), this.fetchImpl);
+    // An explicit apiUrl is trusted for a credential the app passed in `auth`.
+    this.auth = shareApiCredential(
+      withTrustedApiUrl(resolveAuthConfig(options.auth), options.apiUrl),
+      this.fetchImpl
+    );
     this.apiUrl = options.apiUrl;
     if (options.platform) {
       this.platformClient = options.platform;

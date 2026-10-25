@@ -257,6 +257,37 @@ Choose the credential by where the code runs and who it acts for:
 the `a4` login fallback. This section covers the API credential and the Arete
 API client built from it.
 
+### Where account credentials go
+
+An account credential is your own Arete credential: a secret or agent key
+(`secretKey`, `ARETE_API_KEY` or the `a4` login) or any `token`, `getToken` or
+`tokenEndpoint` with `tokenKind: 'api'`. The SDK sends it only to trusted Arete
+API origins, however it was supplied:
+
+- `https://api.arete.run`, always.
+- The origin of `ARETE_API_URL`, outside browsers.
+- The origin of an `apiUrl` you set in code (`createSession`, `Arete.connect`,
+  `createPlatformHttpClient` or a protocol client), for a local, development or
+  self-hosted API. This only covers credentials you pass in `auth`.
+
+Credentials the SDK finds for you are narrower. An `ARETE_API_KEY` key goes to
+`https://api.arete.run` and the `ARETE_API_URL` origin. A key from the `a4`
+login goes only to `https://api.arete.run`, the API it was stored for.
+
+A session endpoint named by a stack, binding or generated descriptor is not
+trusted just because it is named, and neither is a `sessionEndpoint` override.
+Setting `apiUrl` doesn't change that: the session endpoint must itself be on a
+trusted origin. When it isn't, the SDK sends nothing. The call rejects with an
+`AreteError` whose `code` is `UNTRUSTED_CREDENTIAL_DESTINATION` and whose
+`details` name the `destination` origin, the `credential` and the
+`trustedOrigins`. To allow an API you run, set `apiUrl` to its origin (or
+`ARETE_API_URL`), and pass the key in `auth.secretKey` if it came from the `a4`
+login. A WebSocket that hits this error stops reconnecting.
+
+Publishable keys and Arete session tokens (`tokenKind: 'session'`, the default)
+are not account credentials. They go to the endpoints they were made for, as
+before.
+
 ### Sign in with an Arete API credential
 
 By default (`tokenKind: 'session'`), `token`, `getToken` and `tokenEndpoint`
@@ -286,10 +317,10 @@ A `getToken` provider or a static `token` works the same way. With
 
 - **Where the credential goes.** The SDK sends it only to Arete API routes and
   to session endpoints. A stack, gateway or Program Read endpoint never
-  receives it. Without a `token`, `getToken` or `tokenEndpoint`, the
-  credential falls back to `ARETE_API_KEY`, then to the `a4` login; a key
-  from the `a4` login is sent only to the Arete API it was stored for, so a
-  session endpoint on another host gets no credential.
+  receives it, and a session endpoint is used only on a trusted origin (see
+  [Where account credentials go](#where-account-credentials-go)). Without a
+  `token`, `getToken` or `tokenEndpoint`, the credential falls back to
+  `ARETE_API_KEY`, then to the `a4` login.
 - **Binding-scoped sessions.** For each hosted transport (the Solana gateway's
   chain reads and transactions, Program Read, protocol clients and hosted
   stack WebSockets) the SDK mints a session at that binding's session
@@ -357,12 +388,16 @@ too, so a token endpoint that caches can do the same.
 A client or session whose `auth` carries an API credential (a `secretKey`, or
 `tokenKind: 'api'`) builds an authenticated Arete API client and exposes it as
 `session.platform` or `client.platform`. With a publishable key, Arete session
-tokens or no auth, `platform` is `undefined`. It is also `undefined` when the
-only credential is an `a4` login key and `apiUrl` names another API. `createSession` options and
+tokens or no auth, `platform` is `undefined`. When the credential may not go
+to `apiUrl` (an `ARETE_API_KEY` or `a4` login key with an `apiUrl` on another
+origin), `platform` still exists. Each request then rejects with
+`UNTRUSTED_CREDENTIAL_DESTINATION` before anything is sent, so the error shows
+up where you make the call. `createSession` options and
 `Arete.connect` options take two related settings:
 
 - `apiUrl`: the Arete API origin, with or without `/api`. Defaults to
-  `https://api.arete.run`.
+  `https://api.arete.run`. Setting it trusts that origin for the credential
+  in `auth`.
 - `platform`: an Arete API client to use instead of the one built from `auth`.
 
 To make Arete API calls without a session, create a client directly:
@@ -391,15 +426,15 @@ try {
 - `apiUrl`: as above.
 - `auth`: `secretKey`, `token`, `getToken` or `tokenEndpoint`, each read as an
   API credential. Outside browsers an unset `auth` falls back to
-  `ARETE_API_KEY`, then to the `a4` login, which is sent only to the Arete API
-  it was stored for.
+  `ARETE_API_KEY`, then to the `a4` login.
 - `fetch`: a custom fetch implementation.
 
 It refuses a publishable key with `INVALID_CONFIG`, because a publishable key
 identifies a visitor to an app, not an account. It also refuses
 `tokenKind: 'session'` with a token strategy, since Arete API routes don't take
 stack or gateway sessions, and throws `AUTH_REQUIRED` when there is no
-credential at all. It never mints a session.
+credential at all. When the credential may not go to `apiUrl`, it throws
+`UNTRUSTED_CREDENTIAL_DESTINATION`. It never mints a session.
 
 `platform.request({ path, method, body, signal })` sends `path` under
 `platform.apiUrl` (which ends in `/api`), with `body` serialized as JSON, and

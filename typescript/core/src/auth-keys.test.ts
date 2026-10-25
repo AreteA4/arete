@@ -7,6 +7,7 @@ import {
   resetAuthKeyWarningsForTesting,
   resolveAuthConfig,
 } from './auth-keys';
+import { implicitSecretKeySource } from './credential-destination';
 import { ConnectionManager } from './connection';
 import { AreteError } from './types';
 
@@ -129,8 +130,11 @@ describe('resolveAuthConfig', () => {
 
   it('falls back to ARETE_API_KEY when no auth is configured', () => {
     vi.stubEnv(ARETE_API_KEY_ENV, `  ${AGENT}\n`);
-    expect(resolveAuthConfig(undefined)).toEqual({ secretKey: AGENT });
-    expect(resolveAuthConfig({ tokenTransport: 'bearer' })).toEqual({
+    const resolved = resolveAuthConfig(undefined);
+    expect(resolved).toMatchObject({ secretKey: AGENT });
+    // Marked as found, so it goes only where ARETE_API_KEY may go.
+    expect(implicitSecretKeySource(resolved)).toBe('ARETE_API_KEY');
+    expect(resolveAuthConfig({ tokenTransport: 'bearer' })).toMatchObject({
       tokenTransport: 'bearer',
       secretKey: AGENT,
     });

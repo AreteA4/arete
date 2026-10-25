@@ -252,12 +252,33 @@ describe('protocol client sessions', () => {
     });
   });
 
+  it('refuses a secret key for the descriptor session endpoint unless apiUrl trusts its origin', async () => {
+    const mock = mockFetch(() => undefined);
+    // The generated descriptor names api.example.test; naming it trusts nothing.
+    const client = createProtocolClient(DEFINITION, { auth: { secretKey: 'a4_sk_test' }, fetch: mock.fetch });
+    await expect(client.instances.list()).rejects.toMatchObject({
+      code: 'UNTRUSTED_CREDENTIAL_DESTINATION',
+      details: { destination: 'https://api.example.test', credential: 'auth.secretKey' },
+    });
+    // Nor does a sessionEndpoint override.
+    const overridden = createProtocolClient(DEFINITION, {
+      auth: { secretKey: 'a4_sk_test' },
+      sessionEndpoint: 'https://sessions.example.test/ws/sessions',
+      apiUrl: API,
+      fetch: mock.fetch,
+    });
+    await expect(overridden.instances.list()).rejects.toMatchObject({ code: 'UNTRUSTED_CREDENTIAL_DESTINATION' });
+    expect(mock.calls).toEqual([]);
+  });
+
   it('mints protocol:prepare:* for a secret key and routes create steps to the deployment', async () => {
     const mock = mockFetch((call) =>
       call.url.endsWith('/prepare') ? json({ intent: { executionId: 'exec-2' }, transactions: [] }) : undefined
     );
     const client = createProtocolClient(DEFINITION, {
       auth: { secretKey: 'a4_sk_test' },
+      // The test API is not the default one: trust it for the key.
+      apiUrl: API,
       fetch: mock.fetch,
     });
     expect(client.keyClass).toBe('secret');
@@ -715,7 +736,7 @@ describe('protocol metadata', () => {
       if (call.url.includes('/protocol-instances/')) return json(DETAIL);
       return undefined;
     });
-    const client = createProtocolClient(DEFINITION, { auth: { secretKey: 'a4_sk_test' }, fetch: mock.fetch });
+    const client = createProtocolClient(DEFINITION, { auth: { secretKey: 'a4_sk_test' }, apiUrl: API, fetch: mock.fetch });
 
     await expect(client.metadata.instance('inst-1').get()).resolves.toEqual({
       metadata: { name: 'Raise' },

@@ -1,4 +1,5 @@
 import { isApiCredentialAuth, withSessionMintEndpoint } from '../api-credential';
+import { ARETE_API_URL_ENV, withTrustedApiUrl } from '../credential-destination';
 import { classifyApiKey, isBrowserEnvironment, readEnvironmentVariable, resolveAuthConfig } from '../auth-keys';
 import { ConnectionManager } from '../connection';
 import {
@@ -96,7 +97,7 @@ export interface ProtocolClientOptions<TTypes extends ProtocolTypeMap = Protocol
 }
 
 /** Environment variable read (outside browsers) for the API origin. */
-export const ARETE_API_URL_ENV = 'ARETE_API_URL';
+export { ARETE_API_URL_ENV };
 
 /**
  * The deployment, protocol API and session endpoint a client calls: options
@@ -664,7 +665,14 @@ export function createProtocolClientWithMembers(
   const { deploymentId, apiUrl, sessionEndpoint } = resolveProtocolEndpoints(definition.deployment, options);
   const resolvedAuth = resolveAuthConfig(options?.auth);
   const keyClass = runtimeKeyClass(resolvedAuth, options?.keyClass);
-  const http = new ProtocolHttp(deploymentId, sessionEndpoint, options?.auth, options?.fetch);
+  // Only an apiUrl the app passed in code is trusted for its credential; the
+  // descriptor's URLs and a sessionEndpoint override are not.
+  const http = new ProtocolHttp(
+    deploymentId,
+    sessionEndpoint,
+    withTrustedApiUrl(options?.auth, options?.apiUrl),
+    options?.fetch
+  );
   const stepDefinitions = definition.steps as Record<
     string,
     { scope: string; access: string; guards: readonly string[]; args: readonly string[] }

@@ -13,6 +13,11 @@ import {
   resolveAuthConfig,
   tokenEndpointApiKey,
 } from './auth-keys';
+import {
+  accountCredentialSource,
+  assertCredentialDestination,
+  UNTRUSTED_CREDENTIAL_DESTINATION,
+} from './credential-destination';
 import { CursorTracker, parseFrame, parseFrameFromBlob } from './frame';
 import type {
   AuthConfig,
@@ -165,9 +170,13 @@ function closeReasonWireCode(reason: string | undefined): string | undefined {
   return isKnownWireErrorCode(bare) ? bare : undefined;
 }
 
-/** A stack version refusal ends the connection: no retry or reconnect can fix it. */
+/**
+ * A stack version refusal, or an account credential refused for an untrusted
+ * destination, ends the connection: no retry or reconnect can fix it.
+ */
 function isTerminalRefusal(error: unknown): error is AreteError {
-  return error instanceof AreteError && isStackVersionRefusalCode(error.code);
+  return error instanceof AreteError
+    && (isStackVersionRefusalCode(error.code) || error.code === UNTRUSTED_CREDENTIAL_DESTINATION);
 }
 
 function normalizeStackRelease(release: StackRelease | undefined): StackRelease | undefined {
@@ -822,9 +831,16 @@ export class ConnectionManager {
     request: AuthTokenRequest,
     refusedCredential?: string
   ): Promise<TokenEndpointResponse> {
-    const apiKey = this.apiBearer
-      ? await this.apiBearer.get(tokenEndpoint, refusedCredential)
-      : tokenEndpointApiKey(this.authConfig, tokenEndpoint);
+    // An account credential goes only to a trusted Arete API origin: a
+    // session endpoint elsewhere is refused before anything is sent.
+    let apiKey: string | undefined;
+    if (this.apiBearer) {
+      const source = accountCredentialSource(this.authConfig, true);
+      if (source) assertCredentialDestination(this.authConfig, tokenEndpoint, source);
+      apiKey = await this.apiBearer.get(refusedCredential);
+    } else {
+      apiKey = tokenEndpointApiKey(this.authConfig, tokenEndpoint);
+    }
     const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
       headers: {

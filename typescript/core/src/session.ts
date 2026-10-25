@@ -1,5 +1,6 @@
 import { resolveAuthConfig } from './auth-keys';
 import { shareApiCredential } from './api-credential';
+import { withTrustedApiUrl } from './credential-destination';
 import { defaultPlatformHttpClient, type PlatformHttpClient } from './platform-http';
 import {
   Arete,
@@ -1038,7 +1039,8 @@ function withSessionCredential<T extends SessionOptions<any, any>>(given: T | un
   const options = (given ?? {}) as T;
   const fetchForAuth = ((input: RequestInfo | URL, init?: RequestInit) =>
     (options.fetch ?? globalThis.fetch)(input, init)) as typeof fetch;
-  const auth = shareApiCredential(resolveAuthConfig(options.auth), fetchForAuth);
+  // An explicit apiUrl is trusted for a credential the app passed in `auth`.
+  const auth = shareApiCredential(withTrustedApiUrl(resolveAuthConfig(options.auth), options.apiUrl), fetchForAuth);
   const platform = options.platform
     ?? defaultPlatformHttpClient({ apiUrl: options.apiUrl, auth, fetch: fetchForAuth });
   return { ...options, auth, platform } as T;

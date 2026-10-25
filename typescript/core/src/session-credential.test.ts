@@ -181,7 +181,7 @@ describe('session credential fallbacks', () => {
     empty.close();
   });
 
-  it('never sends a saved a4 login to session endpoints or an API on another host', async () => {
+  it('refuses a saved a4 login for session endpoints and an API on another host', async () => {
     const saved = 'a4_sk_savedlogin';
     useSavedLogin(saved);
     const { fetch, calls } = fakeNetwork();
@@ -190,12 +190,44 @@ describe('session credential fallbacks', () => {
       { fetch, apiUrl: 'https://api.example.test', auth: { tokenKind: 'api' } }
     );
 
-    // The saved key is for the Arete API, not api.example.test.
-    expect(session.platform).toBeUndefined();
+    // The saved key is for the Arete API, not api.example.test: an explicit
+    // apiUrl trusts only credentials the app passed itself.
+    const untrusted = { code: 'UNTRUSTED_CREDENTIAL_DESTINATION', details: { credential: 'a4 login' } };
+    expect(session.platform?.apiUrl).toBe('https://api.example.test/api');
+    await expect(session.programs.squads.read.overview()).rejects.toMatchObject({
+      ...untrusted,
+      details: { ...untrusted.details, destination: 'https://api.example.test' },
+    });
+    await expect(session.programs.squads.read.multisig('address')).rejects.toMatchObject(untrusted);
+    await expect(session.programs.squads.read.exists('address')).rejects.toMatchObject(untrusted);
+    expect(calls).toEqual([]);
+    session.close();
+  });
+
+  it('does not trust a binding session endpoint because apiUrl is explicit', async () => {
+    const { fetch, calls } = fakeNetwork();
+    const session = await createSession(
+      { programs: { squads: program } },
+      { fetch, apiUrl: 'https://api.other.test', auth: { secretKey: 'a4_sk_explicit' } }
+    );
+    // The bindings name api.example.test; only api.other.test was configured.
+    await expect(session.programs.squads.read.multisig('address')).rejects.toMatchObject({
+      code: 'UNTRUSTED_CREDENTIAL_DESTINATION',
+      details: { destination: 'https://api.example.test', credential: 'auth.secretKey' },
+    });
+    expect(calls).toEqual([]);
+    session.close();
+  });
+
+  it('sends an explicit key to binding session endpoints on the explicit apiUrl origin', async () => {
+    const { fetch, calls } = fakeNetwork();
+    const session = await createSession(
+      { programs: { squads: program } },
+      { fetch, apiUrl: 'https://api.example.test', auth: { secretKey: 'a4_sk_explicit' } }
+    );
     await expect(session.programs.squads.read.multisig('address')).resolves.toEqual({ threshold: 2 });
-    await expect(session.programs.squads.read.exists('address')).resolves.toBe(true);
-    expect(calls.filter((call) => call.url === SESSIONS).map((call) => call.authorization)).toEqual([null, null]);
-    expect(calls.some((call) => call.authorization?.includes(saved))).toBe(false);
+    expect(calls.filter((call) => call.url === SESSIONS).map((call) => call.authorization))
+      .toEqual(['Bearer a4_sk_explicit']);
     session.close();
   });
 });
