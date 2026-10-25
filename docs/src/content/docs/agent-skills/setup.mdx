@@ -10,10 +10,10 @@ import CopyPrompt from "../../../components/CopyPrompt.astro";
 
 Reference for installing Arete agent skills manually. For an overview of how skills, the CLI, and agent.md fit together, see [Agent Skills](/agent-skills/overview/).
 
-The preferred route is `a4 init`, which installs the skills for every coding agent it detects (and writes `arete.toml`, `AGENTS.md`, and MCP config at the same time):
+The preferred route is `a4 init`, which installs the skills for the coding agent running it and any agent configured in the project folder (and writes `arete.toml`, `AGENTS.md`, and MCP config at the same time):
 
 ```bash
-a4 init -y                        # project scope, all detected agents
+a4 init -y                        # project scope, the running agent + project-configured agents
 a4 init -y --agents cursor        # one agent
 a4 init -y --global               # user scope instead of the project
 a4 init -y --no-skills            # everything except skills

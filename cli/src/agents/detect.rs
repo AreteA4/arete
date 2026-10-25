@@ -53,6 +53,28 @@ impl Detection {
     pub fn contains(&self, id: &str) -> bool {
         self.agents.iter().any(|agent| agent.id == id)
     }
+
+    /// The agents `a4 init -y` configures by default: the ones driving this
+    /// process (env signal) plus the ones with config in the project folder.
+    /// An agent found only in the home directory is installed on this
+    /// machine but shows no sign of use here, so it is left out.
+    pub fn default_ids(&self) -> Vec<String> {
+        self.agents
+            .iter()
+            .filter(|agent| agent.how != How::Home)
+            .map(|agent| agent.id.clone())
+            .collect()
+    }
+
+    /// Agents found only in the home directory, which `a4 init` reports
+    /// but configures only when asked (`--agents <id>`).
+    pub fn home_only_ids(&self) -> Vec<String> {
+        self.agents
+            .iter()
+            .filter(|agent| agent.how == How::Home)
+            .map(|agent| agent.id.clone())
+            .collect()
+    }
 }
 
 /// Signals for one agent.
@@ -228,6 +250,30 @@ mod tests {
 
         let detection = detect(&env(&root, &home, &[]));
         assert_eq!(detection.agents[0].how, How::Project);
+    }
+
+    #[test]
+    fn defaults_leave_out_home_only_agents() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        let home = dir.path().join("home");
+        fs::create_dir_all(root.join(".cursor")).unwrap();
+        for found in [".gemini", ".kiro", ".codex", ".claude"] {
+            fs::create_dir_all(home.join(found)).unwrap();
+        }
+        let detection = detect(&env(&root, &home, &[("CLAUDECODE", "1")]));
+        assert_eq!(detection.default_ids(), vec!["claude-code", "cursor"]);
+        assert_eq!(
+            detection.home_only_ids(),
+            vec!["codex", "gemini-cli", "kiro"]
+        );
+
+        let detection = detect(&env(&root, &home, &[]));
+        assert_eq!(detection.default_ids(), vec!["cursor"]);
+        assert_eq!(
+            detection.home_only_ids(),
+            vec!["claude-code", "codex", "gemini-cli", "kiro"]
+        );
     }
 
     #[test]

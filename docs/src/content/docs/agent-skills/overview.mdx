@@ -51,7 +51,7 @@ a4 init -y
 a4 doctor --json
 ```
 
-`a4 init` detects the coding agents you have and configures:
+`a4 init` configures the coding agent it runs in, plus any agent already set up in the project folder (agents installed only in your home directory are listed; add one with `a4 init --agents <id>`). It writes:
 
 - `arete.toml` for project dependencies;
 - managed Arete instructions in `AGENTS.md`;

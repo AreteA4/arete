@@ -51,7 +51,8 @@ searching the public catalog.
 
 ## 3. Reload the agent
 
-`a4 init` writes MCP configuration for the agents it detects. Agents that run
+`a4 init` writes MCP configuration for the agent it runs in and any agent set up
+in the project folder; add another with `a4 init --agents <id>`. Agents that run
 in a terminal often pick this up straight away. Desktop apps may need a full
 restart before they reload their configuration and the updated PATH.
 

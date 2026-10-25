@@ -123,6 +123,11 @@ impl ItemResult {
     }
 }
 
+/// The command that adds one agent left out of the default selection.
+pub fn add_agent_command(id: &str) -> String {
+    format!("a4 init --agents {id}")
+}
+
 /// The `a4 init --json` object (spec WP7).
 #[derive(Debug, Clone)]
 pub struct InitReport {
@@ -130,6 +135,9 @@ pub struct InitReport {
     pub detected: Vec<DetectedAgent>,
     pub universal: bool,
     pub selected: Vec<String>,
+    /// Agents found only in the home directory and not selected: reported
+    /// with the command that adds them, never configured by default.
+    pub also_found: Vec<String>,
     pub results: Vec<ItemResult>,
     pub warnings: Vec<String>,
     pub next: Vec<String>,
@@ -142,6 +150,7 @@ struct InitReportJson<'a> {
     dry_run: bool,
     detected_agents: &'a [DetectedAgent],
     selected_agents: &'a [String],
+    also_found: Vec<serde_json::Value>,
     results: Vec<serde_json::Value>,
     warnings: &'a [String],
     next: &'a [String],
@@ -158,6 +167,11 @@ impl InitReport {
             dry_run: self.dry_run,
             detected_agents: &self.detected,
             selected_agents: &self.selected,
+            also_found: self
+                .also_found
+                .iter()
+                .map(|id| serde_json::json!({ "id": id, "fix": add_agent_command(id) }))
+                .collect(),
             results: self
                 .results
                 .iter()
@@ -189,6 +203,14 @@ impl InitReport {
                 detected.join(", ")
             }
         ));
+        if !self.also_found.is_empty() {
+            out.push_str(&format!(
+                "{} Also found (home directory only, not configured): {}; add with {}\n",
+                "→".blue().bold(),
+                self.also_found.join(", "),
+                "a4 init --agents <id>".cyan()
+            ));
+        }
         if self.dry_run {
             out.push_str(&format!(
                 "{} Dry run: nothing is written\n",
@@ -262,6 +284,7 @@ mod tests {
             detected: vec![],
             universal: false,
             selected: vec![],
+            also_found: vec!["kiro".into()],
             results: vec![],
             warnings: vec!["w".into()],
             next: vec!["a4 doctor --json".into()],
@@ -271,6 +294,7 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "alsoFound",
                 "detectedAgents",
                 "dryRun",
                 "next",
@@ -286,5 +310,12 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(
+            json["alsoFound"],
+            serde_json::json!([{"id": "kiro", "fix": "a4 init --agents kiro"}])
+        );
+        assert!(report
+            .render()
+            .contains("Also found (home directory only, not configured): kiro"));
     }
 }

@@ -177,7 +177,7 @@ Templates are downloaded from GitHub releases and cached in `~/.arete/templates/
 Set up the current directory for Arete and for the coding agents that work in it.
 
 ```bash
-a4 init -y                       # all detected agents, project scope
+a4 init -y                       # the agent running it + agents with project config
 a4 init -y --json                # machine-readable report
 a4 init -y --dry-run             # report what would change, write nothing
 a4 init -y --global              # skills and MCP config for your user, not the project
@@ -206,12 +206,12 @@ a4 init -y --no-skills --no-mcp  # manifest and AGENTS.md only
 | `--dry-run`                                                  | Same report with `dryRun: true` and `would-*` statuses; writes nothing |
 | `--force`                                                    | Rewrite the `[project]` block of an existing `arete.toml`              |
 | `--name <project>`                                           | Project name (default: directory basename)                             |
-| `--agents <list\|all\|none>`                                 | Agents to configure (default: detected)                                |
+| `--agents <list\|all\|none>`                                 | Agents to configure (default: env or project signal)                   |
 | `--global`                                                   | Install skills and MCP config for your user instead of the project     |
 | `--no-manifest`, `--no-agents-md`, `--no-skills`, `--no-mcp` | Skip a writer                                                          |
 | `--skills-ref <git ref>`                                     | Skills version to install (default `main`)                             |
 
-**Agent detection.** Project signals win over home-directory signals. If nothing is detected and `--agents` is absent, `init` still writes the agent-independent set (`arete.toml`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.mcp.json`) and adds a warning; it does not fail.
+**Agent detection.** An environment variable set by the agent running the command wins over project signals, which win over home-directory signals. Without `--agents`, `init` configures the agents detected by environment variable or project config. Agents found only in the home directory are listed under `alsoFound` ("also found; add with `a4 init --agents <id>`") and not configured. If no agent has an environment or project signal and `--agents` is absent, `init` still writes the agent-independent set (`arete.toml`, `AGENTS.md`, `CLAUDE.md`, `.agents/skills`, `.mcp.json`) and adds a warning; it does not fail.
 
 | Agent         | Project signal                                       | MCP file (project / `--global`)                         |
 | ------------- | ---------------------------------------------------- | ------------------------------------------------------- |
@@ -239,14 +239,14 @@ Per-host MCP shapes are listed on the [MCP Server](/agent-skills/mcp/#configure-
   "schemaVersion": 1,
   "dryRun": false,
   "detectedAgents": [{ "id": "claude-code", "how": "env" }, { "id": "cursor", "how": "home" }],
-  "selectedAgents": ["claude-code", "cursor"],
+  "selectedAgents": ["claude-code"],
+  "alsoFound": [{ "id": "cursor", "fix": "a4 init --agents cursor" }],
   "results": [
     { "item": "arete.toml", "status": "created", "path": "arete.toml" },
     { "item": "agents-md", "status": "updated", "path": "AGENTS.md" },
     { "item": "claude-md", "status": "unchanged", "path": "CLAUDE.md" },
     { "item": "skills", "status": "skipped", "reason": "npx not found", "fix": "npx skills add AreteA4/skills" },
-    { "item": "mcp:claude-code", "status": "created", "path": ".mcp.json" },
-    { "item": "mcp:cursor", "status": "created", "path": ".cursor/mcp.json" }
+    { "item": "mcp:claude-code", "status": "created", "path": ".mcp.json" }
   ],
   "warnings": [],
   "next": ["a4 doctor --json", "a4 explore --json"]
@@ -379,7 +379,7 @@ Run the Arete stream MCP server over stdio (registry discovery, knowledge layer,
 a4 mcp
 ```
 
-`a4 init` writes the config for every detected agent. The Claude Code shape (`.mcp.json`):
+`a4 init` writes the config for each selected agent. The Claude Code shape (`.mcp.json`):
 
 ```json
 {

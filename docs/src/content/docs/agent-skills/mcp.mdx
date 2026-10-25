@@ -18,7 +18,7 @@ investigation. This page is the server and tool reference.
 | [Documentation](#documentation-server) | HTTP (`https://docs.arete.run/mcp`) | Search and read these docs without scraping                                                   |
 | [Stream](#stream-server)               | stdio (`a4 mcp`)                    | Protocol actions and execution, cloud dev tools, registry discovery, knowledge, and live data |
 
-`a4 init` writes both servers, named `arete` (stream) and `arete-docs` (documentation), into the MCP config of every coding agent it detects. Run it once per project (or `a4 init --global` for your user) and skip the manual snippets below; `a4 doctor` reports drift as `agents.<id>.mcp` and `a4 doctor --fix` rewrites them.
+`a4 init` writes both servers, named `arete` (stream) and `arete-docs` (documentation), into the MCP config of the coding agent it runs in and any agent set up in the project folder (`--agents <id>` adds others). Run it once per project (or `a4 init --global` for your user) and skip the manual snippets below; `a4 doctor` reports drift as `agents.<id>.mcp` and `a4 doctor --fix` rewrites them.
 
 ```bash
 a4 init -y
@@ -92,7 +92,7 @@ The server is built into the `a4` binary; there is nothing separate to install:
 a4 mcp
 ```
 
-It speaks MCP over stdio and writes logs to stderr only. Install `a4` with `curl -fsSL https://arete.run/install.sh | sh` (see [Installation](/cli/commands/#installation)). `a4 init` writes the config for every detected agent, using the absolute binary path so GUI hosts that do not inherit your shell PATH still find it. The npm package `@usearete/mcp` is deprecated; replace `npx -y @usearete/mcp` with `a4 mcp` in any existing config.
+It speaks MCP over stdio and writes logs to stderr only. Install `a4` with `curl -fsSL https://arete.run/install.sh | sh` (see [Installation](/cli/commands/#installation)). `a4 init` writes the config for the selected agents, using the absolute binary path so GUI hosts that do not inherit your shell PATH still find it. The npm package `@usearete/mcp` is deprecated; replace `npx -y @usearete/mcp` with `a4 mcp` in any existing config.
 
 ### Discovery tools
 

@@ -1059,14 +1059,9 @@ fn net_docs_mcp(env: &Env) -> Check {
 }
 
 /// Detected agents with a project or environment signal: the ones this
-/// project uses.
+/// project uses, as `a4 init -y` selects them.
 fn project_agent_ids(detection: &Detection) -> Vec<String> {
-    detection
-        .agents
-        .iter()
-        .filter(|agent| agent.how != How::Home)
-        .map(|agent| agent.id.clone())
-        .collect()
+    detection.default_ids()
 }
 
 /// A context file `agent` reads is missing or lacks AGENTS.md. For an agent

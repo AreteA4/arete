@@ -1,11 +1,14 @@
 //! `a4 init`: agent-first project setup.
 //!
 //! Writes `arete.toml`, the `AGENTS.md` managed block, the `CLAUDE.md`
-//! import, the Arete skills (via `npx skills`) and MCP config for every
-//! detected (or selected) coding agent. Every write is an upsert and the
-//! command is safe to run repeatedly. The only prompt is the agent picker,
-//! shown on a TTY when `--agents` is absent (never under `-y`, `--json`
-//! still gets clean stdout because the picker lives on stderr).
+//! import, the Arete skills (via `npx skills`) and MCP config for the
+//! selected coding agents. By default those are the agents driving this
+//! process (env signal) plus the ones with config in the project folder;
+//! agents found only in the home directory are reported as "also found"
+//! and configured only with `--agents <id>`. Every write is an upsert and
+//! the command is safe to run repeatedly. The only prompt is the agent
+//! picker, shown on a TTY when `--agents` is absent (never under `-y`,
+//! `--json` still gets clean stdout because the picker lives on stderr).
 
 use std::path::{Path, PathBuf};
 
@@ -36,7 +39,8 @@ pub struct InitArgs {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// Agents to configure: comma-separated ids, `all`, or `none` (default: detected)
+    /// Agents to configure: comma-separated ids, `all`, or `none` (default:
+    /// the agent running this command plus agents with project config)
     #[arg(long, value_name = "LIST")]
     pub agents: Option<String>,
 
@@ -68,7 +72,8 @@ pub struct InitArgs {
 /// `--agents` value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Selection {
-    /// Default: every detected agent (agent-independent set when none).
+    /// Default: the agents detected by env var or project config
+    /// (agent-independent set when none). Home-only agents are reported.
     Detected,
     All,
     None,
@@ -164,8 +169,9 @@ pub fn run(args: InitArgs, config_path: &str, json: bool) -> Result<()> {
 }
 
 /// Pre-checked state for every entry of `AGENT_IDS` in the interactive
-/// picker: the detected agents, or `claude-code` alone when nothing was
-/// detected (the same agent the non-interactive fallback configures).
+/// picker: the default agents (env or project signal), or `claude-code`
+/// alone when there are none (the same agent the non-interactive fallback
+/// configures).
 pub fn picker_defaults(detected: &[String]) -> Vec<bool> {
     let any_known = AGENT_IDS
         .iter()
@@ -198,7 +204,7 @@ fn pick_agents(detection: &Detection) -> Result<Selection> {
     let picked = MultiSelect::with_theme(&ColorfulTheme::default())
         .with_prompt("Configure Arete for these coding agents")
         .items(&labels)
-        .defaults(&picker_defaults(&detection.ids()))
+        .defaults(&picker_defaults(&detection.default_ids()))
         .interact_on(&Term::stderr())
         .context("Failed to read agent selection (pass --agents <list|all|none> or -y)")?;
     let ids: Vec<String> = picked
@@ -216,8 +222,11 @@ fn pick_agents(detection: &Detection) -> Result<Selection> {
 /// the agent-independent fallback (nothing detected, no `--agents`).
 fn select(detection: &Detection, selection: &Selection) -> (Vec<String>, bool) {
     match selection {
-        Selection::Detected if detection.agents.is_empty() => (Vec::new(), true),
-        Selection::Detected => (detection.ids(), false),
+        Selection::Detected => {
+            let ids = detection.default_ids();
+            let fallback = ids.is_empty();
+            (ids, fallback)
+        }
         Selection::All => (AGENT_IDS.iter().map(|id| id.to_string()).collect(), false),
         Selection::None => (Vec::new(), false),
         Selection::List(ids) => (ids.clone(), false),
@@ -229,8 +238,12 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
     let detection = detect(env);
     let (selected, fallback) = select(&detection, &plan.selection);
     let mut warnings = Vec::new();
-    if fallback {
+    if fallback && detection.agents.is_empty() {
         warnings.push("No coding agent detected; wrote agent-independent files only.".to_string());
+    } else if fallback {
+        warnings.push(
+            "No coding agent is running this command or configured in this project; wrote agent-independent files only.".to_string(),
+        );
     }
     let has = |id: &str| selected.iter().any(|selected| selected == id);
     let mut results = Vec::new();
@@ -299,11 +312,20 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
         }
     }
 
+    // Home-only agents left out of this run, so the report can say how to
+    // add them.
+    let also_found = detection
+        .home_only_ids()
+        .into_iter()
+        .filter(|id| !selected.contains(id))
+        .collect();
+
     Ok(InitReport {
         dry_run: plan.dry_run,
         detected: detection.agents.clone(),
         universal: detection.universal,
         selected,
+        also_found,
         results,
         warnings,
         next: vec![
@@ -418,6 +440,35 @@ mod tests {
         assert_eq!(
             select(&detection, &Selection::List(Vec::new())),
             (Vec::new(), false)
+        );
+    }
+
+    #[test]
+    fn default_selection_skips_home_only_agents() {
+        use crate::agents::detect::{DetectedAgent, How};
+        let agent = |id: &str, how| DetectedAgent { id: id.into(), how };
+        let detection = Detection {
+            agents: vec![
+                agent("claude-code", How::Env),
+                agent("cursor", How::Project),
+                agent("gemini-cli", How::Home),
+            ],
+            universal: false,
+        };
+        assert_eq!(
+            select(&detection, &Selection::Detected),
+            (vec!["claude-code".to_string(), "cursor".to_string()], false)
+        );
+        // Home-only agents alone: the agent-independent fallback, not them.
+        let detection = Detection {
+            agents: vec![agent("gemini-cli", How::Home), agent("kiro", How::Home)],
+            universal: false,
+        };
+        assert_eq!(select(&detection, &Selection::Detected), (Vec::new(), true));
+        // An explicit list still configures a home-only agent.
+        assert_eq!(
+            select(&detection, &Selection::List(vec!["kiro".into()])),
+            (vec!["kiro".to_string()], false)
         );
     }
 
