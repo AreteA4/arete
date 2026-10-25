@@ -305,7 +305,7 @@ function Round() {
 }
 ```
 
-Nothing connects a second time, and unmounting never disconnects the member: the session closes it. While the session opens the member is `null` and the result is `useArete(stack)`'s connecting state, with placeholder views and programs from `stack` (required whenever the member can be `null`). A reopen gives a new member, and the hooks move to it. Mutations sign with the session's wallet (the provider's `wallet` prop).
+Nothing connects a second time, and unmounting never disconnects the member: the session closes it. While the session opens the member is `null` and the result is `useArete(stack)`'s connecting state, with placeholder views and programs from `stack` (required whenever the member can be `null`). A reopen gives a new member, and the hooks move to it. Mutations sign with the session's wallet (the provider's `wallet` prop), and wait for the streamed slot they landed in only when the session connected the member over the WebSocket: the hooks read the member's `transport` (`'ws'` or `'http'`) and its `stack`, so neither is an option once the member exists.
 
 ## `useArete` result
 

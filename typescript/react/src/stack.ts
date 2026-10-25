@@ -175,16 +175,10 @@ export interface UseAreteMemberOptions<TStack extends StackDefinition = StackDef
   /**
    * The member's stack definition. Required while the member can be `null` or
    * `undefined` (the session is still opening), so views, programs,
-   * addresses and constants exist before it opens; otherwise it comes from
-   * the member.
+   * addresses and constants exist before it opens; once it has opened, the
+   * member's own `stack` is used.
    */
   stack?: MemberStackDefinition<TStack>;
-  /**
-   * How the session connects this member. Mutations wait for the streamed
-   * slot they landed in only over `'ws'` (the default), as for
-   * `useArete(stack, { transport })`.
-   */
-  transport?: 'ws' | 'http';
 }
 
 function isStackClient(value: unknown): value is AnyClient {
@@ -197,19 +191,6 @@ function isStackClient(value: unknown): value is AnyClient {
 function isMemberOptions(value: unknown): value is UseAreteMemberOptions & { stack: StackDefinition } {
   const stack = (value as { stack?: unknown } | null | undefined)?.stack;
   return typeof stack === 'object' && stack !== null && 'views' in stack;
-}
-
-/**
- * The stack definition a connected client holds: the one it was connected
- * for, with any attached programs resolved. The client keeps it in its
- * `stack` field (private to TypeScript, a plain property at runtime); the
- * tests over real sessions hold this in place.
- */
-function stackOfClient(client: AnyClient): StackDefinition | undefined {
-  const stack = (client as unknown as { stack?: unknown }).stack;
-  return typeof stack === 'object' && stack !== null && 'views' in stack
-    ? stack as StackDefinition
-    : undefined;
 }
 
 function zustandStoreOf(client: AnyClient | null): UseBoundStore<StoreApi<AreteStore>> | null {
@@ -235,14 +216,16 @@ function useMemberArete(
   options: UseAreteMemberOptions | undefined
 ): UseAreteResult<StackDefinition, ProgramMap> {
   const client = member;
-  const stack = (client ? stackOfClient(client) : undefined) ?? options?.stack;
+  const stack: StackDefinition | undefined = client?.stack ?? options?.stack;
   if (!stack) {
     throw new Error(
       'useArete(member) could not read the stack definition of the member it was given. '
       + 'Pass it as useArete(member, { stack }).'
     );
   }
-  const transport = options?.transport;
+  // Mutations wait for the streamed slot they landed in only when the member
+  // was connected over the socket.
+  const transport = client?.transport;
   const sessionContext = useOptionalAreteSession();
 
   const [connection, setConnection] = useState<MemberConnection>(() => ({

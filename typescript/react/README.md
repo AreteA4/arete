@@ -215,7 +215,8 @@ function Round() {
 - **While the session opens** the member is `null`, and the result is the one `useArete(stack)` gives before its client exists: `status: 'connecting'`, `client: null`, placeholder views and programs (addresses, PDAs and constants from the definition). Pass the stack definition as `stack` for this; TypeScript asks for it whenever the member can be `null` or `undefined`. If the session fails to open, `status` is `'error'` and `retry()` reopens it.
 - **A reopen** (new auth or options) gives a new member: the hooks drop the old one and subscribe on the new one, with nothing carried over.
 - **The wallet is the session's.** Mutations sign with the member's wallet, which the provider's `wallet` prop (`session.setWallet`) sets. `AreteProvider`'s `wallet` does not reach session members.
-- With a member that is never `null` (`useArete(session.stacks.ore)`, for a session the app opened), `stack` can be left out. Pass `transport: 'http'` for a member the session connects over HTTP, so mutations do not wait for a streamed slot.
+- With a member that is never `null` (`useArete(session.stacks.ore)`, for a session the app opened), `stack` can be left out: the hooks read the member's `stack`.
+- **The transport is the member's.** Mutations wait for the streamed slot they landed in only when the session connected the member over the WebSocket (`member.transport === 'ws'`). A member the session connected over HTTP (`transport: 'http'` in the session options) confirms without waiting.
 
 ## `useArete(stack?, options?)`
 

@@ -10,6 +10,7 @@ import React from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { createSession, type AuthConfig, type Session, type WalletAdapter } from '@usearete/sdk';
 
+import * as programHooks from './program-hooks';
 import { AreteProvider } from './provider';
 import { AreteSessionProvider, useAreteSession, type AreteSessionProviderProps } from './session-provider';
 import { useArete, type UseAreteResult } from './stack';
@@ -285,6 +286,35 @@ describe('useArete(member)', () => {
     } finally {
       view.unmount();
       session.close();
+    }
+  });
+
+  it('waits for the streamed slot only for a member its session connected over the socket', async () => {
+    const buildPrograms = jest.spyOn(programHooks, 'buildProgramHookInterfaces');
+    async function reconcilesOver(transport: 'ws' | 'http') {
+      const session = await createSession(DEFINITION, { ...sessionOptions(ws), transport });
+      const member = session.stacks.things;
+      buildPrograms.mockClear();
+      function Member() {
+        useArete(member);
+        return null;
+      }
+      const view = render(React.createElement(Member));
+      try {
+        expect(member.transport).toBe(transport);
+        const calls = buildPrograms.mock.calls.filter(([, client]) => client === member);
+        expect(calls.length).toBeGreaterThan(0);
+        return calls[calls.length - 1]?.[3]?.defaultReconciliation;
+      } finally {
+        view.unmount();
+        session.close();
+      }
+    }
+    try {
+      await expect(reconcilesOver('ws')).resolves.toBe(true);
+      await expect(reconcilesOver('http')).resolves.toBe(false);
+    } finally {
+      buildPrograms.mockRestore();
     }
   });
 

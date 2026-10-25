@@ -84,6 +84,13 @@ export type MemberClientIsTyped = Assert<Equal<
   NonNullable<typeof byStack.client>['views']
 >>;
 
+// The member carries its stack definition and the transport its session
+// connected it with; the hooks take both from it, so neither is an option.
+export type MemberStackIsTyped = Assert<Equal<typeof session.stacks.ore.stack['views'], typeof ORE.views>>;
+export type MemberTransportIsTyped = Assert<Equal<typeof session.stacks.ore.transport, 'ws' | 'http'>>;
+// @ts-expect-error the member's transport comes from the member
+useArete(session.stacks.ore, { transport: 'http' });
+
 // While the session opens, the member is `null`/`undefined` and the stack
 // definition gives the hooks their placeholders.
 const pending = useArete(opening?.stacks.ore, { stack: ORE });
