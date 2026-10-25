@@ -107,6 +107,10 @@ fn sandbox(fixture: &str, with_npx: bool) -> Sandbox {
 }
 
 fn a4(sb: &Sandbox, args: &[&str]) -> Output {
+    a4_with_env(sb, args, &[])
+}
+
+fn a4_with_env(sb: &Sandbox, args: &[&str], vars: &[(&str, &str)]) -> Output {
     let mut command = Command::new(A4);
     command
         .args(args)
@@ -122,7 +126,8 @@ fn a4(sb: &Sandbox, args: &[&str]) -> Output {
         .env("ARETE_API_URL", &sb.server)
         .env("A4_DOCS_MCP_URL", format!("{}/mcp", sb.server))
         .env("A4_LATEST_URL", "http://127.0.0.1:1/latest.json")
-        .env("DO_NOT_TRACK", "1");
+        .env("DO_NOT_TRACK", "1")
+        .envs(vars.iter().copied());
     command.output().unwrap()
 }
 
@@ -382,6 +387,120 @@ fn init_with_node_and_receipt_makes_doctor_ok() {
     assert_eq!(c["tools.node"]["status"], "ok");
     assert_eq!(c["agents.claude-code.skills"]["status"], "ok");
     assert_eq!(c["agents.claude-code.mcp"]["status"], "ok");
+}
+
+/// Under Claude Code, with Gemini CLI, Kiro and Codex installed in the home
+/// directory only, `a4 init -y` configures Claude Code alone and lists the
+/// others with the command that adds them.
+#[cfg(unix)]
+#[test]
+fn init_configures_only_the_host_it_runs_in() {
+    let sb = sandbox("empty", true);
+    for found in [".gemini", ".kiro", ".codex"] {
+        fs::create_dir_all(sb.home.join(found)).unwrap();
+    }
+    let output = a4_with_env(&sb, &["init", "-y", "--json"], &[("CLAUDECODE", "1")]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["selectedAgents"], serde_json::json!(["claude-code"]));
+    assert_eq!(
+        report["detectedAgents"],
+        serde_json::json!([
+            {"id": "claude-code", "how": "env"},
+            {"id": "codex", "how": "home"},
+            {"id": "gemini-cli", "how": "home"},
+            {"id": "kiro", "how": "home"},
+        ])
+    );
+    assert_eq!(
+        report["alsoFound"],
+        serde_json::json!([
+            {"id": "codex", "fix": "a4 init --agents codex"},
+            {"id": "gemini-cli", "fix": "a4 init --agents gemini-cli"},
+            {"id": "kiro", "fix": "a4 init --agents kiro"},
+        ])
+    );
+    let items = results(&report);
+    let mcp: Vec<&String> = items
+        .keys()
+        .filter(|item| item.starts_with("mcp:"))
+        .collect();
+    assert_eq!(mcp, vec!["mcp:claude-code"]);
+    assert!(!items.contains_key("gemini-context"));
+    assert_eq!(items["claude-md"]["status"], "created");
+    assert_eq!(items["skills"]["status"], "created", "{}", items["skills"]);
+    let args = read(&sb, "npx-args.txt");
+    let args: Vec<&str> = args.lines().collect();
+    let agent = args.iter().position(|arg| *arg == "--agent").unwrap();
+    assert_eq!(
+        &args[agent + 1..],
+        ["claude-code", "-y"],
+        "skills for Claude Code only"
+    );
+    for other in [".gemini", ".kiro", ".codex"] {
+        assert!(
+            !sb.root.join(other).exists(),
+            "{other} written in the project"
+        );
+    }
+    for found in [".gemini", ".kiro", ".codex"] {
+        assert_eq!(
+            fs::read_dir(sb.home.join(found)).unwrap().count(),
+            0,
+            "~/{found} untouched"
+        );
+    }
+
+    // The human report lists them too.
+    let output = a4_with_env(&sb, &["init", "-y"], &[("CLAUDECODE", "1")]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout
+            .contains("Also found (home directory only, not configured): codex, gemini-cli, kiro"),
+        "{stdout}"
+    );
+}
+
+/// With no agent signal outside the home directory, `a4 init -y` falls back
+/// to Claude Code. Claude Code is then configured, so it is not "also found";
+/// Windsurf's MCP config is global only, so its command adds `--global`.
+#[cfg(unix)]
+#[test]
+fn init_fallback_reports_only_agents_it_left_out() {
+    let sb = sandbox("empty", true);
+    for found in [".claude", ".codeium/windsurf"] {
+        fs::create_dir_all(sb.home.join(found)).unwrap();
+    }
+    let (report, output) = a4_json(&sb, &["init", "-y", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(report["selectedAgents"], serde_json::json!([]));
+    assert_eq!(
+        report["alsoFound"],
+        serde_json::json!([
+            {"id": "windsurf", "fix": "a4 init --global --agents windsurf"},
+        ])
+    );
+    let items = results(&report);
+    assert!(items.contains_key("mcp:claude-code"), "{report}");
+
+    let output = a4(&sb, &["init", "-y"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Also found (home directory only, not configured): windsurf; add with"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("a4 init --global --agents windsurf"),
+        "{stdout}"
+    );
 }
 
 #[test]

@@ -81,6 +81,18 @@ fn json(path: PathBuf) -> Placement {
 }
 
 /// Resolve the config file for `id` in `scope`.
+/// Agents whose MCP config exists only in the home directory, so adding
+/// them needs `--global`.
+pub fn global_only(id: &str) -> bool {
+    matches!(id, "windsurf" | "cline")
+}
+
+/// Agents whose MCP config exists only in the project, so adding them never
+/// takes `--global`.
+pub fn project_only(id: &str) -> bool {
+    matches!(id, "vscode" | "roo")
+}
+
 pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
     let root = &env.root;
     let home = || env.home();
@@ -90,7 +102,7 @@ pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
         ("cursor", Scope::Project) => json(root.join(".cursor/mcp.json")),
         ("cursor", Scope::Global) => json(home()?.join(".cursor/mcp.json")),
         ("vscode", Scope::Project) => json(root.join(".vscode/mcp.json")),
-        ("vscode", Scope::Global) => Placement::Skipped("project only"),
+        (id, Scope::Global) if project_only(id) => Placement::Skipped("project only"),
         ("copilot-cli", Scope::Project) => json(root.join(".mcp.json")),
         ("copilot-cli", Scope::Global) => json(home()?.join(".copilot/mcp-config.json")),
         ("codex", Scope::Project) => Placement::File {
@@ -121,9 +133,8 @@ pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
         ),
         ("gemini-cli", Scope::Project) => json(root.join(".gemini/settings.json")),
         ("gemini-cli", Scope::Global) => json(home()?.join(".gemini/settings.json")),
-        ("windsurf", Scope::Project) => Placement::Skipped("global only"),
+        (id, Scope::Project) if global_only(id) => Placement::Skipped("global only"),
         ("windsurf", Scope::Global) => json(home()?.join(".codeium/windsurf/mcp_config.json")),
-        ("cline", Scope::Project) => Placement::Skipped("global only"),
         ("cline", Scope::Global) => json(home()?.join(".cline/mcp.json")),
         ("zed", Scope::Project) => json(root.join(".zed/settings.json")),
         ("zed", Scope::Global) => json(
@@ -140,7 +151,6 @@ pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
         ("kiro", Scope::Project) => json(root.join(".kiro/settings/mcp.json")),
         ("kiro", Scope::Global) => json(home()?.join(".kiro/settings/mcp.json")),
         ("roo", Scope::Project) => json(root.join(".roo/mcp.json")),
-        ("roo", Scope::Global) => Placement::Skipped("project only"),
         ("goose", Scope::Project) => Placement::File {
             path: root.join(".goose/config.yaml"),
             format: Format::Yaml,

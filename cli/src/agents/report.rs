@@ -123,13 +123,30 @@ impl ItemResult {
     }
 }
 
+/// The command that adds one agent left out of the default selection.
+/// `--global` when the agent's MCP config exists only in the home directory,
+/// or when this run was global and the agent has a global MCP config.
+pub fn add_agent_command(id: &str, global: bool) -> String {
+    use super::mcp_config::{global_only, project_only};
+    if global_only(id) || (global && !project_only(id)) {
+        format!("a4 init --global --agents {id}")
+    } else {
+        format!("a4 init --agents {id}")
+    }
+}
+
 /// The `a4 init --json` object (spec WP7).
 #[derive(Debug, Clone)]
 pub struct InitReport {
     pub dry_run: bool,
+    /// The run wrote global (home-directory) config: `--global`.
+    pub global: bool,
     pub detected: Vec<DetectedAgent>,
     pub universal: bool,
     pub selected: Vec<String>,
+    /// Agents found only in the home directory and not selected: reported
+    /// with the command that adds them, never configured by default.
+    pub also_found: Vec<String>,
     pub results: Vec<ItemResult>,
     pub warnings: Vec<String>,
     pub next: Vec<String>,
@@ -142,6 +159,7 @@ struct InitReportJson<'a> {
     dry_run: bool,
     detected_agents: &'a [DetectedAgent],
     selected_agents: &'a [String],
+    also_found: Vec<serde_json::Value>,
     results: Vec<serde_json::Value>,
     warnings: &'a [String],
     next: &'a [String],
@@ -158,6 +176,13 @@ impl InitReport {
             dry_run: self.dry_run,
             detected_agents: &self.detected,
             selected_agents: &self.selected,
+            also_found: self
+                .also_found
+                .iter()
+                .map(
+                    |id| serde_json::json!({ "id": id, "fix": add_agent_command(id, self.global) }),
+                )
+                .collect(),
             results: self
                 .results
                 .iter()
@@ -189,6 +214,34 @@ impl InitReport {
                 detected.join(", ")
             }
         ));
+        if !self.also_found.is_empty() {
+            let commands: Vec<String> = self
+                .also_found
+                .iter()
+                .map(|id| add_agent_command(id, self.global))
+                .collect();
+            // One generic hint when every agent is added the same way,
+            // else each agent's own command.
+            let add_with = if commands
+                .iter()
+                .zip(&self.also_found)
+                .all(|(command, id)| *command == format!("a4 init --agents {id}"))
+            {
+                "a4 init --agents <id>".cyan().to_string()
+            } else {
+                commands
+                    .iter()
+                    .map(|command| command.cyan().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            out.push_str(&format!(
+                "{} Also found (home directory only, not configured): {}; add with {}\n",
+                "→".blue().bold(),
+                self.also_found.join(", "),
+                add_with
+            ));
+        }
         if self.dry_run {
             out.push_str(&format!(
                 "{} Dry run: nothing is written\n",
@@ -259,9 +312,11 @@ mod tests {
     fn report_json_has_schema_version_and_exact_keys() {
         let report = InitReport {
             dry_run: false,
+            global: false,
             detected: vec![],
             universal: false,
             selected: vec![],
+            also_found: vec!["kiro".into()],
             results: vec![],
             warnings: vec!["w".into()],
             next: vec!["a4 doctor --json".into()],
@@ -271,6 +326,7 @@ mod tests {
         assert_eq!(
             keys,
             [
+                "alsoFound",
                 "detectedAgents",
                 "dryRun",
                 "next",
@@ -286,5 +342,32 @@ mod tests {
             .collect::<Vec<_>>()
         );
         assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(
+            json["alsoFound"],
+            serde_json::json!([{"id": "kiro", "fix": "a4 init --agents kiro"}])
+        );
+        assert!(report
+            .render()
+            .contains("Also found (home directory only, not configured): kiro"));
+    }
+
+    #[test]
+    fn also_found_commands_add_global_where_mcp_needs_it() {
+        assert_eq!(add_agent_command("kiro", false), "a4 init --agents kiro");
+        assert_eq!(
+            add_agent_command("windsurf", false),
+            "a4 init --global --agents windsurf"
+        );
+        assert_eq!(
+            add_agent_command("cline", false),
+            "a4 init --global --agents cline"
+        );
+        assert_eq!(
+            add_agent_command("kiro", true),
+            "a4 init --global --agents kiro"
+        );
+        // Roo and VS Code have project MCP config only.
+        assert_eq!(add_agent_command("roo", true), "a4 init --agents roo");
+        assert_eq!(add_agent_command("vscode", true), "a4 init --agents vscode");
     }
 }

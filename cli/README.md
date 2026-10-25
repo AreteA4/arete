@@ -225,7 +225,8 @@ a4 doctor --fix           # re-runs the init writers for every agents.* warning
 import in `CLAUDE.md`, the six Arete workflow skills
 (via `npx skills add AreteA4/skills`; skipped when `npx` is missing), and the
 `arete` (`a4 mcp`) and `arete-docs` (`https://docs.arete.run/mcp`) MCP servers
-for every detected agent. `a4 doctor` exits 0 for `ok`/`warn`, 1 for `fail`.
+for the agent running it and agents set up in the project (others with
+`--agents <id>`). `a4 doctor` exits 0 for `ok`/`warn`, 1 for `fail`.
 
 ## MCP Server
 
