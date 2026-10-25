@@ -87,6 +87,12 @@ pub fn global_only(id: &str) -> bool {
     matches!(id, "windsurf" | "cline")
 }
 
+/// Agents whose MCP config exists only in the project, so adding them never
+/// takes `--global`.
+pub fn project_only(id: &str) -> bool {
+    matches!(id, "vscode" | "roo")
+}
+
 pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
     let root = &env.root;
     let home = || env.home();
@@ -96,7 +102,7 @@ pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
         ("cursor", Scope::Project) => json(root.join(".cursor/mcp.json")),
         ("cursor", Scope::Global) => json(home()?.join(".cursor/mcp.json")),
         ("vscode", Scope::Project) => json(root.join(".vscode/mcp.json")),
-        ("vscode", Scope::Global) => Placement::Skipped("project only"),
+        (id, Scope::Global) if project_only(id) => Placement::Skipped("project only"),
         ("copilot-cli", Scope::Project) => json(root.join(".mcp.json")),
         ("copilot-cli", Scope::Global) => json(home()?.join(".copilot/mcp-config.json")),
         ("codex", Scope::Project) => Placement::File {
@@ -145,7 +151,6 @@ pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
         ("kiro", Scope::Project) => json(root.join(".kiro/settings/mcp.json")),
         ("kiro", Scope::Global) => json(home()?.join(".kiro/settings/mcp.json")),
         ("roo", Scope::Project) => json(root.join(".roo/mcp.json")),
-        ("roo", Scope::Global) => Placement::Skipped("project only"),
         ("goose", Scope::Project) => Placement::File {
             path: root.join(".goose/config.yaml"),
             format: Format::Yaml,

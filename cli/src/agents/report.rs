@@ -124,10 +124,11 @@ impl ItemResult {
 }
 
 /// The command that adds one agent left out of the default selection.
-/// `--global` when this run was global, or when the agent's MCP config
-/// exists only in the home directory.
+/// `--global` when the agent's MCP config exists only in the home directory,
+/// or when this run was global and the agent has a global MCP config.
 pub fn add_agent_command(id: &str, global: bool) -> String {
-    if global || super::mcp_config::global_only(id) {
+    use super::mcp_config::{global_only, project_only};
+    if global_only(id) || (global && !project_only(id)) {
         format!("a4 init --global --agents {id}")
     } else {
         format!("a4 init --agents {id}")
@@ -365,5 +366,8 @@ mod tests {
             add_agent_command("kiro", true),
             "a4 init --global --agents kiro"
         );
+        // Roo and VS Code have project MCP config only.
+        assert_eq!(add_agent_command("roo", true), "a4 init --agents roo");
+        assert_eq!(add_agent_command("vscode", true), "a4 init --agents vscode");
     }
 }
