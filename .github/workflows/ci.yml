@@ -482,6 +482,7 @@ jobs:
           cache: "npm"
           cache-dependency-path: |
             typescript/core/package-lock.json
+            typescript/adapters/kit/package-lock.json
             typescript/react/package-lock.json
             typescript/adapters/web3js/package-lock.json
             examples/ore-react/package-lock.json
@@ -490,9 +491,15 @@ jobs:
         working-directory: typescript/core
         run: npm ci && npm run build
 
+      # React's lockfile links `@usearete/adapter-kit` to this checkout's Kit
+      # adapter, so it is built before React.
+      - name: Build local Kit adapter
+        working-directory: typescript/adapters/kit
+        run: npm ci && npm install ../../core --no-save --package-lock=false && npm run build
+
       - name: Build local React SDK
         working-directory: typescript/react
-        run: npm ci && npm install ../core --no-save --package-lock=false && npm run build
+        run: npm ci && npm install ../core ../adapters/kit --no-save --package-lock=false && npm run build
 
       - name: Build local web3.js adapter
         working-directory: typescript/adapters/web3js
