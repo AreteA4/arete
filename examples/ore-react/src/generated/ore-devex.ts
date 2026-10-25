@@ -11,7 +11,7 @@ import {
   type InstructionHandler,
 } from '@usearete/sdk';
 
-import * as low from './ore-stack-core.js';
+import * as low from './ore-stack-core';
 
 export const ORE_PROGRAM_ADDRESS =
   'oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv';
