@@ -18,10 +18,11 @@ use crate::agents::{find_on_path, read_optional, Env};
 #[cfg(test)]
 use crate::api_client::ApiHttpError;
 use crate::api_client::{
-    api_error_details, AccountCapabilities, ApiClient, CAPABILITY_CREATE_DEPLOYMENT,
+    api_error_details, AccountCapabilities, AccountEntitlements, ApiClient,
+    RegistryProgramInstallResponse, RegistryProgramInstallTransport, CAPABILITY_CREATE_DEPLOYMENT,
     CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND,
 };
-use crate::project::manifest::InstallTarget;
+use crate::project::manifest::{DependencyKind, DependencySourceV1, InstallTarget};
 use crate::project::runtime;
 use crate::selfhost::{latest, platform, receipt::Receipt};
 use crate::ui;
@@ -42,6 +43,8 @@ pub struct DoctorArgs {
 }
 
 const NETWORK_TIMEOUT: Duration = Duration::from_secs(2);
+/// A live probe mints a session and makes one read: allow it longer.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -153,12 +156,15 @@ fn summarize(checks: &[Check]) -> (Vec<Check>, Omitted) {
     (shown, omitted)
 }
 
-/// Aggregate: `fail` if any check fails, else `warn` if any warns, else `ok`.
+/// Aggregate: `fail` if any check fails, else `warn` if any warns, else
+/// `unknown` if any check could not be decided, else `ok`.
 pub fn aggregate(checks: &[Check]) -> Status {
     if checks.iter().any(|check| check.status == Status::Fail) {
         Status::Fail
     } else if checks.iter().any(|check| check.status == Status::Warn) {
         Status::Warn
+    } else if checks.iter().any(|check| check.status == Status::Unknown) {
+        Status::Unknown
     } else {
         Status::Ok
     }
@@ -301,7 +307,8 @@ fn status_label(status: Status) -> String {
         Status::Ok => "ok".green().bold().to_string(),
         Status::Warn => "warn".yellow().bold().to_string(),
         Status::Fail => "fail".red().bold().to_string(),
-        Status::Info | Status::Unknown => "ok".green().bold().to_string(),
+        Status::Unknown => "unknown".dimmed().bold().to_string(),
+        Status::Info => "ok".green().bold().to_string(),
     }
 }
 
@@ -314,6 +321,46 @@ struct ProjectFacts {
     lock_fresh: Option<bool>,
     /// Where the project's TypeScript SDKs are generated.
     typescript_outputs: Vec<PathBuf>,
+    /// What arete.toml uses that the account must be entitled to.
+    usage: ProjectUsage,
+}
+
+/// The parts of arete.toml that need an entitlement.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ProjectUsage {
+    /// Registry program dependencies, `(alias, registry reference)`: they
+    /// read through Program Read.
+    registry_programs: Vec<(String, String)>,
+    /// Program dependencies of any source.
+    programs: usize,
+    /// A `[protocol]` table or a protocol dependency.
+    protocol: bool,
+    /// A `[dev]` table.
+    dev: bool,
+    /// Authoring stacks, deployed with `a4 up`.
+    authoring_stacks: usize,
+}
+
+impl ProjectUsage {
+    /// Whether the project uses `surface`, and how, for the warning.
+    fn uses(&self, surface: &str) -> Option<String> {
+        match surface {
+            "program_read" if self.programs > 0 => Some(format!(
+                "arete.toml has {} program dependenc{}",
+                self.programs,
+                if self.programs == 1 { "y" } else { "ies" }
+            )),
+            "protocol_prepare" | "protocol_submit" | "create_protocol" if self.protocol => {
+                Some("arete.toml has a protocol".to_string())
+            }
+            "dev_environments" if self.dev => Some("arete.toml has a [dev] section".to_string()),
+            "deploy_stack" if self.authoring_stacks > 0 => Some(format!(
+                "arete.toml has {} authoring stack(s) for `a4 up`",
+                self.authoring_stacks
+            )),
+            _ => None,
+        }
+    }
 }
 
 /// Run every check from the WP8 table, in order.
@@ -410,15 +457,41 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
         Some(key) => auth_whoami(key),
     });
 
-    // account.transactions / account.deploy
+    // account.* from the server's entitlements (older APIs: account.transactions
+    // and account.deploy from the capability list), then the live probes.
     let authoring = facts.as_ref().map(|f| f.authoring_stacks).unwrap_or(0);
-    checks.extend(match &key {
-        None => vec![
-            Check::info("account.transactions", "skipped (no credentials)", None),
-            Check::info("account.deploy", "skipped (no credentials)", None),
-        ],
-        Some(key) => account_checks(account_capabilities(key), authoring),
-    });
+    let usage = facts
+        .as_ref()
+        .map(|facts| facts.usage.clone())
+        .unwrap_or_default();
+    match &key {
+        None => checks.extend([
+            Check::info("account.entitlements", "skipped (no credentials)", None),
+            Check::info("probe.program-read", "skipped (no credentials)", None),
+            Check::info("probe.chain-read", "skipped (no credentials)", None),
+        ]),
+        Some(key) => {
+            let entitlements =
+                match keyed_client(key).and_then(|client| client.account_entitlements()) {
+                    Ok(entitlements) => {
+                        checks.extend(entitlement_checks(&entitlements, &usage));
+                        Some(entitlements)
+                    }
+                    Err(error) if api_error_details(&error).is_some_and(|e| e.status == 404) => {
+                        checks.extend(account_checks(account_capabilities(key), authoring));
+                        None
+                    }
+                    Err(error) => {
+                        checks.push(Check::unknown(
+                            "account.entitlements",
+                            format!("unknown: {}", account_unavailable_reason(&error)),
+                        ));
+                        None
+                    }
+                };
+            checks.extend(probe_checks(key, &usage, entitlements.as_ref()));
+        }
+    }
 
     // net.api / net.docs-mcp
     checks.push(net_api(&api_url));
@@ -615,6 +688,28 @@ fn project_manifest(config_path: &Path) -> std::result::Result<ProjectFacts, Che
     }
     match crate::project::installer::validate_project(config_path, true) {
         Ok((manifest, plan, lock)) => Ok(ProjectFacts {
+            usage: ProjectUsage {
+                registry_programs: manifest
+                    .dependencies()
+                    .filter(|(kind, _, _)| *kind == DependencyKind::Program)
+                    .filter_map(|(_, alias, dependency)| match &dependency.source {
+                        DependencySourceV1::Registry(source) => {
+                            Some((alias.clone(), source.registry.clone()))
+                        }
+                        _ => None,
+                    })
+                    .collect(),
+                programs: manifest
+                    .dependencies()
+                    .filter(|(kind, _, _)| *kind == DependencyKind::Program)
+                    .count(),
+                protocol: manifest.document.protocol.is_some()
+                    || manifest
+                        .dependencies()
+                        .any(|(kind, _, _)| kind == DependencyKind::Protocol),
+                dev: manifest.document.dev.is_some(),
+                authoring_stacks: manifest.document.authoring.stacks.len(),
+            },
             name: manifest.document.project.name.clone(),
             root: manifest.root.clone(),
             dependencies: manifest.dependencies().count(),
@@ -672,10 +767,348 @@ fn account_capabilities(key: &str) -> std::result::Result<AccountCapabilities, S
         .map_err(|error| account_unavailable_reason(&error))
 }
 
+fn keyed_client(key: &str) -> Result<ApiClient> {
+    Ok(ApiClient::new()?.with_api_key(key.to_string()))
+}
+
+/// The check id for a surface: `account.transaction-send`.
+fn surface_check_id(surface: &str) -> String {
+    format!("account.{}", surface.replace('_', "-"))
+}
+
+/// What a surface lets the account do, for the check's detail.
+fn surface_label(surface: &str) -> String {
+    match surface {
+        "program_read" => "program reads".to_string(),
+        "chain_read" => "chain reads".to_string(),
+        "transaction_inspect" => "raw transaction inspect".to_string(),
+        "transaction_send" => "raw transaction send".to_string(),
+        "protocol_prepare" => "protocol prepare".to_string(),
+        "protocol_submit" => "protocol submit".to_string(),
+        "deploy_stack" => "stack deploys".to_string(),
+        "create_protocol" => "creating protocols".to_string(),
+        "dev_environments" => "dev environments".to_string(),
+        other => other.replace('_', " "),
+    }
+}
+
+/// `dev tier free: 1 environment allowed, 0 in use`, from the quotas the
+/// server attached to `dev_environments`.
+fn dev_tier_detail(
+    entitlements: &AccountEntitlements,
+    quotas: Option<&serde_json::Value>,
+) -> Option<String> {
+    let tier = entitlements.dev_tier.as_deref().or_else(|| {
+        quotas
+            .and_then(|quotas| quotas.get("tier"))
+            .and_then(serde_json::Value::as_str)
+    })?;
+    let max = quotas
+        .and_then(|quotas| quotas.pointer("/limits/maxEnvironments"))
+        .and_then(serde_json::Value::as_u64);
+    let used = quotas
+        .and_then(|quotas| quotas.pointer("/usage/environments"))
+        .and_then(serde_json::Value::as_u64);
+    Some(match (max, used) {
+        (Some(max), Some(used)) => format!(
+            "dev tier {tier}: {max} environment{} allowed, {used} in use",
+            if max == 1 { "" } else { "s" }
+        ),
+        (Some(max), None) => format!(
+            "dev tier {tier}: {max} environment{} allowed",
+            if max == 1 { "" } else { "s" }
+        ),
+        _ => format!("dev tier {tier}"),
+    })
+}
+
+/// One check per surface the server reports, after an `account.plan` line.
+/// A surface the account can't use is `info` with the server's reason and
+/// unlock, or `warn` when arete.toml uses it.
+fn entitlement_checks(entitlements: &AccountEntitlements, usage: &ProjectUsage) -> Vec<Check> {
+    let mut checks = Vec::with_capacity(entitlements.surfaces.len() + 1);
+    let mut plan = match (&entitlements.plan, &entitlements.account_kind) {
+        (Some(plan), Some(kind)) => format!("plan {plan} ({kind} account)"),
+        (Some(plan), None) => format!("plan {plan}"),
+        (None, Some(kind)) => format!("{kind} account"),
+        (None, None) => "account".to_string(),
+    };
+    if let Some(tier) = &entitlements.dev_tier {
+        plan.push_str(&format!("; dev tier {tier}"));
+    }
+    checks.push(Check::ok("account.plan", plan));
+    for surface in &entitlements.surfaces {
+        let id = surface_check_id(&surface.surface);
+        let label = surface_label(&surface.surface);
+        if surface.allowed {
+            let detail = if surface.surface == "dev_environments" {
+                dev_tier_detail(entitlements, surface.quotas.as_ref())
+                    .unwrap_or_else(|| format!("can use {label}"))
+            } else {
+                format!("can use {label}")
+            };
+            checks.push(Check::ok(&id, detail));
+            continue;
+        }
+        let reason = surface
+            .reason
+            .clone()
+            .unwrap_or_else(|| format!("your account can't use {label}"));
+        let fix = surface.unlock.clone();
+        checks.push(match usage.uses(&surface.surface) {
+            Some(used) => Check::warn(&id, format!("{reason}; {used}"), fix),
+            None => Check::info(&id, reason, fix),
+        });
+    }
+    checks
+}
+
+/// What a probe reads: one program's Program Read metadata and one chain
+/// account through the gateway, both from the program's install descriptor.
+#[derive(Debug, Clone, PartialEq)]
+struct ProbeTargets {
+    program: String,
+    program_read: Option<ProbeRequest>,
+    chain_read: Option<ProbeRequest>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ProbeRequest {
+    session_endpoint: String,
+    session_request: serde_json::Value,
+    /// `GET` without a body, `POST` with one.
+    url: String,
+    body: Option<serde_json::Value>,
+}
+
+impl ProbeTargets {
+    fn from_install(alias: &str, install: &RegistryProgramInstallResponse) -> Self {
+        let RegistryProgramInstallTransport::HostedBinding { binding } = &install.transport;
+        let program_read = binding
+            .auth
+            .get("sessionEndpoint")
+            .and_then(serde_json::Value::as_str)
+            .map(|session_endpoint| ProbeRequest {
+                session_endpoint: session_endpoint.to_string(),
+                session_request: serde_json::json!({
+                    "scopes": ["read"],
+                    "targetKind": "program-read-binding",
+                    "targetId": binding.program_read_binding_id,
+                    "programReleaseHash": install.release.program_release_hash,
+                }),
+                url: format!(
+                    "{}/v1/releases/{}",
+                    binding.endpoint.trim_end_matches('/'),
+                    install.release.program_release_hash
+                ),
+                body: None,
+            });
+        let chain_read = install.chain_binding.as_ref().map(|chain| ProbeRequest {
+            session_endpoint: chain.auth.session_endpoint.clone(),
+            session_request: serde_json::json!({
+                "scopes": ["read"],
+                "targetKind": chain.auth.target_kind,
+                "targetId": chain.auth.target_id,
+            }),
+            url: format!("{}/chain/v1/account", chain.endpoint.trim_end_matches('/')),
+            body: Some(serde_json::json!({
+                "address": install.definition.program_id,
+                "options": {"commitment": "confirmed"},
+            })),
+        });
+        Self {
+            program: alias.to_string(),
+            program_read,
+            chain_read,
+        }
+    }
+}
+
+/// The two live probes. They read through the first registry program in
+/// arete.toml, and are skipped when there is none or the account can't use
+/// the surface.
+fn probe_checks(
+    key: &str,
+    usage: &ProjectUsage,
+    entitlements: Option<&AccountEntitlements>,
+) -> Vec<Check> {
+    let ids = ["probe.program-read", "probe.chain-read"];
+    let Some((alias, reference)) = usage.registry_programs.first() else {
+        return ids
+            .iter()
+            .map(|id| {
+                Check::info(
+                    id,
+                    "skipped (arete.toml has no registry program to read)",
+                    None,
+                )
+            })
+            .collect();
+    };
+    let client = match keyed_client(key) {
+        Ok(client) => client,
+        Err(error) => {
+            return ids
+                .iter()
+                .map(|id| Check::unknown(id, format!("unknown: {}", root_cause(&error))))
+                .collect()
+        }
+    };
+    let targets = match client.get_registry_program_install(reference, None) {
+        Ok(install) => ProbeTargets::from_install(alias, &install),
+        Err(error) => {
+            return ids
+                .iter()
+                .map(|id| {
+                    Check::unknown(
+                        id,
+                        format!("unknown: could not resolve {alias}: {}", root_cause(&error)),
+                    )
+                })
+                .collect()
+        }
+    };
+    let denied = |surface: &str| {
+        entitlements
+            .and_then(|entitlements| entitlements.surface(surface))
+            .is_some_and(|surface| !surface.allowed)
+    };
+    vec![
+        if denied("program_read") {
+            Check::info(ids[0], "skipped (program reads are not in your plan)", None)
+        } else {
+            run_probe(
+                &client,
+                ids[0],
+                "Program Read",
+                &targets.program,
+                targets.program_read.as_ref(),
+            )
+        },
+        if denied("chain_read") {
+            Check::info(ids[1], "skipped (chain reads are not in your plan)", None)
+        } else {
+            run_probe(
+                &client,
+                ids[1],
+                "chain read",
+                &targets.program,
+                targets.chain_read.as_ref(),
+            )
+        },
+    ]
+}
+
+/// Mint a session for the probe's target and make its one read. Reports the
+/// status and code it got; a retryable failure is named as one.
+fn run_probe(
+    client: &ApiClient,
+    id: &str,
+    what: &str,
+    program: &str,
+    request: Option<&ProbeRequest>,
+) -> Check {
+    let Some(request) = request else {
+        return Check::info(
+            id,
+            format!("skipped ({program} has no hosted {what} binding)"),
+            None,
+        );
+    };
+    let token =
+        match client.mint_target_session(&request.session_endpoint, &request.session_request) {
+            Ok(token) => token,
+            Err(error) => {
+                return match api_error_details(&error) {
+                    Some(api) => probe_failure(
+                        id,
+                        &format!("{what} session for {program}"),
+                        api.status,
+                        api.code,
+                        false,
+                    ),
+                    None => Check::warn(
+                        id,
+                        format!("{what} session for {program}: {}", root_cause(&error)),
+                        Some("check your network connection, then: a4 doctor".to_string()),
+                    ),
+                }
+            }
+        };
+    let http = match reqwest::blocking::Client::builder()
+        .timeout(PROBE_TIMEOUT)
+        .user_agent(format!("a4/{}", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(http) => http,
+        Err(error) => return Check::unknown(id, format!("unknown: {error}")),
+    };
+    let builder = match &request.body {
+        Some(body) => http.post(&request.url).json(body),
+        None => http.get(&request.url),
+    };
+    match builder.bearer_auth(token).send() {
+        Ok(response) if response.status().is_success() => Check::ok(
+            id,
+            format!("{what} for {program} → {}", response.status().as_u16()),
+        ),
+        Ok(response) => {
+            let status = response.status().as_u16();
+            let body: serde_json::Value = response.json().unwrap_or_default();
+            let code = body
+                .pointer("/error/code")
+                .or_else(|| body.get("code"))
+                .and_then(serde_json::Value::as_str);
+            let retryable = body
+                .get("retryable")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            probe_failure(
+                id,
+                &format!("{what} for {program}"),
+                status,
+                code,
+                retryable,
+            )
+        }
+        Err(error) => Check::warn(
+            id,
+            format!(
+                "{what} for {program}: {}",
+                root_cause(&anyhow::Error::from(error))
+            ),
+            Some("check your network connection, then: a4 doctor".to_string()),
+        ),
+    }
+}
+
+/// A probe that got an error status. 429, 5xx and errors the server marks
+/// retryable are Arete-side or transient: they say so and never read as a
+/// plan problem.
+fn probe_failure(id: &str, what: &str, status: u16, code: Option<&str>, retryable: bool) -> Check {
+    let code = code.map(|code| format!(" {code}")).unwrap_or_default();
+    if retryable || status == 429 || status >= 500 {
+        Check::warn(
+            id,
+            format!("{what} → HTTP {status}{code} (retryable: an Arete-side or transient failure, not your plan)"),
+            Some("retry in a few minutes; if it persists, report the code above to Arete".to_string()),
+        )
+    } else {
+        Check::warn(
+            id,
+            format!("{what} → HTTP {status}{code}"),
+            Some("see the account.* checks above for what your plan includes".to_string()),
+        )
+    }
+}
+
+/// What an API without the account endpoints answers.
+const NOT_REPORTED: &str = "this API does not report account capabilities yet";
+
 /// A neutral, user-facing reason account capabilities could not be read.
 pub(crate) fn account_unavailable_reason(error: &anyhow::Error) -> String {
     match api_error_details(error).map(|error| error.status) {
-        Some(404) => "this API does not report account capabilities yet".to_string(),
+        Some(404) => NOT_REPORTED.to_string(),
         Some(401 | 403) => "the API key was not accepted for account details".to_string(),
         _ => format!(
             "could not read account capabilities ({})",
@@ -694,6 +1127,14 @@ fn account_checks(
 ) -> Vec<Check> {
     let account = match account {
         Ok(account) => account,
+        // An API that doesn't report capabilities has answered: that is
+        // information, not an undecided check.
+        Err(reason) if reason == NOT_REPORTED => {
+            return vec![
+                Check::info("account.transactions", reason.clone(), None),
+                Check::info("account.deploy", reason, None),
+            ]
+        }
         Err(reason) => {
             return vec![
                 Check::unknown("account.transactions", format!("unknown: {reason}")),
@@ -1366,11 +1807,15 @@ mod tests {
     }
 
     #[test]
-    fn unknown_status_is_neutral_in_the_aggregate() {
+    fn an_undecided_check_makes_the_aggregate_unknown_not_ok() {
         let checks = vec![Check::ok("a", ""), Check::unknown("b", "")];
-        assert_eq!(aggregate(&checks), Status::Ok);
+        assert_eq!(aggregate(&checks), Status::Unknown);
         let json = serde_json::to_value(&checks[1]).unwrap();
         assert_eq!(json["status"], "unknown");
+        assert!(status_label(Status::Unknown).contains("unknown"));
+        // A warning or failure still wins.
+        let checks = vec![Check::unknown("a", ""), Check::warn("b", "", None)];
+        assert_eq!(aggregate(&checks), Status::Warn);
     }
 
     fn account(capabilities: &[&str]) -> AccountCapabilities {
@@ -1426,15 +1871,16 @@ mod tests {
 
     #[test]
     fn account_checks_are_unknown_when_the_server_cannot_say() {
-        let checks = account_checks(
-            Err("this API does not report account capabilities yet".into()),
-            3,
-        );
+        let checks = account_checks(Err("could not read account capabilities (boom)".into()), 3);
         assert!(checks.iter().all(|check| check.status == Status::Unknown));
         assert_eq!(
             checks[0].detail,
-            "unknown: this API does not report account capabilities yet"
+            "unknown: could not read account capabilities (boom)"
         );
+        assert_eq!(aggregate(&checks), Status::Unknown);
+        // An API without the endpoint has answered: information.
+        let checks = account_checks(Err(NOT_REPORTED.into()), 3);
+        assert!(checks.iter().all(|check| check.status == Status::Info));
         assert_eq!(aggregate(&checks), Status::Ok);
 
         let not_found: anyhow::Error = ApiHttpError {
@@ -1453,6 +1899,234 @@ mod tests {
             account_unavailable_reason(&anyhow::anyhow!("connection refused"))
                 .contains("connection refused")
         );
+    }
+
+    fn entitlements(plan: &str, surfaces: serde_json::Value) -> AccountEntitlements {
+        serde_json::from_value(serde_json::json!({
+            "schemaVersion": 1,
+            "accountKind": "human",
+            "plan": plan,
+            "devTier": "free",
+            "surfaces": surfaces,
+        }))
+        .unwrap()
+    }
+
+    fn check<'a>(checks: &'a [Check], id: &str) -> &'a Check {
+        checks
+            .iter()
+            .find(|check| check.id == id)
+            .unwrap_or_else(|| panic!("no {id}"))
+    }
+
+    #[test]
+    fn pro_entitlements_show_raw_transactions_and_a_free_dev_tier() {
+        let pro = entitlements(
+            "pro",
+            serde_json::json!([
+                {"surface": "transaction_inspect", "allowed": true},
+                {"surface": "transaction_send", "allowed": true},
+                {"surface": "dev_environments", "allowed": true, "quotas": {
+                    "tier": "free", "limits": {"maxEnvironments": 1}, "usage": {"environments": 0}
+                }},
+            ]),
+        );
+        let checks = entitlement_checks(&pro, &ProjectUsage::default());
+        assert_eq!(
+            check(&checks, "account.plan").detail,
+            "plan pro (human account); dev tier free"
+        );
+        assert_eq!(
+            check(&checks, "account.transaction-inspect").status,
+            Status::Ok
+        );
+        assert_eq!(
+            check(&checks, "account.transaction-send").status,
+            Status::Ok
+        );
+        let dev = check(&checks, "account.dev-environments");
+        assert_eq!(dev.status, Status::Ok);
+        assert_eq!(dev.detail, "dev tier free: 1 environment allowed, 0 in use");
+        assert_eq!(aggregate(&checks), Status::Ok);
+    }
+
+    #[test]
+    fn denied_surfaces_carry_the_reason_and_unlock_and_warn_when_used() {
+        let free = entitlements(
+            "free",
+            serde_json::json!([
+                {"surface": "transaction_send", "allowed": false,
+                 "reason": "Your plan does not include raw transaction send", "unlock": "Upgrade to Pro"},
+                {"surface": "program_read", "allowed": false, "reason": "public stacks only", "unlock": "Upgrade"},
+                {"surface": "dev_environments", "allowed": false, "reason": "turned off"},
+            ]),
+        );
+        let checks = entitlement_checks(&free, &ProjectUsage::default());
+        let send = check(&checks, "account.transaction-send");
+        assert_eq!(send.status, Status::Info);
+        assert_eq!(
+            send.detail,
+            "Your plan does not include raw transaction send"
+        );
+        assert_eq!(send.fix.as_deref(), Some("Upgrade to Pro"));
+        // With an unlock, --summary lists it.
+        assert!(needs_attention(send));
+        assert_eq!(aggregate(&checks), Status::Ok);
+
+        let usage = ProjectUsage {
+            programs: 2,
+            dev: true,
+            ..ProjectUsage::default()
+        };
+        let checks = entitlement_checks(&free, &usage);
+        let read = check(&checks, "account.program-read");
+        assert_eq!(read.status, Status::Warn);
+        assert!(
+            read.detail
+                .ends_with("arete.toml has 2 program dependencies"),
+            "{}",
+            read.detail
+        );
+        assert_eq!(
+            check(&checks, "account.dev-environments").status,
+            Status::Warn
+        );
+        // Raw send isn't something arete.toml declares.
+        assert_eq!(
+            check(&checks, "account.transaction-send").status,
+            Status::Info
+        );
+        assert_eq!(aggregate(&checks), Status::Warn);
+    }
+
+    #[test]
+    fn probe_targets_come_from_the_program_install_descriptor() {
+        let install: RegistryProgramInstallResponse = serde_json::from_value(serde_json::json!({
+            "installName": "klend",
+            "displayName": "klend",
+            "definition": {
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "programSpecHash": "spec", "idlContentHash": "c", "normalizedIdlHash": "n",
+                "idlPayload": {},
+                "programSpec": {"artifactVersion": "1.0.0", "kind": "program-spec", "artifactHash": "spec", "payload": {}},
+                "extensions": null
+            },
+            "release": {"programReleaseHash": "rel", "programSpecHash": "spec"},
+            "transport": {"kind": "hosted-binding", "binding": {
+                "endpoint": "https://reads.example.test/",
+                "programReadBindingId": "prb_1",
+                "auth": {"sessionEndpoint": "https://api.example.test/ws/sessions",
+                         "targetKind": "program-read-binding", "targetId": "prb_1"}
+            }},
+            "chainBinding": {
+                "endpoint": "https://gw.example.test",
+                "authPolicy": "signed_session",
+                "solanaGatewayBindingId": "sgb_1",
+                "cluster": "mainnet-beta",
+                "region": "us",
+                "auth": {
+                    "required": true, "mode": "signed_session",
+                    "sessionEndpoint": "https://api.example.test/ws/sessions",
+                    "jwksUrl": "https://api.example.test/ws/.well-known/jwks.json",
+                    "tokenTransport": "bearer", "audience": "aud",
+                    "targetKind": "solana-gateway-binding", "targetId": "sgb_1",
+                    "scopes": ["read"], "acceptedKeyClasses": ["secret"],
+                    "transactionEntitlementRequired": false
+                }
+            }
+        }))
+        .unwrap();
+        let targets = ProbeTargets::from_install("klend", &install);
+        let read = targets.program_read.unwrap();
+        assert_eq!(read.url, "https://reads.example.test/v1/releases/rel");
+        assert_eq!(read.session_request["programReleaseHash"], "rel");
+        assert_eq!(read.session_request["targetId"], "prb_1");
+        assert!(read.body.is_none());
+        let chain = targets.chain_read.unwrap();
+        assert_eq!(chain.url, "https://gw.example.test/chain/v1/account");
+        assert_eq!(
+            chain.session_request["targetKind"],
+            "solana-gateway-binding"
+        );
+        assert_eq!(
+            chain.body.unwrap()["address"],
+            "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD"
+        );
+    }
+
+    fn probe_against(responses: Vec<(u16, String)>) -> Check {
+        use crate::api_client::test_support::MockServer;
+        let server = MockServer::json_sequence(responses);
+        let base = server.base_url().to_string();
+        let client = ApiClient::with_base_url(&base).with_api_key("a4_sk_probe".into());
+        let request = ProbeRequest {
+            session_endpoint: format!("{base}/ws/sessions"),
+            session_request: serde_json::json!({"scopes": ["read"]}),
+            url: format!("{base}/v1/releases/rel"),
+            body: None,
+        };
+        let check = run_probe(
+            &client,
+            "probe.program-read",
+            "Program Read",
+            "klend",
+            Some(&request),
+        );
+        let mint = server.request();
+        assert_eq!(mint.request_line, "POST /ws/sessions HTTP/1.1");
+        check
+    }
+
+    #[test]
+    fn a_failing_program_read_limiter_is_a_named_retryable_warning() {
+        let check = probe_against(vec![
+            (200, r#"{"token":"tok"}"#.into()),
+            (503, r#"{"error":{"code":"RATE_LIMIT_UNAVAILABLE"}}"#.into()),
+        ]);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.detail.contains("HTTP 503 RATE_LIMIT_UNAVAILABLE"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("retryable"), "{}", check.detail);
+        assert!(check.detail.contains("not your plan"), "{}", check.detail);
+        let checks = vec![Check::ok("cli.version", ""), check];
+        assert_ne!(aggregate(&checks), Status::Ok);
+        let (shown, _) = summarize(&checks);
+        assert_eq!(shown[0].id, "probe.program-read");
+    }
+
+    #[test]
+    fn a_working_probe_reports_its_status() {
+        let check = probe_against(vec![
+            (200, r#"{"token":"tok"}"#.into()),
+            (200, r#"{"readiness":"ready"}"#.into()),
+        ]);
+        assert_eq!(check.status, Status::Ok);
+        assert_eq!(check.detail, "Program Read for klend → 200");
+    }
+
+    #[test]
+    fn a_refused_probe_session_names_status_and_code() {
+        let check = probe_against(vec![(
+            500,
+            r#"{"error":"boom","code":"internal_error"}"#.into(),
+        )]);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.detail.contains("HTTP 500 internal_error"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("retryable"), "{}", check.detail);
+    }
+
+    #[test]
+    fn probes_are_skipped_without_a_registry_program() {
+        let checks = probe_checks("a4_sk_unused", &ProjectUsage::default(), None);
+        assert_eq!(checks.len(), 2);
+        assert!(checks.iter().all(|check| check.status == Status::Info));
     }
 
     fn write(path: &Path, contents: &str) {

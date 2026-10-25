@@ -282,8 +282,10 @@ text output starts with the status line.
 | `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)                   | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch                 |
 | `auth.credentials`      | Key present for the active API URL                                                    | `info`: `a4 auth signup` (not needed to explore)                                              |
 | `auth.whoami`           | Credentials are accepted by the server                                                | `fail`: `a4 auth login --key …`                                                               |
-| `account.transactions`  | Account can inspect and send transactions (`transaction_inspect`, `transaction_send`) | `info`, naming the missing capabilities; `unknown` when the server cannot say                 |
-| `account.deploy`        | Account can deploy stacks with `a4 up` (`create_deployment`)                          | `info`; `warn` if `arete.toml` has `[authoring]` stacks; `unknown` when the server cannot say |
+| `account.plan`          | The account's plan and dev environment tier                                           | `unknown` when the server cannot say                                                          |
+| `account.<surface>`     | One per surface the account can or can't use (see below)                              | `info` with the reason and the unlock; `warn` if `arete.toml` uses the surface                |
+| `probe.program-read`    | One Program Read metadata request for the first registry program in `arete.toml`      | `warn` with the HTTP status and error code; retryable failures say so                         |
+| `probe.chain-read`      | One chain account read through the gateway for the same program                       | `warn` with the HTTP status and error code; retryable failures say so                         |
 | `net.api`               | `https://api.arete.run` reachable                                                     | `fail`                                                                                        |
 | `net.docs-mcp`          | `https://docs.arete.run/mcp` reachable                                                | `warn`                                                                                        |
 | `tools.node`            | `npx` on PATH (skills only)                                                           | `info`                                                                                        |
@@ -306,9 +308,11 @@ text output starts with the status line.
 }
 ```
 
-`status` is `ok`, `warn`, or `fail`; each check is `ok | warn | fail | info | unknown`. `unknown` means the check could not be decided (for example, the API does not report account capabilities) and, like `info`, never changes the overall status. Exit 0 for `ok` and `warn`, 1 for `fail`. `--fix` never touches auth, account, network, or tool checks. Human output is one line per check followed by the list of fixes.
+`status` is `ok`, `warn`, `unknown` or `fail`; each check is `ok | warn | fail | info | unknown`. `unknown` means a check could not be decided (for example, the account details could not be read); the overall status is `unknown` when that happens and nothing warns or fails. Exit 0 for `ok`, `warn` and `unknown`, 1 for `fail`. `--fix` never touches auth, account, network, or tool checks. Human output is one line per check followed by the list of fixes.
 
-The `account.*` checks read your account's capabilities from `GET /api/auth/me` with the stored key, and are skipped when no key is configured. A missing capability is reported, not failed: reads and subscriptions work without transaction access.
+The `account.*` checks read what your account can use from `GET /api/auth/entitlements` with the stored key, and are skipped when no key is configured. Surfaces are `program_read`, `chain_read`, `transaction_inspect`, `transaction_send`, `protocol_prepare`, `protocol_submit`, `deploy_stack`, `create_protocol` and `dev_environments`; the check id uses dashes (`account.transaction-send`). A surface you can't use is reported with the server's reason and how to unlock it, not failed: reads and subscriptions work without transaction access. It is a `warn` when `arete.toml` uses it: program dependencies need `program_read`, a protocol needs `protocol_prepare`, `protocol_submit` and `create_protocol`, a `[dev]` section needs `dev_environments`, and `[authoring]` stacks need `deploy_stack`. `account.dev-environments` shows your dev tier with its environment limit and usage. APIs without the entitlements route fall back to `account.transactions` and `account.deploy`, read from `GET /api/auth/me`.
+
+The `probe.*` checks make one real read each, through the first registry program in `arete.toml`, and report the status and error code they got. A 429, a 5xx or an error the server marks retryable is an Arete-side or transient failure, not your plan; retry later. They are skipped without a registry program or when your plan doesn't include the surface.
 
 `sdk.runtime` reads the `@usearete/*` packages that each TypeScript output of `arete.toml` resolves from `node_modules`. It warns when `@usearete/sdk`, `@usearete/react`, and the adapters are not all one version, when more than one copy of `@usearete/sdk` is installed (for example `node_modules/@usearete/react/node_modules/@usearete/sdk`), when `@usearete/sdk` is missing, and when the installed runtime differs from the `a4` version that generated the code. It fails only when a generated extension declares an `extensionApi` that differs from the installed `@usearete/sdk`'s, because that code cannot run. It is `info` (not applicable) when the project has no TypeScript outputs or no `node_modules`.
 
@@ -493,6 +497,12 @@ Verify authentication with server.
 ```bash
 a4 auth whoami
 ```
+
+It shows the account's plan, its dev environment tier, the surfaces the
+account can use and, for each one it can't, the reason and how to unlock it.
+`--json` carries them as `plan`, `devTier` and `entitlements` (a list of
+`{surface, allowed, reason?, unlock?}`; the `dev_environments` entry also has
+`quotas` with the tier's limits and usage).
 
 For an agent key it also shows the plan's usage. `When used up` says what
 happens once the allowance is used: `block` (requests are refused until the
