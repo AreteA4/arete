@@ -171,6 +171,16 @@ describe('session credential fallbacks', () => {
     credentialsDir = undefined;
   });
 
+  it('builds the session platform client with options omitted, as with {}', async () => {
+    vi.stubEnv('ARETE_API_KEY', 'a4_sk_fromenv');
+    const omitted = await createSession({ programs: { squads: program } });
+    const empty = await createSession({ programs: { squads: program } }, {});
+    expect(omitted.platform?.apiUrl).toBe('https://api.arete.run/api');
+    expect(empty.platform?.apiUrl).toBe(omitted.platform?.apiUrl);
+    omitted.close();
+    empty.close();
+  });
+
   it('never sends a saved a4 login to session endpoints or an API on another host', async () => {
     const saved = 'a4_sk_savedlogin';
     useSavedLogin(saved);

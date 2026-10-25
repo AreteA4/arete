@@ -1031,10 +1031,11 @@ export async function createSession<
 /**
  * The session's options with one shared API credential source in `auth`
  * (every member, transport and the platform client fetch the credential
- * through it) and the session's platform client.
+ * through it) and the session's platform client. Omitted options are
+ * treated as `{}`, so the credential fallbacks apply the same way.
  */
-function withSessionCredential<T extends SessionOptions<any, any> | undefined>(options: T): T {
-  if (!options) return options;
+function withSessionCredential<T extends SessionOptions<any, any>>(given: T | undefined): T {
+  const options = (given ?? {}) as T;
   const fetchForAuth = ((input: RequestInfo | URL, init?: RequestInit) =>
     (options.fetch ?? globalThis.fetch)(input, init)) as typeof fetch;
   const auth = shareApiCredential(resolveAuthConfig(options.auth), fetchForAuth);
