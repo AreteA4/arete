@@ -8,6 +8,8 @@ use url::{Host, Url};
 
 pub const API_PROBLEM_SCHEMA_VERSION: u8 = 1;
 pub const CLAIM_AGENT_MATERIALIZER_PATH: &str = "/api/agents/me/claim-links";
+/// Stable code of [`AreteError::UntrustedCredentialDestination`].
+pub const UNTRUSTED_CREDENTIAL_DESTINATION: &str = "UNTRUSTED_CREDENTIAL_DESTINATION";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -529,6 +531,22 @@ pub enum AreteError {
         message = .0.message()
     )]
     TransactionFailed(Box<crate::operations::TransactionFailureOutcome>),
+
+    /// An account credential (secret or agent key, `ARETE_API_KEY`, the
+    /// `a4` login) was about to be sent to an origin that is not a trusted
+    /// Arete API, such as a session endpoint a stack or binding names on
+    /// another host. Nothing was sent. Code
+    /// [`UNTRUSTED_CREDENTIAL_DESTINATION`]; the message names the origin,
+    /// the credential and how to allow it, never the key.
+    #[error("{UNTRUSTED_CREDENTIAL_DESTINATION}: {message}")]
+    UntrustedCredentialDestination {
+        /// `scheme://host[:port]` of the refused destination.
+        origin: String,
+        /// Which credential was withheld: `secret key`, `ARETE_API_KEY` or
+        /// `a4 login`.
+        credential: &'static str,
+        message: String,
+    },
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -663,7 +681,8 @@ impl AreteError {
             | Self::InvalidConfig(_)
             | Self::InvalidInput(_)
             | Self::WebSocketDisabled
-            | Self::TransactionFailed(_) => false,
+            | Self::TransactionFailed(_)
+            | Self::UntrustedCredentialDestination { .. } => false,
         }
     }
 

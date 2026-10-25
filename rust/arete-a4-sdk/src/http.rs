@@ -468,7 +468,9 @@ impl HttpAuthClient {
 
         let mut headers = HeaderMap::new();
         if let Some(auth) = &self.auth {
-            if let Some(api_key) = auth.api_key_for(endpoint) {
+            // Fails, before anything is sent, when an account credential
+            // would go to an untrusted origin.
+            if let Some(api_key) = auth.api_key_for(endpoint)? {
                 // The header error never echoes the key.
                 let field = if auth.secret_key.is_some() {
                     "secret"
@@ -530,7 +532,7 @@ impl HttpAuthClient {
             // to supply one. Custom Authorization headers have their own
             // advice to give.
             let sent_credential = self.auth.as_ref().is_some_and(|auth| {
-                auth.api_key_for(endpoint).is_some() || auth.has_authorization_header()
+                matches!(auth.api_key_for(endpoint), Ok(Some(_))) || auth.has_authorization_header()
             });
             if status.as_u16() == 401 && !sent_credential {
                 if let AreteError::AuthRequestFailed { message, .. } = &mut error {

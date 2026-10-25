@@ -485,7 +485,9 @@ impl RuntimeAuthState {
             .json(&TokenEndpointRequest::new(&self.websocket_url, release));
 
         if let Some(config) = self.config.as_ref() {
-            if let Some(api_key) = config.api_key_for(token_endpoint) {
+            // Fails, before anything is sent, when an account credential
+            // would go to an untrusted origin.
+            if let Some(api_key) = config.api_key_for(token_endpoint)? {
                 request = request.header("Authorization", format!("Bearer {}", api_key));
             }
 

@@ -101,6 +101,9 @@ impl ProtocolError {
                 problem: Some(problem),
                 ..
             }) => problem.code.as_deref(),
+            Self::Auth(AreteError::UntrustedCredentialDestination { .. }) => {
+                Some(crate::error::UNTRUSTED_CREDENTIAL_DESTINATION)
+            }
             _ => None,
         }
     }
@@ -132,7 +135,9 @@ pub struct ProtocolClientOptions {
     /// unset, [`ARETE_API_URL_ENV`] (the API origin, e.g.
     /// `https://api.arete.run`) is the default, so one generated client runs
     /// against another API by environment alone. The session endpoint
-    /// follows: `<origin>/ws/sessions`.
+    /// follows: `<origin>/ws/sessions`. A secret key passed in code may be
+    /// sent to this origin; the generated descriptor's URLs never widen
+    /// where a key may go.
     pub api_url: Option<String>,
     /// The session endpoint, instead of the one derived from the API URL or
     /// generated.
@@ -774,10 +779,16 @@ impl ProtocolClient {
             )));
         }
         // Keys mint through the generated session endpoint unless the app
-        // brought its own token strategy.
+        // brought its own token strategy. An `api_url` option is the app's
+        // own configuration, so a key passed in code may go to its origin;
+        // the generated descriptor's URLs never widen that.
+        let explicit_api_url = non_empty(options.api_url.as_deref()).map(str::to_string);
         let auth = auth.map(|mut auth| {
             if auth.token.is_none() && auth.get_token.is_none() && auth.token_endpoint.is_none() {
                 auth.token_endpoint = Some(session_endpoint.clone());
+            }
+            if auth.api_url.is_none() {
+                auth.api_url = explicit_api_url;
             }
             auth
         });

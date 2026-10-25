@@ -6,7 +6,7 @@ use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use url::Url;
+use url::{Host, Url};
 
 pub const TOKEN_REFRESH_BUFFER_SECONDS: u64 = 60;
 pub const MIN_REFRESH_DELAY_SECONDS: u64 = 1;
@@ -184,6 +184,9 @@ pub struct AuthConfig {
     /// of an `a4` login key; reset by [`Self::with_secret_key`].
     pub(crate) secret_key_source: SecretKeySource,
     pub(crate) token_endpoint_headers: HashMap<String, String>,
+    /// Arete API URL the app configured in code. Its origin may receive an
+    /// explicitly supplied secret key; see [`Self::with_api_url`].
+    pub(crate) api_url: Option<String>,
     pub(crate) token_transport: TokenTransport,
     /// Served stack version named in untargeted session requests. Set by the
     /// client from its generated [`crate::Stack`], never by callers.
@@ -206,6 +209,7 @@ impl fmt::Debug for AuthConfig {
                 "token_endpoint_headers",
                 &self.token_endpoint_headers.keys().collect::<Vec<_>>(),
             )
+            .field("api_url", &self.api_url)
             .field("token_transport", &self.token_transport)
             .field("stack_release", &self.stack_release)
             .finish()
@@ -231,6 +235,8 @@ impl AuthConfig {
     /// credential; no `Origin` header is needed. When no auth option is set,
     /// [`ARETE_API_KEY_ENV`], then the key from the active `a4` CLI login,
     /// supplies it when connecting through the client or session builder.
+    /// It is only sent to a trusted Arete API origin; see
+    /// [`Self::with_api_url`].
     pub fn with_secret_key(mut self, secret_key: impl Into<String>) -> Self {
         self.secret_key = Some(secret_key.into());
         self.secret_key_source = SecretKeySource::Option;
@@ -261,16 +267,56 @@ impl AuthConfig {
             .or(self.publishable_key.as_deref())
     }
 
-    /// The key sent as the bearer credential to `endpoint`, if any. A key
-    /// taken from the `a4` login is only sent to the Arete API it was stored
-    /// for.
-    pub(crate) fn api_key_for(&self, endpoint: &str) -> Option<&str> {
-        let from_login =
-            self.secret_key.is_some() && self.secret_key_source == SecretKeySource::A4Login;
-        if from_login && !crate::credentials::is_login_key_destination(endpoint) {
-            return None;
+    /// The Arete API this app talks to, when it is not
+    /// `https://api.arete.run`, e.g. a local or self-hosted API. A secret or
+    /// agent key passed in code is only sent to `https://api.arete.run`, the
+    /// origin of `ARETE_API_URL`, and the origin of this URL; a session or
+    /// token endpoint anywhere else is refused with
+    /// [`AreteError::UntrustedCredentialDestination`]. It does not widen
+    /// where `ARETE_API_KEY` or the `a4` login key may go.
+    pub fn with_api_url(mut self, api_url: impl Into<String>) -> Self {
+        self.api_url = Some(api_url.into());
+        self
+    }
+
+    /// The account credential this config sends as a bearer, if any: any
+    /// secret key, or a secret-class key given as the publishable key.
+    /// Publishable keys are not account credentials.
+    fn account_credential(&self) -> Option<AccountCredential> {
+        if self.secret_key.is_some() {
+            return match self.secret_key_source {
+                SecretKeySource::Env => Some(AccountCredential::EnvKey),
+                SecretKeySource::A4Login => Some(AccountCredential::A4Login),
+                SecretKeySource::Option => Some(AccountCredential::SecretKey),
+            };
         }
-        self.api_key()
+        self.publishable_key
+            .as_deref()
+            .filter(|key| classify_api_key(key) == ApiKeyClass::Secret)
+            .map(|_| AccountCredential::SecretKey)
+    }
+
+    /// The key sent as the bearer credential to `endpoint`, if any. An
+    /// account credential is only sent to a trusted Arete API origin (see
+    /// [`check_credential_destination`]); anywhere else this fails before
+    /// anything is sent.
+    pub(crate) fn api_key_for(&self, endpoint: &str) -> Result<Option<&str>, AreteError> {
+        self.api_key_for_with(endpoint, &|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::api_key_for`] reading the environment through `read_env`.
+    fn api_key_for_with(
+        &self,
+        endpoint: &str,
+        read_env: &dyn Fn(&str) -> Option<String>,
+    ) -> Result<Option<&str>, AreteError> {
+        let Some(key) = self.api_key() else {
+            return Ok(None);
+        };
+        if let Some(credential) = self.account_credential() {
+            check_credential_destination(credential, endpoint, self.api_url.as_deref(), read_env)?;
+        }
+        Ok(Some(key))
     }
 
     /// Whether the token endpoint headers carry their own `Authorization`.
@@ -347,6 +393,131 @@ impl AuthConfig {
             ResolvedAuthStrategy::TokenProvider(_) | ResolvedAuthStrategy::TokenEndpoint(_)
         )
     }
+}
+
+/// An account credential: it acts as the account, so it only goes to a
+/// trusted Arete API origin.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountCredential {
+    /// A secret or agent key passed in code.
+    SecretKey,
+    /// [`ARETE_API_KEY_ENV`].
+    EnvKey,
+    /// The key of the active `a4` CLI login.
+    A4Login,
+}
+
+impl AccountCredential {
+    fn label(self) -> &'static str {
+        match self {
+            Self::SecretKey => "secret key",
+            Self::EnvKey => ARETE_API_KEY_ENV,
+            Self::A4Login => "a4 login",
+        }
+    }
+}
+
+/// `scheme://host[:port]` of an http(s) URL: lowercase host without a
+/// trailing dot, default ports omitted. Userinfo is ignored here.
+fn url_origin(url: &Url) -> Option<String> {
+    let scheme = url.scheme();
+    if scheme != "https" && scheme != "http" {
+        return None;
+    }
+    let host = match url.host()? {
+        Host::Domain(domain) => domain.trim_end_matches('.').to_ascii_lowercase(),
+        Host::Ipv4(address) => address.to_string(),
+        Host::Ipv6(address) => format!("[{address}]"),
+    };
+    if host.is_empty() {
+        return None;
+    }
+    let port = url.port_or_known_default()?;
+    let default_port = if scheme == "https" { 443 } else { 80 };
+    Some(if port == default_port {
+        format!("{scheme}://{host}")
+    } else {
+        format!("{scheme}://{host}:{port}")
+    })
+}
+
+/// The origin `url` may be trusted as: `None` when it does not parse, is
+/// not http(s) or carries userinfo.
+fn trusted_origin(url: &str) -> Option<String> {
+    let url = Url::parse(url.trim()).ok()?;
+    if !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    url_origin(&url)
+}
+
+/// Decide whether `credential` may be sent to `destination`. Origins match
+/// by scheme, lowercase host without trailing dot and effective port.
+///
+/// Trusted: `https://api.arete.run`, always. The origin of `ARETE_API_URL`
+/// (read through `read_env`), for every credential but the `a4` login, which
+/// is stored for `https://api.arete.run` only. The origin of
+/// `explicit_api_url`, for a key passed in code only. Anything else (another
+/// host, a URL with userinfo, one that does not parse) is refused with
+/// [`AreteError::UntrustedCredentialDestination`]; the message never holds
+/// key material.
+pub(crate) fn check_credential_destination(
+    credential: AccountCredential,
+    destination: &str,
+    explicit_api_url: Option<&str>,
+    read_env: &dyn Fn(&str) -> Option<String>,
+) -> Result<(), AreteError> {
+    let target = trusted_origin(destination);
+    if let Some(target) = target.as_deref() {
+        let mut trusted = vec![crate::credentials::DEFAULT_API_URL.to_string()];
+        if credential != AccountCredential::A4Login {
+            trusted.extend(
+                read_env(crate::protocol::ARETE_API_URL_ENV)
+                    .as_deref()
+                    .and_then(trusted_origin),
+            );
+        }
+        if credential == AccountCredential::SecretKey {
+            trusted.extend(explicit_api_url.and_then(trusted_origin));
+        }
+        if trusted.iter().any(|origin| origin == target) {
+            return Ok(());
+        }
+    }
+
+    let origin = target
+        .or_else(|| {
+            Url::parse(destination.trim())
+                .ok()
+                .and_then(|url| url_origin(&url))
+        })
+        .unwrap_or_else(|| "an invalid URL".to_string());
+    let label = credential.label();
+    let allow = match credential {
+        AccountCredential::SecretKey => format!(
+            "To allow it, configure the API URL in code (AuthConfig::with_api_url or the protocol \
+             client's api_url) with that origin, or set {env} to it.",
+            env = crate::protocol::ARETE_API_URL_ENV
+        ),
+        AccountCredential::EnvKey => format!(
+            "To allow it, set {env} to that origin, or pass the key explicitly with \
+             AuthConfig::with_secret_key and configure the API URL in code.",
+            env = crate::protocol::ARETE_API_URL_ENV
+        ),
+        AccountCredential::A4Login => format!(
+            "The a4 login key only goes to {api}; pass the key explicitly with \
+             AuthConfig::with_secret_key (and configure the API URL in code) instead.",
+            api = crate::credentials::DEFAULT_API_URL
+        ),
+    };
+    Err(AreteError::UntrustedCredentialDestination {
+        message: format!(
+            "refusing to send the {label} to {origin}, which is not a trusted Arete API origin. \
+             Nothing was sent. {allow}"
+        ),
+        origin,
+        credential: label,
+    })
 }
 
 #[derive(Clone)]
@@ -810,67 +981,272 @@ mod tests {
         );
     }
 
-    #[test]
-    fn login_key_is_withheld_from_other_hosts() {
-        let login_key = "a4_ak_loginonlyforarete";
-        let resolved =
-            resolve_auth_config_with_sources(None, env_with(None), || Some(login_key.into()))
-                .unwrap()
-                .unwrap();
-        assert_eq!(
-            resolved.api_key_for("https://api.arete.run/ws/sessions"),
-            Some(login_key)
+    const FOREIGN: &str = "https://evil.example/sessions";
+    const ARETE_SESSIONS: &str = "https://api.arete.run/ws/sessions";
+
+    fn no_env(_: &str) -> Option<String> {
+        None
+    }
+
+    fn api_url_env(value: &'static str) -> impl Fn(&str) -> Option<String> {
+        move |name| (name == crate::protocol::ARETE_API_URL_ENV).then(|| value.to_string())
+    }
+
+    fn from_env() -> AuthConfig {
+        resolve_auth_config_with_sources(None, env_with(Some(AGENT)), || None)
+            .unwrap()
+            .unwrap()
+    }
+
+    fn from_login(key: &str) -> AuthConfig {
+        resolve_auth_config_with_sources(None, env_with(None), || Some(key.into()))
+            .unwrap()
+            .unwrap()
+    }
+
+    /// The refusal for `config` sending to `endpoint`, checked for its code,
+    /// origin and credential and for leaking no key material.
+    fn refusal(
+        config: &AuthConfig,
+        endpoint: &str,
+        read_env: &dyn Fn(&str) -> Option<String>,
+        origin: &str,
+        credential: &str,
+    ) -> String {
+        let error = config.api_key_for_with(endpoint, read_env).unwrap_err();
+        let AreteError::UntrustedCredentialDestination {
+            origin: refused,
+            credential: withheld,
+            ..
+        } = &error
+        else {
+            panic!("expected an untrusted destination refusal, got {error:?}");
+        };
+        assert_eq!(refused, origin);
+        assert_eq!(*withheld, credential);
+        assert!(!error.should_retry());
+        let message = error.to_string();
+        assert!(
+            message.starts_with(crate::error::UNTRUSTED_CREDENTIAL_DESTINATION),
+            "{message}"
         );
-        // Binding paths clone the config and point it at a stack-provided
-        // session endpoint; the login key must not follow.
-        let rebound = resolved
-            .clone()
-            .with_token_endpoint("https://evil.example/sessions");
-        assert_eq!(rebound.api_key_for("https://evil.example/sessions"), None);
-        // Explicit keys are unaffected.
+        assert!(message.contains(origin), "{message}");
+        assert!(message.contains(credential), "{message}");
+        assert_no_key_material(&message);
+        assert!(!message.contains("loginonly"), "{message}");
+        message
+    }
+
+    #[test]
+    fn explicit_secret_key_is_refused_for_a_foreign_session_endpoint() {
+        // Binding paths clone the config and point it at a session endpoint
+        // the stack names; the key must not follow it to another host.
+        let rebound = AuthConfig::default()
+            .with_secret_key(SECRET)
+            .with_token_endpoint(FOREIGN);
+        let message = refusal(
+            &rebound,
+            FOREIGN,
+            &no_env,
+            "https://evil.example",
+            "secret key",
+        );
+        assert!(message.contains("with_api_url"), "{message}");
+        assert!(message.contains("ARETE_API_URL"), "{message}");
+        // A secret-class key passed as the publishable key is still one.
+        let misfiled = AuthConfig::default().with_publishable_key(AGENT);
+        refusal(
+            &misfiled,
+            FOREIGN,
+            &no_env,
+            "https://evil.example",
+            "secret key",
+        );
+        // Userinfo and unparseable destinations are never trusted.
         let explicit = AuthConfig::default().with_secret_key(SECRET);
+        refusal(
+            &explicit,
+            "https://user@api.arete.run/ws/sessions",
+            &no_env,
+            "https://api.arete.run",
+            "secret key",
+        );
+        refusal(
+            &explicit,
+            "not a url",
+            &no_env,
+            "an invalid URL",
+            "secret key",
+        );
+    }
+
+    #[test]
+    fn env_key_is_refused_for_a_foreign_session_endpoint() {
+        let config = from_env();
+        let message = refusal(
+            &config,
+            FOREIGN,
+            &no_env,
+            "https://evil.example",
+            ARETE_API_KEY_ENV,
+        );
+        assert!(message.contains("set ARETE_API_URL"), "{message}");
+        // An api_url configured in code does not widen ARETE_API_KEY.
+        let widened = config.clone().with_api_url("https://evil.example/api");
+        refusal(
+            &widened,
+            FOREIGN,
+            &no_env,
+            "https://evil.example",
+            ARETE_API_KEY_ENV,
+        );
+        // ARETE_API_URL does.
+        let env = api_url_env("https://evil.example");
+        assert_eq!(config.api_key_for_with(FOREIGN, &env).unwrap(), Some(AGENT));
+    }
+
+    #[test]
+    fn login_key_is_refused_for_a_foreign_session_endpoint() {
+        let login_key = "a4_ak_loginonlyforarete";
+        let config = from_login(login_key)
+            .with_token_endpoint(FOREIGN)
+            .with_api_url("https://evil.example/api");
+        // Neither an api_url in code nor ARETE_API_URL widens the a4 login.
+        let env = api_url_env("https://evil.example");
+        let message = refusal(&config, FOREIGN, &env, "https://evil.example", "a4 login");
+        assert!(
+            message.contains("only goes to https://api.arete.run"),
+            "{message}"
+        );
+        assert!(message.contains("with_secret_key"), "{message}");
+        assert!(!message.contains(login_key), "{message}");
+    }
+
+    #[test]
+    fn account_credentials_go_to_the_arete_api() {
+        let login_key = "a4_ak_loginonlyforarete";
+        for (config, key) in [
+            (AuthConfig::default().with_secret_key(SECRET), SECRET),
+            (from_env(), AGENT),
+            (from_login(login_key), login_key),
+        ] {
+            for endpoint in [ARETE_SESSIONS, "https://API.Arete.Run.:443/ws/sessions"] {
+                assert_eq!(
+                    config.api_key_for_with(endpoint, &no_env).unwrap(),
+                    Some(key),
+                    "{endpoint}"
+                );
+            }
+            // Same host, another scheme or port, is another origin.
+            assert!(config
+                .api_key_for_with("http://api.arete.run/ws/sessions", &no_env)
+                .is_err());
+            assert!(config
+                .api_key_for_with("https://api.arete.run:8443/ws/sessions", &no_env)
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn explicit_api_url_origin_admits_an_explicit_key() {
+        let config = AuthConfig::default()
+            .with_secret_key(SECRET)
+            .with_api_url("http://127.0.0.1:4100/api/");
         assert_eq!(
-            explicit.api_key_for("https://evil.example/sessions"),
+            config
+                .api_key_for_with("http://127.0.0.1:4100/ws/sessions", &no_env)
+                .unwrap(),
             Some(SECRET)
         );
+        assert_eq!(
+            config.api_key_for_with(ARETE_SESSIONS, &no_env).unwrap(),
+            Some(SECRET)
+        );
+        refusal(
+            &config,
+            "http://127.0.0.1:4101/ws/sessions",
+            &no_env,
+            "http://127.0.0.1:4101",
+            "secret key",
+        );
+        // Host case and a trailing dot do not make another origin.
+        let named = AuthConfig::default()
+            .with_secret_key(SECRET)
+            .with_api_url("https://API.Example.test./api");
+        assert!(named
+            .api_key_for_with("https://api.example.test/ws/sessions", &no_env)
+            .is_ok());
+        // An api_url with userinfo trusts nothing.
+        let userinfo = AuthConfig::default()
+            .with_secret_key(SECRET)
+            .with_api_url("https://user@api.example.test/api");
+        refusal(
+            &userinfo,
+            "https://api.example.test/ws/sessions",
+            &no_env,
+            "https://api.example.test",
+            "secret key",
+        );
+    }
+
+    #[test]
+    fn publishable_keys_and_session_tokens_are_unaffected() {
+        let publishable = AuthConfig::default().with_publishable_key(PUBLISHABLE);
+        assert_eq!(
+            publishable.api_key_for_with(FOREIGN, &no_env).unwrap(),
+            Some(PUBLISHABLE)
+        );
+        // A session token is not sent to the token endpoint at all.
+        let token = AuthConfig::default()
+            .with_token("session-token")
+            .with_token_endpoint(FOREIGN);
+        assert_eq!(token.api_key_for_with(FOREIGN, &no_env).unwrap(), None);
+        assert!(matches!(
+            token.resolve_strategy("wss://demo.stack.arete.run"),
+            ResolvedAuthStrategy::StaticToken(_)
+        ));
+        // Any key passed as the secret key is an account credential, whatever
+        // its prefix.
+        let custom = AuthConfig::default().with_secret_key("custom-key");
+        assert!(matches!(
+            custom.api_key_for_with(FOREIGN, &no_env),
+            Err(AreteError::UntrustedCredentialDestination { .. })
+        ));
     }
 
     #[test]
     fn restriction_follows_the_config_not_the_key_value() {
         let key = "a4_ak_sharedbetweenclients";
         let custom = "https://auth.example.com/token";
-        let discovered =
-            resolve_auth_config_with_sources(None, env_with(None), || Some(key.into()))
-                .unwrap()
-                .unwrap();
-        // Another client in the same process passes the same key explicitly.
+        let discovered = from_login(key).with_api_url("https://auth.example.com");
+        // Another client in the same process passes the same key explicitly
+        // and configures that API in code.
         let explicit = resolve_auth_config_with_sources(
             Some(
                 AuthConfig::default()
                     .with_secret_key(key)
-                    .with_token_endpoint(custom),
+                    .with_token_endpoint(custom)
+                    .with_api_url("https://auth.example.com"),
             ),
             env_with(None),
             || Some(key.into()),
         )
         .unwrap()
         .unwrap();
-        assert_eq!(explicit.api_key_for(custom), Some(key));
-        assert_eq!(discovered.api_key_for(custom), None);
-        // Giving the discovered config its own key lifts the restriction.
+        assert_eq!(
+            explicit.api_key_for_with(custom, &no_env).unwrap(),
+            Some(key)
+        );
+        assert!(discovered.api_key_for_with(custom, &no_env).is_err());
+        // Giving the discovered config its own key makes it explicit.
         assert_eq!(
             discovered
                 .clone()
                 .with_secret_key(SECRET)
-                .api_key_for(custom),
+                .api_key_for_with(custom, &no_env)
+                .unwrap(),
             Some(SECRET)
         );
-        // ARETE_API_KEY keys are not restricted.
-        let from_env =
-            resolve_auth_config_with_sources(None, env_with(Some(AGENT)), || Some(key.into()))
-                .unwrap()
-                .unwrap();
-        assert_eq!(from_env.api_key_for(custom), Some(AGENT));
     }
 
     #[test]
