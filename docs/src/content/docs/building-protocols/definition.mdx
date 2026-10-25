@@ -67,7 +67,10 @@ instance parameters. Use decimal strings for integer values at API boundaries.
 
 `ix` takes an installed program, its IDL instruction name, and expressions for
 arguments and accounts. Expressions such as `args.amount`, `wallet`, and
-`instance.accounts.vault` are resolved when preparing the step.
+`instance.accounts.vault` are resolved when preparing the step. The
+[expression reference](/reference/protocol-expressions/) lists every
+function, operator and name, where each name is in scope, and every check
+rejection with its fix.
 
 Instruction, argument, and account names come from the installed IDL.
 TypeScript catches unknown names and missing required values. Derivable or

@@ -1,0 +1,1197 @@
+{
+  "checkCodes": [
+    {
+      "cause": "The expression does not parse, a function got the wrong number of arguments, or an argument that must be a literal is not one.",
+      "code": "invalid-expression",
+      "fix": "Fix the syntax at the reported offset; check the function's arguments in this reference.",
+      "stage": "expression"
+    },
+    {
+      "cause": "A name that is not in scope at this place in the spec.",
+      "code": "unknown-reference",
+      "fix": "Check the scope table: declare the arg, read, resource or param, or move the expression to a site where the name exists.",
+      "stage": "expression"
+    },
+    {
+      "cause": "A function, operator or character the language does not have, float math in a protocol, or a `??` default that is not a literal.",
+      "code": "unsupported-feature",
+      "fix": "Use a listed function or operator; see what is not supported, with its workaround.",
+      "stage": "expression"
+    },
+    {
+      "cause": "The expression has the wrong type for its place (a guard that is not boolean, an account that is not a public key, a wrap amount that is not an integer) or a function got the wrong argument type.",
+      "code": "expression-type-mismatch",
+      "fix": "Compare the message's expected and found types; cast with u64(...), string(...), etc. where a conversion is meant.",
+      "stage": "expression"
+    },
+    {
+      "cause": "The expression is over a limit: source bytes, nodes or nesting depth.",
+      "code": "source-limit-exceeded",
+      "fix": "Split the logic: derive a value in a machine state, or move a constant into a resource.",
+      "stage": "expression"
+    },
+    {
+      "cause": "A Squads step's multisig reads something other than resources.* and literals.",
+      "code": "squads-multisig-not-from-resources",
+      "fix": "Declare the multisig as a resource and use resources.<name>.",
+      "stage": "expression"
+    },
+    {
+      "cause": "The template's program alias has no pinned ProgramSpec: it is undeclared, or it is a builtin program, which templates cannot call yet.",
+      "code": "template_program_spec_missing",
+      "fix": "Install the program and use its alias; for token accounts use the step's glue.",
+      "stage": "template"
+    },
+    {
+      "cause": "The program's IDL has no instruction with this name.",
+      "code": "template_unknown_instruction",
+      "fix": "Use the instruction name from the IDL (camelCase and snake_case both match).",
+      "stage": "template"
+    },
+    {
+      "cause": "The template supplies an argument the instruction does not take.",
+      "code": "template_unknown_arg",
+      "fix": "Remove it, or correct its name to the IDL's.",
+      "stage": "template"
+    },
+    {
+      "cause": "The template does not supply one of the instruction's arguments.",
+      "code": "template_missing_arg",
+      "fix": "Add every IDL argument to the template's args.",
+      "stage": "template"
+    },
+    {
+      "cause": "An argument's expression has a type the IDL argument cannot take.",
+      "code": "template_arg_type_mismatch",
+      "fix": "Cast or change the expression to the IDL type.",
+      "stage": "template"
+    },
+    {
+      "cause": "The template names an account the instruction does not have.",
+      "code": "template_unknown_account",
+      "fix": "Remove it, or correct its name to the IDL's.",
+      "stage": "template"
+    },
+    {
+      "cause": "A required account is neither supplied nor derivable from the IDL (a PDA or a known program address).",
+      "code": "template_missing_account",
+      "fix": "Supply it in the template's accounts.",
+      "stage": "template"
+    },
+    {
+      "cause": "The step being prepared does not exist.",
+      "code": "template_unknown_step",
+      "fix": "Call a step the deployment's spec declares.",
+      "stage": "prepare"
+    },
+    {
+      "cause": "The step builds with a handler, not a template.",
+      "code": "template_not_a_template",
+      "fix": "Internal: report it.",
+      "stage": "prepare"
+    },
+    {
+      "cause": "An expression failed while building the transaction (a null where a value is needed, an overflow, a missing account).",
+      "code": "template_evaluation_failed",
+      "fix": "Read the message; guard against the case in the step's guards.",
+      "stage": "prepare"
+    },
+    {
+      "cause": "An expression was not checked at upload.",
+      "code": "template_unchecked",
+      "fix": "Internal: report it.",
+      "stage": "prepare"
+    },
+    {
+      "cause": "A value does not fit the IDL type when the instruction is encoded (out of range, wrong length).",
+      "code": "template_encode_failed",
+      "fix": "Bound the value with a guard, or cast it to the IDL type.",
+      "stage": "prepare"
+    }
+  ],
+  "deploymentFields": [
+    {
+      "name": "deployment.id",
+      "type": "string"
+    },
+    {
+      "name": "deployment.attestation",
+      "type": "pubkey"
+    },
+    {
+      "name": "deployment.squadsProposer",
+      "type": "option<pubkey>"
+    }
+  ],
+  "functions": [
+    {
+      "args": [
+        {
+          "name": "condition",
+          "type": "bool"
+        },
+        {
+          "name": "then",
+          "type": "any"
+        },
+        {
+          "name": "else",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "if(args.amount > 1000, args.amount, 1000)",
+      "name": "if",
+      "returns": "the type of `then`",
+      "signature": "if(condition, then, else)",
+      "summary": "`then` when the condition is true, otherwise `else`. Both branches must have compatible types.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "some(args.amount)",
+      "name": "some",
+      "returns": "the type of `value`, nullable",
+      "signature": "some(value)",
+      "summary": "Marks a value as optional (`Option::Some`).",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "exists(reads.vault.amount)",
+      "name": "exists",
+      "returns": "bool",
+      "signature": "exists(value)",
+      "summary": "True when the value is not null.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "is_some(reads.vault.amount)",
+      "name": "is_some",
+      "returns": "bool",
+      "signature": "is_some(value)",
+      "summary": "True when the value is not null (the same as `exists`).",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "is_none(reads.vault.amount)",
+      "name": "is_none",
+      "returns": "bool",
+      "signature": "is_none(value)",
+      "summary": "True when the value is null.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "is_null(reads.vault.amount)",
+      "name": "is_null",
+      "returns": "bool",
+      "signature": "is_null(value)",
+      "summary": "True when the value is null (the same as `is_none`).",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "n",
+          "type": "integer"
+        }
+      ],
+      "evaluates": true,
+      "example": "abs(params.rate)",
+      "name": "abs",
+      "returns": "the type of `n`, nullable",
+      "signature": "abs(n)",
+      "summary": "Absolute value; null when `n` is null.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "a",
+          "type": "integer"
+        },
+        {
+          "name": "b",
+          "type": "integer"
+        }
+      ],
+      "evaluates": true,
+      "example": "min(args.amount, reads.vault.amount)",
+      "name": "min",
+      "returns": "the type of `a`, nullable",
+      "signature": "min(a, b)",
+      "summary": "The smaller of two numbers; null when either is null.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "a",
+          "type": "integer"
+        },
+        {
+          "name": "b",
+          "type": "integer"
+        }
+      ],
+      "evaluates": true,
+      "example": "max(args.amount, 1000)",
+      "name": "max",
+      "returns": "the type of `a`, nullable",
+      "signature": "max(a, b)",
+      "summary": "The larger of two numbers; null when either is null.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "amount",
+          "type": "number"
+        },
+        {
+          "name": "decimals",
+          "type": "integer"
+        }
+      ],
+      "evaluates": false,
+      "example": "ui_amount(args.amount, params.decimals)",
+      "name": "ui_amount",
+      "returns": "f64",
+      "signature": "ui_amount(amount, decimals)",
+      "summary": "A raw token amount scaled down by its decimals.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "amount",
+          "type": "number"
+        },
+        {
+          "name": "decimals",
+          "type": "integer"
+        }
+      ],
+      "evaluates": false,
+      "example": "raw_amount(args.amount, params.decimals)",
+      "name": "raw_amount",
+      "returns": "u64",
+      "signature": "raw_amount(amount, decimals)",
+      "summary": "A UI token amount scaled up by its decimals.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "a",
+          "type": "scalar"
+        },
+        {
+          "name": "b",
+          "type": "scalar"
+        }
+      ],
+      "evaluates": true,
+      "example": "concat(args.label, \"-\", args.amount)",
+      "name": "concat",
+      "returns": "string",
+      "signature": "concat(a, b, ...)",
+      "summary": "Joins two or more scalars into a string; null when any part is null.",
+      "variadic": true
+    },
+    {
+      "args": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "prefix",
+          "type": "string"
+        }
+      ],
+      "evaluates": true,
+      "example": "starts_with(args.label, \"vault-\")",
+      "name": "starts_with",
+      "returns": "bool?",
+      "signature": "starts_with(text, prefix)",
+      "summary": "Whether `text` begins with `prefix`; null when either is null.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "text",
+          "type": "string"
+        },
+        {
+          "name": "separator",
+          "type": "string"
+        },
+        {
+          "name": "position",
+          "type": "integer literal"
+        }
+      ],
+      "evaluates": true,
+      "example": "split_part(args.label, \":\", 2)",
+      "name": "split_part",
+      "returns": "string?",
+      "signature": "split_part(text, separator, position)",
+      "summary": "The `position`-th field (1-based) of `text` split on `separator`; null when out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "bytes",
+          "type": "bytes"
+        }
+      ],
+      "evaluates": true,
+      "example": "utf8(args.seed)",
+      "name": "utf8",
+      "returns": "string?",
+      "signature": "utf8(bytes)",
+      "summary": "Bytes as UTF-8 text; null when they are not valid UTF-8.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "len(args.seed)",
+      "name": "len",
+      "returns": "u64",
+      "signature": "len(value)",
+      "summary": "The number of items in an array, or of bytes in a string.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "array",
+          "type": "array"
+        }
+      ],
+      "evaluates": true,
+      "example": "sum(args.seed)",
+      "name": "sum",
+      "returns": "u64",
+      "signature": "sum(array)",
+      "summary": "The sum of an array of integers.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "array",
+          "type": "array"
+        },
+        {
+          "name": "i",
+          "type": "integer literal"
+        }
+      ],
+      "evaluates": true,
+      "example": "index(args.seed, 0)",
+      "name": "index",
+      "returns": "any",
+      "signature": "index(array, i)",
+      "summary": "The item at a literal, 0-based position; null when out of range. The result is untyped.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "array",
+          "type": "array"
+        },
+        {
+          "name": "start",
+          "type": "integer literal"
+        },
+        {
+          "name": "end",
+          "type": "integer literal"
+        }
+      ],
+      "evaluates": true,
+      "example": "slice(args.seed, 0, 8)",
+      "name": "slice",
+      "returns": "the type of `array`",
+      "signature": "slice(array, start, end)",
+      "summary": "The items from `start` up to (not including) `end`, both literal and clamped to the array.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "bytes",
+          "type": "bytes"
+        }
+      ],
+      "evaluates": false,
+      "example": "u64_from_le_bytes(reads.vault.data)",
+      "name": "u64_from_le_bytes",
+      "returns": "u64",
+      "signature": "u64_from_le_bytes(bytes)",
+      "summary": "Reads 8 little-endian bytes as a u64.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "bytes",
+          "type": "bytes"
+        }
+      ],
+      "evaluates": false,
+      "example": "u64_from_be_bytes(reads.vault.data)",
+      "name": "u64_from_be_bytes",
+      "returns": "u64",
+      "signature": "u64_from_be_bytes(bytes)",
+      "summary": "Reads 8 big-endian bytes as a u64.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "bytes",
+          "type": "bytes"
+        }
+      ],
+      "evaluates": false,
+      "example": "keccak256(args.seed)",
+      "name": "keccak256",
+      "returns": "bytes",
+      "signature": "keccak256(bytes)",
+      "summary": "The Keccak-256 hash of the bytes.",
+      "variadic": false
+    },
+    {
+      "args": [],
+      "evaluates": false,
+      "example": "slot()",
+      "name": "slot",
+      "returns": "u64",
+      "signature": "slot()",
+      "summary": "The slot of the update being processed.",
+      "variadic": false
+    },
+    {
+      "args": [],
+      "evaluates": true,
+      "example": "timestamp()",
+      "name": "timestamp",
+      "returns": "i64",
+      "signature": "timestamp()",
+      "summary": "The current Unix time in seconds (in protocols, the same as `now`).",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "program",
+          "type": "string literal"
+        },
+        {
+          "name": "name",
+          "type": "string literal"
+        },
+        {
+          "name": "seed",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "pda(\"vault\", \"escrow\", wallet, args.amount)",
+      "name": "pda",
+      "returns": "pubkey",
+      "signature": "pda(program, name, seed, ...)",
+      "summary": "Derives a PDA the program's IDL names: the program alias, the PDA's name, then its non-constant seeds in order. A PDA with no non-constant seeds takes none.",
+      "variadic": true
+    },
+    {
+      "args": [
+        {
+          "name": "owner",
+          "type": "pubkey"
+        },
+        {
+          "name": "mint",
+          "type": "pubkey"
+        }
+      ],
+      "evaluates": true,
+      "example": "ata(wallet, resources.mint)",
+      "name": "ata",
+      "returns": "pubkey",
+      "signature": "ata(owner, mint)",
+      "summary": "The classic SPL associated token account of `owner` for `mint`.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "u8(params.decimals)",
+      "name": "u8",
+      "returns": "u8",
+      "signature": "u8(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "u16(params.decimals)",
+      "name": "u16",
+      "returns": "u16",
+      "signature": "u16(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "u32(args.amount)",
+      "name": "u32",
+      "returns": "u32",
+      "signature": "u32(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "u64(params.rate)",
+      "name": "u64",
+      "returns": "u64",
+      "signature": "u64(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "u128(args.amount)",
+      "name": "u128",
+      "returns": "u128",
+      "signature": "u128(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "i8(params.decimals)",
+      "name": "i8",
+      "returns": "i8",
+      "signature": "i8(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "i16(params.decimals)",
+      "name": "i16",
+      "returns": "i16",
+      "signature": "i16(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "i32(params.rate)",
+      "name": "i32",
+      "returns": "i32",
+      "signature": "i32(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "i64(args.amount)",
+      "name": "i64",
+      "returns": "i64",
+      "signature": "i64(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "i128(args.amount)",
+      "name": "i128",
+      "returns": "i128",
+      "signature": "i128(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": false,
+      "example": "f32(args.amount)",
+      "name": "f32",
+      "returns": "f32",
+      "signature": "f32(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": false,
+      "example": "f64(args.amount)",
+      "name": "f64",
+      "returns": "f64",
+      "signature": "f64(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "string(args.amount)",
+      "name": "string",
+      "returns": "string",
+      "signature": "string(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    },
+    {
+      "args": [
+        {
+          "name": "value",
+          "type": "any"
+        }
+      ],
+      "evaluates": true,
+      "example": "bool(exists(reads.vault.amount))",
+      "name": "bool",
+      "returns": "bool",
+      "signature": "bool(value)",
+      "summary": "Converts a value to this type; null stays null. Integer casts fail when the value is out of range.",
+      "variadic": false
+    }
+  ],
+  "limits": {
+    "maxExpressionBytes": 2048,
+    "maxExpressionNodes": 1024,
+    "maxNestingDepth": 64
+  },
+  "names": [
+    {
+      "name": "now",
+      "summary": "The current Unix time in seconds.",
+      "type": "i64"
+    },
+    {
+      "name": "deployment.id",
+      "summary": "The deployment's id.",
+      "type": "string"
+    },
+    {
+      "name": "deployment.attestation",
+      "summary": "The deployment's attestation public key.",
+      "type": "pubkey"
+    },
+    {
+      "name": "deployment.squadsProposer",
+      "summary": "The calling account's Squads proposer; null when no step uses squadsProposer.",
+      "type": "pubkey?"
+    },
+    {
+      "name": "params.<name>",
+      "summary": "An instance param, fixed when the instance is created (nested object fields as params.<name>.<field>).",
+      "type": "the param's schema type"
+    },
+    {
+      "name": "resources.<name>",
+      "summary": "A deployment resource, published before activation (nested fields as resources.<name>.<field>).",
+      "type": "the resource's schema type"
+    },
+    {
+      "name": "wallet",
+      "summary": "The wallet calling the step (in a participant machine, the participant's wallet).",
+      "type": "pubkey"
+    },
+    {
+      "name": "args.<name>",
+      "summary": "An argument of the step being called.",
+      "type": "the arg's schema type"
+    },
+    {
+      "name": "ephemeral.<name>",
+      "summary": "A fresh keypair the step allocates (step.ephemeral).",
+      "type": "pubkey"
+    },
+    {
+      "name": "reads.<read>.exists",
+      "summary": "Whether the read account exists.",
+      "type": "bool"
+    },
+    {
+      "name": "reads.<read>.address",
+      "summary": "The read account's address.",
+      "type": "pubkey"
+    },
+    {
+      "name": "reads.<read>.lamports",
+      "summary": "The read account's lamports.",
+      "type": "u64"
+    },
+    {
+      "name": "reads.<read>.amount",
+      "summary": "A token account read's balance (tokenAccount reads).",
+      "type": "u64"
+    },
+    {
+      "name": "reads.<read>.mint",
+      "summary": "A token account read's mint (tokenAccount reads).",
+      "type": "pubkey"
+    },
+    {
+      "name": "reads.<read>.owner",
+      "summary": "A token account read's owner (tokenAccount reads).",
+      "type": "pubkey"
+    },
+    {
+      "name": "reads.<read>.<field>",
+      "summary": "A decoded field of a program account read (account reads), typed by the program's IDL at run time.",
+      "type": "any"
+    },
+    {
+      "name": "instance.id",
+      "summary": "The instance's id.",
+      "type": "string"
+    },
+    {
+      "name": "instance.state",
+      "summary": "The instance machine's current state.",
+      "type": "string"
+    },
+    {
+      "name": "instance.accounts.<name>",
+      "summary": "An account the create step bound (create step bind.accounts).",
+      "type": "pubkey"
+    },
+    {
+      "name": "instance.roles.<role>",
+      "summary": "The wallet holding a role.",
+      "type": "pubkey"
+    },
+    {
+      "name": "participant.id",
+      "summary": "The participant's id.",
+      "type": "string"
+    },
+    {
+      "name": "participant.state",
+      "summary": "The participant machine's current state.",
+      "type": "string"
+    },
+    {
+      "name": "participant.wallet",
+      "summary": "The participant's wallet.",
+      "type": "pubkey"
+    }
+  ],
+  "operators": {
+    "binary": [
+      {
+        "precedence": 1,
+        "returns": "the type of the left side",
+        "summary": "The left side, or the right side when it is null. The right side must be a literal.",
+        "symbol": "??"
+      },
+      {
+        "precedence": 2,
+        "returns": "bool",
+        "summary": "Logical or; the right side is evaluated only when the left is false.",
+        "symbol": "||"
+      },
+      {
+        "precedence": 3,
+        "returns": "bool",
+        "summary": "Logical and; the right side is evaluated only when the left is true.",
+        "symbol": "&&"
+      },
+      {
+        "precedence": 4,
+        "returns": "the type of the left side",
+        "summary": "Bitwise or.",
+        "symbol": "|"
+      },
+      {
+        "precedence": 5,
+        "returns": "the type of the left side",
+        "summary": "Bitwise exclusive or.",
+        "symbol": "^"
+      },
+      {
+        "precedence": 6,
+        "returns": "the type of the left side",
+        "summary": "Bitwise and.",
+        "symbol": "&"
+      },
+      {
+        "precedence": 7,
+        "returns": "bool",
+        "summary": "Equal. Integers compare by value, whether written as numbers or decimal strings.",
+        "symbol": "=="
+      },
+      {
+        "precedence": 7,
+        "returns": "bool",
+        "summary": "Not equal.",
+        "symbol": "!="
+      },
+      {
+        "precedence": 8,
+        "returns": "bool",
+        "summary": "Less than (integers).",
+        "symbol": "<"
+      },
+      {
+        "precedence": 8,
+        "returns": "bool",
+        "summary": "Less than or equal (integers).",
+        "symbol": "<="
+      },
+      {
+        "precedence": 8,
+        "returns": "bool",
+        "summary": "Greater than (integers).",
+        "symbol": ">"
+      },
+      {
+        "precedence": 8,
+        "returns": "bool",
+        "summary": "Greater than or equal (integers).",
+        "symbol": ">="
+      },
+      {
+        "precedence": 9,
+        "returns": "the type of the left side",
+        "summary": "Shift left.",
+        "symbol": "<<"
+      },
+      {
+        "precedence": 9,
+        "returns": "the type of the left side",
+        "summary": "Shift right.",
+        "symbol": ">>"
+      },
+      {
+        "precedence": 10,
+        "returns": "the type of the left side",
+        "summary": "Add. In protocols, integer math is exact and fails on overflow.",
+        "symbol": "+"
+      },
+      {
+        "precedence": 10,
+        "returns": "the type of the left side",
+        "summary": "Subtract.",
+        "symbol": "-"
+      },
+      {
+        "precedence": 11,
+        "returns": "the type of the left side",
+        "summary": "Multiply.",
+        "symbol": "*"
+      },
+      {
+        "precedence": 11,
+        "returns": "the type of the left side",
+        "summary": "Divide. In protocols, integer division truncates and fails on division by zero.",
+        "symbol": "/"
+      },
+      {
+        "precedence": 11,
+        "returns": "the type of the left side",
+        "summary": "Remainder.",
+        "symbol": "%"
+      }
+    ],
+    "prefix": [
+      {
+        "precedence": 12,
+        "returns": "bool",
+        "summary": "Logical not; binds tighter than every binary operator.",
+        "symbol": "!"
+      }
+    ]
+  },
+  "schema": "arete.protocol-expression-reference/v1",
+  "scopes": [
+    {
+      "declaredRoots": [
+        "params",
+        "resources",
+        "args",
+        "ephemeral",
+        "reads"
+      ],
+      "note": "A step with scope create. No instance exists yet, so instance.* is out of scope.",
+      "pointers": [
+        "/steps/<step>/guards/<i>/expr",
+        "/steps/<step>/bind/accounts/<name>",
+        "/steps/<step>/bind/roles/<role>",
+        "/steps/<step>/fee/asset/mint",
+        "/steps/<step>/glue/atas/<i>/owner",
+        "/steps/<step>/glue/atas/<i>/mint",
+        "/steps/<step>/glue/wrapSol/amount",
+        "/steps/<step>/build/instructions/<i>/args/<name>",
+        "/steps/<step>/build/instructions/<i>/accounts/<name>",
+        "/steps/<step>/build/instructions/<i>/remainingAccounts/<k>/pubkey"
+      ],
+      "roots": [
+        "now",
+        "deployment",
+        "wallet"
+      ],
+      "site": "create-step"
+    },
+    {
+      "declaredRoots": [
+        "params",
+        "resources",
+        "args",
+        "ephemeral",
+        "reads"
+      ],
+      "note": "A step with scope instance.",
+      "pointers": [
+        "/steps/<step>/guards/<i>/expr",
+        "/steps/<step>/bind/accounts/<name>",
+        "/steps/<step>/bind/roles/<role>",
+        "/steps/<step>/fee/asset/mint",
+        "/steps/<step>/glue/atas/<i>/owner",
+        "/steps/<step>/glue/atas/<i>/mint",
+        "/steps/<step>/glue/wrapSol/amount",
+        "/steps/<step>/build/instructions/<i>/args/<name>",
+        "/steps/<step>/build/instructions/<i>/accounts/<name>",
+        "/steps/<step>/build/instructions/<i>/remainingAccounts/<k>/pubkey"
+      ],
+      "roots": [
+        "now",
+        "deployment",
+        "wallet",
+        "instance"
+      ],
+      "site": "instance-step"
+    },
+    {
+      "declaredRoots": [
+        "params",
+        "resources",
+        "args",
+        "ephemeral",
+        "reads"
+      ],
+      "note": "A step with scope participant.",
+      "pointers": [
+        "/steps/<step>/guards/<i>/expr",
+        "/steps/<step>/bind/accounts/<name>",
+        "/steps/<step>/bind/roles/<role>",
+        "/steps/<step>/fee/asset/mint",
+        "/steps/<step>/glue/atas/<i>/owner",
+        "/steps/<step>/glue/atas/<i>/mint",
+        "/steps/<step>/glue/wrapSol/amount",
+        "/steps/<step>/build/instructions/<i>/args/<name>",
+        "/steps/<step>/build/instructions/<i>/accounts/<name>",
+        "/steps/<step>/build/instructions/<i>/remainingAccounts/<k>/pubkey"
+      ],
+      "roots": [
+        "now",
+        "deployment",
+        "wallet",
+        "instance",
+        "participant"
+      ],
+      "site": "participant-step"
+    },
+    {
+      "declaredRoots": [
+        "params",
+        "resources",
+        "reads"
+      ],
+      "note": "Derivations of the instance machine and reactions on it. reads are the machine's reads. No wallet and no args.",
+      "pointers": [
+        "/machines/<machine>/derive/<i>/when",
+        "/machines/<machine>/derive/<i>/at",
+        "/reactions/<i>/trigger/time",
+        "/reactions/<i>/trigger/condition"
+      ],
+      "roots": [
+        "now",
+        "deployment",
+        "instance"
+      ],
+      "site": "instance-machine"
+    },
+    {
+      "declaredRoots": [
+        "params",
+        "resources",
+        "reads"
+      ],
+      "note": "Derivations of the participant machine and reactions on it; wallet is the participant's wallet.",
+      "pointers": [
+        "/machines/<machine>/derive/<i>/when",
+        "/machines/<machine>/derive/<i>/at",
+        "/reactions/<i>/trigger/time",
+        "/reactions/<i>/trigger/condition"
+      ],
+      "roots": [
+        "now",
+        "deployment",
+        "instance",
+        "participant",
+        "wallet"
+      ],
+      "site": "participant-machine"
+    },
+    {
+      "declaredRoots": [
+        "params",
+        "resources",
+        "wallet",
+        "args",
+        "ephemeral",
+        "instance",
+        "participant"
+      ],
+      "note": "Checked once for every step or machine that uses the read, with that user's names minus now and reads. A name must be in scope at every use. A read no step or machine uses is not checked.",
+      "pointers": [
+        "/reads/<read>/address"
+      ],
+      "roots": [
+        "deployment"
+      ],
+      "site": "read-address"
+    },
+    {
+      "declaredRoots": [
+        "resources"
+      ],
+      "note": "A step's names, but the expression may read only resources.* and literals, and must read at least one resource.",
+      "pointers": [
+        "/steps/<step>/authority/multisig"
+      ],
+      "roots": [],
+      "site": "squads-multisig"
+    }
+  ],
+  "stackSourceOnlyFunctions": [
+    "exp",
+    "ln",
+    "pow"
+  ]
+}
