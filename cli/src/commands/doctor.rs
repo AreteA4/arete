@@ -333,8 +333,13 @@ struct ProjectUsage {
     registry_programs: Vec<(String, String)>,
     /// Program dependencies of any source.
     programs: usize,
-    /// A `[protocol]` table or a protocol dependency.
+    /// A `[protocol]` table or a protocol dependency: it prepares and
+    /// submits protocol steps.
     protocol: bool,
+    /// A `[protocol]` table: the project publishes its own protocol and so
+    /// needs a deployment on this account. A protocol dependency calls its
+    /// publisher's deployment instead.
+    authors_protocol: bool,
     /// A `[dev]` table.
     dev: bool,
     /// Authoring stacks, deployed with `a4 up`.
@@ -350,8 +355,11 @@ impl ProjectUsage {
                 self.programs,
                 if self.programs == 1 { "y" } else { "ies" }
             )),
-            "protocol_prepare" | "protocol_submit" | "create_protocol" if self.protocol => {
+            "protocol_prepare" | "protocol_submit" if self.protocol => {
                 Some("arete.toml has a protocol".to_string())
+            }
+            "create_protocol" if self.authors_protocol => {
+                Some("arete.toml has a [protocol] section".to_string())
             }
             "dev_environments" if self.dev => Some("arete.toml has a [dev] section".to_string()),
             "deploy_stack" if self.authoring_stacks > 0 => Some(format!(
@@ -707,6 +715,7 @@ fn project_manifest(config_path: &Path) -> std::result::Result<ProjectFacts, Che
                     || manifest
                         .dependencies()
                         .any(|(kind, _, _)| kind == DependencyKind::Protocol),
+                authors_protocol: manifest.document.protocol.is_some(),
                 dev: manifest.document.dev.is_some(),
                 authoring_stacks: manifest.document.authoring.stacks.len(),
             },
@@ -906,13 +915,15 @@ fn entitlement_checks(entitlements: &AccountEntitlements, usage: &ProjectUsage) 
     checks
 }
 
-/// What a probe reads: one program's Program Read metadata and one chain
-/// account through the gateway, both from the program's install descriptor.
+/// What a probe reads: whether one account of the program exists through
+/// Program Read, and one chain account through the gateway, both from the
+/// program's install descriptor. A target is `Err` with the reason it can't
+/// be probed.
 #[derive(Debug, Clone, PartialEq)]
 struct ProbeTargets {
     program: String,
-    program_read: Option<ProbeRequest>,
-    chain_read: Option<ProbeRequest>,
+    program_read: Result<ProbeRequest, String>,
+    chain_read: Result<ProbeRequest, String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -924,41 +935,85 @@ struct ProbeRequest {
     body: Option<serde_json::Value>,
 }
 
+/// The address the Program Read probe asks about: a fixed key with no
+/// account (the SHA-256 of "arete doctor program read probe"), so the read
+/// answers `{"exists": false}` without decoding anything.
+const PROBE_ADDRESS: &str = "Hma3MVHpRMtSegj6K2mFNCSk6LxWGyiBLotuXPhL6kgP";
+
+/// `endpoint` with `segments` appended, each percent-encoded.
+fn append_path(endpoint: &str, segments: &[&str]) -> Result<String, String> {
+    let mut url = url::Url::parse(endpoint)
+        .map_err(|error| format!("invalid binding endpoint {endpoint}: {error}"))?;
+    url.path_segments_mut()
+        .map_err(|()| format!("invalid binding endpoint {endpoint}"))?
+        .pop_if_empty()
+        .extend(segments);
+    Ok(url.to_string())
+}
+
 impl ProbeTargets {
     fn from_install(alias: &str, install: &RegistryProgramInstallResponse) -> Self {
         let RegistryProgramInstallTransport::HostedBinding { binding } = &install.transport;
-        let program_read = binding
+        let session_endpoint = binding
             .auth
             .get("sessionEndpoint")
+            .and_then(serde_json::Value::as_str);
+        // Every Program Read server answers the account routes, so the probe
+        // asks whether an account of the IDL's first account type exists.
+        let account = install
+            .definition
+            .idl_payload
+            .get("accounts")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|accounts| accounts.first())
+            .and_then(|account| account.get("name"))
             .and_then(serde_json::Value::as_str)
-            .map(|session_endpoint| ProbeRequest {
+            .filter(|name| !name.is_empty());
+        let release = &install.release.program_release_hash;
+        let program_read = match (session_endpoint, account) {
+            (None, _) => Err(format!("{alias} has no hosted Program Read binding")),
+            (Some(_), None) => Err(format!("{alias}'s IDL names no account type to read")),
+            (Some(session_endpoint), Some(account)) => append_path(
+                &binding.endpoint,
+                &[
+                    "v1",
+                    "releases",
+                    release,
+                    "accounts",
+                    account,
+                    PROBE_ADDRESS,
+                    "exists",
+                ],
+            )
+            .map(|url| ProbeRequest {
                 session_endpoint: session_endpoint.to_string(),
                 session_request: serde_json::json!({
                     "scopes": ["read"],
                     "targetKind": "program-read-binding",
                     "targetId": binding.program_read_binding_id,
-                    "programReleaseHash": install.release.program_release_hash,
+                    "programReleaseHash": release,
                 }),
-                url: format!(
-                    "{}/v1/releases/{}",
-                    binding.endpoint.trim_end_matches('/'),
-                    install.release.program_release_hash
-                ),
+                url,
                 body: None,
-            });
-        let chain_read = install.chain_binding.as_ref().map(|chain| ProbeRequest {
-            session_endpoint: chain.auth.session_endpoint.clone(),
-            session_request: serde_json::json!({
-                "scopes": ["read"],
-                "targetKind": chain.auth.target_kind,
-                "targetId": chain.auth.target_id,
             }),
-            url: format!("{}/chain/v1/account", chain.endpoint.trim_end_matches('/')),
-            body: Some(serde_json::json!({
-                "address": install.definition.program_id,
-                "options": {"commitment": "confirmed"},
-            })),
-        });
+        };
+        let chain_read = install
+            .chain_binding
+            .as_ref()
+            .map(|chain| ProbeRequest {
+                session_endpoint: chain.auth.session_endpoint.clone(),
+                session_request: serde_json::json!({
+                    "scopes": ["read"],
+                    "targetKind": chain.auth.target_kind,
+                    "targetId": chain.auth.target_id,
+                }),
+                url: format!("{}/chain/v1/account", chain.endpoint.trim_end_matches('/')),
+                body: Some(serde_json::json!({
+                    "address": install.definition.program_id,
+                    "options": {"commitment": "confirmed"},
+                })),
+            })
+            .ok_or_else(|| format!("{alias} has no hosted chain read binding"));
         Self {
             program: alias.to_string(),
             program_read,
@@ -969,17 +1024,20 @@ impl ProbeTargets {
 
 /// The two live probes. They read through the first registry program in
 /// arete.toml, and are skipped when there is none or the account can't use
-/// the surface.
+/// the surface. A skipped probe makes no request.
 fn probe_checks(
     key: &str,
     usage: &ProjectUsage,
     entitlements: Option<&AccountEntitlements>,
 ) -> Vec<Check> {
-    let ids = ["probe.program-read", "probe.chain-read"];
+    const PROBES: [(&str, &str, &str); 2] = [
+        ("probe.program-read", "program_read", "program reads"),
+        ("probe.chain-read", "chain_read", "chain reads"),
+    ];
     let Some((alias, reference)) = usage.registry_programs.first() else {
-        return ids
+        return PROBES
             .iter()
-            .map(|id| {
+            .map(|(id, _, _)| {
                 Check::info(
                     id,
                     "skipped (arete.toml has no registry program to read)",
@@ -988,58 +1046,60 @@ fn probe_checks(
             })
             .collect();
     };
-    let client = match keyed_client(key) {
-        Ok(client) => client,
-        Err(error) => {
-            return ids
-                .iter()
-                .map(|id| Check::unknown(id, format!("unknown: {}", root_cause(&error))))
-                .collect()
-        }
-    };
-    let targets = match client.get_registry_program_install(reference, None) {
-        Ok(install) => ProbeTargets::from_install(alias, &install),
-        Err(error) => {
-            return ids
-                .iter()
-                .map(|id| {
-                    Check::unknown(
-                        id,
-                        format!("unknown: could not resolve {alias}: {}", root_cause(&error)),
-                    )
-                })
-                .collect()
-        }
-    };
     let denied = |surface: &str| {
         entitlements
             .and_then(|entitlements| entitlements.surface(surface))
             .is_some_and(|surface| !surface.allowed)
     };
-    vec![
-        if denied("program_read") {
-            Check::info(ids[0], "skipped (program reads are not in your plan)", None)
-        } else {
-            run_probe(
-                &client,
-                ids[0],
-                "Program Read",
-                &targets.program,
-                targets.program_read.as_ref(),
+    let mut checks: Vec<Option<Check>> = PROBES
+        .iter()
+        .map(|(id, surface, what)| {
+            denied(surface)
+                .then(|| Check::info(id, format!("skipped ({what} are not in your plan)"), None))
+        })
+        .collect();
+    if checks.iter().all(Option::is_some) {
+        return checks.into_iter().flatten().collect();
+    }
+    let undecided = |checks: Vec<Option<Check>>, reason: String| -> Vec<Check> {
+        checks
+            .into_iter()
+            .zip(PROBES)
+            .map(|(check, (id, _, _))| check.unwrap_or_else(|| Check::unknown(id, reason.clone())))
+            .collect()
+    };
+    let client = match keyed_client(key) {
+        Ok(client) => client,
+        Err(error) => return undecided(checks, format!("unknown: {}", root_cause(&error))),
+    };
+    let targets = match client.get_registry_program_install(reference, None) {
+        Ok(install) => ProbeTargets::from_install(alias, &install),
+        Err(error) => {
+            return undecided(
+                checks,
+                format!("unknown: could not resolve {alias}: {}", root_cause(&error)),
             )
-        },
-        if denied("chain_read") {
-            Check::info(ids[1], "skipped (chain reads are not in your plan)", None)
-        } else {
-            run_probe(
-                &client,
-                ids[1],
-                "chain read",
-                &targets.program,
-                targets.chain_read.as_ref(),
-            )
-        },
-    ]
+        }
+    };
+    if checks[0].is_none() {
+        checks[0] = Some(run_probe(
+            &client,
+            PROBES[0].0,
+            "Program Read",
+            &targets.program,
+            targets.program_read.as_ref(),
+        ));
+    }
+    if checks[1].is_none() {
+        checks[1] = Some(run_probe(
+            &client,
+            PROBES[1].0,
+            "chain read",
+            &targets.program,
+            targets.chain_read.as_ref(),
+        ));
+    }
+    checks.into_iter().flatten().collect()
 }
 
 /// Mint a session for the probe's target and make its one read. Reports the
@@ -1049,14 +1109,11 @@ fn run_probe(
     id: &str,
     what: &str,
     program: &str,
-    request: Option<&ProbeRequest>,
+    request: Result<&ProbeRequest, &String>,
 ) -> Check {
-    let Some(request) = request else {
-        return Check::info(
-            id,
-            format!("skipped ({program} has no hosted {what} binding)"),
-            None,
-        );
+    let request = match request {
+        Ok(request) => request,
+        Err(reason) => return Check::info(id, format!("skipped ({reason})"), None),
     };
     let token =
         match client.mint_target_session(&request.session_endpoint, &request.session_request) {
@@ -2016,11 +2073,24 @@ mod tests {
         assert_eq!(create.status, Status::Info);
         assert_eq!(create.fix.as_deref(), Some("Upgrade to Pro"));
 
-        let usage = ProjectUsage {
+        // A project that only depends on a protocol calls its publisher's
+        // deployment: the limit stays informational.
+        let consumer = ProjectUsage {
             protocol: true,
             ..ProjectUsage::default()
         };
-        let checks = entitlement_checks(&account(3), &usage);
+        let checks = entitlement_checks(&account(3), &consumer);
+        assert_eq!(
+            check(&checks, "account.create-protocol").status,
+            Status::Info
+        );
+
+        let author = ProjectUsage {
+            protocol: true,
+            authors_protocol: true,
+            ..ProjectUsage::default()
+        };
+        let checks = entitlement_checks(&account(3), &author);
         assert_eq!(
             check(&checks, "account.create-protocol").status,
             Status::Warn
@@ -2084,7 +2154,7 @@ mod tests {
             "definition": {
                 "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
                 "programSpecHash": "spec", "idlContentHash": "c", "normalizedIdlHash": "n",
-                "idlPayload": {},
+                "idlPayload": {"accounts": [{"name": "Lending Market"}, {"name": "Reserve"}]},
                 "programSpec": {"artifactVersion": "1.0.0", "kind": "program-spec", "artifactHash": "spec", "payload": {}},
                 "extensions": null
             },
@@ -2115,7 +2185,13 @@ mod tests {
         .unwrap();
         let targets = ProbeTargets::from_install("klend", &install);
         let read = targets.program_read.unwrap();
-        assert_eq!(read.url, "https://reads.example.test/v1/releases/rel");
+        // An account route, which every Program Read server answers.
+        assert_eq!(
+            read.url,
+            format!(
+                "https://reads.example.test/v1/releases/rel/accounts/Lending%20Market/{PROBE_ADDRESS}/exists"
+            )
+        );
         assert_eq!(read.session_request["programReleaseHash"], "rel");
         assert_eq!(read.session_request["targetId"], "prb_1");
         assert!(read.body.is_none());
@@ -2139,7 +2215,7 @@ mod tests {
         let request = ProbeRequest {
             session_endpoint: format!("{base}/ws/sessions"),
             session_request: serde_json::json!({"scopes": ["read"]}),
-            url: format!("{base}/v1/releases/rel"),
+            url: format!("{base}/v1/releases/rel/accounts/Reserve/{PROBE_ADDRESS}/exists"),
             body: None,
         };
         let check = run_probe(
@@ -2147,7 +2223,7 @@ mod tests {
             "probe.program-read",
             "Program Read",
             "klend",
-            Some(&request),
+            Ok(&request),
         );
         let mint = server.request();
         assert_eq!(mint.request_line, "POST /ws/sessions HTTP/1.1");
@@ -2178,7 +2254,7 @@ mod tests {
     fn a_working_probe_reports_its_status() {
         let check = probe_against(vec![
             (200, r#"{"token":"tok"}"#.into()),
-            (200, r#"{"readiness":"ready"}"#.into()),
+            (200, r#"{"exists":false}"#.into()),
         ]);
         assert_eq!(check.status, Status::Ok);
         assert_eq!(check.detail, "Program Read for klend → 200");
@@ -2197,6 +2273,59 @@ mod tests {
             check.detail
         );
         assert!(check.detail.contains("retryable"), "{}", check.detail);
+    }
+
+    #[test]
+    fn a_program_without_account_types_skips_the_program_read_probe() {
+        let install: RegistryProgramInstallResponse = serde_json::from_value(serde_json::json!({
+            "installName": "memo",
+            "displayName": "memo",
+            "definition": {
+                "programId": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+                "programSpecHash": "spec", "idlContentHash": "c", "normalizedIdlHash": "n",
+                "idlPayload": {"accounts": []},
+                "programSpec": {"artifactVersion": "1.0.0", "kind": "program-spec", "artifactHash": "spec", "payload": {}},
+                "extensions": null
+            },
+            "release": {"programReleaseHash": "rel", "programSpecHash": "spec"},
+            "transport": {"kind": "hosted-binding", "binding": {
+                "endpoint": "https://reads.example.test",
+                "programReadBindingId": "prb_1",
+                "auth": {"sessionEndpoint": "https://api.example.test/ws/sessions"}
+            }}
+        }))
+        .unwrap();
+        let targets = ProbeTargets::from_install("memo", &install);
+        assert_eq!(
+            targets.program_read,
+            Err("memo's IDL names no account type to read".to_string())
+        );
+        assert_eq!(
+            targets.chain_read,
+            Err("memo has no hosted chain read binding".to_string())
+        );
+    }
+
+    #[test]
+    fn denied_probes_are_skipped_before_any_request() {
+        let usage = ProjectUsage {
+            registry_programs: vec![("klend".into(), "klend@1".into())],
+            ..ProjectUsage::default()
+        };
+        let denied = entitlements(
+            "free",
+            serde_json::json!([
+                {"surface": "program_read", "allowed": false},
+                {"surface": "chain_read", "allowed": false},
+            ]),
+        );
+        // No API is reachable with this key: a lookup would be `unknown`.
+        let checks = probe_checks("not-a-key", &usage, Some(&denied));
+        assert_eq!(checks.len(), 2);
+        for check in &checks {
+            assert_eq!(check.status, Status::Info, "{check:?}");
+            assert!(check.detail.contains("not in your plan"), "{check:?}");
+        }
     }
 
     #[test]
