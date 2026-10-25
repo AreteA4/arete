@@ -124,14 +124,22 @@ impl ItemResult {
 }
 
 /// The command that adds one agent left out of the default selection.
-pub fn add_agent_command(id: &str) -> String {
-    format!("a4 init --agents {id}")
+/// `--global` when this run was global, or when the agent's MCP config
+/// exists only in the home directory.
+pub fn add_agent_command(id: &str, global: bool) -> String {
+    if global || super::mcp_config::global_only(id) {
+        format!("a4 init --global --agents {id}")
+    } else {
+        format!("a4 init --agents {id}")
+    }
 }
 
 /// The `a4 init --json` object (spec WP7).
 #[derive(Debug, Clone)]
 pub struct InitReport {
     pub dry_run: bool,
+    /// The run wrote global (home-directory) config: `--global`.
+    pub global: bool,
     pub detected: Vec<DetectedAgent>,
     pub universal: bool,
     pub selected: Vec<String>,
@@ -170,7 +178,9 @@ impl InitReport {
             also_found: self
                 .also_found
                 .iter()
-                .map(|id| serde_json::json!({ "id": id, "fix": add_agent_command(id) }))
+                .map(
+                    |id| serde_json::json!({ "id": id, "fix": add_agent_command(id, self.global) }),
+                )
                 .collect(),
             results: self
                 .results
@@ -204,11 +214,31 @@ impl InitReport {
             }
         ));
         if !self.also_found.is_empty() {
+            let commands: Vec<String> = self
+                .also_found
+                .iter()
+                .map(|id| add_agent_command(id, self.global))
+                .collect();
+            // One generic hint when every agent is added the same way,
+            // else each agent's own command.
+            let add_with = if commands
+                .iter()
+                .zip(&self.also_found)
+                .all(|(command, id)| *command == format!("a4 init --agents {id}"))
+            {
+                "a4 init --agents <id>".cyan().to_string()
+            } else {
+                commands
+                    .iter()
+                    .map(|command| command.cyan().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             out.push_str(&format!(
                 "{} Also found (home directory only, not configured): {}; add with {}\n",
                 "→".blue().bold(),
                 self.also_found.join(", "),
-                "a4 init --agents <id>".cyan()
+                add_with
             ));
         }
         if self.dry_run {
@@ -281,6 +311,7 @@ mod tests {
     fn report_json_has_schema_version_and_exact_keys() {
         let report = InitReport {
             dry_run: false,
+            global: false,
             detected: vec![],
             universal: false,
             selected: vec![],
@@ -317,5 +348,22 @@ mod tests {
         assert!(report
             .render()
             .contains("Also found (home directory only, not configured): kiro"));
+    }
+
+    #[test]
+    fn also_found_commands_add_global_where_mcp_needs_it() {
+        assert_eq!(add_agent_command("kiro", false), "a4 init --agents kiro");
+        assert_eq!(
+            add_agent_command("windsurf", false),
+            "a4 init --global --agents windsurf"
+        );
+        assert_eq!(
+            add_agent_command("cline", false),
+            "a4 init --global --agents cline"
+        );
+        assert_eq!(
+            add_agent_command("kiro", true),
+            "a4 init --global --agents kiro"
+        );
     }
 }

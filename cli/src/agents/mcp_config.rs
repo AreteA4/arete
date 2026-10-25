@@ -81,6 +81,12 @@ fn json(path: PathBuf) -> Placement {
 }
 
 /// Resolve the config file for `id` in `scope`.
+/// Agents whose MCP config exists only in the home directory, so adding
+/// them needs `--global`.
+pub fn global_only(id: &str) -> bool {
+    matches!(id, "windsurf" | "cline")
+}
+
 pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
     let root = &env.root;
     let home = || env.home();
@@ -121,9 +127,8 @@ pub fn placement(env: &Env, id: &str, scope: Scope) -> Result<Placement> {
         ),
         ("gemini-cli", Scope::Project) => json(root.join(".gemini/settings.json")),
         ("gemini-cli", Scope::Global) => json(home()?.join(".gemini/settings.json")),
-        ("windsurf", Scope::Project) => Placement::Skipped("global only"),
+        (id, Scope::Project) if global_only(id) => Placement::Skipped("global only"),
         ("windsurf", Scope::Global) => json(home()?.join(".codeium/windsurf/mcp_config.json")),
-        ("cline", Scope::Project) => Placement::Skipped("global only"),
         ("cline", Scope::Global) => json(home()?.join(".cline/mcp.json")),
         ("zed", Scope::Project) => json(root.join(".zed/settings.json")),
         ("zed", Scope::Global) => json(

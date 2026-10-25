@@ -313,15 +313,16 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
     }
 
     // Home-only agents left out of this run, so the report can say how to
-    // add them.
+    // add them. `agent_ids` includes the fallback agent this run configured.
     let also_found = detection
         .home_only_ids()
         .into_iter()
-        .filter(|id| !selected.contains(id))
+        .filter(|id| !agent_ids.contains(id))
         .collect();
 
     Ok(InitReport {
         dry_run: plan.dry_run,
+        global: plan.global,
         detected: detection.agents.clone(),
         universal: detection.universal,
         selected,

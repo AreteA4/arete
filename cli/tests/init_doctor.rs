@@ -459,6 +459,44 @@ fn init_configures_only_the_host_it_runs_in() {
     );
 }
 
+/// With no agent signal outside the home directory, `a4 init -y` falls back
+/// to Claude Code. Claude Code is then configured, so it is not "also found";
+/// Windsurf's MCP config is global only, so its command adds `--global`.
+#[cfg(unix)]
+#[test]
+fn init_fallback_reports_only_agents_it_left_out() {
+    let sb = sandbox("empty", true);
+    for found in [".claude", ".codeium/windsurf"] {
+        fs::create_dir_all(sb.home.join(found)).unwrap();
+    }
+    let (report, output) = a4_json(&sb, &["init", "-y", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(report["selectedAgents"], serde_json::json!([]));
+    assert_eq!(
+        report["alsoFound"],
+        serde_json::json!([
+            {"id": "windsurf", "fix": "a4 init --global --agents windsurf"},
+        ])
+    );
+    let items = results(&report);
+    assert!(items.contains_key("mcp:claude-code"), "{report}");
+
+    let output = a4(&sb, &["init", "-y"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Also found (home directory only, not configured): windsurf; add with"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("a4 init --global --agents windsurf"),
+        "{stdout}"
+    );
+}
+
 #[test]
 fn dry_run_writes_nothing_and_reports_would_statuses() {
     let sb = sandbox("empty", false);
