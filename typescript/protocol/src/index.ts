@@ -61,6 +61,7 @@ export {
 export * from "./webhooks.js";
 export {
   EXPRESSION_FUNCTIONS,
+  builtinTemplateWarnings,
   checkExpression,
   checkSpecExpressions,
   tokenizeExpression,

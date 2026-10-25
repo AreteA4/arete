@@ -5,7 +5,13 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { parseContractJson, validateProtocolSpec, type ProtocolSpecV1 } from "../index.js";
-import { checkExpression, checkSpecExpressions, type ExpressionScope } from "./expressions.js";
+import {
+  EXPRESSION_FUNCTIONS,
+  builtinTemplateWarnings,
+  checkExpression,
+  checkSpecExpressions,
+  type ExpressionScope,
+} from "./expressions.js";
 import { checkHandlerSource } from "./static.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -145,6 +151,69 @@ describe("expression reference check", () => {
     ]);
     expect(checkExpression("deployment", scope)[0]?.code).toBe("unknown-reference");
     expect(checkExpression("deployment.id.x", scope)[0]?.code).toBe("unknown-reference");
+  });
+
+  it("lists exactly the functions the server's checker accepts", () => {
+    // The server's exported expression reference (copied into the docs).
+    const reference = JSON.parse(
+      readFileSync(resolve(here, "../../../../docs/src/data/protocol-expressions.json"), "utf8"),
+    ) as { functions: Array<{ name: string; example: string }> };
+    expect([...EXPRESSION_FUNCTIONS].sort()).toEqual(reference.functions.map((fn) => fn.name).sort());
+    // And every example call there passes the local check.
+    const scope: ExpressionScope = {
+      now: true,
+      wallet: true,
+      params: new Set(["decimals", "rate"]),
+      args: new Set(["amount", "label", "seed"]),
+      instance: { accounts: new Set(["vault"]), roles: new Set() },
+      participant: false,
+      ephemeral: new Set(),
+      reads: new Set(["vault"]),
+      resources: new Set(["mint"]),
+    };
+    for (const fn of reference.functions) expect(checkExpression(fn.example, scope), fn.example).toEqual([]);
+  });
+
+  it("checks a read's address with the names of each step or machine that uses it", () => {
+    const spec = load("token-raise.protocol-spec.json") as ProtocolSpecV1;
+    const findingsAt = (read: string) =>
+      checkSpecExpressions(spec).filter((finding) => finding.path === `/reads/${read}/address`);
+    // `escrow` is used only by `contribute`, which takes `amount`.
+    spec.reads.escrow!.address = 'pda("meteoraPresale", "escrow", instance.accounts.presale, wallet, args.amount)';
+    expect(findingsAt("escrow")).toEqual([]);
+    // `presale` is also used by the instance machine, which has no args.
+    spec.reads.presale!.address = "args.amount";
+    expect(findingsAt("presale")).toEqual([
+      {
+        code: "unknown-reference",
+        path: "/reads/presale/address",
+        offset: 0,
+        length: 11,
+        message: "args is not in scope here (where the read is used)",
+      },
+    ]);
+    // `now` is never in scope in a read address.
+    spec.reads.escrow!.address = "now";
+    expect(findingsAt("escrow")).toHaveLength(1);
+    // A read nobody uses is not checked.
+    spec.steps.contribute!.reads = [];
+    spec.machines.instance.reads = [];
+    expect(findingsAt("escrow")).toEqual([]);
+    expect(findingsAt("presale")).toEqual([]);
+  });
+
+  it("warns, without failing, when a template calls a builtin program", () => {
+    const spec = load("escrow-resolution.protocol-spec.json") as ProtocolSpecV1;
+    expect(builtinTemplateWarnings(spec)).toEqual([]);
+    spec.programs.associatedToken = { kind: "builtin", builtin: "associatedToken" };
+    const [stepName, step] = Object.entries(spec.steps).find(([, step]) => step.build.kind === "template")!;
+    if (step.build.kind !== "template") throw new Error("unreachable");
+    step.build.instructions[0]!.program = "associatedToken";
+    expect(checkSpecExpressions(spec)).toEqual([]);
+    const warnings = builtinTemplateWarnings(spec);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain(`/steps/${stepName}/build/instructions/0`);
+    expect(warnings[0]).toContain("template_program_spec_missing");
   });
 
   it("tokenizes the documented syntax", () => {

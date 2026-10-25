@@ -1,18 +1,19 @@
 /**
- * Expression reference checks for authors.
+ * Local expression checks for authors: syntax and names only.
  *
  * Guards, derivations, reads, templates, bindings and reaction conditions
- * use the stack-source expression language. This module tokenizes that
- * syntax, extracts identifier paths and function names, and checks each
- * reference against what is in scope at its use site, so an author learns
- * about `reads.escorw` or `ephemeral.mint` on a step that allocates no
- * `mint` before uploading. It is author feedback only: it does not parse
- * precedence or check types, and the platform type-checks every expression
- * authoritatively.
+ * use the protocol expression language. This module tokenizes that syntax,
+ * extracts identifier paths and function names, and checks each reference
+ * against what is in scope at its use site, so an author learns about
+ * `reads.escorw` or `ephemeral.mint` on a step that allocates no `mint`
+ * before uploading. It does not parse precedence or check types: the
+ * server's check (`arete-protocol check` with a secret key, or
+ * `a4 protocol deploy --dry-run`) is the reference, and this module must
+ * never reject what the server accepts.
  */
 
 import { sortedKeys } from "../contracts/shape.js";
-import { isClientCallable, type MachineKind, type ProtocolSpecV1, type StepV1 } from "../contracts/types.js";
+import type { MachineKind, ProtocolSpecV1, StepV1 } from "../contracts/types.js";
 
 export type ExpressionFindingCode =
   | "unknown-reference"
@@ -45,18 +46,37 @@ export interface ExpressionScope {
   resources: ReadonlySet<string>;
 }
 
+/**
+ * Every function the server's checker accepts in protocols, as its exported
+ * expression reference lists them (a test compares the two).
+ */
 export const EXPRESSION_FUNCTIONS = [
-  "pda",
-  "ata",
-  "some",
   "if",
-  "len",
+  "some",
   "exists",
   "is_some",
   "is_none",
+  "is_null",
+  "abs",
+  "min",
+  "max",
+  "ui_amount",
+  "raw_amount",
   "concat",
+  "starts_with",
+  "split_part",
+  "utf8",
+  "len",
+  "sum",
+  "index",
+  "slice",
+  "u64_from_le_bytes",
+  "u64_from_be_bytes",
+  "keccak256",
   "slot",
   "timestamp",
+  "pda",
+  "ata",
   "u8",
   "u16",
   "u32",
@@ -67,6 +87,8 @@ export const EXPRESSION_FUNCTIONS = [
   "i32",
   "i64",
   "i128",
+  "f32",
+  "f64",
   "string",
   "bool",
 ] as const;
@@ -242,17 +264,10 @@ export function checkSpecExpressions(spec: ProtocolSpecV1): ExpressionFinding[] 
   const check = (source: string, scope: ExpressionScope, path: string) =>
     findings.push(...checkExpression(source, scope, path));
 
-  for (const name of sortedKeys(spec.reads)) {
-    check(
-      spec.reads[name]!.address,
-      { now: true, wallet: true, params, instance, participant: true, ephemeral: none, reads: none, resources },
-      `/reads/${name}/address`,
-    );
-  }
-
   const machineScope = (kind: MachineKind): ExpressionScope => ({
     now: true,
-    wallet: false,
+    // A participant machine is evaluated for one wallet.
+    wallet: kind === "participant",
     params,
     instance,
     participant: kind === "participant",
@@ -267,6 +282,29 @@ export function checkSpecExpressions(spec: ProtocolSpecV1): ExpressionFinding[] 
       check(rule.when, machineScope(kind), `/machines/${kind}/derive/${i}/when`);
       if (rule.at !== undefined) check(rule.at, machineScope(kind), `/machines/${kind}/derive/${i}/at`);
     });
+  }
+
+  // The server checks a read's address once for every step or machine that
+  // uses the read, with that user's names minus `now` and `reads`; a read
+  // nobody uses is not checked.
+  for (const name of sortedKeys(spec.reads)) {
+    const users: ExpressionScope[] = [];
+    for (const stepName of sortedKeys(spec.steps)) {
+      const step = spec.steps[stepName]!;
+      if (step.reads.includes(name)) users.push(stepScope(spec, step, { params, instance, resources }));
+    }
+    for (const kind of ["instance", "participant"] as const) {
+      if (spec.machines[kind]?.reads.includes(name)) users.push(machineScope(kind));
+    }
+    const seen = new Set<string>();
+    for (const user of users) {
+      for (const finding of checkExpression(spec.reads[name]!.address, { ...user, now: false, reads: none }, `/reads/${name}/address`)) {
+        const key = `${finding.offset}:${finding.message}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        findings.push({ ...finding, message: `${finding.message} (where the read is used)` });
+      }
+    }
   }
 
   spec.reactions.forEach((reaction, i) => {
@@ -368,7 +406,9 @@ function stepScope(
 ): ExpressionScope {
   return {
     now: true,
-    wallet: isClientCallable(step.authority),
+    // The server gives every step site `wallet`; a keeper or admin step has
+    // none at run time, but the check accepts it, so this check does too.
+    wallet: true,
     params: shared.params,
     args: set(Object.keys(step.args.properties)),
     instance: step.scope === "create" ? undefined : shared.instance,
@@ -377,4 +417,26 @@ function stepScope(
     reads: set(step.reads),
     resources: shared.resources,
   };
+}
+
+/**
+ * Templates that call a builtin program (`system`, `splToken`,
+ * `associatedToken`, `computeBudget`, `memo`). Builtins have no program spec
+ * yet, so the server cannot check these templates and rejects them
+ * (`template_program_spec_missing`). One note per instruction.
+ */
+export function builtinTemplateWarnings(spec: ProtocolSpecV1): string[] {
+  const warnings: string[] = [];
+  for (const name of sortedKeys(spec.steps)) {
+    const build = spec.steps[name]!.build;
+    if (build.kind !== "template") continue;
+    build.instructions.forEach((instruction, i) => {
+      const program = spec.programs[instruction.program];
+      if (program?.kind !== "builtin") return;
+      warnings.push(
+        `/steps/${name}/build/instructions/${i}: '${instruction.program}' is a builtin program, which has no program spec yet, so the server cannot check this template and rejects it (template_program_spec_missing). Use the step's glue for token accounts, or install the program from the registry and call it under that alias`,
+      );
+    });
+  }
+  return warnings;
 }
