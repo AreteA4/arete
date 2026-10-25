@@ -73,7 +73,7 @@ a4 dev up
 | `--show-token`             |                                                 | print the environment token in the ready summary; only when stdout is a terminal (`a4 dev token` prints one anywhere)                                |
 | `--open`                   |                                                 | open the [dev UI](#the-dev-ui-and-its-event-feed) once the session is ready                                                                          |
 | `--no-ui`                  |                                                 | don't serve the dev UI or its event feed                                                                                                             |
-| `--no-watch`               |                                                 | deploy once and keep running without watching                                                                                                        |
+| `--once` (`--no-watch`)    |                                                 | deploy once, report `ready` or `failed`, and exit: 0 after a good deploy, non-zero after a failed one. Nothing keeps running (see below)             |
 | `--no-deploy`              |                                                 | serve the environment and the UI only; don't build or deploy the protocol                                                                            |
 | `--no-sdk`                 |                                                 | don't generate this protocol's client from the local build (see [The app's protocol client](#the-apps-protocol-client))                              |
 | `--json`                   |                                                 | JSON event lines on stdout instead of text                                                                                                           |
@@ -115,11 +115,23 @@ a4 dev is ready: dev environment my-protocol (denv_01k…)
 The summary never prints the environment token unless you pass
 `--show-token` in a terminal, and `--json` output never carries it.
 
+`a4 dev up --once --json` is the scripted form: it deploys, prints the
+`ready` event (or `failed`, with `error`), stops its local endpoints and exits.
+Use it in CI or from an agent that only needs the deployment.
+
 Each change rebuilds. An unchanged release does nothing. A **new release
 creates a new deployment** with a new id and short id, and `session.json`
 moves to it. Once the new deployment is active, the previous one is
 disabled, so at most one is active; `a4 dev status` lists them. A failed
 build or deploy is reported and the previous deployment keeps running.
+
+With `--json`, each watch pass ends with one `pass` event. It carries `ok`,
+the `changed` files, `deployment` (`state`: `deployed`, `unchanged` or
+`failed`, with `deploymentId` and `releaseHash`), the `stacks` serving and
+`sdk` (`generated`, `unchanged` or `failed`). When the protocol build fails,
+the `failed`, `deploy-failed` and `pass` events add `"stage": "build"` and
+`diagnostics`, one `{file, line, column, message, code}` per finding the
+build reports.
 
 **Private dev handlers can run without review.** A handler release bound to
 this private environment can activate at trust tier `unreviewed`. This lets
@@ -484,8 +496,8 @@ and deploys its generated artifacts. Without a crate it uses the existing
 artifacts. Rust and Cargo are needed only for Rust stacks.
 
 Sources and their IDLs are watched and redeployed into the same environment.
-A failed rebuild leaves the previous stack serving. `--no-watch` disables
-watching; `--no-deploy` serves existing deployments without deploying stacks.
+A failed rebuild leaves the previous stack serving. `--once` deploys once
+and exits; `--no-deploy` serves existing deployments without deploying stacks.
 Use `a4 stream --dev --stack <name>` to select a stack when there are several,
 or open the dev UI to stream the session's selected stack. Streams use the
 stack's environment WebSocket address and renew their session tokens.
