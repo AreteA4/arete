@@ -746,10 +746,18 @@ fn existing_manifest(path: &Path) -> Result<ExistingManifest> {
     if !missing.is_empty() {
         problems.push(format!("has no {}", missing.join(" or ")));
     }
-    Ok(if problems.is_empty() {
-        ExistingManifest::Mergeable(text)
-    } else {
-        ExistingManifest::Refused(problems.join(" and "))
+    if !problems.is_empty() {
+        return Ok(ExistingManifest::Refused(problems.join(" and ")));
+    }
+    // The keys are the ones `a4 init` writes; their values must also make a
+    // manifest that installs (`[project]` with a string `name`, and so on).
+    let invalid = match toml::from_str::<crate::project::manifest::ManifestV1>(&text) {
+        Ok(document) => document.validate().err().map(|error| error.to_string()),
+        Err(error) => Some(error.message().to_string()),
+    };
+    Ok(match invalid {
+        Some(why) => ExistingManifest::Refused(format!("is not a valid manifest: {why}")),
+        None => ExistingManifest::Mergeable(text),
     })
 }
 
@@ -1060,11 +1068,34 @@ mod tests {
             ("\n[sdk]\ntargets = [\"rust\"]\n", "has [sdk]"),
             ("extra = 1\n", "has project.extra"),
         ] {
+            refuses_existing(&format!("{base}{extra}"), reason);
+        }
+        for (manifest, reason) in [
+            (
+                "manifest_version = 1\n\n[project]\nname = 123\n",
+                "is not a valid manifest: invalid type: integer `123`, expected a string",
+            ),
+            (
+                "manifest_version = 1\n\n[project]\nprivate = true\n",
+                "is not a valid manifest: missing field `name`",
+            ),
+            (
+                "manifest_version = 1\n\n[project]\nname = \"app\"\nprivate = \"yes\"\n",
+                "is not a valid manifest: invalid type: string \"yes\", expected a boolean",
+            ),
+            (
+                "manifest_version = 1\n\n[project]\nname = \" \"\n",
+                "is not a valid manifest: project.name cannot be empty",
+            ),
+        ] {
+            refuses_existing(manifest, reason);
+        }
+
+        fn refuses_existing(original: &str, reason: &str) {
             let dir = tempfile::tempdir().unwrap();
             let root = dir.path().join("tip-jar");
             std::fs::create_dir_all(&root).unwrap();
-            let original = format!("{base}{extra}");
-            std::fs::write(root.join("arete.toml"), &original).unwrap();
+            std::fs::write(root.join("arete.toml"), original).unwrap();
             let error = scaffold(&InitArgs {
                 dir: root.clone(),
                 no_install: true,
