@@ -457,7 +457,8 @@ once per transaction (`transactionIndex` of `transactionCount`). The
 wallets stay `signing` until the transaction confirms. `isAwaitingWallet` is
 true while a prompt can be open, and `isBusy` while a run is in progress. A
 second run while one is in progress fails with `busy`, so a double click never
-opens two prompts.
+opens two prompts. Each hook follows only its own transactions, so several
+hooks can share one wallet without moving each other's `status`.
 
 `mutate()` keeps the failure in `error`. `run()` returns the receipt and
 rejects with the same error, for code that awaits the result. When `prepare`

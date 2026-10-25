@@ -278,15 +278,54 @@ export function toOperationMutationError<TPrepared extends PreparedOperation = P
   return make('not-submitted');
 }
 
-/** A wallet that reports its signing activity (`@usearete/adapter-kit` adapters do). */
+type WalletActivity = { readonly stage: string; readonly signature?: string };
+type WalletActivityListener = (activity: WalletActivity) => void;
+
+/**
+ * A wallet that reports its signing activity (`@usearete/adapter-kit`
+ * adapters do). Besides the adapter-wide `onActivity`, it takes an
+ * `onActivity` listener in a send's options and reports that send's activity
+ * to it, which is how a run follows its own transactions on a wallet other
+ * runs share.
+ */
 interface WalletActivitySource {
-  onActivity(
-    listener: (activity: { readonly stage: string; readonly signature?: string }) => void
-  ): () => void;
+  onActivity(listener: WalletActivityListener): () => void;
 }
 
 function hasActivity(wallet: unknown): wallet is WalletActivitySource {
   return typeof (wallet as Partial<WalletActivitySource> | null | undefined)?.onActivity === 'function';
+}
+
+/**
+ * The wallet as one run hands it to the executor: every `signAndSend` it
+ * makes carries `listener` as that send's `onActivity`, after any listener
+ * the caller's send options already set.
+ */
+function withSendActivity(wallet: WalletAdapter, listener: WalletActivityListener): WalletAdapter {
+  const signAndSend: WalletAdapter['signAndSend'] = (instructions, options, ...rest) => {
+    const own = (options as { onActivity?: unknown } | undefined)?.onActivity;
+    const onActivity: WalletActivityListener = typeof own === 'function'
+      ? (activity) => {
+        try {
+          (own as WalletActivityListener)(activity);
+        } finally {
+          listener(activity);
+        }
+      }
+      : listener;
+    return wallet.signAndSend(
+      instructions,
+      { ...(options ?? {}), onActivity } as SendOptions,
+      ...rest
+    );
+  };
+  return new Proxy(wallet, {
+    get(target, property) {
+      if (property === 'signAndSend') return signAndSend;
+      const value: unknown = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
 }
 
 function isPreparedWithSigners<TPrepared extends PreparedOperation>(
@@ -430,7 +469,6 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
     };
     let prepared: TPrepared | null = null;
     const signatures: string[] = [];
-    let stopActivity: (() => void) | undefined;
 
     const fail = async (error: OperationMutationError<TPrepared>) => {
       update({ status: 'error', error, prepared, signatures: [...signatures] });
@@ -495,16 +533,21 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
       update({ prepared });
 
       // A wallet that reports its activity says when its prompt opens; until
-      // then the transaction is still being built (blockhash, budgets).
+      // then the transaction is still being built (blockhash, budgets). The
+      // run listens to its own sends only, and only until they settle, so
+      // another run on the same wallet, or one that starts while this run's
+      // callbacks are pending, cannot move this run's status.
       const reportsActivity = hasActivity(wallet);
-      if (reportsActivity) {
-        stopActivity = wallet.onActivity((activity) => {
+      let listening = reportsActivity;
+      const runWallet = reportsActivity
+        ? withSendActivity(wallet, (activity) => {
+          if (!listening) return;
           if (activity.stage === 'signing' || activity.stage === 'sending'
             || activity.stage === 'confirming') {
             update({ status: activity.stage });
           }
-        });
-      }
+        })
+        : wallet;
       const signers = [
         ...(hookOptions.signers ?? []),
         ...extraSigners,
@@ -515,7 +558,7 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
       let result: OperationReceiptFor<TPrepared>;
       try {
         result = await executor.execute(prepared, {
-          wallet,
+          wallet: runWallet,
           ...(signers.length > 0 ? { signers } : {}),
           ...(send ? { send } : {}),
           onTransactionStart: (event) => {
@@ -530,8 +573,10 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
           },
         });
       } catch (cause) {
+        listening = false;
         throw await fail(toOperationMutationError(cause, prepared, signatures));
       }
+      listening = false;
 
       update({
         status: 'done',
@@ -546,7 +591,6 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
       }
       return result;
     } finally {
-      stopActivity?.();
       runningRef.current = false;
     }
   }, []);

@@ -67,31 +67,37 @@ function twoStepFlow(): PreparedFlow<CreateArtifacts> {
 type Activity = { stage: 'signing' } | { stage: 'sending' | 'confirming'; signature: string };
 
 /**
- * A wallet that reports its activity like the adapter-kit adapters do. Each
- * send waits on `gate` while "the prompt is open", so a test can look at the
- * state in between.
+ * A wallet that reports its activity like the adapter-kit adapters do: to
+ * the adapter-wide listeners and to the send's own `onActivity`. Each send
+ * waits while "the prompt is open", so a test can look at the state in
+ * between; `approve()` and `decline()` answer the oldest open prompt, or the
+ * prompt of send number `send` (counted from 1).
  */
 function activityWallet() {
   const listeners = new Set<(activity: Activity) => void>();
-  const report = (activity: Activity) => listeners.forEach((listener) => listener(activity));
-  let release: (() => void) | null = null;
-  let reject: ((error: unknown) => void) | null = null;
+  const open = new Map<number, { release: () => void; reject: (error: unknown) => void }>();
   let sends = 0;
   const signAndSend = jest.fn(async (
     _instructions: readonly BuiltInstruction[],
-    options?: { signers?: readonly unknown[] }
+    options?: { signers?: readonly unknown[]; onActivity?: (activity: Activity) => void }
   ) => {
+    const report = (activity: Activity) => {
+      listeners.forEach((listener) => listener(activity));
+      options?.onActivity?.(activity);
+    };
     sends += 1;
-    const signature = `sig-${sends}`;
+    const send = sends;
+    const signature = `sig-${send}`;
     report({ stage: 'signing' });
     await new Promise<void>((resolve, fail) => {
-      release = resolve;
-      reject = fail;
+      open.set(send, { release: resolve, reject: fail });
     });
+    open.delete(send);
     report({ stage: 'sending', signature });
     report({ stage: 'confirming', signature });
-    return { signature, slot: 10 + sends, signers: options?.signers };
+    return { signature, slot: 10 + send, signers: options?.signers };
   });
+  const prompt = (send?: number) => open.get(send ?? Math.min(...open.keys()));
   const wallet: WalletAdapter & { onActivity(listener: (activity: Activity) => void): () => void } = {
     publicKey: PAYER,
     signAndSend,
@@ -104,8 +110,8 @@ function activityWallet() {
     wallet,
     signAndSend,
     listenerCount: () => listeners.size,
-    approve: () => release?.(),
-    decline: (error: unknown) => reject?.(error),
+    approve: (send?: number) => prompt(send)?.release(),
+    decline: (error: unknown, send?: number) => prompt(send)?.reject(error),
   };
 }
 
@@ -223,7 +229,7 @@ describe('useOperationMutation', () => {
     // The hook's, prepare's and the run's signers all reach the wallet.
     expect(signAndSend.mock.calls[0][1]?.signers).toEqual([hookSigner, createKey]);
     expect(onSuccess).toHaveBeenCalledWith(view.hook.result, view.hook.prepared);
-    // The activity subscription ends with the run.
+    // The run follows its own sends; it never listens adapter-wide.
     expect(listenerCount()).toBe(0);
   });
 
@@ -338,6 +344,102 @@ describe('useOperationMutation', () => {
       await first;
     });
     expect(view.hook.status).toBe('done');
+  });
+
+  it('keeps the progress of two runs on one wallet apart', async () => {
+    const { wallet, approve } = activityWallet();
+    const oneStep = async () => createPreparedFlow({
+      name: 'configure',
+      artifacts: { multisig: 'Multisig1111' },
+      transactions: [
+        createPreparedTransactionBody({ name: 'configure', instructions: [instruction([PAYER])] }),
+      ],
+    });
+    const first = renderOperationHook(oneStep, { executor: executorFor(), wallet });
+    const second = renderOperationHook(oneStep, { executor: executorFor(), wallet });
+
+    let firstRun!: Promise<unknown>;
+    let secondRun!: Promise<unknown>;
+    act(() => {
+      firstRun = first.hook.run({ threshold: 1 });
+    });
+    await flush();
+    act(() => {
+      secondRun = second.hook.run({ threshold: 1 });
+    });
+    await flush();
+    expect(first.hook.status).toBe('signing');
+    expect(second.hook.status).toBe('signing');
+
+    // The second wallet prompt is approved first: only the second run moves.
+    await act(async () => {
+      approve(2);
+      await secondRun;
+    });
+    expect(second.hook.status).toBe('done');
+    expect(second.hook.signatures).toEqual(['sig-2']);
+    expect(first.hook.status).toBe('signing');
+    expect(first.seen).toEqual(['idle', 'preparing', 'signing']);
+
+    await act(async () => {
+      approve(1);
+      await firstRun;
+    });
+    expect(first.hook.status).toBe('done');
+    expect(first.hook.signatures).toEqual(['sig-1']);
+    expect(first.seen).toEqual(['idle', 'preparing', 'signing', 'sending', 'confirming', 'done']);
+    expect(second.seen).toEqual(['idle', 'preparing', 'signing', 'sending', 'confirming', 'done']);
+  });
+
+  it('stays done while its onSuccess runs, whatever else the wallet sends', async () => {
+    const { wallet, approve } = activityWallet();
+    let finishCallback!: () => void;
+    const onSuccess = jest.fn(() => new Promise<void>((resolve) => {
+      finishCallback = resolve;
+    }));
+    const oneStep = async () => createPreparedFlow({
+      name: 'configure',
+      artifacts: { multisig: 'Multisig1111' },
+      transactions: [
+        createPreparedTransactionBody({ name: 'configure', instructions: [instruction([PAYER])] }),
+      ],
+    });
+    const first = renderOperationHook(oneStep, { executor: executorFor(), wallet, onSuccess });
+    const other = renderOperationHook(oneStep, { executor: executorFor(), wallet });
+
+    let firstRun!: Promise<unknown>;
+    act(() => {
+      firstRun = first.hook.run({ threshold: 1 });
+    });
+    await flush();
+    await act(async () => {
+      approve(1);
+    });
+    await flush();
+    expect(first.hook.status).toBe('done');
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+
+    // Another run on the same wallet signs and confirms while the first
+    // run's onSuccess is still pending.
+    let otherRun!: Promise<unknown>;
+    act(() => {
+      otherRun = other.hook.run({ threshold: 1 });
+    });
+    await flush();
+    await act(async () => {
+      approve(2);
+      await otherRun;
+    });
+    expect(other.hook.status).toBe('done');
+    expect(first.hook.status).toBe('done');
+    expect(first.hook.signatures).toEqual(['sig-1']);
+
+    await act(async () => {
+      finishCallback();
+      await firstRun;
+    });
+    expect(first.hook.status).toBe('done');
+    expect(first.seen).toEqual(['idle', 'preparing', 'signing', 'sending', 'confirming', 'done']);
   });
 
   it('fails with not-ready without an executor and prepare-failed when prepare throws', async () => {
