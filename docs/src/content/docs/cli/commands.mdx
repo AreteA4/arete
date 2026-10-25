@@ -1060,7 +1060,11 @@ and `tsx` for the automations; `tsconfig.json` mapping `@programs/*`;
 `.gitignore`; and a `README.md`. The automations know nothing about where
 they will be deployed: `npx @usearete/automations add <cloudflare|vercel|node>`
 writes a host's entry later ([Run automations in production](/automations/production/#deploy-to-a-host)). It refuses to overwrite an
-existing file (`.gitignore` only gains missing lines). `--name <name>` sets
+existing file and names it (`.gitignore` only gains missing lines). An
+`arete.toml` that holds only what `a4 init` writes (`manifest_version` and
+`[project]`) gains the protocol's sections, so `a4 init -y && a4 protocol init .`
+and `a4 protocol init <dir> && cd <dir> && a4 init -y` build the same project;
+an `arete.toml` with dependencies, `[dev]` or other tables still refuses. `--name <name>` sets
 the spec name (`^[a-z][A-Za-z0-9]*$`, default: the directory name in
 camelCase); `--no-install` skips the program install.
 

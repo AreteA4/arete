@@ -26,8 +26,12 @@
 //! --check` compares them with `arete.lock`), so `.gitignore` leaves
 //! `generated/` in and ignores `node_modules/` and `.arete/` (build output
 //! and `a4 dev` state). Existing files are never overwritten: init refuses
-//! when any file it writes exists, except `.gitignore`, which gains the
-//! missing lines.
+//! when any file it writes exists, naming it, with two exceptions.
+//! `.gitignore` gains the missing lines. An `arete.toml` holding only what
+//! `a4 init` writes (`manifest_version` and `[project]`) gains the
+//! protocol's sections; one with dependencies, `[dev]` or any other table
+//! still refuses. So `a4 init -y && a4 protocol init .` and
+//! `a4 protocol init <dir> && cd <dir> && a4 init -y` build the same project.
 
 use std::path::{Path, PathBuf};
 
@@ -595,10 +599,16 @@ fn scaffold_with(
     };
 
     let slug = crate::commands::protocol::derive_slug(&name)?;
+    // An `arete.toml` that `a4 init` wrote is kept as it is and gains the
+    // protocol's sections, exactly as a new one would.
+    let existing_manifest = existing_manifest(&dir.join("arete.toml"))?;
+    let base_manifest = match &existing_manifest {
+        ExistingManifest::Mergeable(existing) => existing.clone(),
+        _ => crate::commands::config::new_manifest_contents(&absolute, Some(dir_name.clone()))?,
+    };
     let manifest = format!(
         "{}\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
-        crate::commands::config::new_manifest_contents(&absolute, Some(dir_name.clone()))?
-            .trim_end()
+        base_manifest.trim_end()
     );
     let files: Vec<(&str, String)> = vec![
         ("arete.toml", manifest),
@@ -614,13 +624,17 @@ fn scaffold_with(
         .map(|(path, _)| *path)
         .chain(["README.md", SYSTEM_IDL_PATH])
         .collect();
-    let existing: Vec<&str> = checked
+    let existing: Vec<String> = checked
         .into_iter()
-        .filter(|path| dir.join(path).exists())
+        .filter_map(|path| match (path, &existing_manifest) {
+            ("arete.toml", ExistingManifest::Mergeable(_)) => None,
+            ("arete.toml", ExistingManifest::Refused(why)) => Some(format!("arete.toml ({why})")),
+            _ => dir.join(path).exists().then(|| path.to_string()),
+        })
         .collect();
     if !existing.is_empty() {
         bail!(
-            "{} already has {}; a4 protocol init only writes new files (use an empty directory)",
+            "{} already has {}; a4 protocol init only writes new files, and only adds to an arete.toml that holds just what `a4 init` writes (manifest_version and [project]). Use an empty directory",
             dir.display(),
             existing.join(", ")
         );
@@ -669,6 +683,81 @@ fn scaffold_with(
         installed: system_program.is_some(),
         system_program,
         warnings,
+    })
+}
+
+/// The tables `a4 init` writes to a new `arete.toml`.
+const INIT_MANIFEST_KEYS: [&str; 2] = ["manifest_version", "project"];
+/// The `[project]` keys `a4 init` writes.
+const INIT_PROJECT_KEYS: [&str; 2] = ["name", "private"];
+
+/// An existing `arete.toml`, as init sees it.
+#[derive(Debug, PartialEq, Eq)]
+enum ExistingManifest {
+    Missing,
+    /// Holds only what `a4 init` writes: init adds its sections to it.
+    Mergeable(String),
+    /// Holds anything else (dependencies, `[dev]`, other tables): init
+    /// refuses, saying why.
+    Refused(String),
+}
+
+fn existing_manifest(path: &Path) -> Result<ExistingManifest> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ExistingManifest::Missing)
+        }
+        Err(error) => {
+            return Err(error).with_context(|| format!("Failed to read {}", path.display()))
+        }
+    };
+    let table: toml::Table = match text.parse() {
+        Ok(table) => table,
+        Err(_) => return Ok(ExistingManifest::Refused("not valid TOML".to_string())),
+    };
+    let mut extra: Vec<String> = table
+        .keys()
+        .filter(|key| !INIT_MANIFEST_KEYS.contains(&key.as_str()))
+        .map(|key| format!("[{key}]"))
+        .collect();
+    let mut missing = Vec::new();
+    match table.get("project") {
+        Some(toml::Value::Table(project)) => extra.extend(
+            project
+                .keys()
+                .filter(|key| !INIT_PROJECT_KEYS.contains(&key.as_str()))
+                .map(|key| format!("project.{key}")),
+        ),
+        Some(_) => extra.push("a `project` that is not a table".to_string()),
+        None => missing.push("[project]"),
+    }
+    if table
+        .get("manifest_version")
+        .and_then(toml::Value::as_integer)
+        != Some(i64::from(crate::project::manifest::MANIFEST_VERSION))
+    {
+        missing.push("manifest_version = 1");
+    }
+    let mut problems = Vec::new();
+    if !extra.is_empty() {
+        problems.push(format!("has {}", extra.join(", ")));
+    }
+    if !missing.is_empty() {
+        problems.push(format!("has no {}", missing.join(" or ")));
+    }
+    if !problems.is_empty() {
+        return Ok(ExistingManifest::Refused(problems.join(" and ")));
+    }
+    // The keys are the ones `a4 init` writes; their values must also make a
+    // manifest that installs (`[project]` with a string `name`, and so on).
+    let invalid = match toml::from_str::<crate::project::manifest::ManifestV1>(&text) {
+        Ok(document) => document.validate().err().map(|error| error.to_string()),
+        Err(error) => Some(error.message().to_string()),
+    };
+    Ok(match invalid {
+        Some(why) => ExistingManifest::Refused(format!("is not a valid manifest: {why}")),
+        None => ExistingManifest::Mergeable(text),
     })
 }
 
@@ -918,9 +1007,13 @@ mod tests {
         let template = std::fs::read_to_string(root.join("protocol.ts")).unwrap();
         assert!(template.contains(r#"fundingAccount: "wallet""#));
 
-        // A second run refuses rather than overwriting.
+        // A second run refuses rather than overwriting, naming every file
+        // and why arete.toml can't take the protocol's sections again.
         let error = scaffold(&args).unwrap_err().to_string();
-        assert!(error.contains("already has arete.toml"), "{error}");
+        assert!(
+            error.contains("already has arete.toml (has [dev]), package.json"),
+            "{error}"
+        );
         assert!(scaffold(&InitArgs {
             dir: dir.path().join("other"),
             name: Some("Bad-Name".into()),
@@ -928,6 +1021,212 @@ mod tests {
             ..InitArgs::default()
         })
         .is_err());
+    }
+
+    #[test]
+    fn adds_to_the_manifest_a4_init_wrote() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tip-jar");
+        std::fs::create_dir_all(&root).unwrap();
+        let init_manifest =
+            crate::commands::config::new_manifest_contents(&root, Some("my-app".into())).unwrap();
+        std::fs::write(root.join("arete.toml"), &init_manifest).unwrap();
+        std::fs::write(root.join("AGENTS.md"), "# Mine\n").unwrap();
+        let outcome = scaffold(&InitArgs {
+            dir: root.clone(),
+            no_install: true,
+            ..InitArgs::default()
+        })
+        .unwrap();
+        assert!(outcome.written.iter().any(|file| file == "arete.toml"));
+        let manifest = std::fs::read_to_string(root.join("arete.toml")).unwrap();
+        assert_eq!(
+            manifest,
+            format!(
+                "{}\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
+                init_manifest.trim_end()
+            ),
+            "the project table a4 init wrote is kept as it is"
+        );
+        assert!(manifest.contains("name = \"my-app\""));
+        assert_eq!(
+            std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
+            "# Mine\n"
+        );
+        crate::project::manifest::ProjectManifest::load(root.join("arete.toml")).unwrap();
+    }
+
+    #[test]
+    fn refuses_a_manifest_with_more_than_a4_init_writes() {
+        let base = "manifest_version = 1\n\n[project]\nname = \"app\"\n";
+        for (extra, reason) in [
+            (
+                "\n[dependencies.programs.system]\npackage = \"system-program\"\n",
+                "has [dependencies]",
+            ),
+            ("\n[dev]\nsdk = [\"typescript\"]\n", "has [dev]"),
+            ("\n[sdk]\ntargets = [\"rust\"]\n", "has [sdk]"),
+            ("extra = 1\n", "has project.extra"),
+        ] {
+            refuses_existing(&format!("{base}{extra}"), reason);
+        }
+        for (manifest, reason) in [
+            (
+                "manifest_version = 1\n\n[project]\nname = 123\n",
+                "is not a valid manifest: invalid type: integer `123`, expected a string",
+            ),
+            (
+                "manifest_version = 1\n\n[project]\nprivate = true\n",
+                "is not a valid manifest: missing field `name`",
+            ),
+            (
+                "manifest_version = 1\n\n[project]\nname = \"app\"\nprivate = \"yes\"\n",
+                "is not a valid manifest: invalid type: string \"yes\", expected a boolean",
+            ),
+            (
+                "manifest_version = 1\n\n[project]\nname = \" \"\n",
+                "is not a valid manifest: project.name cannot be empty",
+            ),
+        ] {
+            refuses_existing(manifest, reason);
+        }
+
+        fn refuses_existing(original: &str, reason: &str) {
+            let dir = tempfile::tempdir().unwrap();
+            let root = dir.path().join("tip-jar");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("arete.toml"), original).unwrap();
+            let error = scaffold(&InitArgs {
+                dir: root.clone(),
+                no_install: true,
+                ..InitArgs::default()
+            })
+            .unwrap_err()
+            .to_string();
+            assert!(
+                error.contains(&format!("already has arete.toml ({reason})")),
+                "{error}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(root.join("arete.toml")).unwrap(),
+                original
+            );
+            assert!(!root.join("package.json").exists(), "nothing written");
+        }
+
+        // Other files a4 init doesn't write still refuse, each named.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("tip-jar");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("arete.toml"), base).unwrap();
+        std::fs::write(root.join("README.md"), "mine").unwrap();
+        let error = scaffold(&InitArgs {
+            dir: root.clone(),
+            no_install: true,
+            ..InitArgs::default()
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("already has README.md;"), "{error}");
+        assert_eq!(
+            std::fs::read_to_string(root.join("arete.toml")).unwrap(),
+            base
+        );
+    }
+
+    /// Every file under `root`, by relative path.
+    fn tree(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn walk(base: &Path, dir: &Path, files: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>) {
+            for entry in std::fs::read_dir(dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    walk(base, &path, files);
+                } else {
+                    files.insert(
+                        path.strip_prefix(base).unwrap().to_path_buf(),
+                        std::fs::read(&path).unwrap(),
+                    );
+                }
+            }
+        }
+        let mut files = std::collections::BTreeMap::new();
+        walk(root, root, &mut files);
+        files
+    }
+
+    #[test]
+    fn a4_init_and_protocol_init_build_the_same_project_in_either_order() {
+        use crate::agents::Env;
+        use crate::commands::init::{execute, InitPlan, Selection};
+        let a4_init = |root: &Path, home: &Path| {
+            let plan = InitPlan {
+                dry_run: false,
+                force: false,
+                name: None,
+                global: false,
+                skills_ref: None,
+                selection: Selection::Detected,
+                manifest: true,
+                agents_md: true,
+                skills: false,
+                mcp: true,
+            };
+            let env = Env::new(root, Some(home.to_path_buf()), &[]);
+            let report = execute(&env, &root.join("arete.toml"), &plan).unwrap();
+            assert!(!report.has_errors(), "{:?}", report.results);
+        };
+        let protocol_init = |root: &Path| {
+            scaffold_with(
+                &InitArgs {
+                    dir: root.to_path_buf(),
+                    local_idl: true,
+                    ..InitArgs::default()
+                },
+                |_| panic!("--local-idl must not use the registry"),
+            )
+            .unwrap();
+        };
+
+        // `a4 init -y && a4 protocol init .`
+        let first = tempfile::tempdir().unwrap();
+        let first_root = first.path().join("tip-jar");
+        let first_home = first.path().join("home");
+        std::fs::create_dir_all(&first_root).unwrap();
+        std::fs::create_dir_all(&first_home).unwrap();
+        a4_init(&first_root, &first_home);
+        protocol_init(&first_root);
+
+        // `a4 protocol init tip-jar && cd tip-jar && a4 init -y`
+        let second = tempfile::tempdir().unwrap();
+        let second_root = second.path().join("tip-jar");
+        let second_home = second.path().join("home");
+        std::fs::create_dir_all(&second_home).unwrap();
+        protocol_init(&second_root);
+        a4_init(&second_root, &second_home);
+
+        let first_tree = tree(&first_root);
+        let second_tree = tree(&second_root);
+        assert_eq!(
+            first_tree.keys().collect::<Vec<_>>(),
+            second_tree.keys().collect::<Vec<_>>()
+        );
+        for (path, content) in &first_tree {
+            assert_eq!(
+                String::from_utf8_lossy(content),
+                String::from_utf8_lossy(&second_tree[path]),
+                "{}",
+                path.display()
+            );
+        }
+        for file in [
+            "arete.toml",
+            "AGENTS.md",
+            "CLAUDE.md",
+            "protocol.ts",
+            "arete.lock",
+        ] {
+            assert!(first_tree.contains_key(Path::new(file)), "{file}");
+        }
     }
 
     #[test]
