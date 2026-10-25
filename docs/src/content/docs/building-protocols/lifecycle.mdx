@@ -38,6 +38,27 @@ on arguments the caller has not supplied; it reports these in `argsDependent`.
 An action shown as allowed may still fail preparation if state changes or
 argument-dependent checks fail. Treat rejection as a normal product outcome.
 
+### Allow-lists and list items
+
+`in` checks membership in a literal list or in an array value, such as an
+array resource. Element types must match; a string literal can stand for a
+public key:
+
+```ts
+guards: {
+  mint_not_allowed: "args.mint in resources.allowedMints",
+  unsupported_side: 'args.side in ["bid", "ask"]',
+},
+```
+
+A rejection's detail carries the operand and the list it was checked against.
+To pick one entry of an array, index it with an integer literal and read its
+fields: `resources.venues[1].reserve`. The checker types the field from the
+array's item schema. An index at or past the array's `maxItems` fails the
+check, and so does an index computed from arguments, such as
+`resources.venues[args.i]`. Every address a step uses must be decided by
+fixed names, so use a literal index, or `in` to accept a value from the list.
+
 ## Authority and access are separate
 
 **Authority** identifies the signer: the creator, a participant, or a bound

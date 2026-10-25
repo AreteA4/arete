@@ -80,10 +80,23 @@ export const EXPRESSION_FUNCTIONS = [
 export const DEPLOYMENT_FIELDS: ReadonlySet<string> = new Set(["id", "attestation", "squadsProposer"]);
 
 const LITERAL_WORDS = new Set(["true", "false", "null", "none"]);
+/** `x in [a, b]` and `x in resources.list`. */
+const MEMBERSHIP_OPERATOR = "in";
+
+/** Whether the token at `i` is the `in` operator: `in` after a complete operand. */
+function isMembership(tokens: readonly ExpressionToken[], i: number): boolean {
+  const token = tokens[i];
+  if (token?.kind !== "identifier" || token.text !== MEMBERSHIP_OPERATOR) return false;
+  const previous = tokens[i - 1];
+  if (previous === undefined) return false;
+  return previous.kind !== "operator" || previous.text === ")" || previous.text === "]";
+}
 const OPERATORS = ["??", "||", "&&", "==", "!=", "<=", ">=", "<<", ">>", "|", "^", "&", "<", ">", "+", "-", "*", "/", "%", "!", "(", ")", ",", "[", "]"];
 
 export type ExpressionToken =
   | { kind: "identifier"; text: string; offset: number }
+  /** `.name` after an index, as in `resources.venues[0].reserve`. */
+  | { kind: "field"; text: string; offset: number }
   | { kind: "string"; text: string; offset: number }
   | { kind: "number"; text: string; offset: number }
   | { kind: "operator"; text: string; offset: number };
@@ -110,6 +123,12 @@ export function tokenizeExpression(source: string): ExpressionToken[] | { error:
     if (number) {
       tokens.push({ kind: "number", text: number[0], offset: i });
       i += number[0].length;
+      continue;
+    }
+    const field = /^\.[A-Za-z_][A-Za-z0-9_.]*/.exec(source.slice(i));
+    if (field) {
+      tokens.push({ kind: "field", text: field[0], offset: i });
+      i += field[0].length;
       continue;
     }
     const ident = /^[A-Za-z_][A-Za-z0-9_.]*/.exec(source.slice(i));
@@ -192,7 +211,29 @@ export function checkExpression(source: string, scope: ExpressionScope, path = "
   if (!Array.isArray(tokens)) return [{ code: "invalid-expression", path, ...tokens.error }];
   const findings: ExpressionFinding[] = [];
   tokens.forEach((token, i) => {
+    if (token.kind === "field") {
+      const previous = tokens[i - 1];
+      if (previous?.kind !== "field" && !(previous?.kind === "operator" && previous.text === "]")) {
+        findings.push({
+          code: "invalid-expression",
+          path,
+          offset: token.offset,
+          length: token.text.length,
+          message: `'${token.text}' must follow an index, as in resources.venues[0].reserve`,
+        });
+      } else if (token.text.split(".").slice(1).some((segment) => segment.length === 0)) {
+        findings.push({
+          code: "invalid-expression",
+          path,
+          offset: token.offset,
+          length: token.text.length,
+          message: `'${token.text}' has an empty path segment`,
+        });
+      }
+      return;
+    }
     if (token.kind !== "identifier") return;
+    if (isMembership(tokens, i)) return;
     const next = tokens[i + 1];
     if (next?.kind === "operator" && next.text === "(") {
       if (!(EXPRESSION_FUNCTIONS as readonly string[]).includes(token.text)) {
@@ -326,7 +367,7 @@ function checkSquadsMultisig(source: string, resources: ReadonlySet<string>, pat
   const outside: ExpressionFinding[] = [];
   let readsResource = false;
   tokens.forEach((token, i) => {
-    if (token.kind !== "identifier" || LITERAL_WORDS.has(token.text)) return;
+    if (token.kind !== "identifier" || LITERAL_WORDS.has(token.text) || isMembership(tokens, i)) return;
     const next = tokens[i + 1];
     if (next?.kind === "operator" && next.text === "(") return;
     if (token.text.split(".")[0] === "resources") {
