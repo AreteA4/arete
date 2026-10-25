@@ -6,6 +6,7 @@ import {
   setHostedWebsocketSuffixes,
 } from './connection';
 import { SubscriptionRegistry } from './subscription';
+import { createWebSocketHarness } from './testing/websocket';
 import { QueryStore } from './query-store';
 import { MemoryAdapter } from './storage/memory-adapter';
 import {
@@ -1725,5 +1726,46 @@ describe('ConnectionManager auth', () => {
 
     await expect(manager.connect()).rejects.toMatchObject({ code: 'WEBSOCKET_DISABLED' });
     expect(MockWebSocket.instances).toHaveLength(0);
+  });
+});
+
+describe('ConnectionManager without a global WebSocket', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('connects, reuses the socket and disconnects through auth.websocketFactory alone', async () => {
+    // As on Node 20: no global WebSocket, and the harness must not install one.
+    vi.stubGlobal('WebSocket', undefined);
+    const harness = createWebSocketHarness({ installGlobal: false });
+    expect((globalThis as { WebSocket?: unknown }).WebSocket).toBeUndefined();
+    const getToken = vi.fn(async () => ({ token: 'session-token', scopes: ['read'] }));
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      auth: { getToken, websocketFactory: harness.websocketFactory },
+    });
+
+    await manager.connect();
+    expect(getToken).toHaveBeenCalledTimes(1);
+    expect(manager.getState()).toBe('connected');
+    expect(harness.sockets).toHaveLength(1);
+    // A second connect sees the open socket (a readyState check) and reuses it.
+    await manager.connect();
+    expect(harness.sockets).toHaveLength(1);
+    manager.disconnect();
+    expect(manager.getState()).toBe('disconnected');
+  });
+
+  it('fails clearly when there is neither a global WebSocket nor a factory', async () => {
+    vi.stubGlobal('WebSocket', undefined);
+    const manager = new ConnectionManager({
+      websocketUrl: 'wss://demo.stack.arete.run',
+      auth: { token: 'session-token' },
+      autoReconnect: false,
+    });
+    await expect(manager.connect()).rejects.toMatchObject({
+      code: 'INVALID_CONFIG',
+      message: expect.stringContaining('auth.websocketFactory'),
+    });
   });
 });

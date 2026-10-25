@@ -57,6 +57,11 @@ const TOKEN_REFRESH_BUFFER_SECONDS = 60;
 const MIN_REFRESH_DELAY_MS = 1_000;
 const DEFAULT_QUERY_PARAMETER = 'hs_token';
 const DEFAULT_HOSTED_TOKEN_ENDPOINT = 'https://api.arete.run/ws/sessions';
+
+// WebSocket readyState values, defined here so that a socket from
+// auth.websocketFactory works without a global WebSocket (Node 20 has none).
+const WS_CONNECTING = 0;
+const WS_OPEN = 1;
 const HOSTED_WEBSOCKET_SUFFIX = '.stack.arete.run';
 /**
  * Extra suffixes treated as hosted Arete, beyond the default.
@@ -1005,7 +1010,7 @@ export class ConnectionManager {
           previousToken &&
           this.currentToken &&
           this.currentToken !== previousToken &&
-          this.ws?.readyState === WebSocket.OPEN
+          this.ws?.readyState === WS_OPEN
         ) {
           // Try in-band auth refresh first
           const refreshed = await this.sendInBandAuthRefresh(this.currentToken);
@@ -1035,7 +1040,7 @@ export class ConnectionManager {
   }
 
   private async sendInBandAuthRefresh(token: string): Promise<boolean> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== WS_OPEN) {
       return false;
     }
 
@@ -1082,7 +1087,7 @@ export class ConnectionManager {
   }
 
   private rotateConnectionForTokenRefresh(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.reconnectForTokenRefresh) {
+    if (!this.ws || this.ws.readyState !== WS_OPEN || this.reconnectForTokenRefresh) {
       return;
     }
 
@@ -1144,7 +1149,15 @@ export class ConnectionManager {
       return this.authConfig.websocketFactory(url);
     }
 
-    return new WebSocket(url);
+    const NativeWebSocket = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+    if (typeof NativeWebSocket !== 'function') {
+      throw new AreteError(
+        'This runtime has no global WebSocket: pass auth.websocketFactory (for example one '
+          + 'built on the `ws` package) or use transport: "http"',
+        'INVALID_CONFIG'
+      );
+    }
+    return new NativeWebSocket(url);
   }
 
   getState(): ConnectionState {
@@ -1307,8 +1320,8 @@ export class ConnectionManager {
     this.requireWebsocketUrl();
 
     if (
-      this.ws?.readyState === WebSocket.OPEN ||
-      this.ws?.readyState === WebSocket.CONNECTING ||
+      this.ws?.readyState === WS_OPEN ||
+      this.ws?.readyState === WS_CONNECTING ||
       this.currentState === 'connecting'
     ) {
       return;
@@ -1535,6 +1548,13 @@ export class ConnectionManager {
           }
         };
       } catch (error) {
+        // A configuration problem (no WebSocket to construct) keeps its own
+        // message; anything else is a connection failure.
+        if (error instanceof AreteError && error.code === 'INVALID_CONFIG') {
+          this.updateState('error', error.message);
+          finish(() => reject(error));
+          return;
+        }
         const hsError = new AreteError(
           'Failed to create WebSocket connection',
           'CONNECTION_ERROR',
@@ -1588,7 +1608,7 @@ export class ConnectionManager {
       return;
     }
 
-    if (this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN) {
+    if (this.currentState === 'connected' && this.ws?.readyState === WS_OPEN) {
       try {
         this.ws.send(JSON.stringify(normalized));
       } catch (error) {
@@ -1617,7 +1637,7 @@ export class ConnectionManager {
     if (this.activeSubscriptions.has(subscriptionId)) {
       this.activeSubscriptions.delete(subscriptionId);
 
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.ws?.readyState === WS_OPEN) {
         const unsubMsg = { type: 'unsubscribe', protocolVersion: 2, subscriptionId };
         this.ws.send(JSON.stringify(unsubMsg));
       }
@@ -1657,7 +1677,7 @@ export class ConnectionManager {
   }
 
   isConnected(): boolean {
-    return this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN;
+    return this.currentState === 'connected' && this.ws?.readyState === WS_OPEN;
   }
 
   private flushSubscriptionQueue(): void {
@@ -1670,7 +1690,7 @@ export class ConnectionManager {
 
   private resubscribeActive(): void {
     for (const subscription of this.activeSubscriptions.values()) {
-      if (this.ws?.readyState !== WebSocket.OPEN) continue;
+      if (this.ws?.readyState !== WS_OPEN) continue;
       // Re-sending the original `after` would replay what was already
       // delivered; sending none would skip whatever the drop cost us.
       const after = this.cursors.last(subscription.subscriptionId);
@@ -1792,7 +1812,7 @@ export class ConnectionManager {
   private startPingInterval(): void {
     this.stopPingInterval();
     this.pingInterval = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.ws?.readyState === WS_OPEN) {
         this.ws.send('{"type":"ping"}');
       }
     }, 15000);
