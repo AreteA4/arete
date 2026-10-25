@@ -206,9 +206,10 @@ pub struct UpArgs {
     #[arg(long, default_value_t = 48_700, value_name = "N")]
     pub port_base: u16,
 
-    /// Deploy once and don't watch the project
-    #[arg(long)]
-    pub no_watch: bool,
+    /// Deploy once, report `ready` or `failed`, and exit (0 after a good
+    /// deploy, non-zero after a failed one) without watching the project
+    #[arg(long, visible_alias = "no-watch")]
+    pub once: bool,
 
     /// Don't deploy the protocol or project stacks (serve the environment and UI only)
     #[arg(long)]
@@ -1234,7 +1235,7 @@ fn up(args: UpArgs, json: bool) -> Result<()> {
         template: args.template.clone(),
         settings,
         port_base: args.port_base,
-        watch: !args.no_watch,
+        once: args.once,
         deploy: !args.no_deploy,
         sync_sdk: has_protocol && !args.no_sdk && !args.no_deploy,
         sdk_targets: if has_protocol {
@@ -1402,7 +1403,13 @@ mod tests {
             panic!("expected up");
         };
         assert_eq!(args.port_base, 48_700);
-        assert!(!args.no_watch && !args.no_deploy && !args.no_ui);
+        assert!(!args.once && !args.no_deploy && !args.no_ui);
+        for flag in ["--once", "--no-watch"] {
+            let DevCommands::Up(args) = parse(&["up", flag]).unwrap() else {
+                panic!("expected up");
+            };
+            assert!(args.once, "{flag}");
+        }
 
         let DevCommands::Up(args) = parse(&[
             "up",

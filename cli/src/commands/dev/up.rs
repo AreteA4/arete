@@ -199,7 +199,9 @@ pub struct UpConfig {
     pub template: Option<String>,
     pub settings: DeploySettings,
     pub port_base: u16,
-    pub watch: bool,
+    /// `--once` (or `--no-watch`): deploy, report `ready` or `failed`, and
+    /// exit instead of watching.
+    pub once: bool,
     /// Deploy the protocol into the environment (not with `--no-deploy`).
     pub deploy: bool,
     /// Generate this protocol's installed client from each new build.
@@ -407,6 +409,68 @@ struct Session<'a> {
     /// `[dev.automations]`: the project's automations, restarted on changes.
     automations: Option<automations::Runner>,
     admission: Option<Child>,
+    /// What the current watch pass did, for its `pass` event.
+    pass: PassReport,
+}
+
+/// One watch pass's outcome: the protocol deployment, the project stacks and
+/// the installed client, summarised in one `pass` event.
+#[derive(Debug, Default)]
+struct PassReport {
+    /// `deployed`, `unchanged` or `failed`; `None` when nothing deploys.
+    deployment: Option<&'static str>,
+    deployment_id: Option<String>,
+    release_hash: Option<String>,
+    /// The project stacks serving after the pass; `None` when not deployed.
+    stacks: Option<Vec<String>>,
+    /// `generated`, `unchanged` or `failed`; `None` when not attempted.
+    sdk: Option<&'static str>,
+}
+
+impl PassReport {
+    fn summary(&self, changed: &[String], error: Option<&anyhow::Error>) -> (String, Value) {
+        let mut parts = Vec::new();
+        match (self.deployment, &self.deployment_id) {
+            (Some(state), Some(id)) => parts.push(format!("deployment {id} {state}")),
+            (Some(state), None) => parts.push(format!("deployment {state}")),
+            _ => {}
+        }
+        if let Some(stacks) = &self.stacks {
+            parts.push(format!("{} stack(s) serving", stacks.len()));
+        }
+        if let Some(sdk) = self.sdk {
+            parts.push(format!("client {sdk}"));
+        }
+        let ok = error.is_none();
+        let human = format!(
+            "Pass {}: {}",
+            if ok { "done" } else { "failed" },
+            if parts.is_empty() {
+                "nothing to deploy".to_string()
+            } else {
+                parts.join(", ")
+            }
+        );
+        let mut fields = json!({
+            "ok": ok,
+            "changed": changed,
+            "deployment": self.deployment.map(|state| json!({
+                "state": state,
+                "deploymentId": self.deployment_id,
+                "releaseHash": self.release_hash,
+            })),
+            "stacks": self.stacks,
+            "sdk": self.sdk,
+        });
+        if let Some(error) = error {
+            if let Some(object) = fields.as_object_mut() {
+                if let Some(error_fields) = error_fields(error).as_object() {
+                    object.extend(error_fields.clone());
+                }
+            }
+        }
+        (human, fields)
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -652,6 +716,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
         }),
         ui,
         admission: None,
+        pass: PassReport::default(),
     };
     let result = session.supervise(&token).await;
     if let Some(runner) = &mut session.automations {
@@ -669,6 +734,8 @@ pub async fn run(config: UpConfig) -> Result<()> {
     let _ = std::fs::remove_file(state_path(&project));
     let _ = std::fs::remove_file(project.session_path());
     match &result {
+        // With --once, `ready` already ended the run.
+        Ok(()) if config.once => {}
         Ok(()) => events.emit(
             "stopped",
             "a4 dev stopped. The environment keeps its state and sleeps when idle (`a4 dev sleep` now, `a4 dev status` to look).",
@@ -677,10 +744,35 @@ pub async fn run(config: UpConfig) -> Result<()> {
         Err(error) => events.emit(
             "failed",
             &format!("a4 dev stopped: {error:#}"),
-            json!({ "error": format!("{error:#}") }),
+            error_fields(error),
         ),
     }
     result
+}
+
+/// A signal during startup. A watching session just stops; `--once` fails,
+/// so a script never reads an interrupted deploy as a good one (the caller
+/// emits `failed` and exits non-zero).
+fn interrupted_start(once: bool) -> Result<()> {
+    if once {
+        anyhow::bail!("interrupted before the deploy finished");
+    }
+    Ok(())
+}
+
+/// An error as event fields: `error` (the whole message) and, for a failed
+/// protocol build, `diagnostics` (`[{file, line, column, message, code}]`)
+/// parsed from the compiler's findings.
+fn error_fields(error: &anyhow::Error) -> Value {
+    let mut fields = json!({ "error": format!("{error:#}") });
+    if let Some(build) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<super::deploy::BuildFailed>())
+    {
+        fields["stage"] = json!("build");
+        fields["diagnostics"] = json!(build.diagnostics);
+    }
+    fields
 }
 
 impl Session<'_> {
@@ -938,10 +1030,14 @@ impl Session<'_> {
             self.project.session_path().display()
         ));
         let mut edits = Vec::new();
-        if self.config.protocol && self.config.deploy && self.config.watch {
+        if self.config.protocol && self.config.deploy && !self.config.once {
             edits.push("Edit protocol.ts, handlers/ or idl/ to redeploy.");
         }
-        edits.push("Ctrl-C (or `a4 dev down`) stops the local endpoints; the environment keeps its state and sleeps when idle.");
+        if self.config.once {
+            edits.push("--once: the local endpoints stop now; the deployment stays in the environment, which keeps its state and sleeps when idle.");
+        } else {
+            edits.push("Ctrl-C (or `a4 dev down`) stops the local endpoints; the environment keeps its state and sleeps when idle.");
+        }
         lines.push(edits.join(" "));
         lines.join("\n")
     }
@@ -1132,6 +1228,11 @@ impl Session<'_> {
         })();
         match synced {
             Ok(report) => {
+                self.pass.sdk = Some(if report.install.changed {
+                    "generated"
+                } else {
+                    "unchanged"
+                });
                 self.sdk_generated_for =
                     Some((outcome.deployment_id.clone(), outcome.release_hash.clone()));
                 if report.added_dependency {
@@ -1152,26 +1253,42 @@ impl Session<'_> {
                     );
                 }
             }
-            Err(error) => self.events.emit(
-                "sdk-warning",
-                &format!("Could not generate the protocol client from the local build: {error:#}"),
-                json!({ "error": format!("{error:#}") }),
-            ),
+            Err(error) => {
+                self.pass.sdk = Some("failed");
+                self.events.emit(
+                    "sdk-warning",
+                    &format!(
+                        "Could not generate the protocol client from the local build: {error:#}"
+                    ),
+                    json!({ "error": format!("{error:#}") }),
+                );
+            }
         }
     }
 
     async fn redeploy(&mut self, changed: &[String]) -> Result<()> {
-        self.build(changed).await?;
+        if let Err(error) = self.build(changed).await {
+            self.pass.deployment = Some("failed");
+            return Err(error);
+        }
         if self.deployer.is_none() {
             return Ok(());
         }
         let outcome = match self.deploy().await {
             Ok(outcome) => outcome,
             Err(error) => {
+                self.pass.deployment = Some("failed");
                 self.ui.deploy_failed(&error);
                 return Err(error);
             }
         };
+        self.pass.deployment = Some(if outcome.changed {
+            "deployed"
+        } else {
+            "unchanged"
+        });
+        self.pass.deployment_id = Some(outcome.deployment_id.clone());
+        self.pass.release_hash = Some(outcome.release_hash.clone());
         if !outcome.changed {
             self.events.emit(
                 "unchanged",
@@ -1194,6 +1311,7 @@ impl Session<'_> {
             self.events.emit("stack", &format!("Stack {} is serving at {}", stack.name, stack.ws_url),
                 json!({ "stack": stack.name, "wsUrl": stack.ws_url, "deploymentId": stack.deployment_id }));
         }
+        self.pass.stacks = Some(stacks.iter().map(|stack| stack.name.clone()).collect());
         if !self.config.protocol {
             self.stack = stacks
                 .first()
@@ -1217,11 +1335,15 @@ impl Session<'_> {
         #[cfg(not(unix))]
         let mut terminate = ();
         tokio::select! {
-            _ = &mut ctrl_c => return Ok(()),
-            _ = terminated(&mut terminate) => return Ok(()),
+            _ = &mut ctrl_c => return interrupted_start(self.config.once),
+            _ = terminated(&mut terminate) => return interrupted_start(self.config.once),
             result = self.start(token) => result?,
         }
-        let watching = self.config.watch;
+        if self.config.once {
+            // `ready` was the last event: deployed, nothing to watch.
+            return Ok(());
+        }
+        let watching = !self.config.once;
         let mut snapshot = if watching {
             watch::snapshot(&self.project.root)
         } else {
@@ -1294,6 +1416,9 @@ impl Session<'_> {
             &format!("Changed: {}; rebuilding", names.join(", ")),
             json!({ "changed": names }),
         );
+        // This pass reports only its own work, never startup's or the last
+        // pass's (a failed build returns before the client is generated).
+        self.pass = PassReport::default();
         let result = async {
             if self.config.protocol {
                 self.redeploy(&names).await?;
@@ -1304,16 +1429,19 @@ impl Session<'_> {
             Ok::<_, anyhow::Error>(())
         }
         .await;
-        if let Err(error) = result {
+        if let Err(error) = &result {
             self.events.emit(
                 "deploy-failed",
                 &format!("Redeploy failed: {error:#}"),
-                json!({ "error": format!("{error:#}") }),
+                error_fields(error),
             );
         }
         // The client sync writes arete.lock (`local_build`); that is not a
         // change to redeploy for.
         watch::refresh(snapshot, &self.project.root, "arete.lock");
+        let pass = std::mem::take(&mut self.pass);
+        let (human, fields) = pass.summary(&names, result.as_ref().err());
+        self.events.emit("pass", &human, fields);
         Ok(())
     }
 }
@@ -1371,6 +1499,13 @@ mod tests {
             super::admission_args(true),
             ["dev", "__admit-local-programs", "--verbose"]
         );
+    }
+
+    #[test]
+    fn an_interrupted_start_fails_only_with_once() {
+        assert!(interrupted_start(false).is_ok());
+        let error = interrupted_start(true).unwrap_err();
+        assert!(format!("{error:#}").contains("interrupted before the deploy finished"));
     }
 
     // Run only in the subprocess below: an HTTP request that never replies.
@@ -1527,6 +1662,43 @@ mod tests {
             return;
         }
         panic!("no free port block next to a busy port");
+    }
+
+    #[test]
+    fn a_pass_event_summarises_deployment_stacks_and_client() {
+        let pass = PassReport {
+            deployment: Some("deployed"),
+            deployment_id: Some("dep-2".into()),
+            release_hash: Some("rel-2".into()),
+            stacks: Some(vec!["prices".into()]),
+            sdk: Some("generated"),
+        };
+        let (human, fields) = pass.summary(&["protocol.ts".into()], None);
+        assert_eq!(
+            human,
+            "Pass done: deployment dep-2 deployed, 1 stack(s) serving, client generated"
+        );
+        assert_eq!(fields["ok"], true);
+        assert_eq!(fields["deployment"]["deploymentId"], "dep-2");
+        assert_eq!(fields["stacks"], json!(["prices"]));
+        assert_eq!(fields["sdk"], "generated");
+
+        let failed = PassReport {
+            deployment: Some("failed"),
+            ..PassReport::default()
+        };
+        let error: anyhow::Error = super::super::deploy::BuildFailed {
+            output: "protocol.ts:1:2: bad [code]".into(),
+            diagnostics: super::super::deploy::build_diagnostics("protocol.ts:1:2: bad [code]"),
+        }
+        .into();
+        let (human, fields) = failed.summary(&[], Some(&error));
+        assert_eq!(human, "Pass failed: deployment failed");
+        assert_eq!(fields["ok"], false);
+        assert_eq!(fields["stage"], "build");
+        assert_eq!(fields["diagnostics"][0]["file"], "protocol.ts");
+        assert_eq!(fields["diagnostics"][0]["line"], 1);
+        assert!(fields["stacks"].is_null());
     }
 
     #[test]

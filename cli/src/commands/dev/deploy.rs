@@ -240,9 +240,85 @@ pub async fn run_build(project_root: &Path, log: &LogSink) -> Result<()> {
                 "arete-protocol is not installed in this project. Run `npm install --save-dev @usearete/protocol`."
             );
         }
-        bail!("`arete-protocol build` failed:\n{}", stderr.trim());
+        return Err(BuildFailed {
+            diagnostics: build_diagnostics(&stderr),
+            output: stderr.trim().to_string(),
+        }
+        .into());
     }
     Ok(())
+}
+
+/// One finding of a failed `arete-protocol build`, located in a source file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct BuildDiagnostic {
+    pub file: String,
+    pub line: u32,
+    pub column: u32,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<String>,
+}
+
+/// A failed `arete-protocol build`: its output, and the findings in it that
+/// name a file and line.
+#[derive(Debug)]
+pub struct BuildFailed {
+    pub output: String,
+    pub diagnostics: Vec<BuildDiagnostic>,
+}
+
+impl std::fmt::Display for BuildFailed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "`arete-protocol build` failed:\n{}", self.output)
+    }
+}
+
+impl std::error::Error for BuildFailed {}
+
+/// The `file:line:column: message [code]` findings `arete-protocol build`
+/// prints, one per line.
+pub fn build_diagnostics(output: &str) -> Vec<BuildDiagnostic> {
+    output.lines().filter_map(parse_diagnostic).collect()
+}
+
+/// `<file>:<line>:<column>: <message> [<code>]`. The file may hold spaces
+/// and a Windows drive prefix (`C:\…`); it is everything before the first
+/// `:<line>:<column>: `, and must end in an extension, so prose such as
+/// `at 12:30:45: …` is not read as a location.
+fn parse_diagnostic(line: &str) -> Option<BuildDiagnostic> {
+    let line = line.trim();
+    let (file, line_number, column, rest) = line.match_indices(':').find_map(|(index, _)| {
+        let mut parts = line[index + 1..].splitn(3, ':');
+        let line_number: u32 = parts.next()?.parse().ok()?;
+        let column: u32 = parts.next()?.parse().ok()?;
+        let rest = parts.next()?.strip_prefix(' ')?.trim_end();
+        Some((line[..index].trim(), line_number, column, rest))
+    })?;
+    let has_extension = file.rsplit_once('.').is_some_and(|(stem, extension)| {
+        !stem.is_empty()
+            && !extension.is_empty()
+            && extension.chars().all(|c| c.is_ascii_alphanumeric())
+    });
+    if !has_extension || rest.is_empty() {
+        return None;
+    }
+    let (message, code) = match rest
+        .strip_suffix(']')
+        .and_then(|head| head.rsplit_once(" ["))
+    {
+        Some((message, code)) if !code.is_empty() && !code.contains(' ') => {
+            (message.to_string(), Some(code.to_string()))
+        }
+        _ => (rest.to_string(), None),
+    };
+    Some(BuildDiagnostic {
+        file: file.to_string(),
+        line: line_number,
+        column,
+        message,
+        code,
+    })
 }
 
 pub fn read_build(build_dir: &Path) -> Result<BuildOutput> {
@@ -550,6 +626,69 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     const ENV: &str = "denv_01hzx3k8m9q2r4s5t6v7w8x9yz";
+
+    #[test]
+    fn build_failures_carry_located_findings() {
+        let stderr = "warning: something minor\n\
+            error: the protocol does not type-check\n  \
+            protocol.ts:12:7: unknown account 'vault' [template_unknown_account]\n  \
+            handlers/close.ts:3:1: Cannot find name 'x'\n\
+            npm error code 1\n";
+        assert_eq!(
+            build_diagnostics(stderr),
+            vec![
+                BuildDiagnostic {
+                    file: "protocol.ts".into(),
+                    line: 12,
+                    column: 7,
+                    message: "unknown account 'vault'".into(),
+                    code: Some("template_unknown_account".into()),
+                },
+                BuildDiagnostic {
+                    file: "handlers/close.ts".into(),
+                    line: 3,
+                    column: 1,
+                    message: "Cannot find name 'x'".into(),
+                    code: None,
+                },
+            ]
+        );
+        // Paths with spaces and Windows drive prefixes keep their findings;
+        // prose with a time in it is not a location.
+        let located = |line: &str| {
+            build_diagnostics(line)
+                .into_iter()
+                .map(|found| (found.file, found.line, found.column, found.message))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            located("handlers/my handler.ts:3:1: bad [code]"),
+            [(
+                "handlers/my handler.ts".to_string(),
+                3,
+                1,
+                "bad".to_string()
+            )]
+        );
+        assert_eq!(
+            located("C:\\project\\protocol.ts:3:1: bad [code]"),
+            [(
+                "C:\\project\\protocol.ts".to_string(),
+                3,
+                1,
+                "bad".to_string()
+            )]
+        );
+        assert!(located("retrying at 12:30:45: still down").is_empty());
+        assert!(located("protocol.ts:3:1:").is_empty());
+
+        let error: anyhow::Error = BuildFailed {
+            output: stderr.trim().into(),
+            diagnostics: build_diagnostics(stderr),
+        }
+        .into();
+        assert!(format!("{error:#}").starts_with("`arete-protocol build` failed:\n"));
+    }
 
     #[test]
     fn derives_slugs() {
