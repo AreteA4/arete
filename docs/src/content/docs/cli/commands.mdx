@@ -109,8 +109,8 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 protocol request-listing`                                                 | Ask for your deployment to be listed                              |
 | `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
 | `a4 protocol webhook add\|list\|remove\|test`                                 | The webhook endpoints that receive your deployment's events       |
-| `a4 squads status\|list\|attach`                                             | Your account's Squads multisigs (set them up on the dashboard)    |
-| `a4 protocol squads proposer\|status [target]`                               | Bring your own Squads multisig: the proposer and its status       |
+| `a4 squads status\|list\|attach`                                              | Your account's Squads multisigs (set them up on the dashboard)    |
+| `a4 protocol squads proposer\|status [target]`                                | Bring your own Squads multisig: the proposer and its status       |
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
 | `a4 telemetry status`                                                         | Show telemetry status                                             |
@@ -1260,10 +1260,10 @@ a4 squads list
 a4 squads attach <M> --label Treasury
 ```
 
-| Flag             | Description                                     |
-| ---------------- | ----------------------------------------------- |
-| `--label <text>` | `attach`: a label for the dashboard (1 to 64)   |
-| `--json`         | The answer as JSON                              |
+| Flag             | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `--label <text>` | `attach`: a label for the dashboard (1 to 64) |
+| `--json`         | The answer as JSON                            |
 
 Dev environments keep their own proposer: use `a4 protocol squads --dev` and
 [`a4 dev squads`](/cli/local-development/#squads-multisigs) there.
@@ -1302,12 +1302,12 @@ SDK's Arete setup helpers. In a dev environment,
 [`a4 dev squads add-proposer`](/cli/local-development/#squads-multisigs)
 builds the config proposal locally and a dev wallet signs it.
 
-| Flag                        | Description                                                             |
-| --------------------------- | ----------------------------------------------------------------------- |
-| `--multisig <address>`      | `status`: the multisig account, not one of its vaults                   |
-| `--rpc-url <url>`           | Where balances are read (not with `--dev`)                              |
-| `--dev` / `--project <dir>` | The project's dev deployment                                            |
-| `--json`                    | The answer as JSON                                                      |
+| Flag                        | Description                                           |
+| --------------------------- | ----------------------------------------------------- |
+| `--multisig <address>`      | `status`: the multisig account, not one of its vaults |
+| `--rpc-url <url>`           | Where balances are read (not with `--dev`)            |
+| `--dev` / `--project <dir>` | The project's dev deployment                          |
+| `--json`                    | The answer as JSON                                    |
 
 The MCP server offers the same reads as `protocol_squads_proposer` and
 `protocol_squads_status`. For production deployments, attach the multisig to
@@ -1445,22 +1445,22 @@ a4 dev sleep                       # or let it sleep when idle
 a4 dev delete --yes
 ```
 
-| Command                                                               | What it does                                                         |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `a4 dev up [--env name] [--no-deploy] [--no-ui] [--port-base n]`      | create or wake, serve locally, deploy and watch                      |
-| `a4 dev down [--sleep] [--purge]`                                     | stop a running `a4 dev up`                                           |
-| `a4 dev status`, `a4 dev list`, `a4 dev use <name>`                   | the environment, all of yours, or point the project at another       |
-| `a4 dev wake`, `a4 dev sleep`, `a4 dev delete`                        | lifecycle                                                            |
-| `a4 dev checkpoint [name]`, `--list`, `--delete <id\|name>`           | checkpoints                                                          |
-| `a4 dev restore <checkpoint>`, `a4 dev branch <checkpoint> <name>`    | undo to a checkpoint, or start a new environment from one            |
-| `a4 dev rebase`, `a4 dev reset [--account <pubkey>]`                  | refresh untouched accounts, or start over                            |
-| `a4 dev fund`, `a4 dev pin`, `a4 dev follow`                          | balances and freshness of accounts                                   |
-| `a4 dev warp`, `a4 dev pause`, `a4 dev resume`                        | the clock                                                            |
-| `a4 dev scenario <file>`, `a4 dev preview <tx>`, `a4 dev repro <sig>` | scenarios, previews and repro exports                                |
-| `a4 dev events`, `a4 dev token`                                       | lifecycle events; an environment token with the RPC URLs             |
-| `a4 dev step`, `a4 dev wallet`, `a4 dev instance`, `a4 dev replay`    | drive the protocol with local dev wallets                            |
-| `a4 dev sdk`, `a4 dev capture`                                        | the protocol client from the local build; a capture from an RPC node |
-| `a4 dev consent <wallet> --steps <a,b>`                               | opt a dev wallet in to the project's `[dev.automations]`             |
+| Command                                                                     | What it does                                                                    |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `a4 dev up [--env name] [--no-deploy] [--no-ui] [--port-base n]`            | create or wake, serve locally, deploy and watch                                 |
+| `a4 dev down [--sleep] [--purge]`                                           | stop a running `a4 dev up`                                                      |
+| `a4 dev status`, `a4 dev list`, `a4 dev use <name>`                         | the environment, all of yours, or point the project at another                  |
+| `a4 dev wake`, `a4 dev sleep`, `a4 dev delete`                              | lifecycle                                                                       |
+| `a4 dev checkpoint [name]`, `--list`, `--delete <id\|name>`                 | checkpoints                                                                     |
+| `a4 dev restore <checkpoint>`, `a4 dev branch <checkpoint> <name>`          | undo to a checkpoint, or start a new environment from one                       |
+| `a4 dev rebase`, `a4 dev reset [--account <pubkey>]`                        | refresh untouched accounts, or start over                                       |
+| `a4 dev fund`, `a4 dev pin`, `a4 dev follow`                                | balances and freshness of accounts                                              |
+| `a4 dev warp`, `a4 dev pause`, `a4 dev resume`                              | the clock                                                                       |
+| `a4 dev scenario <file>`, `a4 dev preview <tx>`, `a4 dev repro <sig>`       | scenarios, previews and repro exports                                           |
+| `a4 dev events`, `a4 dev token`                                             | lifecycle events; an environment token with the RPC URLs                        |
+| `a4 dev step`, `a4 dev wallet`, `a4 dev instance`, `a4 dev replay`          | drive the protocol with local dev wallets                                       |
+| `a4 dev sdk`, `a4 dev capture`                                              | the protocol client from the local build; a capture from an RPC node            |
+| `a4 dev consent <wallet> --steps <a,b>`                                     | opt a dev wallet in to the project's `[dev.automations]`                        |
 | `a4 dev squads create\|add-proposer\|show\|approve\|execute\|vault-execute` | Squads v4 multisigs in the environment, built locally and signed by dev wallets |
 
 Every environment command takes `--env <name|id>` (default `ARETE_DEV_ENV`,
