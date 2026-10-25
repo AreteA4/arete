@@ -601,6 +601,8 @@ const actions = await raise.actions({ wallet, limit: 20 }); // { createSteps, in
 for (const { instanceId, relation, steps } of actions.instances) {
   // relation: ['participant' | 'creator' | `role:${name}`]; steps: [{ step, allowed, reason?, scope?, args? }]
 }
+// Every page at once, only the raises `wallet` created.
+const created = await raise.instances.forWallet(wallet, { relation: 'creator' });
 
 const subscription = raise.events(id, {
   onEvent(event) {
@@ -611,7 +613,7 @@ const subscription = raise.events(id, {
 subscription.close();
 ```
 
-`actions({ wallet, instance?, cursor?, limit? })` reads which steps a wallet can call across the deployment: `createSteps`, evaluated without an instance (guards that read the arguments or the instance-to-be are listed in `argsDependent`), and one page of the instances the wallet relates to, each with its `state`, `relation`, `participantState` and `steps`. Each step carries its `scope` and its typed `args` (`{ name, optional, type, format?, description? }`: the JSON type, with a `format` such as `u64` or `pubkey` for Solana amounts and keys), so an agent or UI can build the call without the spec. Pass `nextCursor` back as `cursor` for the next page (`limit` is at most 50), or `instance` to read one instance.
+`actions({ wallet, instance?, cursor?, limit? })` reads which steps a wallet can call across the deployment: `createSteps`, evaluated without an instance (guards that read the arguments or the instance-to-be are listed in `argsDependent`), and one page of the instances the wallet relates to, each with its `state`, `relation`, `participantState` and `steps`. Each step carries its `scope` and its typed `args` (`{ name, optional, type, format?, description? }`: the JSON type, with a `format` such as `u64` or `pubkey` for Solana amounts and keys), so an agent or UI can build the call without the spec. Pass `nextCursor` back as `cursor` for the next page (`limit` is at most 50), or `instance` to read one instance. `instances.forWallet(wallet, { relation? })` reads every page and returns the instance entries, only those with `relation` (`creator`, `participant` or `role:<name>`) when it is given.
 
 `events` reads the instance's Server-Sent Events stream over `fetch` (so the session token is sent as a header), delivering `transition`, `participant`, `observation` and `emit` events. The server ends streams periodically and when the session expires; the client reconnects with `Last-Event-ID` and a fresh token, so no event is skipped. Pass `lastEventId` to resume a stream you stored.
 

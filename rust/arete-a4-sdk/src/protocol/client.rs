@@ -40,6 +40,9 @@ pub const PROTOCOL_SUBMIT_SCOPE: &str = "protocol:submit";
 /// Session scope a secret key asks for: prepare any client-callable step.
 pub const PROTOCOL_PREPARE_ANY_SCOPE: &str = "protocol:prepare:*";
 
+/// The most instances one wallet actions page returns.
+const WALLET_ACTIONS_PAGE_LIMIT: u32 = 50;
+
 /// The prepare scope of one step: `protocol:prepare:<step>`.
 pub fn protocol_prepare_scope(step: &str) -> String {
     format!("protocol:prepare:{step}")
@@ -1257,6 +1260,40 @@ impl ProtocolClient {
             url.pop();
         }
         self.get_json("Protocol wallet actions read", url).await
+    }
+
+    /// Every instance `wallet` relates to, read through all pages of
+    /// [`actions`](Self::actions). With `relation`, only the instances it
+    /// relates to that way: `creator` for the ones it created, `role:<name>`
+    /// for the ones where it holds that role, `participant` for the ones it
+    /// joined.
+    pub async fn instances_for_wallet(
+        &self,
+        wallet: &str,
+        relation: Option<&str>,
+    ) -> Result<Vec<ProtocolWalletInstanceActions>, ProtocolError> {
+        let mut found = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut cursor: Option<String> = None;
+        loop {
+            let mut request =
+                ProtocolWalletActionsRequest::new(wallet).with_limit(WALLET_ACTIONS_PAGE_LIMIT);
+            request.cursor = cursor.take();
+            let page = self.actions(request).await?;
+            found.extend(page.instances.into_iter().filter(|instance| {
+                relation
+                    .is_none_or(|relation| instance.relation.iter().any(|held| held == relation))
+            }));
+            let Some(next) = page.next_cursor else {
+                return Ok(found);
+            };
+            if !seen.insert(next.clone()) {
+                return Err(ProtocolError::UnexpectedResponse(format!(
+                    "Protocol wallet actions returned the cursor {next} twice"
+                )));
+            }
+            cursor = Some(next);
+        }
     }
 
     /// An instance's metadata document and version.

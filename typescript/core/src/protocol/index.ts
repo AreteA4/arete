@@ -16,6 +16,7 @@ export type {
   ProtocolInstanceGetOptions,
   ProtocolInstanceHandle,
   ProtocolInstanceListFilter,
+  ProtocolInstancesForWalletOptions,
   ProtocolInstanceSnapshot,
   ProtocolKeyClassOf,
   ProtocolMetadataHandle,

@@ -994,6 +994,105 @@ async fn wallet_actions_read_the_wallet_route_with_a_read_session() {
         .all(|session| session.body["scopes"] == json!(["protocol:read"])));
 }
 
+fn wallet_instance(id: &str, relation: &[&str]) -> Value {
+    json!({ "instanceId": id, "state": "open", "relation": relation, "participantState": null, "steps": [] })
+}
+
+#[tokio::test]
+async fn instances_for_wallet_finds_the_instances_a_wallet_created_across_pages() {
+    let (mock, base) = mock(|request, index| match request.path.as_str() {
+        "/ws/sessions" => session(index),
+        "/api/protocol-deployments/dep_1/wallets/wal/actions" => {
+            let cursor = request
+                .query
+                .as_deref()
+                .unwrap_or_default()
+                .split('&')
+                .find_map(|pair| pair.strip_prefix("cursor="));
+            let (instances, next) = match cursor {
+                None => (
+                    vec![
+                        wallet_instance("inst_1", &["creator"]),
+                        wallet_instance("inst_2", &["participant"]),
+                        wallet_instance("inst_3", &["participant", "creator"]),
+                    ],
+                    json!("c2"),
+                ),
+                Some("c2") => (
+                    vec![
+                        wallet_instance("inst_4", &["role:admin"]),
+                        wallet_instance("inst_5", &["creator", "role:admin"]),
+                    ],
+                    json!("c3"),
+                ),
+                Some("c3") => (vec![wallet_instance("inst_6", &["participant"])], Value::Null),
+                Some(other) => panic!("unexpected cursor {other}"),
+            };
+            let body = json!({ "deploymentId": "dep_1", "wallet": "wal", "instances": instances, "nextCursor": next });
+            (200, vec![], body.to_string())
+        }
+        other => panic!("unexpected {other}"),
+    })
+    .await;
+    let client = client(&base, AuthConfig::default().with_secret_key("a4_sk_test"));
+    let ids = |instances: Vec<ProtocolWalletInstanceActions>| {
+        instances
+            .into_iter()
+            .map(|instance| instance.instance_id)
+            .collect::<Vec<_>>()
+    };
+
+    let created = client
+        .instances_for_wallet("wal", Some("creator"))
+        .await
+        .unwrap();
+    assert_eq!(ids(created), ["inst_1", "inst_3", "inst_5"]);
+    let queries: Vec<_> = mock
+        .api()
+        .into_iter()
+        .map(|request| request.query.unwrap_or_default())
+        .collect();
+    assert_eq!(
+        queries,
+        ["limit=50", "cursor=c2&limit=50", "cursor=c3&limit=50"]
+    );
+
+    let admin = client
+        .instances_for_wallet("wal", Some("role:admin"))
+        .await
+        .unwrap();
+    assert_eq!(ids(admin), ["inst_4", "inst_5"]);
+    let all = client.instances_for_wallet("wal", None).await.unwrap();
+    assert_eq!(
+        ids(all),
+        ["inst_1", "inst_2", "inst_3", "inst_4", "inst_5", "inst_6"]
+    );
+    assert!(matches!(
+        client.instances_for_wallet("", None).await,
+        Err(ProtocolError::InvalidInput(_))
+    ));
+}
+
+#[tokio::test]
+async fn instances_for_wallet_stops_on_a_repeated_cursor() {
+    let (mock, base) = mock(|request, index| match request.path.as_str() {
+        "/ws/sessions" => session(index),
+        _ => (
+            200,
+            vec![],
+            json!({ "deploymentId": "dep_1", "wallet": "wal", "instances": [], "nextCursor": "same" })
+                .to_string(),
+        ),
+    })
+    .await;
+    let client = client(&base, AuthConfig::default().with_secret_key("a4_sk_test"));
+    assert!(matches!(
+        client.instances_for_wallet("wal", None).await,
+        Err(ProtocolError::UnexpectedResponse(_))
+    ));
+    assert_eq!(mock.api().len(), 2);
+}
+
 #[tokio::test]
 async fn event_streams_resume_after_the_last_event_id() {
     let (mock, base) = mock(|request, index| match request.path.as_str() {

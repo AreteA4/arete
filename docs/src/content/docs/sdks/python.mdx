@@ -23,7 +23,10 @@ codes.
 
 Clients expose instances, participants, wallet action discovery, metadata,
 events, intent tracking, and receipts. Use `await client.actions(wallet)` for
-wallet actions; receipt helpers are `verify_receipt` and
+wallet actions, one page at a time, and
+`await client.instances_for_wallet(wallet, relation="creator")` for every
+instance the wallet created, across pages (`relation="role:<name>"` for a role
+it holds; no `relation` for every related instance). Receipt helpers are `verify_receipt` and
 `verify_receipt_on_chain`. Preserve the prepared transactions when signing
 locally and track the existing execution after submission.
 

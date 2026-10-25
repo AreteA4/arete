@@ -44,6 +44,8 @@ import {
   type ProtocolTypeMap,
   type ProtocolTypesOf,
   type ProtocolWalletActions,
+  type ProtocolWalletInstanceActions,
+  type ProtocolWalletRelation,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -54,6 +56,9 @@ import {
 export const PROTOCOL_READ_SCOPE = 'protocol:read';
 export const PROTOCOL_SUBMIT_SCOPE = 'protocol:submit';
 export const PROTOCOL_PREPARE_ANY_SCOPE = 'protocol:prepare:*';
+
+/** The most instances one wallet actions page returns. */
+const WALLET_ACTIONS_PAGE_LIMIT = 50;
 
 export interface ProtocolClientOptions<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
   /**
@@ -185,6 +190,12 @@ export interface ProtocolInstanceListFilter<TTypes extends ProtocolTypeMap = Pro
   metadata?: Partial<Record<Extract<keyof TTypes['instanceMetadata'], string>, string>>;
   cursor?: string;
   limit?: number;
+  signal?: AbortSignal;
+}
+
+export interface ProtocolInstancesForWalletOptions {
+  /** Only instances the wallet relates to this way. */
+  relation?: ProtocolWalletRelation;
   signal?: AbortSignal;
 }
 
@@ -321,6 +332,17 @@ export interface ProtocolClient<
     list(filter?: ProtocolInstanceListFilter<TTypes>): Promise<ProtocolInstancePage<TTypes['instanceState']>>;
     get(id: string, options?: ProtocolInstanceGetOptions): Promise<ProtocolInstanceDetail<TTypes>>;
     use(id: string, options?: { wallet?: string }): ProtocolInstanceHandle<TTypes>;
+    /**
+     * Every instance `wallet` relates to, read through all pages of
+     * {@link ProtocolClient.actions}. With `relation`, only the instances it
+     * relates to that way: `creator` for the ones it created, `role:<name>`
+     * for the ones where it holds that role, `participant` for the ones it
+     * joined.
+     */
+    forWallet(
+      wallet: string,
+      options?: ProtocolInstancesForWalletOptions
+    ): Promise<ProtocolWalletInstanceActions<TTypes>[]>;
   };
   readonly participants: {
     get(input: { instance: string; wallet: string; signal?: AbortSignal }): Promise<ProtocolParticipantDetail<TTypes>>;
@@ -1222,6 +1244,52 @@ export function createProtocolClientWithMembers(
     },
   };
 
+  const walletActions: ProtocolClient['actions'] = async (input) => {
+    const wallet = segment(input.wallet, 'wallet');
+    const params = new URLSearchParams();
+    if (input.instance !== undefined) params.set('instance', input.instance);
+    if (input.cursor !== undefined) params.set('cursor', input.cursor);
+    if (input.limit !== undefined) params.set('limit', String(input.limit));
+    const query = params.toString();
+    const actions = await getJson(
+      'Protocol wallet actions',
+      `${apiUrl}/protocol-deployments/${segment(deploymentId, 'deploymentId')}/wallets/${wallet}/actions${query ? `?${query}` : ''}`,
+      input.signal
+    ) as ProtocolWalletActions;
+    return {
+      ...actions,
+      createSteps: actions.createSteps ?? [],
+      instances: actions.instances ?? [],
+      nextCursor: actions.nextCursor ?? null,
+    };
+  };
+
+  const instancesForWallet: ProtocolClient['instances']['forWallet'] = async (wallet, options = {}) => {
+    const found: ProtocolWalletInstanceActions[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    for (;;) {
+      const page = await walletActions({
+        wallet,
+        limit: WALLET_ACTIONS_PAGE_LIMIT,
+        ...(cursor !== undefined ? { cursor } : {}),
+        ...(options.signal ? { signal: options.signal } : {}),
+      });
+      for (const instance of page.instances) {
+        if (options.relation !== undefined && !(instance.relation ?? []).includes(options.relation)) continue;
+        found.push(instance);
+      }
+      if (page.nextCursor === null) return found;
+      if (seen.has(page.nextCursor)) {
+        throw new AreteError('Protocol wallet actions returned a cursor it already returned', 'PROTOCOL_REQUEST_FAILED', {
+          cursor: page.nextCursor,
+        });
+      }
+      seen.add(page.nextCursor);
+      cursor = page.nextCursor;
+    }
+  };
+
   const client: ProtocolClient<ProtocolTypeMap, ProtocolKeyClass, Record<string, unknown>, Record<string, unknown>> = {
     definition: definition as ProtocolDefinition,
     deploymentId,
@@ -1252,6 +1320,7 @@ export function createProtocolClientWithMembers(
       },
       get: getInstance,
       use: useInstance,
+      forWallet: instancesForWallet,
     },
     participants: {
       get: getParticipant,
@@ -1261,25 +1330,7 @@ export function createProtocolClientWithMembers(
       const detail = await getInstance(input.instance, { wallet: input.wallet, signal: input.signal });
       return detail.allowedSteps ?? [];
     },
-    async actions(input) {
-      const wallet = segment(input.wallet, 'wallet');
-      const params = new URLSearchParams();
-      if (input.instance !== undefined) params.set('instance', input.instance);
-      if (input.cursor !== undefined) params.set('cursor', input.cursor);
-      if (input.limit !== undefined) params.set('limit', String(input.limit));
-      const query = params.toString();
-      const actions = await getJson(
-        'Protocol wallet actions',
-        `${apiUrl}/protocol-deployments/${segment(deploymentId, 'deploymentId')}/wallets/${wallet}/actions${query ? `?${query}` : ''}`,
-        input.signal
-      ) as ProtocolWalletActions;
-      return {
-        ...actions,
-        createSteps: actions.createSteps ?? [],
-        instances: actions.instances ?? [],
-        nextCursor: actions.nextCursor ?? null,
-      };
-    },
+    actions: walletActions,
     submit,
     async getReceipt(signature, receiptOptions) {
       return (await getJson(

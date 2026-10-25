@@ -568,6 +568,57 @@ describe('protocol client reads', () => {
     expect(mock.requests()).toHaveLength(3);
   });
 
+  it('finds the instances a wallet created across every page of its actions', async () => {
+    const entry = (instanceId: string, relation: string[]) => ({
+      instanceId,
+      state: 'open',
+      relation,
+      participantState: null,
+      steps: [],
+    });
+    const pages: Record<string, { instances: ReturnType<typeof entry>[]; nextCursor: string | null }> = {
+      '': {
+        instances: [entry('inst-1', ['creator']), entry('inst-2', ['participant']), entry('inst-3', ['participant', 'creator'])],
+        nextCursor: 'c2',
+      },
+      c2: { instances: [entry('inst-4', ['role:admin']), entry('inst-5', ['creator', 'role:admin'])], nextCursor: 'c3' },
+      c3: { instances: [entry('inst-6', ['participant'])], nextCursor: null },
+    };
+    const mock = mockFetch((call) => {
+      if (!call.url.includes('/wallets/')) return undefined;
+      const page = pages[new URL(call.url).searchParams.get('cursor') ?? '']!;
+      return json({ deploymentId: DEPLOYMENT_ID, wallet: WALLET, createSteps: [], ...page });
+    });
+    const client = createProtocolClient(DEFINITION, { auth: { publishableKey: 'a4_pk_test' }, fetch: mock.fetch });
+
+    const created = await client.instances.forWallet(WALLET, { relation: 'creator' });
+    expect(created.map((instance) => instance.instanceId)).toEqual(['inst-1', 'inst-3', 'inst-5']);
+    expect(created[0]).toEqual(entry('inst-1', ['creator']));
+    const base = `${API}/protocol-deployments/${DEPLOYMENT_ID}/wallets/${WALLET}/actions`;
+    expect(mock.requests().map((call) => call.url)).toEqual([
+      `${base}?limit=50`,
+      `${base}?cursor=c2&limit=50`,
+      `${base}?cursor=c3&limit=50`,
+    ]);
+
+    const admin = await client.instances.forWallet(WALLET, { relation: 'role:admin' });
+    expect(admin.map((instance) => instance.instanceId)).toEqual(['inst-4', 'inst-5']);
+    const all = await client.instances.forWallet(WALLET);
+    expect(all.map((instance) => instance.instanceId)).toEqual(['inst-1', 'inst-2', 'inst-3', 'inst-4', 'inst-5', 'inst-6']);
+    await expect(client.instances.forWallet('')).rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+  });
+
+  it('stops when wallet actions return a cursor twice', async () => {
+    const mock = mockFetch((call) =>
+      call.url.includes('/wallets/')
+        ? json({ deploymentId: DEPLOYMENT_ID, wallet: WALLET, instances: [], nextCursor: 'same' })
+        : undefined
+    );
+    const client = createProtocolClient(DEFINITION, { auth: { token: 't' }, fetch: mock.fetch });
+    await expect(client.instances.forWallet(WALLET)).rejects.toMatchObject({ code: 'PROTOCOL_REQUEST_FAILED' });
+    expect(mock.requests()).toHaveLength(2);
+  });
+
   it('encodes the wallet and defaults missing lists on wallet actions', async () => {
     const mock = mockFetch((call) =>
       call.url.includes('/wallets/') ? json({ deploymentId: DEPLOYMENT_ID, wallet: 'a/b' }) : undefined
