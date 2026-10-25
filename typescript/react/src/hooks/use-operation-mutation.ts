@@ -358,7 +358,11 @@ export interface UseOperationMutationResult<TInput, TPrepared extends PreparedOp
   /** Event-handler form of `run`: the failure is kept in `error`, never thrown. */
   mutate(input: TInput, options?: OperationRunOptions): void;
   readonly status: OperationMutationStatus;
-  /** `preparing`, `signing`, `sending` or `confirming`. */
+  /**
+   * `preparing`, `signing`, `sending` or `confirming`. Exactly when it is
+   * true, `run()` is refused with `busy`: once `status` is `done` or `error`
+   * the hook takes a new run, even while `onSuccess`/`onError` are pending.
+   */
   readonly isBusy: boolean;
   /** The wallet is waiting for the user: show "check your wallet". */
   readonly isAwaitingWallet: boolean;
@@ -412,7 +416,11 @@ const IDLE_STATE: OperationMutationState<never> = {
  * before `prepare` is called; set `allowExecutorWallet` to sign with the
  * executor's own wallet instead. A second run while one is in progress rejects
  * with `busy` and leaves the first alone, so a double click never opens two
- * wallet prompts.
+ * wallet prompts. "In progress" is exactly `isBusy`: a run ends when its
+ * `done` or `error` status is published, before `onSuccess`/`onError` are
+ * awaited, so a button disabled by `isBusy` is never enabled while `run()`
+ * would refuse it. A run started during those callbacks is a new run; the
+ * earlier run's `run()` promise still settles after its callback.
  */
 export function useOperationMutation<TInput, TPrepared extends PreparedOperation>(
   prepare: OperationPrepareFn<TInput, TPrepared>,
@@ -427,7 +435,9 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
   optionsRef.current = options;
   sessionReadyRef.current = sessionContext?.ready;
   const generationRef = useRef(0);
-  const runningRef = useRef(false);
+  // The run that holds the lock, if any. A run releases only its own lock,
+  // so a run that finishes its callbacks late never frees a newer run's.
+  const runningRef = useRef<object | null>(null);
   const mountedRef = useRef(true);
 
   useEffect(() => {
@@ -449,7 +459,11 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
         cause: undefined,
       });
     }
-    runningRef.current = true;
+    const lock = {};
+    runningRef.current = lock;
+    const release = () => {
+      if (runningRef.current === lock) runningRef.current = null;
+    };
     const generation = ++generationRef.current;
     const hookOptions = optionsRef.current;
     let lastStatus: OperationMutationStatus = 'idle';
@@ -471,6 +485,9 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
     const signatures: string[] = [];
 
     const fail = async (error: OperationMutationError<TPrepared>) => {
+      // The run is over once `error` is published: `isBusy` turns false and
+      // the hook takes the next run, even while `onError` is still pending.
+      release();
       update({ status: 'error', error, prepared, signatures: [...signatures] });
       try {
         await hookOptions.onError?.(error);
@@ -578,6 +595,10 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
       }
       listening = false;
 
+      // As in `fail`: `done` releases the lock, so `isBusy` and `run()` agree
+      // while `onSuccess` runs. Activity listening has already stopped, so a
+      // run started from (or during) the callback cannot move this one.
+      release();
       update({
         status: 'done',
         result,
@@ -591,7 +612,7 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
       }
       return result;
     } finally {
-      runningRef.current = false;
+      release();
     }
   }, []);
 

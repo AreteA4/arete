@@ -442,6 +442,84 @@ describe('useOperationMutation', () => {
     expect(first.seen).toEqual(['idle', 'preparing', 'signing', 'sending', 'confirming', 'done']);
   });
 
+  it('takes a new run exactly when isBusy is false, also while an async onSuccess or onError runs', async () => {
+    const { wallet, approve, decline, signAndSend } = activityWallet();
+    const pending: Array<() => void> = [];
+    const callback = () => new Promise<void>((resolve) => {
+      pending.push(resolve);
+    });
+    const onSuccess = jest.fn(callback);
+    const onError = jest.fn(callback);
+    const oneStep = async () => createPreparedFlow({
+      name: 'configure',
+      artifacts: { multisig: 'Multisig1111' },
+      transactions: [
+        createPreparedTransactionBody({ name: 'configure', instructions: [instruction([PAYER])] }),
+      ],
+    });
+    const view = renderOperationHook(oneStep, { executor: executorFor(), wallet, onSuccess, onError });
+
+    let firstRun!: Promise<unknown>;
+    act(() => {
+      firstRun = view.hook.run({ threshold: 1 });
+    });
+    await flush();
+    expect(view.hook.isBusy).toBe(true);
+    await expect(view.hook.run({ threshold: 1 })).rejects.toMatchObject({ kind: 'busy' });
+
+    await act(async () => {
+      approve(1);
+    });
+    await flush();
+    // onSuccess is pending: the hook is not busy, and a click is accepted.
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(view.hook.status).toBe('done');
+    expect(view.hook.isBusy).toBe(false);
+    act(() => {
+      view.hook.mutate({ threshold: 1 });
+    });
+    await flush();
+    expect(signAndSend).toHaveBeenCalledTimes(2);
+    expect(view.hook.status).toBe('signing');
+    expect(view.hook.isBusy).toBe(true);
+
+    // The first run's callback finishing does not free the second run's lock.
+    await act(async () => {
+      pending.shift()?.();
+      await firstRun;
+    });
+    expect(view.hook.isBusy).toBe(true);
+    await expect(view.hook.run({ threshold: 1 })).rejects.toMatchObject({ kind: 'busy' });
+    expect(view.hook.status).toBe('signing');
+
+    // The same holds for a failure and its pending onError.
+    await act(async () => {
+      decline(Object.assign(new Error('User rejected the request'), { code: 4001 }), 2);
+    });
+    await flush();
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(view.hook.status).toBe('error');
+    expect(view.hook.isBusy).toBe(false);
+    let thirdRun!: Promise<unknown>;
+    act(() => {
+      thirdRun = view.hook.run({ threshold: 1 });
+    });
+    await flush();
+    expect(signAndSend).toHaveBeenCalledTimes(3);
+    expect(view.hook.isBusy).toBe(true);
+
+    await act(async () => {
+      pending.shift()?.();
+      approve(3);
+      await flush();
+      pending.shift()?.();
+      await thirdRun;
+    });
+    expect(view.hook.status).toBe('done');
+    expect(view.hook.isBusy).toBe(false);
+    expect(view.hook.signatures).toEqual(['sig-3']);
+  });
+
   it('fails with not-ready without an executor and prepare-failed when prepare throws', async () => {
     const prepare = jest.fn(async () => twoStepFlow());
     const missing = renderOperationHook(prepare, { executor: null });
