@@ -500,9 +500,12 @@ function shapeStep(value: unknown, path: string): void {
   ]);
   if (buildKind === "template") {
     const instructionsPath = build.pathOf("instructions");
+    // An empty template is a state-only step: its transaction carries only
+    // the attested memo (and any glue), and its transitions apply when that
+    // transaction confirms.
     const instructions = asArray(build.req("instructions"), instructionsPath, MAX_TEMPLATE_INSTRUCTIONS);
-    if (instructions.length === 0) {
-      err("invalid-value", instructionsPath, "a template needs at least one instruction");
+    if (instructions.length === 0 && kind === "squadsProposer") {
+      err("invalid-value", instructionsPath, "a squadsProposer step proposes its instructions, so it needs at least one");
     }
     instructions.forEach((item, i) => {
       const instruction = new Obj(item, index(instructionsPath, i), [

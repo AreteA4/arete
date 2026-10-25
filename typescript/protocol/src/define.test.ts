@@ -74,6 +74,31 @@ describe("defineProtocol", () => {
     expect(spec.handlerAbi).toBeUndefined();
   });
 
+  it("lowers an empty build to a state-only template step", () => {
+    const { spec } = lowerProtocol(
+      defineProtocol({
+        name: "tiny",
+        version: "0.1.0",
+        programs: { vault: { programId: "Vau1t11111111111111111111111111111111111111", programSpecHash: `arete:h1:program-spec:sha256:${"d".repeat(64)}` } },
+        instanceVisibility: "shared",
+        roles: { operator: {} },
+        machines: { instance: { initial: "open", states: { open: "recorded", closed: { terminal: true } } } },
+        steps: {
+          open: { scope: "create", authority: "creator", bind: { roles: { operator: "wallet" } }, build: [{ program: "vault", ix: "open" }] },
+          close: {
+            scope: "instance",
+            authority: { kind: "role", role: "operator" },
+            guards: { not_operator: "wallet == instance.roles.operator" },
+            transitions: [{ from: ["open"], to: "closed" }],
+            build: [],
+          },
+        },
+      }),
+    );
+    expect(spec.steps.close!.build).toEqual({ kind: "template", instructions: [] });
+    expect(validateContract("protocol-spec", spec)).toMatch(/^arete:h1:protocol-spec:sha256:/);
+  });
+
   it("lowers remaining accounts after the IDL accounts and refuses signers", () => {
     const tiny = (remainingAccounts: unknown) =>
       defineProtocol({

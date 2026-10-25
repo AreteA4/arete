@@ -352,3 +352,46 @@ fn builtin_activity_is_valid_but_builtin_account_decoding_is_not() {
         "unknown-program"
     );
 }
+
+/// Allowing state-only steps (`build.instructions: []`) only accepts
+/// documents that failed before, so every committed spec and release keeps
+/// its identity.
+#[test]
+fn existing_specs_and_releases_keep_their_hashes() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../test-vectors");
+    for (file, hash) in [
+        ("protocol/token-raise.protocol-spec.json", "arete:h1:protocol-spec:sha256:7bf6fd4340857bf8c5b381a03b30b07eb42f9e52e5a461a1dd286147dbca08f4"),
+        ("protocol/escrow-resolution.protocol-spec.json", "arete:h1:protocol-spec:sha256:b7b4249437959a64742a47da0ce9e133e32d851b53a909d7e47996ae3a789240"),
+    ] {
+        let document = parse_contract_json(&fs::read(dir.join(file)).unwrap()).unwrap();
+        let spec = validate_protocol_spec_value(&document).unwrap();
+        assert_eq!(spec.hash().unwrap().to_string(), hash, "{file}");
+    }
+    let corpus = corpus();
+    for (name, hash) in [
+        ("tokenRaise", "arete:h1:protocol-spec:sha256:7bf6fd4340857bf8c5b381a03b30b07eb42f9e52e5a461a1dd286147dbca08f4"),
+        ("tokenRaiseRemainingAccounts", "arete:h1:protocol-spec:sha256:c45f03777090a72b49e55896a0f953a6ef4cc8d397bffbe3817cf8124ffc1405"),
+        ("tokenRaiseVaultIndex", "arete:h1:protocol-spec:sha256:79dd01fcb66736430bf58f3e6980e5ccbf0b0b6eab2deb94082acf15f14b9881"),
+        ("escrowResolution", "arete:h1:protocol-spec:sha256:b7b4249437959a64742a47da0ce9e133e32d851b53a909d7e47996ae3a789240"),
+    ] {
+        let spec = validate_protocol_spec_value(&document(&corpus, name)).unwrap();
+        assert_eq!(spec.hash().unwrap().to_string(), hash, "{name}");
+    }
+}
+
+#[test]
+fn a_template_with_no_instructions_is_a_state_only_step() {
+    let corpus = corpus();
+    let mut doc = document(&corpus, "escrowResolution");
+    doc["steps"]["release"]["build"]["instructions"] = serde_json::json!([]);
+    let spec = validate_protocol_spec_value(&doc).unwrap();
+    let parsed = parse_protocol_spec_v1(&canonicalize_jcs(&doc).unwrap()).unwrap();
+    assert!(matches!(
+        &parsed.steps["release"].build,
+        BuildV1::Template { instructions } if instructions.is_empty()
+    ));
+    assert_eq!(parsed.steps["release"].transitions[0].to, "released");
+    // The shared corpus pins the same document and hash for TypeScript.
+    assert_eq!(doc, document(&corpus, "escrowResolutionStateOnly"));
+    assert_eq!(spec.hash().unwrap().to_string(), "arete:h1:protocol-spec:sha256:e6c0e52fb897c9e2cc8705514ff386ee0e38bc4ad430b7cc2040e166143d0f4e");
+}

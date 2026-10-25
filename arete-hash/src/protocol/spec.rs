@@ -668,6 +668,7 @@ fn shape_step(value: &Value, path: &str) -> ProtocolResult<()> {
         }
         _ => {}
     }
+    let proposes = kind == "squadsProposer";
     if let Some(value) = step.opt("access")? {
         one_of(value, &step.path_of("access"), &["public", "secret"])?;
     }
@@ -768,16 +769,19 @@ fn shape_step(value: &Value, path: &str) -> ProtocolResult<()> {
     )?;
     if kind == "template" {
         let instructions_path = build.path_of("instructions");
+        // An empty template is a state-only step: its transaction carries
+        // only the attested memo (and any glue), and its transitions apply
+        // when that transaction confirms.
         let instructions = as_array(
             build.req("instructions")?,
             &instructions_path,
             MAX_TEMPLATE_INSTRUCTIONS,
         )?;
-        if instructions.is_empty() {
+        if instructions.is_empty() && proposes {
             return Err(err(
                 "invalid-value",
                 &instructions_path,
-                "a template needs at least one instruction",
+                "a squadsProposer step proposes its instructions, so it needs at least one",
             ));
         }
         for (i, instruction) in instructions.iter().enumerate() {

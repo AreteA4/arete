@@ -177,3 +177,23 @@ fn unreviewed_is_a_tier_but_never_a_review() {
     let error = validate_protocol_release_review_value(&review).unwrap_err();
     assert_eq!(error.path, "/trustTier");
 }
+
+#[test]
+fn a_state_only_step_derives_a_server_release() {
+    let path = vectors_dir().join("../protocol/token-raise.protocol-spec.json");
+    let mut document = parse_contract_json(&fs::read(path).unwrap()).unwrap();
+    document["steps"]["refund"]["build"]["instructions"] = serde_json::json!([]);
+    let spec = validate_protocol_spec_value(&document).unwrap();
+    let vectors = vectors();
+    let case = vectors["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"] == "token-raise.server")
+        .unwrap();
+    let bundle = decode_base64(case["bundleBase64"].as_str().unwrap()).unwrap();
+    let derived = derive_server_release(&spec, Some(&bundle)).unwrap();
+    validate_protocol_release_value(&serde_json::to_value(&derived.release).unwrap()).unwrap();
+    validate_protocol_stack_source_value(&serde_json::to_value(&derived.stack_source).unwrap())
+        .unwrap();
+}
