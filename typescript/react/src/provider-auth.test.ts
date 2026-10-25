@@ -13,6 +13,7 @@ import type { AuthConfig, PlatformHttpClient } from '@usearete/sdk';
 import { AreteProvider } from './provider';
 import { usePlatformHttpClient } from './platform-http-hooks';
 import { useArete } from './stack';
+import { createWebSocketHarness, type WebSocketHarness } from './testing';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -35,33 +36,6 @@ const stack = {
   endpoints: { ws: 'wss://demo.stack.arete.run', http: 'https://demo.stack.arete.run' },
   views: {},
 } as const;
-
-class FakeSocket {
-  static instances: FakeSocket[] = [];
-  readyState = 0;
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: unknown }) => void) | null = null;
-  onerror: (() => void) | null = null;
-  onclose: ((event: { code: number; reason: string }) => void) | null = null;
-
-  constructor(
-    readonly url: string,
-    readonly init?: { headers?: Record<string, string> }
-  ) {
-    FakeSocket.instances.push(this);
-    queueMicrotask(() => {
-      this.readyState = 1;
-      this.onopen?.();
-    });
-  }
-
-  send(): void {}
-
-  close(code = 1000, reason = ''): void {
-    this.readyState = 3;
-    this.onclose?.({ code, reason });
-  }
-}
 
 interface Recorded {
   url: string;
@@ -98,8 +72,15 @@ async function settle() {
 }
 
 describe('AreteProvider with tokenKind api', () => {
+  // The harness also installs a global WebSocket where the runtime has none
+  // (Node 20, as in CI): the client reads its readyState constants even when
+  // auth.websocketFactory opens the sockets.
+  let ws: WebSocketHarness;
   beforeEach(() => {
-    FakeSocket.instances = [];
+    ws = createWebSocketHarness();
+  });
+  afterEach(() => {
+    ws.restore();
   });
 
   it.each([
@@ -114,7 +95,7 @@ describe('AreteProvider with tokenKind api', () => {
     const getToken = jest.fn(async () => CREDENTIAL);
     const auth: AuthConfig = {
       ...authFor(getToken),
-      websocketFactory: (url, init) => new FakeSocket(url, init) as unknown as WebSocket,
+      websocketFactory: ws.websocketFactory,
     };
     let connection: string | undefined;
     function Consumer() {
@@ -132,8 +113,8 @@ describe('AreteProvider with tokenKind api', () => {
 
     const mint = requests.find((request) => request.url.endsWith('/ws/sessions'));
     expect(mint?.authorization).toBe(`Bearer ${CREDENTIAL}`);
-    expect(FakeSocket.instances).toHaveLength(1);
-    const socket = FakeSocket.instances[0];
+    expect(ws.sockets).toHaveLength(1);
+    const socket = ws.sockets[0];
     const sentToSocket = `${socket.url} ${JSON.stringify(socket.init ?? {})}`;
     expect(sentToSocket).toContain(SESSION);
     // The API credential never reaches the stack.
