@@ -417,6 +417,54 @@ describe("generateStackSource: direct activity", () => {
     expect([...instanceOwnedAccounts(accounts)].sort()).toEqual(["derived", "fresh"]);
   });
 
+  it("owns only binds that are pure derivations of an ephemeral key", () => {
+    const accounts = withSpec((copy) => {
+      createBind(copy).accounts = {
+        // Pure derivations: every evaluation is fresh to the instance.
+        bare: "ephemeral.mint",
+        spaced: " ( ephemeral.mint ) ",
+        seeded: 'pda("meteoraPresale", "presale", if(args.flag, params.quoteMint, wallet), ephemeral.mint)',
+        nested: 'pda("squadsV4", "vault", (pda("squadsV4", "multisig", ephemeral.presaleBase)), 0)',
+        ataOwner: "ata(ephemeral.presaleBase, params.quoteMint)",
+        ataMint: "ata(wallet, ephemeral.mint)",
+        // Expressions that mention a key but can evaluate to another account.
+        branch: "if(args.flag, args.pool, ephemeral.mint)",
+        elseBranch: "if(args.flag, ephemeral.mint, params.quoteMint)",
+        fallback: "args.pool ?? ephemeral.mint",
+        fallbackLast: "ephemeral.mint ?? args.pool",
+        compared: "ephemeral.mint == wallet",
+        indexed: "ephemeral.mint[0]",
+        field: "ephemeral.mint.owner",
+        trailing: 'pda("meteoraPresale", "presale", ephemeral.mint) ?? wallet',
+        splitParens: "(ephemeral.mint) ?? (wallet)",
+        programOnly: 'pda(ephemeral.mint, "presale")',
+        nameOnly: 'pda("meteoraPresale", ephemeral.mint)',
+        seedBranch: 'pda("meteoraPresale", "presale", if(args.flag, wallet, ephemeral.mint))',
+        ataExtra: "ata(wallet, args.mint, ephemeral.mint)",
+        otherCall: "some(ephemeral.mint)",
+        unclosed: 'pda("meteoraPresale", "presale", ephemeral.mint',
+        quotedClose: 'pda("meteoraPresale", "presale", ephemeral.mint, ")")',
+      };
+    });
+    expect([...instanceOwnedAccounts(accounts)].sort()).toEqual([
+      "ataMint",
+      "ataOwner",
+      "bare",
+      "nested",
+      "quotedClose",
+      "seeded",
+      "spaced",
+    ]);
+  });
+
+  it("matches no direct activity on a conditionally bound instance account", () => {
+    const conditional = withSpec((copy) => {
+      createBind(copy).accounts.presale = 'if(args.flag, args.pool, pda("meteoraPresale", "presale", ephemeral.presaleBase))';
+    });
+    const instance = instanceOf(generateStackSource(conditional, FULL));
+    expect(instance.register_from).toBeUndefined();
+  });
+
   it("matches direct activity on an instance-owned account (token-raise's presale)", () => {
     const instance = instanceOf(generateStackSource(spec, FULL));
     expect(instance.register_from).toEqual([

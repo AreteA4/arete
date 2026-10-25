@@ -43,6 +43,342 @@
       "hash": "arete:h1:protocol-stack-source:sha256:7d1dc47bd638bbdd235883b04809a1997d00a847d39529321949e7ecd8f091cd"
     },
     {
+      "name": "token-raise.full-conditional-bind",
+      "spec": "../protocol/token-raise.protocol-spec.json",
+      "specOverrides": {
+        "steps": {
+          "create": {
+            "scope": "create",
+            "authority": {
+              "kind": "creator"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "deadline": {
+                  "type": "string",
+                  "format": "unixTimestamp"
+                },
+                "softCap": {
+                  "type": "string",
+                  "format": "u64"
+                },
+                "hardCap": {
+                  "type": "string",
+                  "format": "u64"
+                },
+                "walletCap": {
+                  "type": "string",
+                  "format": "u64"
+                },
+                "quoteMint": {
+                  "type": "string",
+                  "format": "pubkey"
+                }
+              },
+              "required": [
+                "deadline",
+                "hardCap",
+                "quoteMint",
+                "softCap",
+                "walletCap"
+              ],
+              "additionalProperties": false
+            },
+            "guards": [
+              {
+                "code": "soft_cap_above_hard_cap",
+                "expr": "args.softCap <= args.hardCap",
+                "message": "The soft cap must not exceed the hard cap."
+              }
+            ],
+            "reads": [],
+            "ephemeral": [
+              "mint",
+              "presaleBase"
+            ],
+            "fee": {
+              "kind": "none"
+            },
+            "transitions": [],
+            "glue": {
+              "atas": [],
+              "unwrapSol": false
+            },
+            "build": {
+              "kind": "handler",
+              "export": "createLaunch",
+              "programs": [
+                "meteoraPresale",
+                "splToken",
+                "system"
+              ]
+            },
+            "access": "secret",
+            "title": "Create a launch",
+            "bind": {
+              "accounts": {
+                "mint": "ephemeral.mint",
+                "presale": "if(args.softCap == args.hardCap, params.quoteMint, pda(\"meteoraPresale\", \"presale\", ephemeral.presaleBase, ephemeral.mint, params.quoteMint))"
+              },
+              "roles": {}
+            }
+          },
+          "contribute": {
+            "scope": "participant",
+            "authority": {
+              "kind": "participant"
+            },
+            "args": {
+              "type": "object",
+              "properties": {
+                "amount": {
+                  "type": "string",
+                  "format": "u64"
+                }
+              },
+              "required": [
+                "amount"
+              ],
+              "additionalProperties": false
+            },
+            "guards": [
+              {
+                "code": "raise_not_open",
+                "expr": "instance.state == \"open\""
+              },
+              {
+                "code": "deadline_passed",
+                "expr": "now < params.deadline"
+              },
+              {
+                "code": "wallet_cap_exceeded",
+                "expr": "(reads.escrow.totalDeposit ?? 0) + args.amount <= params.walletCap"
+              },
+              {
+                "code": "hard_cap_exceeded",
+                "expr": "reads.presale.totalDeposit + args.amount <= params.hardCap"
+              }
+            ],
+            "reads": [
+              "escrow",
+              "presale"
+            ],
+            "ephemeral": [],
+            "fee": {
+              "kind": "input",
+              "amountArg": "amount",
+              "asset": {
+                "kind": "native"
+              }
+            },
+            "transitions": [],
+            "glue": {
+              "atas": [
+                {
+                  "owner": "wallet",
+                  "mint": "params.quoteMint"
+                }
+              ],
+              "wrapSol": {
+                "amount": "args.amount"
+              },
+              "unwrapSol": false
+            },
+            "build": {
+              "kind": "template",
+              "instructions": [
+                {
+                  "program": "meteoraPresale",
+                  "instruction": "deposit",
+                  "args": {
+                    "max_amount": "args.amount"
+                  },
+                  "accounts": {
+                    "presale": "instance.accounts.presale",
+                    "owner": "wallet"
+                  }
+                }
+              ]
+            },
+            "access": "public",
+            "title": "Contribute"
+          },
+          "finalize": {
+            "scope": "instance",
+            "authority": {
+              "kind": "squadsProposer",
+              "multisig": "resources.treasury.multisig"
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            },
+            "guards": [
+              {
+                "code": "raise_not_succeeded",
+                "expr": "instance.state == \"succeeded\""
+              }
+            ],
+            "reads": [],
+            "ephemeral": [],
+            "fee": {
+              "kind": "none"
+            },
+            "transitions": [
+              {
+                "machine": "instance",
+                "from": [
+                  "succeeded"
+                ],
+                "to": "awaiting_approval"
+              }
+            ],
+            "glue": {
+              "atas": [],
+              "unwrapSol": false
+            },
+            "build": {
+              "kind": "template",
+              "instructions": [
+                {
+                  "program": "meteoraPresale",
+                  "instruction": "creator_withdraw",
+                  "args": {},
+                  "accounts": {
+                    "presale": "instance.accounts.presale",
+                    "owner": "pda(\"squadsV4\", \"vault\", resources.treasury.multisig, 0)"
+                  }
+                }
+              ]
+            },
+            "title": "Finalise through Squads"
+          },
+          "claim": {
+            "scope": "participant",
+            "authority": {
+              "kind": "participant"
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            },
+            "guards": [
+              {
+                "code": "raise_not_finalized",
+                "expr": "instance.state == \"finalized\""
+              }
+            ],
+            "reads": [],
+            "ephemeral": [],
+            "fee": {
+              "kind": "none"
+            },
+            "transitions": [
+              {
+                "machine": "participant",
+                "from": [
+                  "contributed"
+                ],
+                "to": "claimed"
+              }
+            ],
+            "glue": {
+              "atas": [
+                {
+                  "owner": "wallet",
+                  "mint": "instance.accounts.mint"
+                }
+              ],
+              "unwrapSol": false
+            },
+            "build": {
+              "kind": "template",
+              "instructions": [
+                {
+                  "program": "meteoraPresale",
+                  "instruction": "claim",
+                  "args": {},
+                  "accounts": {
+                    "presale": "instance.accounts.presale",
+                    "owner": "wallet"
+                  }
+                }
+              ]
+            },
+            "access": "public"
+          },
+          "refund": {
+            "scope": "participant",
+            "authority": {
+              "kind": "participant"
+            },
+            "args": {
+              "type": "object",
+              "properties": {},
+              "required": [],
+              "additionalProperties": false
+            },
+            "guards": [
+              {
+                "code": "raise_not_failed",
+                "expr": "instance.state == \"failed\""
+              }
+            ],
+            "reads": [],
+            "ephemeral": [],
+            "fee": {
+              "kind": "none"
+            },
+            "transitions": [
+              {
+                "machine": "participant",
+                "from": [
+                  "contributed"
+                ],
+                "to": "refunded"
+              }
+            ],
+            "glue": {
+              "atas": [],
+              "unwrapSol": true
+            },
+            "build": {
+              "kind": "template",
+              "instructions": [
+                {
+                  "program": "meteoraPresale",
+                  "instruction": "withdraw",
+                  "args": {},
+                  "accounts": {
+                    "presale": "instance.accounts.presale",
+                    "owner": "wallet"
+                  }
+                }
+              ]
+            },
+            "access": "public"
+          }
+        }
+      },
+      "options": {
+        "profile": "full",
+        "attestation": "Attest1111111111111111111111111111111111111",
+        "deploymentShortId": "raise1",
+        "programs": {
+          "meteoraPresale": {
+            "idl": "./idl/meteora-presale.idl.json"
+          }
+        }
+      },
+      "output": "token-raise.full-conditional-bind.protocol-stack-source.json",
+      "hash": "arete:h1:protocol-stack-source:sha256:06511cfaf5fb2802f075cf0f88c34deb6389eae69e735af512edd9a82740134f"
+    },
+    {
       "name": "token-raise.full-any-deployment",
       "spec": "../protocol/token-raise.protocol-spec.json",
       "options": {
