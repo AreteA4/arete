@@ -1732,8 +1732,10 @@ generated as for a registry program; `--as` is an alias of `--alias`.
 A TypeScript program install writes `index.ts` into the program's output
 directory, and `a4 install` makes sure the project's `tsconfig.json` maps
 `compilerOptions.paths["@programs/*"]` to that directory
-(`./generated/typescript/programs/*/index.js` by default), so code imports
-the program as `@programs/<alias>`. It adds only the missing key and leaves
+(`./generated/typescript/programs/*/index.js` by default, or
+`./generated/typescript/programs/*/index` in a project that resolves modules
+like a bundler, see below), so code imports the program as
+`@programs/<alias>`. It adds only the missing key and leaves
 the rest of the file as written. When there is no `tsconfig.json`, or it
 isn't plain JSON, `a4 install` prints the line to add instead.
 
@@ -1960,7 +1962,18 @@ and `publishableKey` (`envVar`, `command`, `directory`), and
 report, and `typescriptApps` is absent without TypeScript output.
 
 Generated TypeScript is ES module source (`import`/`export` with `.js`
-specifiers). A project whose nearest `package.json` is not `"type": "module"`
+specifiers, which `module: nodenext` requires and `tsc`, `tsx`, Vite and
+webpack map to the `.ts` files). In a project that resolves modules like a
+bundler, where the output's nearest `tsconfig.json` sets
+`moduleResolution: "bundler"` (or `module: "preserve"`), directly or through
+`extends`, as Next.js and Vite projects do, the relative specifiers that name
+the SDK's own `.ts` files are written without the `.js` instead, extension
+files included: Turbopack (`next dev` and `next build` in Next.js 16) does
+not map `./name.js` to `./name.ts`, so the SDK builds there without
+`turbopack.resolveAlias` entries. The SDK's content hash covers the files as
+written. A project without a `tsconfig.json` keeps the `.js`.
+
+A project whose nearest `package.json` is not `"type": "module"`
 (`npm init` writes `"commonjs"`) and whose `tsconfig.json` sets
 `verbatimModuleSyntax` with a `module` setting that follows `package.json`
 (`nodenext`, `node16`, `node18` or `node20`), directly or through `extends`, as

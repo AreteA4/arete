@@ -4360,6 +4360,9 @@ fn generate_outputs<'a>(
             .join("output");
         let reference = reference_context(&manifest.root, &output.path, dependency);
         let program_install = program_install_identity(dependency);
+        // Staged here, imported from `output.path`: match that project's
+        // TypeScript import style.
+        let _final_output = crate::commands::sdk::import_specifiers::generating_for(&output.path);
         let options = ProjectGenerationOptions {
             alias: &output.alias,
             target: output.target,

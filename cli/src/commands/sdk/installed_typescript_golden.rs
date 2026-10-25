@@ -413,3 +413,80 @@ fn installed_typescript_golden() {
     }
     compare_with_golden("installed-typescript", &golden_root(), generated);
 }
+
+/// The same installs into a project that resolves like a bundler (Next.js,
+/// Vite): the files are the golden ones except that relative specifiers
+/// drop their `.js`, which Turbopack would not map to `.ts`, and every
+/// relative specifier left names a TypeScript file of the output. The
+/// content hash covers the files as written.
+#[test]
+fn installed_typescript_in_a_bundler_project_imports_without_js() {
+    let program = vault_program();
+    let node = tempfile::tempdir().unwrap();
+    let bundler = tempfile::tempdir().unwrap();
+    fs::write(
+        bundler.path().join("tsconfig.json"),
+        r#"{"compilerOptions":{"module":"esnext","moduleResolution":"bundler","jsx":"preserve"}}"#,
+    )
+    .unwrap();
+    for root in [node.path(), bundler.path()] {
+        generate(
+            stack_dependency(&program),
+            &root.join("stacks/vault"),
+            "stacks/vault",
+        );
+        generate(
+            program_dependency(&program),
+            &root.join("programs/vault"),
+            "programs/vault",
+        );
+    }
+
+    let node_files = collect_files(node.path());
+    let mut bundler_files = collect_files(bundler.path());
+    bundler_files.remove("tsconfig.json");
+    assert_eq!(
+        node_files.keys().collect::<Vec<_>>(),
+        bundler_files.keys().collect::<Vec<_>>()
+    );
+
+    let relative_js =
+        Regex::new(r#"(from|import)(\s*\(?\s*)(['"])(\.\.?/[^'"\n]+)\.js['"]"#).unwrap();
+    let relative = Regex::new(r#"(?:from|import)\s*\(?\s*['"](\.\.?/[^'"\n]+)['"]"#).unwrap();
+    let mut rewritten = 0;
+    for (name, contents) in &bundler_files {
+        if name.ends_with(SDK_MANIFEST_FILE) {
+            continue; // Records the content hash, which covers the change.
+        }
+        let golden = &node_files[name];
+        if !name.ends_with(".ts") {
+            assert_eq!(contents, golden, "{name}");
+            continue;
+        }
+        let expected = relative_js.replace_all(golden, "$1$2$3$4$3");
+        if expected != *golden {
+            rewritten += 1;
+        }
+        assert_eq!(contents, &expected, "{name}");
+        let directory = bundler.path().join(name);
+        let directory = directory.parent().unwrap();
+        for captures in relative.captures_iter(contents) {
+            let specifier = &captures[1];
+            assert!(
+                !specifier.ends_with(".js"),
+                "{name} still imports {specifier}"
+            );
+            let target = directory.join(specifier);
+            assert!(
+                PathBuf::from(format!("{}.ts", target.display())).is_file(),
+                "{name} imports {specifier}, which names no TypeScript file"
+            );
+        }
+    }
+    assert!(rewritten > 5, "only {rewritten} files changed");
+
+    for output in ["stacks/vault", "programs/vault"] {
+        verify_generated_sdk_output(&bundler.path().join(output))
+            .unwrap_or_else(|error| panic!("{output}: {error:#}"));
+    }
+}

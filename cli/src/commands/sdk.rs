@@ -3910,6 +3910,9 @@ fn write_sdk_provenance_manifest_file(
             output_dir.display()
         )
     })?;
+    // TypeScript imports its siblings the way the project it lands in
+    // resolves modules; done before hashing, so the hash covers it.
+    import_specifiers::match_project_import_style(output_dir, &manifest.artifacts)?;
     // Validate and hash every declared payload file before pruning or writing metadata.
     // Source fingerprints, absolute checkout paths and root metadata are excluded.
     let (tree_hash, content) = sdk_payload_identity(&output, manifest, &manifest.artifacts)?;
@@ -11883,6 +11886,7 @@ mod tests {
 }
 
 mod extension_outline;
+pub(crate) mod import_specifiers;
 pub(crate) mod protocol;
 pub(crate) mod protocol_python;
 pub(crate) mod protocol_rust;

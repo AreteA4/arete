@@ -348,7 +348,9 @@ pub const PROGRAM_IMPORT_ALIAS: &str = "@programs/*";
 /// Make installed programs importable as `@programs/<name>`: ensure the
 /// project's `tsconfig.json` maps `compilerOptions.paths["@programs/*"]` to
 /// `<programs_dir>/*/index.js` (each installed program directory has an
-/// `index.ts`). The file is edited in place, inserting only the missing key
+/// `index.ts`), or to the extensionless `<programs_dir>/*/index` in a project
+/// that resolves like a bundler, whose bundler may not map `.js` to `.ts`
+/// (see `runtime::tsconfig_resolves_like_a_bundler`). The file is edited in place, inserting only the missing key
 /// and leaving everything else as written. Returns a note when it changed
 /// the file, or when it could not and the user should add the line.
 pub fn ensure_program_import_alias(root: &Path, programs_dir: &Path) -> Option<String> {
@@ -358,7 +360,12 @@ pub fn ensure_program_import_alias(root: &Path, programs_dir: &Path) -> Option<S
         .map(|component| component.as_os_str().to_string_lossy().into_owned())
         .collect::<Vec<_>>()
         .join("/");
-    let target = format!("./{relative}/*/index.js");
+    let extension = if super::runtime::tsconfig_resolves_like_a_bundler(root) {
+        ""
+    } else {
+        ".js"
+    };
+    let target = format!("./{relative}/*/index{extension}");
     let entry = format!(
         "\"{PROGRAM_IMPORT_ALIAS}\": [{}]",
         serde_json::Value::String(target.clone())
@@ -685,6 +692,27 @@ mod tests {
             edited["compilerOptions"]["paths"]["@programs/*"],
             serde_json::json!(["./generated/typescript/programs/*/index.js"])
         );
+    }
+
+    #[test]
+    fn a_bundler_project_maps_installed_programs_without_an_extension() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let programs = root.join("generated/typescript/programs");
+        // What `create-next-app` writes, trimmed.
+        fs::write(
+            root.join("tsconfig.json"),
+            "{\"compilerOptions\":{\"module\":\"esnext\",\"moduleResolution\":\"bundler\",\"paths\":{\"@/*\":[\"./*\"]}}}",
+        )
+        .unwrap();
+        ensure_program_import_alias(root, &programs).unwrap();
+        let edited: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("tsconfig.json")).unwrap()).unwrap();
+        assert_eq!(
+            edited["compilerOptions"]["paths"]["@programs/*"],
+            serde_json::json!(["./generated/typescript/programs/*/index"])
+        );
+        assert_eq!(ensure_program_import_alias(root, &programs), None);
     }
 
     #[test]
