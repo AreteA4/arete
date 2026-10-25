@@ -822,6 +822,43 @@ fn dev_tier_detail(
     })
 }
 
+/// `account.create-protocol` with the plan's cap on active protocol
+/// deployments: `ok` with the usage, `info` at the cap with the server's
+/// unlock, `warn` at the cap when arete.toml has a protocol. `None` when the
+/// server reports no cap.
+fn protocol_deployment_check(
+    id: &str,
+    surface: &crate::api_client::EntitlementSurface,
+    usage: &ProjectUsage,
+) -> Option<Check> {
+    let quotas = surface.quotas.as_ref()?;
+    let max = quotas
+        .get("maxActiveDeployments")
+        .and_then(serde_json::Value::as_u64)?;
+    let active = quotas
+        .get("activeDeployments")
+        .and_then(serde_json::Value::as_u64);
+    let unlock = quotas
+        .get("unlock")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let Some(active) = active else {
+        return Some(Check::ok(
+            id,
+            format!("can create protocols; up to {max} active deployments"),
+        ));
+    };
+    let detail = format!("can create protocols; {active} of {max} active deployments in use");
+    if active < max {
+        return Some(Check::ok(id, detail));
+    }
+    let detail = format!("{detail}: disable one before activating another");
+    Some(match usage.uses("create_protocol") {
+        Some(used) => Check::warn(id, format!("{detail}; {used}"), unlock),
+        None => Check::info(id, detail, unlock),
+    })
+}
+
 /// One check per surface the server reports, after an `account.plan` line.
 /// A surface the account can't use is `info` with the server's reason and
 /// unlock, or `warn` when arete.toml uses it.
@@ -841,6 +878,12 @@ fn entitlement_checks(entitlements: &AccountEntitlements, usage: &ProjectUsage) 
         let id = surface_check_id(&surface.surface);
         let label = surface_label(&surface.surface);
         if surface.allowed {
+            if surface.surface == "create_protocol" {
+                if let Some(check) = protocol_deployment_check(&id, surface, usage) {
+                    checks.push(check);
+                    continue;
+                }
+            }
             let detail = if surface.surface == "dev_environments" {
                 dev_tier_detail(entitlements, surface.quotas.as_ref())
                     .unwrap_or_else(|| format!("can use {label}"))
@@ -1948,6 +1991,40 @@ mod tests {
         assert_eq!(dev.status, Status::Ok);
         assert_eq!(dev.detail, "dev tier free: 1 environment allowed, 0 in use");
         assert_eq!(aggregate(&checks), Status::Ok);
+    }
+
+    #[test]
+    fn create_protocol_shows_the_deployment_cap_and_warns_at_it() {
+        let account = |active: u64| {
+            entitlements(
+                "free",
+                serde_json::json!([{"surface": "create_protocol", "allowed": true, "quotas": {
+                    "maxActiveDeployments": 3, "activeDeployments": active, "unlock": "Upgrade to Pro"
+                }}]),
+            )
+        };
+        let checks = entitlement_checks(&account(2), &ProjectUsage::default());
+        let create = check(&checks, "account.create-protocol");
+        assert_eq!(create.status, Status::Ok);
+        assert_eq!(
+            create.detail,
+            "can create protocols; 2 of 3 active deployments in use"
+        );
+
+        let checks = entitlement_checks(&account(3), &ProjectUsage::default());
+        let create = check(&checks, "account.create-protocol");
+        assert_eq!(create.status, Status::Info);
+        assert_eq!(create.fix.as_deref(), Some("Upgrade to Pro"));
+
+        let usage = ProjectUsage {
+            protocol: true,
+            ..ProjectUsage::default()
+        };
+        let checks = entitlement_checks(&account(3), &usage);
+        assert_eq!(
+            check(&checks, "account.create-protocol").status,
+            Status::Warn
+        );
     }
 
     #[test]
