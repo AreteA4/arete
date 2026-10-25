@@ -242,6 +242,8 @@ export function memoryStore(options: { state?: MemoryStoreState } = {}): Automat
         return [...jobs.values()]
           .filter((job) => (filter.kind ? job.kind === filter.kind : true))
           .filter((job) => (filter.state ? job.state === filter.state : true))
+          .filter((job) => (filter.wallet !== undefined ? job.kind === 'step' && job.request.wallet === filter.wallet : true))
+          .filter((job) => (filter.finished !== undefined ? isFinished(job) === filter.finished : true))
           .sort((a, b) => sequence.get(a.id)! - sequence.get(b.id)!)
           .map(clone);
       },

@@ -72,7 +72,10 @@ so rerunning a handler never doubles a step. A step job:
 
 Only one step job per wallet runs at a time, from claim until it settles.
 After a crash, a job that had signed reads its intent before doing anything
-else. `onOutcome`, `onRefused` and `onRejected` report final states.
+else. `onOutcome`, `onRefused` and `onRejected` report final states, with
+the args each step was prepared with (`args`, amounts as decimal strings;
+`null` when it never reached prepare). `automations.outcomes.get(jobId)` and
+`automations.outcomes.list({ wallet })` read them back from the store.
 
 A store must pass `runStoreConformance` from `@usearete/automations/testing`.
 

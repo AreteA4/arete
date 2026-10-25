@@ -32,7 +32,7 @@ export type { DelegationStatus, ProtocolSigner, SignTransactionsInput } from './
 export { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from './signer/format';
 export { checkPreparedAgainstIntent, checkSignedTransactions } from './signer/verify';
 export { isSignerRefusal, SignerRefusal } from './signer/signer';
-export { clientCluster, createAutomations } from './runtime/automations';
+export { clientCluster, createAutomations, stepOutcome } from './runtime/automations';
 export { connectStack, defineAutomations, describeDefinition, isAutomationsDefinition } from './runtime/define';
 export type {
   AutomationsDefinition,
@@ -45,6 +45,7 @@ export type {
   AutomationClient,
   AutomationEvent,
   AutomationOutcome,
+  AutomationStepOutcome,
   Automations,
   AutomationsOptions,
   ConsentApi,
@@ -54,6 +55,7 @@ export type {
   ExpressLikeResponse,
   Handler,
   HandlerContext,
+  PreparedStepArgs,
   ScheduledTrigger,
   ScheduleOptions,
   SourceHandle,

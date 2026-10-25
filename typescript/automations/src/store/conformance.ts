@@ -136,6 +136,41 @@ export function runStoreConformance(
       expect(saved.lease?.worker).toBe('w1');
     });
 
+    it("keeps a step's prepared args with its final outcome", async () => {
+      const store = await createStore();
+      const [id] = await seedSteps(store, 'd1', [step('d1', 'alice')]);
+      await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      const args = { amount: '25000000', memo: null, route: { venues: ['a', 'b'], slippageBps: 50 } };
+      expect(
+        await store.jobs.transition(id!, {
+          worker: 'w1',
+          from: 'running',
+          to: 'rejected',
+          now: T0 + 1,
+          outcome: { code: 'insufficient_balance' },
+          progress: { args },
+        }),
+      ).toBe(true);
+      const saved = (await store.jobs.get(id!)) as StepJob;
+      expect(saved.progress.args).toEqual(args);
+      expect(saved.outcome).toEqual({ code: 'insufficient_balance' });
+    });
+
+    it('lists jobs by wallet and by whether they are finished', async () => {
+      const store = await createStore();
+      const [alice, bob] = await seedSteps(store, 'd1', [step('d1', 'alice'), step('d1', 'bob')]);
+      const claimed = await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      expect(claimed?.id).toBe(alice);
+      await store.jobs.transition(alice!, { worker: 'w1', from: 'running', to: 'rejected', now: T0 + 1, outcome: { code: 'x' } });
+      const ids = async (filter: Parameters<AutomationStore['jobs']['list']>[0]) =>
+        (await store.jobs.list(filter)).map((job) => job.id);
+      expect(await ids({ kind: 'step', wallet: 'alice' })).toEqual([alice]);
+      expect(await ids({ kind: 'step', finished: true })).toEqual([alice]);
+      expect(await ids({ kind: 'step', finished: false })).toEqual([bob]);
+      expect(await ids({ wallet: 'bob', finished: true })).toEqual([]);
+      expect(await ids({ finished: true })).toEqual(['d1', alice]);
+    });
+
     it('completes a delivery and creates its step jobs in one step', async () => {
       const store = await createStore();
       await store.deliveries.accept(delivery('d1'), T0);

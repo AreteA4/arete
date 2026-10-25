@@ -228,9 +228,10 @@ function readJson<T>(path: string, fallback: T): T {
 
 function describe(outcome: AutomationOutcome): string {
   const where = outcome.instanceId ? ` on ${outcome.instanceId}` : '';
+  const args = outcome.args && Object.keys(outcome.args).length > 0 ? ` ${JSON.stringify(outcome.args)}` : '';
   const reason = outcome.reason ? ` (${outcome.reason})` : '';
   const signatures = outcome.signatures.filter(Boolean);
-  return `${outcome.state}: ${outcome.step} for ${outcome.wallet}${where}: ${outcome.code}${reason}${signatures.length ? ` ${signatures.join(', ')}` : ''}`;
+  return `${outcome.state}: ${outcome.step}${args} for ${outcome.wallet}${where}: ${outcome.code}${reason}${signatures.length ? ` ${signatures.join(', ')}` : ''}`;
 }
 
 /** Forward-only mode needs a client for listing instances and their events, not a protocol module. */
