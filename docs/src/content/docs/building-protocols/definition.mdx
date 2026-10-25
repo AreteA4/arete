@@ -96,7 +96,10 @@ an empty template. Don't add a placeholder instruction:
 close: {
   scope: "instance",
   authority: { kind: "role", role: "operator" },
-  guards: { not_open: 'instance.state == "open"' },
+  guards: {
+    not_operator: "wallet == instance.roles.operator",
+    not_open: 'instance.state == "open"',
+  },
   transitions: [{ machine: "instance", from: ["open"], to: "closed" }],
   build: [],
 },
