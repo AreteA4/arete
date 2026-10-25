@@ -147,14 +147,17 @@ pub struct StackSession {
 }
 
 /// `text` with every `hs_token=<token>` value replaced by `<redacted>`.
+/// Idempotent: a value already redacted is left as it is.
 pub fn redact_hs_tokens(text: &str) -> String {
     const MARKER: &str = "hs_token=";
+    const REDACTED: &str = "<redacted>";
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(index) = rest.find(MARKER) {
         let (head, tail) = rest.split_at(index + MARKER.len());
         out.push_str(head);
-        out.push_str("<redacted>");
+        out.push_str(REDACTED);
+        let tail = tail.strip_prefix(REDACTED).unwrap_or(tail);
         let end = tail
             .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '%')))
             .unwrap_or(tail.len());
@@ -1627,6 +1630,17 @@ mod tests {
             "wss://s.example.test/?a=1&hs_token=<redacted>&b=2"
         );
         assert_eq!(report["session"]["stackSession"]["expiresAt"], 5);
+
+        // Scrubbing again (status scrubs the URL, then the report, then the
+        // CLI scrubs it once more) leaves one marker.
+        let once = report.clone();
+        redact_secrets(&mut report);
+        redact_secrets(&mut report);
+        assert_eq!(report, once);
+        assert_eq!(
+            redact_hs_tokens(&redact_hs_tokens("x?hs_token=abc&hs_token=def")),
+            "x?hs_token=<redacted>&hs_token=<redacted>"
+        );
     }
 
     fn key(seed: u8) -> SigningKey {
