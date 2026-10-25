@@ -84,7 +84,9 @@
  * `instanceAccount`, and only when that account belongs to one instance
  * alone: an account the create step binds (`bind.accounts`, under the same
  * name) from one of its ephemeral keys, directly (`ephemeral.vault`) or
- * through a derivation (`pda("p", "presale", ephemeral.base, ...)`). Such an
+ * through an address derivation (`pda("p", "presale", ephemeral.base, ...)`,
+ * `ata(...)`), and nothing else: a binding that could evaluate to some other
+ * account (under `if` or `??`, say) does not qualify. Such an
  * account is fresh for each instance, so it has no history before the
  * instance and no other instance shares it. Any other account (the signing
  * wallet, a role, an `args` or `params` account, an instruction account the
@@ -450,8 +452,10 @@ function interimInstanceEntity(spec: ProtocolSpecV1, primary: string, groups: St
  * The accounts the create step binds from one of its ephemeral keys, the
  * instance's own accounts: the only accounts the full profile matches direct
  * activity on (see **Direct activity** in the module comment). A binding
- * qualifies when its expression references `ephemeral.<name>` for a key the
- * create step declares, outside a string literal.
+ * qualifies only when its whole expression is a pure derivation of a key the
+ * create step declares (see `isFreshDerivation`); one that merely mentions
+ * `ephemeral.<name>` somewhere (under `if`, `??` or an operator, say) could
+ * evaluate to some other, possibly shared, account.
  */
 export function instanceOwnedAccounts(spec: ProtocolSpecV1): Set<string> {
   const create = sortedKeys(spec.steps)
@@ -461,7 +465,7 @@ export function instanceOwnedAccounts(spec: ProtocolSpecV1): Set<string> {
   if (create?.bind === undefined) return owned;
   const ephemeral = new Set(create.ephemeral);
   for (const [name, expr] of Object.entries(create.bind.accounts)) {
-    if (ephemeralReferences(expr).some((key) => ephemeral.has(key))) owned.add(name);
+    if (isFreshDerivation(ownedTokens(expr), ephemeral)) owned.add(name);
   }
   return owned;
 }
@@ -469,32 +473,100 @@ export function instanceOwnedAccounts(spec: ProtocolSpecV1): Set<string> {
 const isIdentChar = (code: number): boolean =>
   (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x5f;
 
-const EPHEMERAL_PREFIX = "ephemeral.";
+/** ASCII whitespace, as Rust's `u8::is_ascii_whitespace`. */
+const isSpace = (code: number): boolean => code === 0x20 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d;
 
-/** The `<name>` of every `ephemeral.<name>` in an expression, skipping string literals. */
-function ephemeralReferences(expr: string): string[] {
-  const names: string[] = [];
+/** A token of the instance-owned check: a dotted name, a string literal, or any other single code unit. */
+type OwnedToken = { kind: "name"; text: string } | { kind: "text" } | { kind: "char"; code: number };
+
+/**
+ * Tokenize an expression for `isFreshDerivation`. Only ASCII is significant,
+ * so it reads the same text as the Rust tokenizer's byte walk. Whatever it
+ * cannot read becomes `char` tokens, which never form a derivation.
+ */
+function ownedTokens(expr: string): OwnedToken[] {
+  const tokens: OwnedToken[] = [];
   let i = 0;
   while (i < expr.length) {
     const code = expr.charCodeAt(i);
-    if (code === 0x22 || code === 0x27) {
+    if (isSpace(code)) {
+      i += 1;
+    } else if (code === 0x22 || code === 0x27) {
       // A string literal: skip to its closing quote, honouring escapes.
       i += 1;
       while (i < expr.length && expr.charCodeAt(i) !== code) i += expr.charCodeAt(i) === 0x5c ? 2 : 1;
       i += 1;
-      continue;
+      tokens.push({ kind: "text" });
+    } else if (isIdentChar(code) || code === 0x2e) {
+      const start = i;
+      while (i < expr.length && (isIdentChar(expr.charCodeAt(i)) || expr.charCodeAt(i) === 0x2e)) i += 1;
+      tokens.push({ kind: "name", text: expr.slice(start, i) });
+    } else {
+      tokens.push({ kind: "char", code });
+      i += 1;
     }
-    const before = i === 0 ? -1 : expr.charCodeAt(i - 1);
-    if (expr.startsWith(EPHEMERAL_PREFIX, i) && !isIdentChar(before) && before !== 0x2e) {
-      let end = i + EPHEMERAL_PREFIX.length;
-      while (end < expr.length && isIdentChar(expr.charCodeAt(end))) end += 1;
-      names.push(expr.slice(i + EPHEMERAL_PREFIX.length, end));
-      i = end;
-      continue;
-    }
-    i += 1;
   }
-  return names;
+  return tokens;
+}
+
+const isChar = (token: OwnedToken | undefined, char: string): boolean =>
+  token?.kind === "char" && token.code === char.charCodeAt(0);
+
+/** The index of the `)` closing the `(` at `open`, if any. */
+function closingParen(tokens: OwnedToken[], open: number): number | undefined {
+  let depth = 0;
+  for (let i = open; i < tokens.length; i += 1) {
+    if (isChar(tokens[i], "(")) depth += 1;
+    else if (isChar(tokens[i], ")")) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return undefined;
+}
+
+/** Split call arguments at their top-level commas. */
+function callArguments(tokens: OwnedToken[]): OwnedToken[][] {
+  const args: OwnedToken[][] = [];
+  let depth = 0;
+  let start = 0;
+  tokens.forEach((token, i) => {
+    if (isChar(token, "(") || isChar(token, "[")) depth += 1;
+    else if (isChar(token, ")") || isChar(token, "]")) depth -= 1;
+    else if (isChar(token, ",") && depth === 0) {
+      args.push(tokens.slice(start, i));
+      start = i + 1;
+    }
+  });
+  args.push(tokens.slice(start));
+  return args;
+}
+
+/**
+ * Whether an expression can only evaluate to an address fresh to one
+ * instance: exactly `ephemeral.<name>` for a declared key, or `pda(...)` with
+ * such an expression among its seeds, or `ata(...)` with one as its owner or
+ * mint, optionally in parentheses. A fresh key makes the derived address
+ * fresh whatever the other arguments are. Anything else, even when it
+ * mentions an ephemeral key, is not instance-owned.
+ */
+function isFreshDerivation(tokens: OwnedToken[], ephemeral: ReadonlySet<string>): boolean {
+  const first = tokens[0];
+  const last = tokens.length - 1;
+  if (tokens.length === 1 && first?.kind === "name") {
+    return first.text.startsWith("ephemeral.") && ephemeral.has(first.text.slice("ephemeral.".length));
+  }
+  if (tokens.length >= 2 && isChar(first, "(") && isChar(tokens[last], ")")) {
+    return closingParen(tokens, 0) === last && isFreshDerivation(tokens.slice(1, last), ephemeral);
+  }
+  if (tokens.length >= 3 && first?.kind === "name" && isChar(tokens[1], "(") && isChar(tokens[last], ")")) {
+    if (closingParen(tokens, 1) !== last) return false;
+    const args = callArguments(tokens.slice(2, last));
+    const fresh = (arg: OwnedToken[]): boolean => isFreshDerivation(arg, ephemeral);
+    if (first.text === "pda") return args.slice(2).some(fresh);
+    if (first.text === "ata") return args.length === 2 && args.some(fresh);
+  }
+  return false;
 }
 
 /** The one instruction account each role is read from, across every activity group. */

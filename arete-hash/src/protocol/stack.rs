@@ -27,7 +27,7 @@
 //! step the attested memo names (through `last_<step>_signature`).
 //!
 //! Direct (unattested) activity is matched only on the instance's own
-//! accounts, those the create step binds from its ephemeral keys
+//! accounts, those the create step binds from its ephemeral keys alone
 //! ([`instance_owned_accounts`]); a step whose instance account is anything
 //! else (a wallet, a role, a shared account) is counted from attested memos
 //! only.
@@ -601,8 +601,10 @@ fn interim_instance_entity(
 /// The accounts the create step binds from one of its ephemeral keys, the
 /// instance's own accounts: the only accounts the full profile matches direct
 /// activity on (see the TypeScript generator's "Direct activity"). A binding
-/// qualifies when its expression references `ephemeral.<name>` for a key the
-/// create step declares, outside a string literal.
+/// qualifies only when its whole expression is a pure derivation of a key the
+/// create step declares (see [`is_fresh_derivation`]); one that merely
+/// mentions `ephemeral.<name>` somewhere (under `if`, `??` or an operator,
+/// say) could evaluate to some other, possibly shared, account.
 pub fn instance_owned_accounts(spec: &ProtocolSpecV1) -> BTreeSet<String> {
     let Some((bind, ephemeral)) = spec
         .create_step()
@@ -613,9 +615,8 @@ pub fn instance_owned_accounts(spec: &ProtocolSpecV1) -> BTreeSet<String> {
     bind.accounts
         .iter()
         .filter(|(_, expr)| {
-            ephemeral_references(expr)
-                .iter()
-                .any(|name| ephemeral.iter().any(|key| key == name))
+            let tokens = owned_tokens(expr);
+            is_fresh_derivation(&tokens, ephemeral)
         })
         .map(|(name, _)| name.clone())
         .collect()
@@ -625,41 +626,115 @@ fn is_ident_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_'
 }
 
-const EPHEMERAL_PREFIX: &str = "ephemeral.";
+/// A token of the instance-owned check: a dotted name, a string literal, or
+/// any other single byte (punctuation, an operator byte, a non-ASCII byte).
+#[derive(Debug, PartialEq, Eq)]
+enum OwnedToken<'a> {
+    Name(&'a str),
+    Text,
+    Byte(u8),
+}
 
-/// The `<name>` of every `ephemeral.<name>` in an expression, skipping
-/// string literals. Byte-wise; only ASCII bytes are significant, so it reads
-/// the same text as the TypeScript scanner's UTF-16 walk.
-fn ephemeral_references(expr: &str) -> Vec<&str> {
+/// Tokenize an expression for [`is_fresh_derivation`]. Byte-wise; only ASCII
+/// bytes are significant, so it reads the same text as the TypeScript
+/// tokenizer's UTF-16 walk. Whatever it cannot read becomes `Byte` tokens,
+/// which never form a derivation.
+fn owned_tokens(expr: &str) -> Vec<OwnedToken<'_>> {
     let bytes = expr.as_bytes();
-    let mut names = Vec::new();
+    let mut tokens = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
         let byte = bytes[i];
-        if byte == b'"' || byte == b'\'' {
+        if byte.is_ascii_whitespace() {
+            i += 1;
+        } else if byte == b'"' || byte == b'\'' {
             // A string literal: skip to its closing quote, honouring escapes.
             i += 1;
             while i < bytes.len() && bytes[i] != byte {
                 i += if bytes[i] == b'\\' { 2 } else { 1 };
             }
             i += 1;
-            continue;
-        }
-        let before = if i == 0 { None } else { Some(bytes[i - 1]) };
-        let boundary = before.is_none_or(|b| !is_ident_byte(b) && b != b'.');
-        if boundary && bytes[i..].starts_with(EPHEMERAL_PREFIX.as_bytes()) {
-            let start = i + EPHEMERAL_PREFIX.len();
-            let mut end = start;
-            while end < bytes.len() && is_ident_byte(bytes[end]) {
-                end += 1;
+            tokens.push(OwnedToken::Text);
+        } else if is_ident_byte(byte) || byte == b'.' {
+            let start = i;
+            while i < bytes.len() && (is_ident_byte(bytes[i]) || bytes[i] == b'.') {
+                i += 1;
             }
-            names.push(&expr[start..end]);
-            i = end;
-            continue;
+            tokens.push(OwnedToken::Name(&expr[start..i]));
+        } else {
+            tokens.push(OwnedToken::Byte(byte));
+            i += 1;
         }
-        i += 1;
     }
-    names
+    tokens
+}
+
+/// The index of the `)` closing the `(` at `open`, if any.
+fn closing_paren(tokens: &[OwnedToken<'_>], open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, token) in tokens.iter().enumerate().skip(open) {
+        match token {
+            OwnedToken::Byte(b'(') => depth += 1,
+            OwnedToken::Byte(b')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Split call arguments at their top-level commas.
+fn call_arguments<'t, 'a>(tokens: &'t [OwnedToken<'a>]) -> Vec<&'t [OwnedToken<'a>]> {
+    let mut args = Vec::new();
+    let mut depth = 0i64;
+    let mut start = 0;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            OwnedToken::Byte(b'(' | b'[') => depth += 1,
+            OwnedToken::Byte(b')' | b']') => depth -= 1,
+            OwnedToken::Byte(b',') if depth == 0 => {
+                args.push(&tokens[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(&tokens[start..]);
+    args
+}
+
+/// Whether an expression can only evaluate to an address fresh to one
+/// instance: exactly `ephemeral.<name>` for a declared key, or `pda(...)`
+/// with such an expression among its seeds, or `ata(...)` with one as its
+/// owner or mint, optionally in parentheses. A fresh key makes the derived
+/// address fresh whatever the other arguments are. Anything else, even when
+/// it mentions an ephemeral key, is not instance-owned.
+fn is_fresh_derivation(tokens: &[OwnedToken<'_>], ephemeral: &[String]) -> bool {
+    match tokens {
+        [OwnedToken::Name(name)] => name
+            .strip_prefix("ephemeral.")
+            .is_some_and(|key| ephemeral.iter().any(|declared| declared == key)),
+        [OwnedToken::Byte(b'('), .., OwnedToken::Byte(b')')] => {
+            closing_paren(tokens, 0) == Some(tokens.len() - 1)
+                && is_fresh_derivation(&tokens[1..tokens.len() - 1], ephemeral)
+        }
+        [OwnedToken::Name(function), OwnedToken::Byte(b'('), .., OwnedToken::Byte(b')')]
+            if closing_paren(tokens, 1) == Some(tokens.len() - 1) =>
+        {
+            let args = call_arguments(&tokens[2..tokens.len() - 1]);
+            let fresh = |arg: &&[OwnedToken<'_>]| is_fresh_derivation(arg, ephemeral);
+            match *function {
+                "pda" => args.iter().skip(2).any(fresh),
+                "ata" => args.len() == 2 && args.iter().any(fresh),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
 }
 
 /// The one instruction account each role is read from, across every
@@ -1593,6 +1668,60 @@ mod tests {
         .collect();
         let owned: Vec<String> = instance_owned_accounts(&spec).into_iter().collect();
         assert_eq!(owned, ["derived", "fresh"]);
+    }
+
+    #[test]
+    fn instance_owned_accounts_are_pure_derivations_of_ephemeral_keys() {
+        let mut spec = token_raise();
+        let bind = spec.steps.get_mut("create").unwrap().bind.as_mut().unwrap();
+        bind.accounts = [
+            // Pure derivations: every evaluation is fresh to the instance.
+            ("bare", "ephemeral.mint"),
+            ("spaced", " ( ephemeral.mint ) "),
+            (
+                "seeded",
+                r#"pda("meteoraPresale", "presale", if(args.flag, params.quoteMint, wallet), ephemeral.mint)"#,
+            ),
+            (
+                "nested",
+                r#"pda("squadsV4", "vault", (pda("squadsV4", "multisig", ephemeral.presaleBase)), 0)"#,
+            ),
+            ("ataOwner", "ata(ephemeral.presaleBase, params.quoteMint)"),
+            ("ataMint", "ata(wallet, ephemeral.mint)"),
+            // Expressions that mention a key but can evaluate to another account.
+            ("branch", "if(args.flag, args.pool, ephemeral.mint)"),
+            ("elseBranch", "if(args.flag, ephemeral.mint, params.quoteMint)"),
+            ("fallback", "args.pool ?? ephemeral.mint"),
+            ("fallbackLast", "ephemeral.mint ?? args.pool"),
+            ("compared", "ephemeral.mint == wallet"),
+            ("indexed", "ephemeral.mint[0]"),
+            ("field", "ephemeral.mint.owner"),
+            ("trailing", r#"pda("meteoraPresale", "presale", ephemeral.mint) ?? wallet"#),
+            ("splitParens", "(ephemeral.mint) ?? (wallet)"),
+            ("programOnly", r#"pda(ephemeral.mint, "presale")"#),
+            ("nameOnly", r#"pda("meteoraPresale", ephemeral.mint)"#),
+            ("seedBranch", r#"pda("meteoraPresale", "presale", if(args.flag, wallet, ephemeral.mint))"#),
+            ("ataExtra", "ata(wallet, args.mint, ephemeral.mint)"),
+            ("otherCall", "some(ephemeral.mint)"),
+            ("unclosed", r#"pda("meteoraPresale", "presale", ephemeral.mint"#),
+            ("quotedClose", r#"pda("meteoraPresale", "presale", ephemeral.mint, ")")"#),
+        ]
+        .into_iter()
+        .map(|(name, expr)| (name.to_string(), expr.to_string()))
+        .collect();
+        let owned: Vec<String> = instance_owned_accounts(&spec).into_iter().collect();
+        assert_eq!(
+            owned,
+            [
+                "ataMint",
+                "ataOwner",
+                "bare",
+                "nested",
+                "quotedClose",
+                "seeded",
+                "spaced"
+            ]
+        );
     }
 
     #[test]
