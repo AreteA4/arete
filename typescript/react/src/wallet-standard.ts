@@ -104,12 +104,12 @@ export function useWalletStandardWallet(
   source: UiWalletAccount | WalletStandardSelection | null | undefined,
   options: UseWalletStandardWalletOptions = {}
 ): UseWalletStandardWalletResult {
-  // Open prompts, counted per adapter: a prompt left open by a previous
-  // account does not belong to the current one.
-  const [prompts, setPrompts] = useState<{
-    readonly adapter: KitWalletAdapter | null;
-    readonly open: number;
-  }>({ adapter: null, open: 0 });
+  // Open prompts, counted per adapter. Each adapter only moves its own
+  // count, so a prompt the previous account's adapter closes late cannot
+  // hide one the current adapter has open.
+  const [prompts, setPrompts] = useState<ReadonlyMap<KitWalletAdapter, number>>(
+    () => new Map()
+  );
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -144,10 +144,15 @@ export function useWalletStandardWallet(
     if (!wallet || !account) return { error: null };
     let adapter: KitWalletAdapter | null = null;
     const adjust = (delta: number) => {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || !adapter) return;
+      const owner = adapter;
       setPrompts((current) => {
-        const open = current.adapter === adapter ? current.open : 0;
-        return { adapter, open: Math.max(0, open + delta) };
+        const open = Math.max(0, (current.get(owner) ?? 0) + delta);
+        if (open === (current.get(owner) ?? 0)) return current;
+        const next = new Map(current);
+        if (open === 0) next.delete(owner);
+        else next.set(owner, open);
+        return next;
       });
     };
     try {
@@ -177,8 +182,7 @@ export function useWalletStandardWallet(
     wallet: created.adapter,
     address: account?.address ?? null,
     isPromptOpen: created.adapter !== undefined
-      && prompts.adapter === created.adapter
-      && prompts.open > 0,
+      && (prompts.get(created.adapter) ?? 0) > 0,
     error: resolveError ?? created.error,
   };
 }

@@ -319,6 +319,76 @@ describe('useWalletStandardWallet', () => {
     });
   });
 
+  it('keeps the current account\'s prompt open when the previous account\'s prompt closes late', async () => {
+    const first = await fakeWallet();
+    const second = await fakeWallet([SIGN_TRANSACTION], 4);
+    const executor = relayExecutor(fakeRelay());
+    const current: {
+      wallet?: UseWalletStandardWalletResult;
+      onFirst?: ReturnType<typeof useOperationMutation<void, PreparedInstruction<{ note: string }>>>;
+      onSecond?: ReturnType<typeof useOperationMutation<void, PreparedInstruction<{ note: string }>>>;
+    } = {};
+    function Harness({ account }: { account: UiWalletAccount }) {
+      const wallet = useWalletStandardWallet(account, { chain: 'solana:devnet' });
+      current.wallet = wallet;
+      current.onFirst = useOperationMutation(
+        async () => memoInstruction(first.keypair.address),
+        { executor, wallet: wallet.wallet }
+      );
+      current.onSecond = useOperationMutation(
+        async () => memoInstruction(second.keypair.address),
+        { executor, wallet: wallet.wallet }
+      );
+      return null;
+    }
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(React.createElement(Harness, { account: first.uiAccount }));
+    });
+    let firstRun!: Promise<unknown>;
+    act(() => {
+      firstRun = current.onFirst!.run();
+    });
+    await flush();
+    expect(current.wallet?.isPromptOpen).toBe(true);
+
+    // Switch accounts with the first prompt still open, then open one in the
+    // second account's wallet.
+    act(() => {
+      renderer.update(React.createElement(Harness, { account: second.uiAccount }));
+    });
+    expect(current.wallet?.isPromptOpen).toBe(false);
+    let secondRun!: Promise<unknown>;
+    act(() => {
+      secondRun = current.onSecond!.run();
+    });
+    await flush();
+    expect(second.signTransaction).toHaveBeenCalledTimes(1);
+    expect(current.wallet?.isPromptOpen).toBe(true);
+
+    // The first account's prompt closes after the switch.
+    await act(async () => {
+      first.approve();
+      await firstRun;
+    });
+    expect(current.wallet?.isPromptOpen).toBe(true);
+
+    await act(async () => {
+      second.approve();
+      await secondRun;
+    });
+    expect(current.wallet?.isPromptOpen).toBe(false);
+
+    // Switching back finds the first account's prompt closed too.
+    act(() => {
+      renderer.update(React.createElement(Harness, { account: first.uiAccount }));
+    });
+    expect(current.wallet?.isPromptOpen).toBe(false);
+    act(() => {
+      renderer.unmount();
+    });
+  });
+
   it('refuses an account that does not sign for the chain, with its own code', async () => {
     const fake = await fakeWallet();
     let result!: UseWalletStandardWalletResult;
