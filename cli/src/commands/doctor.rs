@@ -329,10 +329,9 @@ struct ProjectFacts {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ProjectUsage {
     /// Registry program dependencies, `(alias, registry reference)`: they
-    /// read through Program Read.
+    /// read through hosted Program Read. Path, workspace and IDL programs
+    /// read through the local stack's HTTP endpoint instead.
     registry_programs: Vec<(String, String)>,
-    /// Program dependencies of any source.
-    programs: usize,
     /// A `[protocol]` table or a protocol dependency: it prepares and
     /// submits protocol steps.
     protocol: bool,
@@ -350,10 +349,14 @@ impl ProjectUsage {
     /// Whether the project uses `surface`, and how, for the warning.
     fn uses(&self, surface: &str) -> Option<String> {
         match surface {
-            "program_read" if self.programs > 0 => Some(format!(
-                "arete.toml has {} program dependenc{}",
-                self.programs,
-                if self.programs == 1 { "y" } else { "ies" }
+            "program_read" if !self.registry_programs.is_empty() => Some(format!(
+                "arete.toml has {} registry program dependenc{}",
+                self.registry_programs.len(),
+                if self.registry_programs.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
             )),
             "protocol_prepare" | "protocol_submit" if self.protocol => {
                 Some("arete.toml has a protocol".to_string())
@@ -707,10 +710,6 @@ fn project_manifest(config_path: &Path) -> std::result::Result<ProjectFacts, Che
                         _ => None,
                     })
                     .collect(),
-                programs: manifest
-                    .dependencies()
-                    .filter(|(kind, _, _)| *kind == DependencyKind::Program)
-                    .count(),
                 protocol: manifest.document.protocol.is_some()
                     || manifest
                         .dependencies()
@@ -2120,8 +2119,15 @@ mod tests {
         assert!(needs_attention(send));
         assert_eq!(aggregate(&checks), Status::Ok);
 
+        // Local (path, workspace, IDL) programs read through the local
+        // stack, not hosted Program Read.
+        assert_eq!(check(&checks, "account.program-read").status, Status::Info);
+
         let usage = ProjectUsage {
-            programs: 2,
+            registry_programs: vec![
+                ("klend".into(), "klend@1".into()),
+                ("ore".into(), "ore@1".into()),
+            ],
             dev: true,
             ..ProjectUsage::default()
         };
@@ -2130,7 +2136,7 @@ mod tests {
         assert_eq!(read.status, Status::Warn);
         assert!(
             read.detail
-                .ends_with("arete.toml has 2 program dependencies"),
+                .ends_with("arete.toml has 2 registry program dependencies"),
             "{}",
             read.detail
         );
