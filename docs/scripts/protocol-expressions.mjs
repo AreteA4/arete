@@ -75,6 +75,12 @@ function operatorsTable(operators) {
   return table(
     ["Operator", "Precedence", "Returns", "Meaning"],
     [
+      ...(operators.postfix ?? []).map((op) => [
+        `${code(op.form)} (postfix)`,
+        String(op.precedence),
+        cell(op.returns),
+        `${cell(op.summary)} Example: ${code(op.example)}.`,
+      ]),
       ...operators.prefix.map((op) => [
         `${code(op.symbol)} (prefix)`,
         String(op.precedence),
@@ -156,8 +162,9 @@ the server's checks, without uploading anything.
   public key is expected: \`wallet == "So11111111111111111111111111111111111111112"\`.
 - **Booleans and null**: \`true\`, \`false\`, \`null\` (also \`none\`).
 - **Byte arrays** are written \`[1, 2, 3]\`: integers from 0 to 255, for
-  seeds and byte arguments. Brackets build bytes only; they do not index (see
-  [Not supported](#not-supported)).
+  seeds and byte arguments. After a value, brackets index it instead:
+  \`resources.venues[1].reserve\` (see [Operators](#operators)). After
+  \`in\`, they hold a list of values: \`args.side in ["bid", "ask"]\`.
 
 ## Operators
 
@@ -204,9 +211,8 @@ Over a limit, the check answers \`source-limit-exceeded\`.
 
 | Instead of | Write |
 | --- | --- |
-| \`list[0].field\` (indexing) | \`index(list, 0)\`; the result is untyped, so a field after it is not checked. Brackets only build byte arrays |
-| \`args.venue in [...]\` (allow-lists) | \`args.venue == resources.venueA \\|\\| args.venue == resources.venueB\` |
-| \`resources.venues[args.venue]\` (keyed lookups) | One resource per entry, chosen with \`if(...)\` or allowed with \`\\|\\|\`, so every address stays reviewable |
+| \`resources.venues[args.i]\` (an index computed from args) | A literal index, \`resources.venues[1]\`, or \`args.venue in resources.venues\` to accept any entry, so every address stays reviewable |
+| \`index(list, 0).field\` | \`list[0].field\`: \`index()\` returns an untyped value, so no field can follow it |
 | \`cond ? a : b\` | \`if(cond, a, b)\` |
 | \`x.len()\`, \`x.startsWith(y)\` (methods) | \`len(x)\`, \`starts_with(x, y)\` |
 | \`-x\` on a name | \`0 - x\` (a leading \`-\` is only part of a number literal) |

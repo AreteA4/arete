@@ -25,5 +25,6 @@ test("the page lists every function, operator and check code", () => {
   for (const op of [...reference.operators.binary, ...reference.operators.prefix]) {
     assert.ok(page.includes(`\`${op.symbol.replaceAll("|", "\\|")}\``), op.symbol);
   }
+  for (const op of reference.operators.postfix) assert.ok(page.includes(`\`${op.form}\``), op.form);
   for (const entry of reference.checkCodes) assert.ok(page.includes(`\`${entry.code}\``), entry.code);
 });
