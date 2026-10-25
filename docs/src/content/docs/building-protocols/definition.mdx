@@ -87,6 +87,29 @@ remainingAccounts: [
 Remaining accounts cannot be signers. Use a [handler](/building-protocols/handlers/)
 when dynamic construction cannot be expressed with templates.
 
+### State-only steps
+
+A step that only moves the state machine, such as close, pause or reopen, has
+an empty template. Don't add a placeholder instruction:
+
+```ts
+close: {
+  scope: "instance",
+  authority: { kind: "role", role: "operator" },
+  guards: {
+    not_operator: "wallet == instance.roles.operator",
+    not_open: 'instance.state == "open"',
+  },
+  transitions: [{ machine: "instance", from: ["open"], to: "closed" }],
+  build: [],
+},
+```
+
+Its transaction carries only the attested memo, plus any fee or `glue`
+instructions the step declares. The wallet signs and submits it like any other
+step, and the transition applies when it confirms.
+A `squadsProposer` step can't be state-only: it proposes its instructions.
+
 ## Bind accounts and roles
 
 The create step's `bind` records identities that later steps use. The scaffold
