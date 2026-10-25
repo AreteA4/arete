@@ -76,12 +76,10 @@ from arete.protocol.types import (
     ProtocolPrepared,
     ProtocolPrepareResult,
     ProtocolRejection,
-    ProtocolSquadsAddProposerResult,
     ProtocolSquadsProposer,
     ProtocolSquadsStatus,
     ProtocolStepAvailability,
     ProtocolStreamEvent,
-    ProtocolTransactionFormat,
     ProtocolWalletActions,
 )
 
@@ -587,8 +585,8 @@ class ProtocolClient:
 
     @property
     def squads(self) -> "ProtocolSquads":
-        """Squads onboarding for the calling account (its proposer, an
-        unsigned add-proposer proposal, and membership status)."""
+        """Squads onboarding for the calling account (its proposer and its
+        membership status)."""
         return ProtocolSquads(self)
 
     def _squads_url(self, route: str) -> str:
@@ -868,7 +866,9 @@ class ProtocolSquads:
 
     Admin steps are proposed to a team's Squads v4 multisig by a proposer key
     that belongs to the calling account and may only initiate. Arete never
-    votes or executes."""
+    votes or executes, and builds no Squads transactions: the team adds the
+    proposer on the dashboard, in the Squads app, or from code with the
+    squads-v4 program SDK."""
 
     def __init__(self, client: ProtocolClient) -> None:
         self._client = client
@@ -881,29 +881,6 @@ class ProtocolSquads:
             "GET",
             client._squads_url("proposer"),
             scopes=client._read_scopes,
-        )
-
-    async def add_proposer(
-        self,
-        *,
-        multisig: str,
-        member: str,
-        transaction_format: Optional[ProtocolTransactionFormat] = None,
-    ) -> ProtocolSquadsAddProposerResult:
-        """An unsigned transaction proposing to add the proposer to
-        ``multisig``, for ``member`` (an Initiate member) to sign and send."""
-        if not multisig or not member:
-            raise AreteError("add_proposer requires a multisig and a member", "INVALID_CONFIG")
-        body: Dict[str, Any] = {"multisig": multisig, "member": member}
-        if transaction_format is not None:
-            body["transactionFormat"] = transaction_format
-        client = self._client
-        return await client._json(
-            "Squads add-proposer",
-            "POST",
-            client._squads_url("add-proposer"),
-            scopes=client._read_scopes,
-            json_body=body,
         )
 
     async def status(self, multisig: str) -> ProtocolSquadsStatus:

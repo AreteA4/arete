@@ -473,3 +473,145 @@ fn large_vault_execute_fits_through_lookup_tables() {
         assert_eq!(order[*index], b58(&meta.key));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Config proposal builders
+// ---------------------------------------------------------------------------
+
+/// `(writable, signer)` of each account, in order.
+fn flags(instruction: &Instruction) -> Vec<(bool, bool)> {
+    instruction
+        .accounts
+        .iter()
+        .map(|meta| (meta.writable, meta.signer))
+        .collect()
+}
+
+#[test]
+fn config_transaction_create_add_member_matches_hand_checked_bytes() {
+    let multisig = [7u8; 32];
+    let creator = [8u8; 32];
+    let proposer = [9u8; 32];
+    let built = config_transaction_create(
+        &multisig,
+        &creator,
+        4,
+        &[ConfigAction::AddMember {
+            key: proposer,
+            mask: PERMISSION_INITIATE,
+        }],
+    );
+    // sha256("global:config_transaction_create")[..8], then
+    // ConfigTransactionCreateArgs { actions: vec![AddMember { new_member:
+    // Member { key, permissions: { mask: 1 } } }], memo: None }:
+    // u32 length 1, variant 0, the 32-byte key, mask 1, option tag 0.
+    let expected = hex_data(&serde_json::json!({
+        "data": concat!(
+            "9bec57e4894b5127",
+            "01000000",
+            "00",
+            "0909090909090909090909090909090909090909090909090909090909090909",
+            "01",
+            "00"
+        )
+    }));
+    assert_eq!(built.data, expected);
+    // multisig (mut), transaction (mut), creator (signer), rent_payer (mut
+    // signer), system_program.
+    assert_eq!(
+        account_keys(&built),
+        vec![
+            b58(&multisig),
+            b58(&transaction_pda(&multisig, 4)),
+            b58(&creator),
+            b58(&creator),
+            b58(&system_program()),
+        ]
+    );
+    assert_eq!(
+        flags(&built),
+        vec![
+            (true, false),
+            (true, false),
+            (false, true),
+            (true, true),
+            (false, false)
+        ]
+    );
+
+    // Every modelled action encodes the way ConfigTransaction decodes it.
+    let actions = [
+        ConfigAction::AddMember {
+            key: proposer,
+            mask: PERMISSION_INITIATE,
+        },
+        ConfigAction::RemoveMember { key: proposer },
+        ConfigAction::ChangeThreshold { threshold: 2 },
+        ConfigAction::SetTimeLock { seconds: 60 },
+        ConfigAction::SetRentCollector {
+            collector: Some(creator),
+        },
+        ConfigAction::SetRentCollector { collector: None },
+    ];
+    let built = config_transaction_create(&multisig, &creator, 5, &actions);
+    let mut account = account_discriminator("ConfigTransaction").to_vec();
+    account.extend_from_slice(&multisig);
+    account.extend_from_slice(&creator);
+    account.extend_from_slice(&5u64.to_le_bytes());
+    account.push(255);
+    account.extend_from_slice(&built.data[8..built.data.len() - 1]);
+    assert_eq!(
+        ConfigTransaction::decode(&account).unwrap().actions,
+        actions.to_vec()
+    );
+}
+
+#[test]
+fn proposal_create_encodes_like_the_deployed_program() {
+    // An observed mainnet proposal_create (creator and rent payer the same
+    // member) re-encodes byte for byte.
+    let vectors = vectors();
+    let observed = &vectors["proposalCreate"];
+    let data = hex_data(observed);
+    let index = u64::from_le_bytes(data[8..16].try_into().unwrap());
+    let multisig = key(&observed["accounts"][0]);
+    let creator = key(&observed["accounts"][2]);
+    let built = proposal_create(&multisig, &creator, index, data[16] == 1);
+    assert_eq!(built.data, data);
+    assert_eq!(account_keys(&built), keys(&observed["accounts"]));
+    // multisig, proposal (mut), creator (signer), rent_payer (mut signer),
+    // system_program.
+    assert_eq!(
+        flags(&built),
+        vec![
+            (false, false),
+            (true, false),
+            (false, true),
+            (true, true),
+            (false, false)
+        ]
+    );
+}
+
+#[test]
+fn add_proposer_compiles_with_one_signer() {
+    let multisig = [7u8; 32];
+    let creator = [8u8; 32];
+    let instructions = [
+        config_transaction_create(
+            &multisig,
+            &creator,
+            2,
+            &[ConfigAction::AddMember {
+                key: [9; 32],
+                mask: PERMISSION_INITIATE,
+            }],
+        ),
+        proposal_create(&multisig, &creator, 2, false),
+    ];
+    let wire = compile_legacy(&creator, &instructions, &[5; 32]).unwrap();
+    let decoded = arete_mcp::prepared_summary::decode_transaction(&wire).unwrap();
+    assert_eq!(decoded.required_signatures, 1);
+    assert_eq!(decoded.static_keys[0], b58(&creator));
+    assert_eq!(decoded.instructions.len(), 2);
+}

@@ -1095,8 +1095,10 @@ impl ProtocolClient {
         self.complete("Submit", request).await
     }
 
-    /// Squads onboarding for the calling account: its proposer, an unsigned
-    /// add-proposer proposal, and membership status.
+    /// Squads onboarding for the calling account: its proposer and its
+    /// membership status. Arete builds no Squads transactions; the team adds
+    /// the proposer on the dashboard, in the Squads app, or from code with
+    /// the squads-v4 program SDK.
     pub fn squads(&self) -> ProtocolSquads<'_> {
         ProtocolSquads { client: self }
     }
@@ -1602,24 +1604,6 @@ impl ProtocolSquads<'_> {
     pub async fn proposer(&self) -> Result<ProtocolSquadsProposer, ProtocolError> {
         let url = self.client.squads_url("proposer")?;
         self.client.get_json("Squads proposer read", url).await
-    }
-
-    /// An unsigned transaction proposing to add the proposer to the
-    /// multisig, for `member` to sign and send.
-    pub async fn add_proposer(
-        &self,
-        request: &ProtocolSquadsAddProposerRequest,
-    ) -> Result<ProtocolSquadsAddProposerResult, ProtocolError> {
-        if request.multisig.is_empty() || request.member.is_empty() {
-            return Err(ProtocolError::InvalidInput(
-                "add_proposer requires a multisig and a member".into(),
-            ));
-        }
-        let url = self.client.squads_url("add-proposer")?;
-        let body = serde_json::to_value(request)
-            .map_err(|error| ProtocolError::InvalidInput(error.to_string()))?;
-        let request = Outgoing::new(Method::POST, url, &self.client.inner.read_scopes).json(body);
-        self.client.complete("Squads add-proposer", request).await
     }
 
     /// Whether the proposer is an Initiate-only member of `multisig`.

@@ -567,10 +567,8 @@ fn other_activation_failures_are_errors() {
 #[test]
 fn a_squads_activation_refusal_prints_its_commands() {
     let dir = project(&escrow_spec(), None);
-    let add = format!(
-        "a4 protocol squads add-proposer {DEPLOYMENT_ID} --multisig M --member <a member who can initiate>"
-    );
-    let status = format!("a4 protocol squads status {DEPLOYMENT_ID} --multisig M");
+    let add = "a4 dev squads add-proposer --multisig M --proposer P --wallet <a dev wallet that can initiate>";
+    let status = format!("a4 protocol squads status {DEPLOYMENT_ID} --dev --multisig M");
     let server = responses(vec![
         (200, json!([protocol_json("escrow-resolution")])),
         (200, upload_json(ESCROW_RELEASE, false, "pending", false)),

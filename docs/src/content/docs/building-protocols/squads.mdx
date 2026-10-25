@@ -1,6 +1,6 @@
 ---
 title: Govern steps with your Squads multisig
-description: Propose admin steps to your team's own Squads v4 multisig, for one protocol or several.
+description: Set up your team's Squads v4 multisig on the dashboard and propose admin steps to it, for one protocol or several.
 ---
 
 Some steps should never run on one person's say-so: moving a treasury,
@@ -9,14 +9,47 @@ authority and they are proposed to your team's Squads v4 multisig. Arete's
 proposer only proposes. Your members approve and execute in Squads, as they
 would any other transaction.
 
+## Set up Squads on the dashboard
+
+Open **[app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads)**.
+It works with any standard browser wallet (Phantom, Solflare, Backpack),
+including a Ledger connected through one of them, so members who sign with
+hardware wallets can do everything there. The page asks one question:
+
+- **You already have a Squads multisig.** Enter its address. The page shows
+  its members and status, and gives two ways to add Arete's proposer:
+  - **Here:** connect a member wallet that can initiate, sign the
+    add-proposer proposal, then approve and execute it (each member signs),
+    here or in the Squads app.
+  - **In the Squads app:** open the multisig, go to **Members → Add member**,
+    paste the proposer, give it the **Initiate** permission only, then approve
+    and execute the proposal. The page updates when the member appears.
+- **You don't have one.** Create it on the page: choose a label, the members
+  and the threshold, and connect the wallet that pays. Arete's proposer is a
+  member from the start, so there is nothing else to add.
+
+Once the multisig is **active**, the page shows its address and the
+`arete.toml` snippet to put in your protocol's deployment config. Attach a
+multisig once; every protocol you deploy can use it.
+
 ## How it works
 
 - Your account has one **proposer**: a public key Arete signs proposals with.
   Every protocol you deploy uses the same proposer.
-- You add the proposer to your multisig as a member with the **Initiate**
-  permission only. It can create proposals; it can never vote or execute.
+- The proposer is a member of your multisig with the **Initiate** permission
+  only. It can create proposals; it can never vote or execute, and it does
+  not count toward the threshold.
+- Your account **attaches** each multisig it uses. An attachment is
+  `pending` until the proposer is an Initiate-only member, `active` while it
+  is, and `archived` if the proposer is removed or its permissions change
+  (and `active` again once it is added back). The dashboard and
+  `a4 squads status` show the state.
+- A production deployment of a protocol with Squads steps is refused unless
+  the multisig in its deployment config is an `active` attachment of your
+  account. A multisig that already has the proposer is attached
+  automatically when you deploy.
 - The proposer pays the fee and rent of each proposal, so it needs a little
-  SOL.
+  SOL. The dashboard shows its balance.
 - When a reaction fires `proposeSquads`, Arete wraps the step's instructions
   in a vault transaction and a proposal on your multisig. Your members approve
   and execute it. The protocol's derive rules observe the result.
@@ -74,11 +107,15 @@ resource's value for each deployment in `arete.toml`:
 treasury = "treasury.json"   # { "multisig": "<your multisig address>" }
 ```
 
+Put the address of a multisig attached on the dashboard there. The page
+shows the snippet for each active multisig.
+
 The multisig must come from the deployment config: the step's `multisig`
 reads a resource (`resources.<name>`) and nothing else. A protocol never
 creates a multisig, and a step that reads it from the instance or its
 arguments is refused when the protocol is checked. Because the multisig is
-fixed for the deployment, Arete checks it when the deployment activates.
+fixed for the deployment, Arete checks it when the deployment is created
+and when it activates.
 
 The step acts from vault 0 unless it sets `vaultIndex`. Use different vault
 indexes to keep protocols that share a multisig apart. The vault the step's
@@ -91,68 +128,74 @@ const vault = 'pda("squads", "vault", resources.treasury.multisig, 1)';
 authority: { kind: "squadsProposer", multisig: "resources.treasury.multisig", vaultIndex: 1 },
 ```
 
-## Onboard your multisig
+## When a deploy is refused
 
-Do this once per multisig, before the first deploy activates. The commands
-take the deployment as their target, like `a4 protocol actions`; deploy with
-`--no-activate` first if the deployment does not exist yet.
+If the multisig in the deployment config is not set up, `a4 protocol deploy`
+(deployment create or activation) fails with `protocol-squads-setup-required`.
+The error names the step, the multisig and why (`not_member`,
+`permissions_invalid`, ...), and links to the multisig's dashboard page,
+where the multisig is already waiting as `pending`:
 
-1. Find your proposer:
+```text
+Step 'finalize' proposes to Squads multisig <M>, which is not set up for your account (not_member). ...
+  Set it up: https://app.arete.run/dashboard/squads/<M>
+```
 
-   ```bash
-   a4 protocol squads proposer <deployment>
-   ```
+Add the proposer there (or in the Squads app), then deploy again.
 
-2. Build the transaction that adds it with the Initiate permission. A member
-   who can already initiate signs and sends it:
+## From the command line
 
-   ```bash
-   a4 protocol squads add-proposer <deployment> --multisig <M> --member <member>
-   ```
+`a4 squads` reads your account's setup and attaches a multisig by address.
+Each command prints the multisig's dashboard link first and, while it is
+`pending`, the Squads-app steps to add the proposer. It builds no
+transactions.
 
-   It prints the unsigned transaction. Sign it with the member's wallet, or
-   pass `--keypair <file> --rpc-url <url>` to sign and send from the command
-   line. Then approve and execute the config proposal it created in Squads.
+```bash
+a4 squads status                        # setup, proposer, attached multisigs
+a4 squads status <M>                    # one multisig: members, deployments, proposals
+a4 squads list
+a4 squads attach <M> --label Treasury   # attach an existing multisig
+```
 
-3. Send the proposer a little SOL. One proposal needs about 0.01 SOL.
+Agents use the MCP tools `squads_status` and `squads_attach`. They point the
+user to the dashboard or the Squads app and never sign for a member.
 
-4. Check:
+## From code (scripts and hot wallets)
 
-   ```bash
-   a4 protocol squads status <deployment> --multisig <M>
-   ```
+Arete builds no Squads transactions. To create a multisig with the proposer
+already a member, or to add the proposer to an existing one, from code,
+install the Squads v4 program SDK and use its Arete setup helpers:
 
-   `ready` means the proposer is an Initiate-only member and funded. Otherwise
-   `problem` says what is left: `not_member`, `permissions_invalid` or
-   `proposer_unfunded`.
+```bash
+a4 install program squads-v4
+```
 
-Then deploy (or activate) again. If you skip a step, activation refuses the
-deployment and its error names the proposer, the multisig and the commands to
-run.
-
-Agents can do the same through the MCP tools `protocol_squads_proposer`,
-`protocol_squads_status` and `protocol_squads_add_proposer`. They return the
-unsigned transaction for the member to sign; they never sign.
+The member's own wallet signs, as for any other transaction; Arete never
+asks for or holds a member key. Then read the multisig again (`a4 squads
+status <M>` or the dashboard) to see it turn `active`.
 
 ## One multisig for several protocols
 
-The proposer is per account, so once it is a member of your multisig, every
-protocol you deploy can point its resource at that multisig with no further
-onboarding. Proposals from all of them land in the same Squads queue. Give
+The proposer is per account, so once a multisig is attached and active,
+every protocol you deploy can point its resource at that multisig with no
+further setup. Proposals from all of them land in the same Squads queue. Give
 each protocol its own `vaultIndex` if their funds should stay apart.
 
 ## Try it in a dev environment
 
-The Squads app cannot see a dev environment, so `a4 dev squads` stands in for
-it with your dev wallets:
+Dev environments are separate: they have their own proposer, are never
+checked against your account's attachments, and the dashboard does not
+apply. The Squads app cannot see a dev environment either, so
+`a4 dev squads` stands in for it with your dev wallets:
 
 ```bash
-a4 dev squads create --members alice,bob --threshold 1      # prints the multisig and vault 0
-a4 protocol squads add-proposer --dev --multisig <M> --member alice --send
-a4 dev squads show --multisig <M>                           # the config proposal's index
+a4 protocol squads proposer --dev                                  # the proposer <P>
+a4 dev squads create --members alice,bob --threshold 1 --proposer <P>   # proposer already a member
+# or add it to an existing dev multisig:
+a4 dev squads add-proposer --multisig <M> --proposer <P> --wallet alice # prints the index <n>
 a4 dev squads approve --multisig <M> --index <n> --wallet alice
 a4 dev squads execute --multisig <M> --index <n> --wallet alice
-a4 dev fund <proposer> 1
+a4 dev fund <P> 1
 a4 protocol squads status --dev --multisig <M>
 ```
 
@@ -165,5 +208,7 @@ If a step is proposed while the proposer is not a valid member (for example,
 someone removed it after the deployment activated), nothing is signed. The proposal waits and
 retries for up to 24 hours, and the instance's event stream reports
 `arete.squads.proposerMissing` with the multisig, the proposer and the
-problem. Add the proposer and it goes through on the next retry; after 24
-hours it is dropped.
+problem. The attachment turns `archived` and the dashboard lists the
+deployments affected. Add the proposer back (on the dashboard or in the
+Squads app) and it goes through on the next retry; after 24 hours it is
+dropped.

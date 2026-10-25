@@ -32,8 +32,6 @@ import {
   type ProtocolParticipantDetail,
   type ProtocolPrepareResult,
   type ProtocolProgramsOf,
-  type ProtocolSquadsAddProposerInput,
-  type ProtocolSquadsAddProposerResult,
   type ProtocolSquadsProposer,
   type ProtocolSquadsProposerMissingData,
   type ProtocolSquadsStatus,
@@ -297,13 +295,13 @@ export interface ProtocolEventSubscription {
 /**
  * Squads onboarding. Admin steps are proposed to a team's Squads v4 multisig
  * by a proposer key that belongs to the calling account and may only
- * initiate. Arete never votes or executes.
+ * initiate. Arete never votes or executes, and builds no Squads
+ * transactions: the team adds the proposer on the dashboard, in the Squads
+ * app, or from code with the squads-v4 program SDK.
  */
 export interface ProtocolSquadsClient {
   /** The calling account's proposer and the permission it needs. */
   proposer(options?: { signal?: AbortSignal }): Promise<ProtocolSquadsProposer>;
-  /** An unsigned transaction proposing to add the proposer to `multisig`. */
-  addProposer(input: ProtocolSquadsAddProposerInput): Promise<ProtocolSquadsAddProposerResult>;
   /** Whether the proposer is an Initiate-only member of `multisig`. */
   status(multisig: string, options?: { signal?: AbortSignal }): Promise<ProtocolSquadsStatus>;
 }
@@ -1210,24 +1208,6 @@ export function createProtocolClientWithMembers(
         `${squadsUrl}/proposer`,
         proposerOptions?.signal
       ) as ProtocolSquadsProposer;
-    },
-    async addProposer(input) {
-      if (!isRecord(input) || typeof input.multisig !== 'string' || typeof input.member !== 'string') {
-        throw new AreteError('addProposer requires a multisig and a member', 'INVALID_CONFIG');
-      }
-      const response = await http.send(`${squadsUrl}/add-proposer`, {
-        method: 'POST',
-        scopes: readScopes,
-        body: {
-          multisig: input.multisig,
-          member: input.member,
-          ...(input.transactionFormat ? { transactionFormat: input.transactionFormat } : {}),
-        },
-        signal: input.signal,
-      });
-      const body = await readJson(response);
-      if (!response.ok) throw responseError('Squads add-proposer', response, body);
-      return body as ProtocolSquadsAddProposerResult;
     },
     async status(multisig, statusOptions) {
       if (typeof multisig !== 'string' || multisig.length === 0) {

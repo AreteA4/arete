@@ -36,22 +36,26 @@ Normal development uses `a4 dev up`; production uses `a4 protocol deploy`.
 `createSession({ protocols: { alias: definition } }, options)` includes it in
 an application session.
 
-| Surface                                                       | Purpose                                                          |
-| ------------------------------------------------------------- | ---------------------------------------------------------------- |
-| `steps.<name>.prepare(input, options?)`                       | Prepare a typed step or return a typed rejection                 |
-| `actions({ wallet, instance?, cursor?, limit? })`             | Wallet actions and related instances                             |
-| `allowedSteps({ instance, wallet })`                          | Step availability for one instance                               |
-| `instances.list(filter?)`, `instances.get(id, options?)`      | Canonical instance reads                                         |
-| `instances.use(id, options?)`                                 | Reactive instance handle with optional live row                  |
-| `participants.get({ instance, wallet })`                      | Canonical participant read                                       |
-| `submit(intent, signedTransactions)`                          | Submit exact wallet-signed transactions                          |
-| `intents.get(executionId)`                                    | Read execution outcome                                           |
-| `events(instanceId, options)`                                 | Resumable instance event stream                                  |
-| `metadata.instance(id)`, `metadata.participant(input)`        | Metadata handles and wallet proof messages                       |
-| `squads.proposer()`, `addProposer(input)`, `status(multisig)` | Multisig proposer onboarding                                     |
-| `getReceipt(signature)`, `getReceiptKeys()`                   | Receipt and verification keys                                    |
-| `stacks`, `programs`                                          | Included definitions, or connected dependencies inside a session |
-| `close()`                                                     | Release the client's owned resources                             |
+| Surface                                                  | Purpose                                                          |
+| -------------------------------------------------------- | ---------------------------------------------------------------- |
+| `steps.<name>.prepare(input, options?)`                  | Prepare a typed step or return a typed rejection                 |
+| `actions({ wallet, instance?, cursor?, limit? })`        | Wallet actions and related instances                             |
+| `allowedSteps({ instance, wallet })`                     | Step availability for one instance                               |
+| `instances.list(filter?)`, `instances.get(id, options?)` | Canonical instance reads                                         |
+| `instances.use(id, options?)`                            | Reactive instance handle with optional live row                  |
+| `participants.get({ instance, wallet })`                 | Canonical participant read                                       |
+| `submit(intent, signedTransactions)`                     | Submit exact wallet-signed transactions                          |
+| `intents.get(executionId)`                               | Read execution outcome                                           |
+| `events(instanceId, options)`                            | Resumable instance event stream                                  |
+| `metadata.instance(id)`, `metadata.participant(input)`   | Metadata handles and wallet proof messages                       |
+| `squads.proposer()`, `status(multisig)`                  | The Squads proposer and whether it is an Initiate-only member    |
+| `getReceipt(signature)`, `getReceiptKeys()`              | Receipt and verification keys                                    |
+| `stacks`, `programs`                                     | Included definitions, or connected dependencies inside a session |
+| `close()`                                                | Release the client's owned resources                             |
+
+The account's Squads multisigs are set up on the dashboard or with
+`a4 squads`; code that creates a multisig or adds the proposer uses the Squads
+v4 program SDK's Arete setup helpers. See [Squads](/building-protocols/squads/).
 
 Secret-key clients expose client-callable steps; publishable-key clients are
 typed for public steps. Runtime access and authority checks still apply.

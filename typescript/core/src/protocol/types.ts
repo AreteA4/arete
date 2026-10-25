@@ -479,8 +479,8 @@ export type ProtocolSquadsProposerProblem = 'not_member' | 'permissions_invalid'
 /**
  * Data of `arete.squads.proposerMissing`: an admin step's proposal is parked
  * because the calling account's proposer is not an Initiate-only member of
- * the multisig. It is retried with backoff for up to 24 hours; add the
- * proposer with `squads.addProposer` to unblock it.
+ * the multisig. It is retried with backoff for up to 24 hours; adding the
+ * proposer (on the dashboard or in the Squads app) unblocks it.
  */
 export interface ProtocolSquadsProposerMissingData {
   readonly id: number;
@@ -527,32 +527,6 @@ export interface ProtocolSquadsProposer {
   readonly permissions: 'initiate';
   /** The root the proposer derives from; `null` for an environment key. */
   readonly rootKeyId: string | null;
-}
-
-export interface ProtocolSquadsAddProposerInput {
-  /** The team's Squads v4 multisig. */
-  readonly multisig: string;
-  /** A member with the Initiate permission who signs and pays. */
-  readonly member: string;
-  readonly transactionFormat?: ProtocolTransactionFormat;
-  readonly signal?: AbortSignal;
-}
-
-/**
- * An unsigned transaction creating a Squads config proposal that adds the
- * proposer with Initiate only. `member` signs and sends it; the team then
- * approves and executes the proposal in Squads.
- */
-export interface ProtocolSquadsAddProposerResult {
-  readonly transactionBase64: string;
-  readonly transactionFormat: ProtocolTransactionFormat;
-  readonly transactionIndex: number;
-  readonly proposal: string;
-  readonly configTransaction: string;
-  readonly multisig: string;
-  readonly member: string;
-  readonly proposer: string;
-  readonly lastValidBlockHeight: number;
 }
 
 /** Whether the calling account's proposer can propose to a multisig. */

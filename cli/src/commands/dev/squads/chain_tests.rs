@@ -303,6 +303,7 @@ async fn create_signs_with_the_creator_and_the_create_key() {
             members: vec!["alice".into(), "bob".into(), outsider.clone()],
             threshold: 2,
             wallet: None,
+            proposer: None,
         },
     )
     .await
@@ -314,10 +315,13 @@ async fn create_signs_with_the_creator_and_the_create_key() {
     assert_eq!(result["creator"], alice.pubkey());
     assert_eq!(result["members"][0]["wallet"], "alice");
     assert_eq!(result["members"][2]["wallet"], Value::Null);
-    assert!(result["next"]
-        .as_str()
-        .unwrap()
-        .contains("a4 protocol squads add-proposer --dev"));
+    let next = result["next"].as_str().unwrap();
+    assert!(
+        next.contains("a4 dev squads add-proposer --multisig"),
+        "{next}"
+    );
+    assert!(!next.contains("a4 protocol squads add-proposer"), "{next}");
+    assert_eq!(result["proposer"], Value::Null);
 
     let instructions = last_instructions(&state);
     assert_eq!(instructions.len(), 1);
@@ -362,6 +366,7 @@ async fn create_signs_with_the_creator_and_the_create_key() {
                 members: members.iter().map(|m| m.to_string()).collect(),
                 threshold,
                 wallet: wallet.map(str::to_string),
+                proposer: None,
             },
         )
         .await
@@ -501,4 +506,160 @@ async fn approve_activates_drafts_and_execute_runs_the_config_transaction() {
         "initiate, vote, execute"
     );
     assert_eq!(shown["configAuthority"], Value::Null);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn create_with_a_proposer_adds_it_with_initiate_only() {
+    let (origin, state) = fake_chain();
+    let dir = tempfile::tempdir().unwrap();
+    let client = dev_client(dir.path(), &origin);
+    let alice = wallet(&client, "alice");
+    let vectors: Value =
+        serde_json::from_str(include_str!("../../../squads/mainnet-vectors.json")).unwrap();
+    let config = base64::engine::general_purpose::STANDARD
+        .decode(vectors["programConfig"]["data"].as_str().unwrap())
+        .unwrap();
+    let treasury = v4::ProgramConfig::decode(&config).unwrap().treasury;
+    state.lock().unwrap().accounts.insert(
+        b58(&v4::program_config_pda()),
+        (v4::PROGRAM_ID.into(), config),
+    );
+    let chain = Chain::Dev(&client);
+    let proposer = [61u8; 32];
+    let args = |members: Vec<String>| CreateArgs {
+        project: ProjectArgs::default(),
+        members,
+        threshold: 1,
+        wallet: None,
+        proposer: Some(b58(&proposer)),
+    };
+    let result = create(&client, &chain, &args(vec!["alice".into()]))
+        .await
+        .unwrap();
+    assert_eq!(result["proposer"], b58(&proposer));
+    assert_eq!(result["members"][1]["mask"], v4::PERMISSION_INITIATE);
+    assert!(result["next"]
+        .as_str()
+        .unwrap()
+        .contains("a4 protocol squads status --dev"));
+    let create_key = parse_key(result["createKey"].as_str().unwrap()).unwrap();
+    let mut members = vec![
+        (alice.pubkey_bytes(), v4::PERMISSION_ALL),
+        (proposer, v4::PERMISSION_INITIATE),
+    ];
+    members.sort();
+    let expected = v4::multisig_create_v2(&v4::CreateMultisig {
+        treasury,
+        create_key,
+        creator: alice.pubkey_bytes(),
+        threshold: 1,
+        members: &members,
+        time_lock: 0,
+    });
+    assert_eq!(last_instructions(&state)[0].2, expected.data);
+
+    // The proposer is never also a full member.
+    let error = create(&client, &chain, &args(vec!["alice".into(), b58(&proposer)]))
+        .await
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("leave it out of --members"),
+        "{error}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn add_proposer_opens_an_initiate_only_config_proposal() {
+    let (origin, state) = fake_chain();
+    let dir = tempfile::tempdir().unwrap();
+    let client = dev_client(dir.path(), &origin);
+    let alice = wallet(&client, "alice");
+    let voter = wallet(&client, "voter");
+    wallet(&client, "carol");
+    let proposer = [61u8; 32];
+    let set_members = |members: &[(Key, u8)]| {
+        state.lock().unwrap().accounts.insert(
+            b58(&MULTISIG),
+            (v4::PROGRAM_ID.into(), multisig_data(members, 3)),
+        );
+    };
+    set_members(&[
+        (alice.pubkey_bytes(), v4::PERMISSION_ALL),
+        (voter.pubkey_bytes(), v4::PERMISSION_VOTE),
+    ]);
+    let chain = Chain::Dev(&client);
+    let args = |wallet: &str| AddProposerArgs {
+        project: ProjectArgs::default(),
+        multisig: b58(&MULTISIG),
+        proposer: b58(&proposer),
+        wallet: wallet.into(),
+    };
+
+    // Only a member that can initiate opens it.
+    for (wallet, expected) in [
+        ("voter", "cannot initiate"),
+        ("carol", "not a member"),
+        ("dave", "not a dev wallet"),
+    ] {
+        let error = add_proposer(&client, &chain, &args(wallet))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{wallet}: {error}");
+    }
+    assert!(state.lock().unwrap().sent.is_empty());
+
+    let result = add_proposer(&client, &chain, &args("alice")).await.unwrap();
+    assert_eq!(result["transactionIndex"], 4);
+    assert_eq!(result["mask"], 1);
+    let next = result["next"].as_str().unwrap();
+    assert!(next.contains("a4 dev squads approve --multisig"), "{next}");
+    assert!(next.contains("--index 4 --wallet alice"), "{next}");
+    assert!(next.contains("a4 dev squads execute"), "{next}");
+
+    let instructions = last_instructions(&state);
+    assert_eq!(instructions.len(), 2);
+    let expected = [
+        v4::config_transaction_create(
+            &MULTISIG,
+            &alice.pubkey_bytes(),
+            4,
+            &[v4::ConfigAction::AddMember {
+                key: proposer,
+                mask: v4::PERMISSION_INITIATE,
+            }],
+        ),
+        v4::proposal_create(&MULTISIG, &alice.pubkey_bytes(), 4, false),
+    ];
+    for ((program, accounts, data), expected) in instructions.iter().zip(&expected) {
+        assert_eq!(program, v4::PROGRAM_ID);
+        assert_eq!(*data, expected.data);
+        assert_eq!(
+            *accounts,
+            expected
+                .accounts
+                .iter()
+                .map(|meta| b58(&meta.key))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    // Already an Initiate-only member: nothing to add. Another mask: remove
+    // it first.
+    set_members(&[
+        (alice.pubkey_bytes(), v4::PERMISSION_ALL),
+        (proposer, v4::PERMISSION_INITIATE),
+    ]);
+    let error = add_proposer(&client, &chain, &args("alice"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("nothing to add"), "{error}");
+    set_members(&[
+        (alice.pubkey_bytes(), v4::PERMISSION_ALL),
+        (proposer, v4::PERMISSION_ALL),
+    ]);
+    let error = add_proposer(&client, &chain, &args("alice"))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("remove it first"), "{error}");
+    assert_eq!(state.lock().unwrap().sent.len(), 1);
 }

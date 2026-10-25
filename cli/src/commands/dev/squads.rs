@@ -2,13 +2,15 @@
 //! environment, so a protocol whose steps are proposed to a multisig can be
 //! tested end to end without the Squads app (which cannot see a fork).
 //!
-//! `create` makes a multisig whose members all hold every permission;
-//! `approve` votes on a proposal (activating a draft first); `execute` runs
-//! an approved config transaction (such as the add-proposer proposal
-//! `a4 protocol squads add-proposer --dev` opens) and `vault-execute` an
-//! approved vault transaction (such as a protocol step's proposal). Dev
-//! wallets sign. These commands only ever talk to the project's dev
-//! environment: there is no RPC option to point them anywhere else.
+//! `create` makes a multisig whose members all hold every permission (and,
+//! with `--proposer`, the environment's proposer with Initiate only);
+//! `add-proposer` opens a config proposal adding the proposer to an existing
+//! multisig; `approve` votes on a proposal (activating a draft first);
+//! `execute` runs an approved config transaction and `vault-execute` an
+//! approved vault transaction (such as a protocol step's proposal). Every
+//! transaction is built here and signed by dev wallets. These commands only
+//! ever talk to the project's dev environment: there is no RPC option to
+//! point them anywhere else.
 
 use anyhow::{anyhow, bail, Context, Result};
 use arete_mcp::dev::{validate_wallet_name, DevClient, DevWallet};
@@ -30,6 +32,10 @@ pub enum DevSquadsCommands {
     /// Create a Squads v4 multisig whose members hold every permission
     /// (mask 7); prints the multisig and its vault 0
     Create(CreateArgs),
+    /// Open a config proposal adding a Squads proposer to a multisig as an
+    /// Initiate-only member (mask 1); a dev wallet that can initiate creates
+    /// and pays
+    AddProposer(AddProposerArgs),
     /// Show a multisig: members, threshold, last transaction index, vault 0
     Show(ShowArgs),
     /// Approve a proposal with a dev wallet (a draft is activated first)
@@ -62,6 +68,27 @@ pub struct CreateArgs {
     /// is a dev wallet)
     #[arg(long)]
     pub wallet: Option<String>,
+    /// Also add this Squads proposer (`a4 protocol squads proposer --dev`)
+    /// as a member with the Initiate permission only; it does not vote or
+    /// count toward the threshold
+    #[arg(long, value_name = "PUBKEY")]
+    pub proposer: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct AddProposerArgs {
+    #[command(flatten)]
+    pub project: ProjectArgs,
+    /// The multisig account
+    #[arg(long, value_name = "ADDRESS")]
+    pub multisig: String,
+    /// The Squads proposer to add (`a4 protocol squads proposer --dev`)
+    #[arg(long, value_name = "PUBKEY")]
+    pub proposer: String,
+    /// The dev wallet (a member with the Initiate permission) that creates
+    /// and pays for the proposal
+    #[arg(long)]
+    pub wallet: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -80,8 +107,8 @@ pub struct ProposalArgs {
     /// The multisig account
     #[arg(long, value_name = "ADDRESS")]
     pub multisig: String,
-    /// The transaction index (`transactionIndex` of add-proposer, or the
-    /// multisig's latest from `a4 dev squads show`)
+    /// The transaction index (`transactionIndex` of `a4 dev squads
+    /// add-proposer`, or the multisig's latest from `a4 dev squads show`)
     #[arg(long)]
     pub index: u64,
     /// The dev wallet (a multisig member) that signs
@@ -92,6 +119,7 @@ pub struct ProposalArgs {
 pub async fn run(command: DevSquadsCommands, json: bool) -> Result<()> {
     let (project, render): (&ProjectArgs, fn(&Value)) = match &command {
         DevSquadsCommands::Create(args) => (&args.project, render_create),
+        DevSquadsCommands::AddProposer(args) => (&args.project, render_add_proposer),
         DevSquadsCommands::Show(args) => (&args.project, render_show),
         DevSquadsCommands::Approve(args) => (&args.project, render_approve),
         DevSquadsCommands::Execute(args) | DevSquadsCommands::VaultExecute(args) => {
@@ -102,6 +130,7 @@ pub async fn run(command: DevSquadsCommands, json: bool) -> Result<()> {
     let chain = Chain::Dev(&client);
     let result = match &command {
         DevSquadsCommands::Create(args) => create(&client, &chain, args).await?,
+        DevSquadsCommands::AddProposer(args) => add_proposer(&client, &chain, args).await?,
         DevSquadsCommands::Show(args) => show(&chain, &parse_key(&args.multisig)?).await?,
         DevSquadsCommands::Approve(args) => approve(&client, &chain, args).await?,
         DevSquadsCommands::Execute(args) => execute(&client, &chain, args, false).await?,
@@ -220,6 +249,15 @@ async fn create(client: &DevClient, chain: &Chain<'_>, args: &CreateArgs) -> Res
             members.len()
         );
     }
+    let proposer = args.proposer.as_deref().map(parse_key).transpose()?;
+    if let Some(proposer) = &proposer {
+        if members.iter().any(|(_, key)| key == proposer) {
+            bail!(
+                "{} is both in --members and --proposer; the proposer is added with Initiate only, so leave it out of --members",
+                b58(proposer)
+            );
+        }
+    }
     let payer_name = match &args.wallet {
         Some(wallet) => wallet.clone(),
         None => members[0].0.clone().ok_or_else(|| {
@@ -240,6 +278,9 @@ async fn create(client: &DevClient, chain: &Chain<'_>, args: &CreateArgs) -> Res
         .iter()
         .map(|(_, key)| (*key, v4::PERMISSION_ALL))
         .collect();
+    if let Some(proposer) = proposer {
+        keyed.push((proposer, v4::PERMISSION_INITIATE));
+    }
     keyed.sort();
     let instruction = v4::multisig_create_v2(&v4::CreateMultisig {
         treasury: config.treasury,
@@ -252,23 +293,137 @@ async fn create(client: &DevClient, chain: &Chain<'_>, args: &CreateArgs) -> Res
     let signature = send(chain, &payer, &[instruction], &[&create_key], &[]).await?;
     let multisig = v4::multisig_pda(&create_key_bytes);
     let vault = v4::vault_pda(&multisig, 0);
+    let project = project_flag(&args.project);
+    let next = match &proposer {
+        Some(proposer) => format!(
+            "Use it as the protocol's Squads multisig: the proposer is already an Initiate-only member. `a4 protocol squads status --dev{project} --multisig {}` checks it (`a4 dev fund{project} {} 1` if it is unfunded).",
+            b58(&multisig),
+            b58(proposer)
+        ),
+        None => format!(
+            "Use it as the protocol's Squads multisig. `a4 dev squads add-proposer{project} --multisig {} --proposer <proposer> --wallet {payer_name}` proposes adding the proposer (`a4 protocol squads proposer --dev` prints it), or pass --proposer to create.",
+            b58(&multisig)
+        ),
+    };
+    let mut listed: Vec<Value> = members
+        .iter()
+        .map(|(name, key)| {
+            json!({
+                "pubkey": b58(key),
+                "wallet": name,
+                "mask": v4::PERMISSION_ALL,
+            })
+        })
+        .collect();
+    if let Some(proposer) = &proposer {
+        listed.push(json!({
+            "pubkey": b58(proposer),
+            "wallet": Value::Null,
+            "mask": v4::PERMISSION_INITIATE,
+            "proposer": true,
+        }));
+    }
     Ok(json!({
         "multisig": b58(&multisig),
         "vault": b58(&vault),
         "createKey": b58(&create_key_bytes),
         "threshold": args.threshold,
-        "members": members.iter().map(|(name, key)| json!({
-            "pubkey": b58(key),
-            "wallet": name,
-            "mask": v4::PERMISSION_ALL,
-        })).collect::<Vec<_>>(),
+        "members": listed,
+        "proposer": proposer.as_ref().map(b58),
         "creator": payer.pubkey(),
         "creationFeeLamports": config.multisig_creation_fee,
         "signature": signature,
+        "next": next,
+    }))
+}
+
+/// ` --project DIR` when a project was named, for follow-up commands.
+fn project_flag(project: &ProjectArgs) -> String {
+    project
+        .project
+        .as_deref()
+        .map(|dir| format!(" --project {}", dir.display()))
+        .unwrap_or_default()
+}
+
+/// `a4 dev squads add-proposer`: a config transaction with exactly one
+/// `AddMember { proposer, mask 1 }` and its proposal, at the multisig's
+/// next transaction index, created and paid by a dev wallet that can
+/// initiate.
+async fn add_proposer(
+    client: &DevClient,
+    chain: &Chain<'_>,
+    args: &AddProposerArgs,
+) -> Result<Value> {
+    let multisig = parse_key(&args.multisig)?;
+    let proposer = parse_key(&args.proposer)?;
+    let account = multisig_account(chain, &multisig).await?;
+    if account.is_controlled() {
+        bail!(
+            "This multisig has a config authority ({}), so members cannot change it by proposal; its config authority adds the proposer directly",
+            b58(&account.config_authority)
+        );
+    }
+    match account.mask_of(&proposer) {
+        Some(v4::PERMISSION_INITIATE) => bail!(
+            "{} is already a member with Initiate only (mask 1); there is nothing to add",
+            args.proposer.trim()
+        ),
+        Some(mask) => bail!(
+            "{} is already a member with permissions {} (mask {mask}); remove it first with a config proposal, then add it with Initiate only",
+            args.proposer.trim(),
+            mask_names(mask)
+        ),
+        None => {}
+    }
+    let wallet = existing_wallet(client, &args.wallet).await?;
+    let mask = account.mask_of(&wallet.pubkey_bytes()).ok_or_else(|| {
+        anyhow!(
+            "The dev wallet '{}' ({}) is not a member of this multisig",
+            args.wallet,
+            wallet.pubkey()
+        )
+    })?;
+    if mask & v4::PERMISSION_INITIATE == 0 {
+        bail!(
+            "The dev wallet '{}' cannot initiate on this multisig (permissions: {}); pass a member with Initiate",
+            args.wallet,
+            mask_names(mask)
+        );
+    }
+    let index = account
+        .transaction_index
+        .checked_add(1)
+        .ok_or_else(|| anyhow!("the multisig's transaction index is exhausted"))?;
+    let creator = wallet.pubkey_bytes();
+    let instructions = [
+        v4::config_transaction_create(
+            &multisig,
+            &creator,
+            index,
+            &[v4::ConfigAction::AddMember {
+                key: proposer,
+                mask: v4::PERMISSION_INITIATE,
+            }],
+        ),
+        v4::proposal_create(&multisig, &creator, index, false),
+    ];
+    let signature = send(chain, &wallet, &instructions, &[], &[]).await?;
+    let project = project_flag(&args.project);
+    let multisig_text = b58(&multisig);
+    let wallet_name = args.wallet.trim();
+    Ok(json!({
+        "multisig": multisig_text,
+        "proposer": b58(&proposer),
+        "mask": v4::PERMISSION_INITIATE,
+        "transactionIndex": index,
+        "configTransaction": b58(&v4::transaction_pda(&multisig, index)),
+        "proposal": b58(&v4::proposal_pda(&multisig, index)),
+        "wallet": wallet.pubkey(),
+        "threshold": account.threshold,
+        "signature": signature,
         "next": format!(
-            "Use it as the protocol's Squads multisig. `a4 protocol squads add-proposer --dev --multisig {} --member {} --send` proposes adding the proposer.",
-            b58(&multisig),
-            payer_name
+            "Config proposal {index} is open. Approve it with enough members (`a4 dev squads approve{project} --multisig {multisig_text} --index {index} --wallet {wallet_name}`), execute it (`a4 dev squads execute{project} --multisig {multisig_text} --index {index} --wallet {wallet_name}`), then `a4 protocol squads status --dev{project} --multisig {multisig_text}` checks the proposer."
         ),
     }))
 }
@@ -490,7 +645,7 @@ async fn execute(
         "next": if vault {
             "Executed. Read the protocol's state again (`a4 dev instance <id>`).".to_string()
         } else {
-            format!("Executed. `a4 protocol squads status --dev --multisig {}` checks the proposer.", args.multisig)
+            format!("Executed. `a4 protocol squads status --dev{} --multisig {}` checks the proposer.", project_flag(&args.project), args.multisig)
         },
     });
     if let (Some(object), Some(details)) = (result.as_object_mut(), details.as_object()) {
@@ -516,14 +671,38 @@ fn render_create(result: &Value) {
     );
     for member in result["members"].as_array().into_iter().flatten() {
         println!(
-            "  member     {}{} (initiate, vote, execute)",
+            "  member     {}{} ({})",
             member["pubkey"].as_str().unwrap_or_default(),
             member["wallet"]
                 .as_str()
                 .map(|name| format!(" [{name}]"))
-                .unwrap_or_default()
+                .or_else(|| (member["proposer"] == true).then(|| " [proposer]".to_string()))
+                .unwrap_or_default(),
+            mask_names(member["mask"].as_u64().unwrap_or(0) as u8)
         );
     }
+    println!(
+        "  signature  {}",
+        result["signature"].as_str().unwrap_or_default()
+    );
+    println!("\n{}", result["next"].as_str().unwrap_or_default());
+}
+
+fn render_add_proposer(result: &Value) {
+    println!(
+        "{} config proposal {} on {}",
+        "add-proposer".bold(),
+        result["transactionIndex"],
+        result["multisig"].as_str().unwrap_or_default()
+    );
+    println!(
+        "  proposer   {} (Initiate only, mask 1)",
+        result["proposer"].as_str().unwrap_or_default()
+    );
+    println!(
+        "  proposal   {}",
+        result["proposal"].as_str().unwrap_or_default()
+    );
     println!(
         "  signature  {}",
         result["signature"].as_str().unwrap_or_default()
@@ -622,6 +801,42 @@ mod tests {
         assert_eq!(args.threshold, 2);
         assert_eq!(args.wallet, None);
         assert!(parse(&["create", "--threshold", "1"]).is_err());
+        let DevSquadsCommands::Create(args) = parse(&[
+            "create",
+            "--members",
+            "alice",
+            "--threshold",
+            "1",
+            "--proposer",
+            "P",
+        ])
+        .unwrap() else {
+            panic!("not create");
+        };
+        assert_eq!(args.proposer.as_deref(), Some("P"));
+
+        let DevSquadsCommands::AddProposer(args) = parse(&[
+            "add-proposer",
+            "--multisig",
+            "M",
+            "--proposer",
+            "P",
+            "--wallet",
+            "alice",
+        ])
+        .unwrap() else {
+            panic!("not add-proposer");
+        };
+        assert_eq!(
+            (
+                args.multisig.as_str(),
+                args.proposer.as_str(),
+                args.wallet.as_str()
+            ),
+            ("M", "P", "alice")
+        );
+        assert!(parse(&["add-proposer", "--multisig", "M", "--wallet", "alice"]).is_err());
+        assert!(parse(&["add-proposer", "--multisig", "M", "--proposer", "P"]).is_err());
 
         let DevSquadsCommands::VaultExecute(args) = parse(&[
             "vault-execute",

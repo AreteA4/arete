@@ -109,7 +109,8 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 protocol request-listing`                                                 | Ask for your deployment to be listed                              |
 | `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
 | `a4 protocol webhook add\|list\|remove\|test`                                 | The webhook endpoints that receive your deployment's events       |
-| `a4 protocol squads proposer\|status\|add-proposer [target]`                  | Bring your own Squads multisig: proposer, status, add it          |
+| `a4 squads status\|list\|attach`                                              | Your account's Squads multisigs (set them up on the dashboard)    |
+| `a4 protocol squads proposer\|status [target]`                                | Bring your own Squads multisig: the proposer and its status       |
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
 | `a4 telemetry status`                                                         | Show telemetry status                                             |
@@ -1237,6 +1238,36 @@ a4 protocol actions --dev --wallet default    # a dev wallet name or a pubkey
 | `--dev` / `--project <dir>` | The project's dev deployment                      |
 | `--json`                    | The answer as JSON                                |
 
+### a4 squads
+
+A production deployment of a protocol with Squads steps is refused
+(`protocol-squads-setup-required`) unless the multisig in its deployment
+config is an `active` attachment of your account: Arete's proposer is a
+member with the Initiate permission only. Set that up on the dashboard,
+[app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads),
+which works with any browser wallet (a Ledger too), or in the Squads app
+(**Members → Add member**, paste the proposer, **Initiate** only, then
+approve and execute). `a4 squads` reads your account's setup and attaches a
+multisig by address. Every command prints the dashboard link first and, for
+a `pending` multisig, the Squads-app steps. It builds no transactions: for
+scripts and hot wallets, use the Arete setup helpers of the Squads v4
+program SDK (`a4 install program squads-v4`).
+
+```bash
+a4 squads status                      # setup, proposer, attached multisigs
+a4 squads status <M>                  # one multisig: members, deployments, proposals
+a4 squads list
+a4 squads attach <M> --label Treasury
+```
+
+| Flag             | Description                                   |
+| ---------------- | --------------------------------------------- |
+| `--label <text>` | `attach`: a label for the dashboard (1 to 64) |
+| `--json`         | The answer as JSON                            |
+
+Dev environments keep their own proposer: use `a4 protocol squads --dev` and
+[`a4 dev squads`](/cli/local-development/#squads-multisigs) there.
+
 ### a4 protocol squads
 
 A step whose authority is `squadsProposer` is proposed to your team's own
@@ -1251,10 +1282,7 @@ as `a4 protocol actions` does: a deployment id or a protocol package, or
 ```bash
 a4 protocol squads proposer <deployment>
 a4 protocol squads status <deployment> --multisig <M>
-a4 protocol squads add-proposer <deployment> --multisig <M> --member <a member who can initiate>
-a4 protocol squads add-proposer <deployment> --multisig <M> --member <pubkey> \
-  --keypair ~/.config/solana/member.json --rpc-url https://api.mainnet-beta.solana.com
-a4 protocol squads add-proposer --dev --multisig <M> --member alice --send
+a4 protocol squads status --dev --multisig <M>
 ```
 
 - `proposer` prints the proposer's public key and, when an RPC answers
@@ -1262,37 +1290,28 @@ a4 protocol squads add-proposer --dev --multisig <M> --member alice --send
 - `status` says whether the proposer can propose to the multisig: `ready`,
   `member`, `mask`, `threshold`, the balance (and what one proposal needs,
   when the server reports it) and, when not ready, the problem and its fix:
-  `not_member` (add it with `add-proposer`), `permissions_invalid` (remove it
-  in Squads and add it again) or `proposer_unfunded` (send it SOL; in a dev
-  environment `a4 dev fund <proposer>`).
-- `add-proposer` fetches the unsigned transaction that creates a Squads
-  config proposal adding the proposer with Initiate only. `--member` must
-  already be a member with Initiate: it signs, sends and pays. By default the
-  transaction is printed (base64) with the proposal; sign and send it with
-  that member's wallet, then approve and execute the config proposal in
-  Squads. `--keypair` signs with a Solana keypair file (it must be
-  `--member`) and sends through `--rpc-url`. With `--dev`, `--member` may be a
-  dev wallet name, and `--send` signs with it and sends through the dev
-  environment; approve and execute with [`a4 dev squads`](/cli/local-development/#squads-multisigs).
+  `not_member` (add it), `permissions_invalid` (remove it in Squads and add
+  it again) or `proposer_unfunded` (send it SOL; in a dev environment
+  `a4 dev fund <proposer>`).
 
-| Flag                          | Description                                                                      |
-| ----------------------------- | -------------------------------------------------------------------------------- |
-| `--multisig <address>`        | The multisig account, not one of its vaults (`status`, `add-proposer`)           |
-| `--member <pubkey>`           | A member with Initiate who signs and pays (with `--dev`, also a dev wallet name) |
-| `--keypair <file>`            | `add-proposer`: sign with this keypair and send                                  |
-| `--send`                      | `add-proposer --dev`: sign with the dev wallet `--member` and send               |
-| `--rpc-url <url>`             | Where `--keypair` sends, and where balances are read (not with `--dev`)          |
-| `--transaction-format v0\|v1` | `add-proposer`: the transaction format (default: the server's)                   |
-| `--dev` / `--project <dir>`   | The project's dev deployment                                                     |
-| `--json`                      | The answer as JSON                                                               |
+Arete builds no Squads transactions. Add the proposer on the dashboard
+([app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads)),
+in the Squads app (**Members → Add member**, the proposer, **Initiate**
+only, then approve and execute), or from code with the Squads v4 program
+SDK's Arete setup helpers. In a dev environment,
+[`a4 dev squads add-proposer`](/cli/local-development/#squads-multisigs)
+builds the config proposal locally and a dev wallet signs it.
 
-Refusals of `add-proposer` say what to do: `member_cannot_initiate`,
-`proposer_already_member`, `proposer_permissions_invalid`,
-`squads_multisig_controlled` (a multisig with a config authority: that
-authority adds the proposer), `squads_multisig_missing`, and
-`protocol-squads-not-used` (the deployment has no Squads step). The MCP
-server offers the same reads as `protocol_squads_proposer`,
-`protocol_squads_status` and `protocol_squads_add_proposer`.
+| Flag                        | Description                                           |
+| --------------------------- | ----------------------------------------------------- |
+| `--multisig <address>`      | `status`: the multisig account, not one of its vaults |
+| `--rpc-url <url>`           | Where balances are read (not with `--dev`)            |
+| `--dev` / `--project <dir>` | The project's dev deployment                          |
+| `--json`                    | The answer as JSON                                    |
+
+The MCP server offers the same reads as `protocol_squads_proposer` and
+`protocol_squads_status`. For production deployments, attach the multisig to
+your account with [`a4 squads`](#a4-squads) or the dashboard.
 
 ### a4 protocol search \[query\]
 
@@ -1426,23 +1445,23 @@ a4 dev sleep                       # or let it sleep when idle
 a4 dev delete --yes
 ```
 
-| Command                                                               | What it does                                                         |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `a4 dev up [--env name] [--no-deploy] [--no-ui] [--port-base n]`      | create or wake, serve locally, deploy and watch                      |
-| `a4 dev down [--sleep] [--purge]`                                     | stop a running `a4 dev up`                                           |
-| `a4 dev status`, `a4 dev list`, `a4 dev use <name>`                   | the environment, all of yours, or point the project at another       |
-| `a4 dev wake`, `a4 dev sleep`, `a4 dev delete`                        | lifecycle                                                            |
-| `a4 dev checkpoint [name]`, `--list`, `--delete <id\|name>`           | checkpoints                                                          |
-| `a4 dev restore <checkpoint>`, `a4 dev branch <checkpoint> <name>`    | undo to a checkpoint, or start a new environment from one            |
-| `a4 dev rebase`, `a4 dev reset [--account <pubkey>]`                  | refresh untouched accounts, or start over                            |
-| `a4 dev fund`, `a4 dev pin`, `a4 dev follow`                          | balances and freshness of accounts                                   |
-| `a4 dev warp`, `a4 dev pause`, `a4 dev resume`                        | the clock                                                            |
-| `a4 dev scenario <file>`, `a4 dev preview <tx>`, `a4 dev repro <sig>` | scenarios, previews and repro exports                                |
-| `a4 dev events`, `a4 dev token`                                       | lifecycle events; an environment token with the RPC URLs             |
-| `a4 dev step`, `a4 dev wallet`, `a4 dev instance`, `a4 dev replay`    | drive the protocol with local dev wallets                            |
-| `a4 dev sdk`, `a4 dev capture`                                        | the protocol client from the local build; a capture from an RPC node |
-| `a4 dev consent <wallet> --steps <a,b>`                               | opt a dev wallet in to the project's `[dev.automations]`             |
-| `a4 dev squads create\|show\|approve\|execute\|vault-execute`         | Squads v4 multisigs in the environment, driven by dev wallets        |
+| Command                                                                     | What it does                                                                    |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `a4 dev up [--env name] [--no-deploy] [--no-ui] [--port-base n]`            | create or wake, serve locally, deploy and watch                                 |
+| `a4 dev down [--sleep] [--purge]`                                           | stop a running `a4 dev up`                                                      |
+| `a4 dev status`, `a4 dev list`, `a4 dev use <name>`                         | the environment, all of yours, or point the project at another                  |
+| `a4 dev wake`, `a4 dev sleep`, `a4 dev delete`                              | lifecycle                                                                       |
+| `a4 dev checkpoint [name]`, `--list`, `--delete <id\|name>`                 | checkpoints                                                                     |
+| `a4 dev restore <checkpoint>`, `a4 dev branch <checkpoint> <name>`          | undo to a checkpoint, or start a new environment from one                       |
+| `a4 dev rebase`, `a4 dev reset [--account <pubkey>]`                        | refresh untouched accounts, or start over                                       |
+| `a4 dev fund`, `a4 dev pin`, `a4 dev follow`                                | balances and freshness of accounts                                              |
+| `a4 dev warp`, `a4 dev pause`, `a4 dev resume`                              | the clock                                                                       |
+| `a4 dev scenario <file>`, `a4 dev preview <tx>`, `a4 dev repro <sig>`       | scenarios, previews and repro exports                                           |
+| `a4 dev events`, `a4 dev token`                                             | lifecycle events; an environment token with the RPC URLs                        |
+| `a4 dev step`, `a4 dev wallet`, `a4 dev instance`, `a4 dev replay`          | drive the protocol with local dev wallets                                       |
+| `a4 dev sdk`, `a4 dev capture`                                              | the protocol client from the local build; a capture from an RPC node            |
+| `a4 dev consent <wallet> --steps <a,b>`                                     | opt a dev wallet in to the project's `[dev.automations]`                        |
+| `a4 dev squads create\|add-proposer\|show\|approve\|execute\|vault-execute` | Squads v4 multisigs in the environment, built locally and signed by dev wallets |
 
 Every environment command takes `--env <name|id>` (default `ARETE_DEV_ENV`,
 else the project's) and `--json`.

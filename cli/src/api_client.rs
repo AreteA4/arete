@@ -1112,6 +1112,25 @@ pub struct CreateSecretKeyRequest {
 /// sent.
 pub const REGISTRY_KEY_REQUIRED: &str = "registry-key-required";
 
+/// A production deployment refused because a Squads step's multisig is not
+/// an active attachment of the account; the message carries the dashboard
+/// link (`details.setupUrl`).
+pub const SQUADS_SETUP_REQUIRED: &str = "protocol-squads-setup-required";
+
+/// An error body that says `message` where the problem contract says
+/// `error`.
+fn problem_from_message(body: &str) -> serde_json::Result<ApiProblemV1> {
+    let mut value: serde_json::Value = serde_json::from_str(body)?;
+    if let Some(object) = value.as_object_mut() {
+        if !object.contains_key("error") {
+            if let Some(message) = object.get("message").cloned() {
+                object.insert("error".into(), message);
+            }
+        }
+    }
+    serde_json::from_value(value)
+}
+
 /// What the CLI says for [`REGISTRY_KEY_REQUIRED`].
 pub const REGISTRY_KEY_REQUIRED_MESSAGE: &str = "The Arete registry needs an API key for this request: run `a4 login` (free), or set ARETE_API_KEY";
 
@@ -2427,27 +2446,34 @@ impl ApiClient {
         let status = response.status();
         let headers = response.headers().clone();
         let body = response.text().unwrap_or_default();
-        let problem = serde_json::from_str::<ApiProblemV1>(&body).unwrap_or_else(|_| {
-            let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
-            ApiProblemV1 {
-                schema_version: None,
-                error: if compact.is_empty() {
-                    "Empty error response".to_string()
-                } else {
-                    compact.chars().take(1024).collect()
-                },
-                code: None,
-                retryable: status.is_server_error().then_some(true),
-                request_id: None,
-                retry_after_seconds: None,
-                usage: None,
-                action: None,
-                extra: BTreeMap::new(),
-            }
-        });
+        let problem = serde_json::from_str::<ApiProblemV1>(&body)
+            .or_else(|_| problem_from_message(&body))
+            .unwrap_or_else(|_| {
+                let compact = body.split_whitespace().collect::<Vec<_>>().join(" ");
+                ApiProblemV1 {
+                    schema_version: None,
+                    error: if compact.is_empty() {
+                        "Empty error response".to_string()
+                    } else {
+                        compact.chars().take(1024).collect()
+                    },
+                    code: None,
+                    retryable: status.is_server_error().then_some(true),
+                    request_id: None,
+                    retry_after_seconds: None,
+                    usage: None,
+                    action: None,
+                    extra: BTreeMap::new(),
+                }
+            });
         let mut problem = problem;
         if problem.code.as_deref() == Some(REGISTRY_KEY_REQUIRED) {
             problem.error = REGISTRY_KEY_REQUIRED_MESSAGE.to_string();
+        }
+        if problem.code.as_deref() == Some(SQUADS_SETUP_REQUIRED) {
+            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+                problem.error = arete_mcp::protocol_api::squads_setup_required_text(&value);
+            }
         }
         ApiClientError {
             status,
@@ -3885,6 +3911,29 @@ mod agent_tests {
         assert_eq!(details.status, 401);
         assert_eq!(details.code, Some(REGISTRY_KEY_REQUIRED));
         assert!(err.to_string().contains("run `a4 login` (free)"), "{err}");
+    }
+
+    #[test]
+    fn a_squads_setup_refusal_prints_the_dashboard_link() {
+        let server = MockServer::json(
+            409,
+            r#"{"code":"protocol-squads-setup-required","message":"Step 'finalize' proposes to Squads multisig Ms1, which is not set up for your account (not_member). Add Arete's proposer at https://app.arete.run/dashboard/squads/Ms1, then deploy again.","details":{"step":"finalize","multisig":"Ms1","state":"pending","problem":"not_member","proposer":"Prop1","setupUrl":"https://app.arete.run/dashboard/squads/Ms1","commands":{"status":"a4 squads status Ms1","addProposer":"a4 squads add-proposer Ms1 --member <member>"}}}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_sk_test".into());
+        let err = client.activate_protocol_deployment("d-1").unwrap_err();
+        let details = api_error_details(&err).unwrap();
+        assert_eq!(details.status, 409);
+        assert_eq!(details.code, Some(SQUADS_SETUP_REQUIRED));
+        let text = err.to_string();
+        assert!(text.contains("Step 'finalize'"), "{text}");
+        assert!(
+            text.contains("Set it up: https://app.arete.run/dashboard/squads/Ms1"),
+            "{text}"
+        );
+        assert!(text.contains("a4 squads status Ms1"), "{text}");
+        assert!(text.contains("Members → Add member → Prop1"), "{text}");
+        assert!(!text.contains("add-proposer"), "{text}");
+        assert!(!text.contains("--keypair"), "{text}");
     }
 
     #[test]

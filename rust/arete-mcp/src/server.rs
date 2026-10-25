@@ -420,28 +420,22 @@ pub struct ProtocolSquadsStatusArgs {
     pub project: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+pub struct SquadsStatusArgs {
+    /// One attached multisig (base58) to read in detail: members, threshold,
+    /// state, deployments and the proposals Arete made. Omit for the whole
+    /// account.
+    #[serde(default)]
+    pub multisig: Option<String>,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ProtocolSquadsAddProposerArgs {
+pub struct SquadsAttachArgs {
     /// The team's Squads v4 multisig account (base58), not one of its vaults.
     pub multisig: String,
-    /// A multisig member with the Initiate permission (base58; in an
-    /// `a4 dev` session also a dev wallet name). It signs, sends and pays.
-    pub member: String,
-    /// `v0` or `v1` (default: the server's).
+    /// A label for the dashboard (1 to 64 characters).
     #[serde(default)]
-    pub transaction_format: Option<String>,
-    /// Deployment id. Give this or `protocol`.
-    #[serde(default)]
-    pub deployment: Option<String>,
-    /// Protocol package reference (e.g. `token-raise`).
-    #[serde(default)]
-    pub protocol: Option<String>,
-    /// Target the local `a4 dev` session instead of Arete.
-    #[serde(default)]
-    pub dev: Option<bool>,
-    /// `a4 dev` project directory (implies `dev`).
-    #[serde(default)]
-    pub project: Option<String>,
+    pub label: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -2662,6 +2656,67 @@ impl AreteMcp {
     }
 
     #[tool(
+        description = "The calling Arete account's Squads setup. Production deployments of a \
+                          protocol with Squads admin steps are refused \
+                          (`protocol-squads-setup-required`) unless the multisig named in the \
+                          deployment config is an `active` attachment of the account: Arete's \
+                          proposer is a member with the Initiate permission only. Returns \
+                          `setup` (`notStarted`, `ready`, `needsAttention`), `proposer` \
+                          (`pubkey`, `lamports` for information), `dashboardUrl` and \
+                          `multisigs` (each with `state` `pending`/`active`/`archived`, \
+                          `problem`, members, threshold, `dashboardUrl`, `squadsUrl`, the \
+                          `deploymentConfigSnippet` to copy and the deployments using it), \
+                          plus `next`. With `multisig`, one attachment in detail with the \
+                          step proposals Arete made and `squadsAppSteps` when not active.\n\n\
+                          Guide the user in this order: declare the multisig as a resource of \
+                          the protocol (never read it from the instance); ask whether they \
+                          already have a Squads multisig and how its members sign; send them \
+                          to the dashboard page (https://app.arete.run/dashboard/squads, any \
+                          browser wallet including a Ledger) or, for an existing multisig, the \
+                          Squads app (Members → Add member → paste the proposer → permission \
+                          Initiate only → approve and execute); then put the active \
+                          multisig's address in the deployment config. Arete builds no \
+                          Squads transactions: for code or a hot-wallet script, install the \
+                          squads-v4 program SDK (`a4 install program squads-v4`) and use its \
+                          Arete setup helpers. Uses the a4 login / ARETE_API_KEY (a secret \
+                          key). Dev environments use their own proposer (`a4 dev squads`), \
+                          not this."
+    )]
+    async fn squads_status(
+        &self,
+        Parameters(args): Parameters<SquadsStatusArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self
+            .protocols
+            .account_squads_status(args.multisig.as_deref())
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
+        description = "Attach an existing Squads v4 multisig to the calling Arete account by \
+                          address (checked on chain). It is `active` at once when Arete's \
+                          proposer is already an Initiate-only member, else `pending` until \
+                          the proposer is added. Returns the attachment, `proposer`, \
+                          `squadsAppSteps` (the Squads-app instructions to add the proposer \
+                          with no transaction from Arete) and `next`. The dashboard \
+                          (`dashboardUrl`) does the same with any browser wallet. Refusals: \
+                          `squads_multisig_missing`, `squads_multisig_invalid`."
+    )]
+    async fn squads_attach(
+        &self,
+        Parameters(args): Parameters<SquadsAttachArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self
+            .protocols
+            .account_squads_attach(&args.multisig, args.label.as_deref())
+            .await
+            .map_err(protocol_error)?;
+        shaped_result(&result)
+    }
+
+    #[tool(
         description = "The calling account's Squads proposer for a protocol deployment whose \
                           steps are proposed to a team's Squads v4 multisig (`authority: \
                           squadsProposer`). Arete holds this key (one per account, shared by \
@@ -2673,8 +2728,12 @@ impl AreteMcp {
                           multisig as a member with exactly the Initiate permission (mask 1) \
                           and funds it with a little SOL: it pays the fee and rent of every \
                           proposal. Name the deployment with `deployment` or `protocol`, or \
-                          `dev: true` for `a4 dev`. Next: protocol_squads_status, \
-                          protocol_squads_add_proposer."
+                          `dev: true` for `a4 dev`. Next: protocol_squads_status. Arete \
+                          builds no Squads transactions: for production deployments the \
+                          account-level squads_status / squads_attach tools and the dashboard \
+                          (https://app.arete.run/dashboard/squads) are the setup path; in \
+                          `a4 dev`, `a4 dev squads add-proposer` opens the config proposal \
+                          with a dev wallet."
     )]
     async fn protocol_squads_proposer(
         &self,
@@ -2709,37 +2768,6 @@ impl AreteMcp {
         let result = self
             .protocols
             .squads_status(&target, &args.multisig, None)
-            .await
-            .map_err(protocol_error)?;
-        shaped_result(&result)
-    }
-
-    #[tool(
-        description = "An unsigned transaction that creates a Squads config proposal adding \
-                          the calling account's proposer to `multisig` with the Initiate \
-                          permission only. Nothing is signed or sent: `member`, an existing \
-                          member with the Initiate permission (a dev wallet name in `a4 dev`), \
-                          signs, sends and pays for it; then the multisig's members approve \
-                          and execute the config proposal (normally in the Squads app). \
-                          Returns `transactionBase64`, `transactionFormat`, \
-                          `transactionIndex`, `proposal`, `configTransaction`, `multisig`, \
-                          `member`, `proposer` and `lastValidBlockHeight`. Refusals carry a \
-                          code and what to do: `member_cannot_initiate`, \
-                          `proposer_already_member`, `proposer_permissions_invalid`, \
-                          `squads_multisig_controlled` (a config authority must add it), \
-                          `squads_multisig_missing`, `protocol-squads-not-used` (the deployment \
-                          has no Squads step). Name the deployment with `deployment` or \
-                          `protocol`, or `dev: true` for `a4 dev`."
-    )]
-    async fn protocol_squads_add_proposer(
-        &self,
-        Parameters(args): Parameters<ProtocolSquadsAddProposerArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let format = transaction_format(args.transaction_format.as_deref())?;
-        let target = target_args(args.dev, args.project, args.deployment, args.protocol);
-        let result = self
-            .protocols
-            .squads_add_proposer(&target, &args.multisig, &args.member, format)
             .await
             .map_err(protocol_error)?;
         shaped_result(&result)

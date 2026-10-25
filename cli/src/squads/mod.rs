@@ -6,8 +6,9 @@
 //! (`sha256("global:<snake_case name>")[..8]`) followed by Borsh args;
 //! accounts start with `sha256("account:<Name>")[..8]`. The PDAs are the
 //! program's seeds (`multisig` prefix). Only what `a4 dev squads` needs is
-//! here: create a multisig, activate, approve and execute config and vault
-//! transactions, and read the accounts those need.
+//! here: create a multisig, open a config transaction and its proposal,
+//! activate, approve and execute config and vault transactions, and read the
+//! accounts those need.
 
 pub mod tx;
 
@@ -163,6 +164,51 @@ pub fn multisig_create_v2(args: &CreateMultisig<'_>) -> Instruction {
             Meta::writable(multisig_pda(&args.create_key)),
             Meta::readonly_signer(args.create_key),
             Meta::writable_signer(args.creator),
+            Meta::readonly(system_program()),
+        ],
+        data,
+    )
+}
+
+/// `config_transaction_create` of `actions` at transaction `index` (the
+/// multisig's `transaction_index + 1`), with no memo. `creator` is a member
+/// with the Initiate permission and pays the transaction account's rent.
+pub fn config_transaction_create(
+    multisig: &Key,
+    creator: &Key,
+    index: u64,
+    actions: &[ConfigAction],
+) -> Instruction {
+    let mut data = instruction_discriminator("config_transaction_create").to_vec();
+    data.extend_from_slice(&(actions.len() as u32).to_le_bytes());
+    for action in actions {
+        action.encode(&mut data);
+    }
+    data.push(0); // memo: None
+    squads_instruction(
+        vec![
+            Meta::writable(*multisig),
+            Meta::writable(transaction_pda(multisig, index)),
+            Meta::readonly_signer(*creator),
+            Meta::writable_signer(*creator),
+            Meta::readonly(system_program()),
+        ],
+        data,
+    )
+}
+
+/// `proposal_create` for transaction `index`; `draft: false` opens it to
+/// votes at once. `creator` (Initiate) pays the proposal account's rent.
+pub fn proposal_create(multisig: &Key, creator: &Key, index: u64, draft: bool) -> Instruction {
+    let mut data = instruction_discriminator("proposal_create").to_vec();
+    data.extend_from_slice(&index.to_le_bytes());
+    data.push(u8::from(draft));
+    squads_instruction(
+        vec![
+            Meta::readonly(*multisig),
+            Meta::writable(proposal_pda(multisig, index)),
+            Meta::readonly_signer(*creator),
+            Meta::writable_signer(*creator),
             Meta::readonly(system_program()),
         ],
         data,
@@ -481,6 +527,39 @@ pub enum ConfigAction {
 }
 
 impl ConfigAction {
+    /// The Borsh encoding (`ConfigAction` variant index, then its fields).
+    pub fn encode(&self, out: &mut Vec<u8>) {
+        match self {
+            Self::AddMember { key, mask } => {
+                out.push(0);
+                out.extend_from_slice(key);
+                out.push(*mask);
+            }
+            Self::RemoveMember { key } => {
+                out.push(1);
+                out.extend_from_slice(key);
+            }
+            Self::ChangeThreshold { threshold } => {
+                out.push(2);
+                out.extend_from_slice(&threshold.to_le_bytes());
+            }
+            Self::SetTimeLock { seconds } => {
+                out.push(3);
+                out.extend_from_slice(&seconds.to_le_bytes());
+            }
+            Self::SetRentCollector { collector } => {
+                out.push(6);
+                match collector {
+                    None => out.push(0),
+                    Some(key) => {
+                        out.push(1);
+                        out.extend_from_slice(key);
+                    }
+                }
+            }
+        }
+    }
+
     pub fn describe(&self) -> String {
         match self {
             Self::AddMember { key, mask } => format!("add member {} (mask {mask})", b58(key)),

@@ -73,10 +73,17 @@ Metadata is off-chain application data, separate from transaction settlement.
 
 ## Onboard Squads when required
 
-For protocols with multisig administration, `client.squads.proposer()` reports
-your account's proposer. `addProposer` builds an unsigned proposal transaction
-to add it, and `status(multisig)` checks whether it is an Initiate-only member.
-Use the returned transaction with the multisig's normal signing process.
+For protocols with multisig administration, the multisig in the deployment
+config must be attached to your account and active. Set it up on the
+dashboard ([app.arete.run/dashboard/squads](https://app.arete.run/dashboard/squads)),
+which works with any browser wallet, or in the Squads app (add the proposer as
+a member with the Initiate permission only). From code, use the Arete setup
+helpers of the Squads v4 program SDK (`a4 install program squads-v4`); the
+member's wallet signs. A deployment refused with
+`protocol-squads-setup-required` carries the multisig's dashboard link in
+`details.setupUrl`. Per deployment, `client.squads.proposer()` and
+`status(multisig)` report the proposer and whether it is an
+Initiate-only member.
 
 Arete can propose the declared admin action; it does not vote or execute the
 multisig proposal. Handle missing-proposer events as an onboarding requirement,
