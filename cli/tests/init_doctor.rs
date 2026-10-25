@@ -277,8 +277,16 @@ fn init_in_empty_dir_without_node_then_doctor_warns_on_skills() {
     assert_eq!(c["project.auth-profile"]["status"], "ok");
     assert_eq!(c["auth.credentials"]["status"], "info");
     assert_eq!(c["auth.whoami"]["status"], "info");
-    assert_eq!(c["account.transactions"]["status"], "info");
-    assert_eq!(c["account.deploy"]["detail"], "skipped (no credentials)");
+    assert_eq!(c["account.entitlements"]["status"], "info");
+    assert_eq!(
+        c["account.entitlements"]["detail"],
+        "skipped (no credentials)"
+    );
+    assert_eq!(
+        c["probe.program-read"]["detail"],
+        "skipped (no credentials)"
+    );
+    assert_eq!(c["probe.chain-read"]["detail"], "skipped (no credentials)");
     assert_eq!(c["net.api"]["status"], "ok", "{}", c["net.api"]);
     assert_eq!(c["net.docs-mcp"]["status"], "ok", "{}", c["net.docs-mcp"]);
     assert_eq!(c["tools.node"]["status"], "info");

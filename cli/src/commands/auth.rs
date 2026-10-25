@@ -3,7 +3,9 @@ use colored::Colorize;
 use std::io::{self, Write};
 use std::path::{Component, Path, PathBuf};
 
-use crate::api_client::{api_error_details, AgentMeResponse, ApiClient, PendingAgentSignup};
+use crate::api_client::{
+    api_error_details, AccountEntitlements, AgentMeResponse, ApiClient, PendingAgentSignup,
+};
 use crate::config;
 use crate::ui;
 
@@ -289,10 +291,15 @@ pub fn whoami(json: bool) -> Result<()> {
     let spinner = (!json).then(|| ui::create_spinner("Verifying authentication..."));
     let client = ApiClient::new()?;
 
+    // What the account can use. Older APIs don't report it (404); any other
+    // failure is shown rather than dropped.
+    let (entitlements, entitlements_error) = entitlements_lookup(client.account_entitlements());
+    let entitlements_error = entitlements_error.as_deref();
+
     if api_key.starts_with("a4_ak_") {
         let identity = client.agent_me()?;
         if json {
-            print_agent_identity_json(&identity)?;
+            print_agent_identity_json(&identity, entitlements.as_ref(), entitlements_error)?;
             return Ok(());
         }
         if let Some(spinner) = spinner {
@@ -339,6 +346,7 @@ pub fn whoami(json: bool) -> Result<()> {
                 println!("  {line}");
             }
         }
+        print_entitlements(entitlements.as_ref(), entitlements_error, "  ");
         println!("  Target API:  {}", api_url.yellow());
         println!("  Credentials: {}", credentials_path().dimmed());
         return Ok(());
@@ -357,6 +365,10 @@ pub fn whoami(json: bool) -> Result<()> {
                         "principalKind": "human",
                         "credentialSource": "credentials_file",
                         "stackCount": specs.len(),
+                        "plan": entitlements.as_ref().and_then(|e| e.plan.as_deref()),
+                        "devTier": entitlements.as_ref().and_then(|e| e.dev_tier.as_deref()),
+                        "entitlements": entitlements.as_ref().map(|e| &e.surfaces),
+                        "entitlementsError": entitlements_error,
                     }))?
                 );
                 return Ok(());
@@ -373,6 +385,10 @@ pub fn whoami(json: bool) -> Result<()> {
                 &api_key[api_key.len().saturating_sub(4)..]
             );
             println!("  Stacks: {}", specs.len());
+            if let Some(plan) = entitlements.as_ref().and_then(|e| e.plan.as_deref()) {
+                println!("  Plan: {plan}");
+            }
+            print_entitlements(entitlements.as_ref(), entitlements_error, "  ");
             println!("  Target API: {}", api_url.yellow());
             println!("  Credentials: {}", credentials_path().dimmed());
         }
@@ -404,7 +420,70 @@ fn on_exhausted_line(usage: &crate::api_client::AgentUsageSummary) -> Option<Str
     })
 }
 
-fn print_agent_identity_json(identity: &AgentMeResponse) -> Result<()> {
+/// The account's entitlements, `None` with no error when the API doesn't
+/// report them (404), or `None` with the reason the lookup failed.
+fn entitlements_lookup(
+    result: Result<AccountEntitlements>,
+) -> (Option<AccountEntitlements>, Option<String>) {
+    match result {
+        Ok(entitlements) => (Some(entitlements), None),
+        Err(error) if api_error_details(&error).is_some_and(|api| api.status == 404) => {
+            (None, None)
+        }
+        Err(error) => (
+            None,
+            Some(crate::commands::doctor::account_unavailable_reason(&error)),
+        ),
+    }
+}
+
+/// The dev tier and the surfaces the account can't use, with how to unlock
+/// each. Nothing when the API doesn't report entitlements; the reason when
+/// the lookup failed.
+fn print_entitlements(
+    entitlements: Option<&AccountEntitlements>,
+    error: Option<&str>,
+    indent: &str,
+) {
+    if let Some(error) = error {
+        eprintln!(
+            "{indent}{} {error}",
+            "Account details unavailable:".yellow()
+        );
+    }
+    let Some(entitlements) = entitlements else {
+        return;
+    };
+    if let Some(tier) = &entitlements.dev_tier {
+        println!("{indent}Dev tier:    {tier}");
+    }
+    let allowed: Vec<&str> = entitlements
+        .surfaces
+        .iter()
+        .filter(|surface| surface.allowed)
+        .map(|surface| surface.surface.as_str())
+        .collect();
+    if !allowed.is_empty() {
+        println!("{indent}Can use:     {}", allowed.join(", "));
+    }
+    for surface in entitlements
+        .surfaces
+        .iter()
+        .filter(|surface| !surface.allowed)
+    {
+        let reason = surface.reason.as_deref().unwrap_or("not available");
+        println!("{indent}Can't use:   {} ({reason})", surface.surface);
+        if let Some(unlock) = &surface.unlock {
+            println!("{indent}             {}", unlock.cyan());
+        }
+    }
+}
+
+fn print_agent_identity_json(
+    identity: &AgentMeResponse,
+    entitlements: Option<&AccountEntitlements>,
+    entitlements_error: Option<&str>,
+) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string(&serde_json::json!({
@@ -421,6 +500,9 @@ fn print_agent_identity_json(identity: &AgentMeResponse) -> Result<()> {
             "starterGuidance": identity.starter_guidance,
             "usage": identity.usage,
             "overage": identity.usage.as_ref().and_then(|usage| usage.overage()),
+            "devTier": entitlements.and_then(|e| e.dev_tier.as_deref()),
+            "entitlements": entitlements.map(|e| &e.surfaces),
+            "entitlementsError": entitlements_error,
             "credentialSource": "credentials_file",
         }))?
     );
@@ -2097,5 +2179,28 @@ mod usage_tests {
             .unwrap()
             .get("onExhausted")
             .is_none());
+    }
+
+    #[test]
+    fn whoami_keeps_entitlement_lookup_failures_but_not_an_older_api() {
+        use crate::api_client::test_support::MockServer;
+        let lookup = |status: u16, body: &str| {
+            let server = MockServer::json(status, body);
+            let client =
+                ApiClient::with_base_url(server.base_url()).with_api_key("a4_sk_me".into());
+            entitlements_lookup(client.account_entitlements())
+        };
+
+        let (entitlements, error) = lookup(404, r#"{"error":"not found"}"#);
+        assert!(entitlements.is_none());
+        assert_eq!(error, None, "an older API is not an error");
+
+        let (entitlements, error) = lookup(503, r#"{"error":"unavailable","code":"busy"}"#);
+        assert!(entitlements.is_none());
+        let error = error.expect("a failed lookup is reported");
+        assert!(
+            error.contains("could not read account capabilities"),
+            "{error}"
+        );
     }
 }

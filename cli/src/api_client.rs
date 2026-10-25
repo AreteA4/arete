@@ -3302,6 +3302,48 @@ impl ApiClient {
             .ok_or_else(|| anyhow::anyhow!("the account response did not list capabilities"))
     }
 
+    /// `GET /api/auth/entitlements`: every surface the account can or can't
+    /// use, with the reason and the unlock for each one it can't, and the
+    /// account's dev environment tier. Unknown fields are ignored.
+    pub fn account_entitlements(&self) -> Result<AccountEntitlements> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .get(format!("{}/api/auth/entitlements", self.base_url))
+            .bearer_auth(api_key)
+            .send()
+            .context("Failed to fetch account entitlements")?;
+        Self::handle_response(response)
+    }
+
+    /// Mint a session token for one target (`POST <session endpoint>`) with
+    /// the stored key, as the SDKs do before a program or chain read.
+    pub fn mint_target_session(
+        &self,
+        session_endpoint: &str,
+        request: &serde_json::Value,
+    ) -> Result<String> {
+        #[derive(Deserialize)]
+        struct Minted {
+            token: String,
+        }
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .post(session_endpoint)
+            .timeout(Duration::from_secs(10))
+            .bearer_auth(api_key)
+            .json(request)
+            .send()
+            .context("Failed to mint a session token")?;
+        let minted: Minted = Self::handle_response(response)?;
+        let token = minted.token.trim().to_string();
+        if token.is_empty() {
+            anyhow::bail!("the session endpoint returned an empty token");
+        }
+        Ok(token)
+    }
+
     /// Materialize a short-lived human claim link for the current agent.
     /// Callers must validate the returned URL before displaying it.
     pub fn agent_claim_link(&self) -> Result<ReadyRecoveryActionV1> {
@@ -3400,6 +3442,47 @@ impl AccountCapabilities {
             })
             .collect()
     }
+}
+
+/// What `GET /api/auth/entitlements` reports about the caller's account.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountEntitlements {
+    /// `human` or `agent`, when reported.
+    #[serde(default)]
+    pub account_kind: Option<String>,
+    /// The account's plan, when reported.
+    #[serde(default)]
+    pub plan: Option<String>,
+    /// The account's dev environment tier, when the API offers dev
+    /// environments.
+    #[serde(default)]
+    pub dev_tier: Option<String>,
+    #[serde(default)]
+    pub surfaces: Vec<EntitlementSurface>,
+}
+
+impl AccountEntitlements {
+    pub fn surface(&self, name: &str) -> Option<&EntitlementSurface> {
+        self.surfaces.iter().find(|surface| surface.surface == name)
+    }
+}
+
+/// One surface (`program_read`, `transaction_send`, `dev_environments`, …):
+/// whether the account can use it and, when it can't, why and how to change
+/// that.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntitlementSurface {
+    pub surface: String,
+    pub allowed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unlock: Option<String>,
+    /// `dev_environments` only: tier, limits and usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quotas: Option<serde_json::Value>,
 }
 
 /// Minimal canned-response HTTP server for unit tests of `ApiClient` and the
@@ -3800,6 +3883,51 @@ mod agent_tests {
         let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".into());
         let err = client.account_capabilities().expect_err("404 is an error");
         assert_eq!(api_error_details(&err).map(|error| error.status), Some(404));
+    }
+
+    #[test]
+    fn account_entitlements_reads_the_surface_list_with_the_stored_key() {
+        let server = MockServer::json(
+            200,
+            r#"{"schemaVersion":1,"accountKind":"human","plan":"pro","devTier":"free","future":1,
+                "surfaces":[
+                  {"surface":"transaction_send","allowed":true},
+                  {"surface":"deploy_stack","allowed":false,"reason":"not in plan","unlock":"ask"},
+                  {"surface":"dev_environments","allowed":true,"quotas":{"tier":"free","limits":{"maxEnvironments":1}}}
+                ]}"#,
+        );
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_sk_me".into());
+        let entitlements = client.account_entitlements().expect("entitlements decode");
+        assert_eq!(entitlements.plan.as_deref(), Some("pro"));
+        assert_eq!(entitlements.dev_tier.as_deref(), Some("free"));
+        assert!(entitlements.surface("transaction_send").unwrap().allowed);
+        let deploy = entitlements.surface("deploy_stack").unwrap();
+        assert!(!deploy.allowed);
+        assert_eq!(deploy.unlock.as_deref(), Some("ask"));
+        let dev = entitlements.surface("dev_environments").unwrap();
+        assert_eq!(dev.quotas.as_ref().unwrap()["limits"]["maxEnvironments"], 1);
+        let req = server.request();
+        assert_eq!(req.request_line, "GET /api/auth/entitlements HTTP/1.1");
+        assert_eq!(req.header("authorization"), Some("Bearer a4_sk_me"));
+    }
+
+    #[test]
+    fn mint_target_session_posts_the_target_and_returns_the_token() {
+        let server = MockServer::json(200, r#"{"token":" tok ","expires_at":1}"#);
+        let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_sk_me".into());
+        let endpoint = format!("{}/ws/sessions", server.base_url());
+        let token = client
+            .mint_target_session(
+                &endpoint,
+                &serde_json::json!({"scopes": ["read"], "targetKind": "solana-gateway-binding", "targetId": "sgb_x"}),
+            )
+            .expect("token");
+        assert_eq!(token, "tok");
+        let req = server.request();
+        assert_eq!(req.request_line, "POST /ws/sessions HTTP/1.1");
+        assert_eq!(req.header("authorization"), Some("Bearer a4_sk_me"));
+        let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
+        assert_eq!(body["targetId"], "sgb_x");
     }
 
     #[test]
