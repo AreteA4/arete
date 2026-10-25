@@ -286,7 +286,10 @@ A `getToken` provider or a static `token` works the same way. With
 
 - **Where the credential goes.** The SDK sends it only to Arete API routes and
   to session endpoints. A stack, gateway or Program Read endpoint never
-  receives it.
+  receives it. Without a `token`, `getToken` or `tokenEndpoint`, the
+  credential falls back to `ARETE_API_KEY`, then to the `a4` login; a key
+  from the `a4` login is sent only to the Arete API it was stored for, so a
+  session endpoint on another host gets no credential.
 - **Binding-scoped sessions.** For each hosted transport (the Solana gateway's
   chain reads and transactions, Program Read, protocol clients and hosted
   stack WebSockets) the SDK mints a session at that binding's session
@@ -295,9 +298,11 @@ A `getToken` provider or a static `token` works the same way. With
 - **Caching.** Minted sessions are cached per target and scope, and renewed
   before they expire.
 - **Refusals.** When a session endpoint refuses the credential with a 401, the
-  SDK fetches the credential again, once, with `forceRefresh: true`, and
-  retries. A static `token` cannot be refetched, so its 401 is returned as an
-  error.
+  SDK drops it, fetches the credential again, once, with `forceRefresh: true`,
+  and retries. Other requests wait for the new credential rather than send the
+  refused one, and a 401 for a credential that was already replaced does not
+  fetch it again. A static `token` cannot be refetched, so its 401 is returned
+  as an error.
 
 `getToken` is called with no target, as `getToken({ scopes: [], forceRefresh })`.
 `tokenEndpoint` is POSTed `{"scopes": [], "forceRefresh": false}` with your
@@ -352,7 +357,8 @@ too, so a token endpoint that caches can do the same.
 A client or session whose `auth` carries an API credential (a `secretKey`, or
 `tokenKind: 'api'`) builds an authenticated Arete API client and exposes it as
 `session.platform` or `client.platform`. With a publishable key, Arete session
-tokens or no auth, `platform` is `undefined`. `createSession` options and
+tokens or no auth, `platform` is `undefined`. It is also `undefined` when the
+only credential is an `a4` login key and `apiUrl` names another API. `createSession` options and
 `Arete.connect` options take two related settings:
 
 - `apiUrl`: the Arete API origin, with or without `/api`. Defaults to

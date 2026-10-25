@@ -1,6 +1,6 @@
-import { isApiCredentialAuth, shareApiCredential } from './api-credential';
+import { shareApiCredential } from './api-credential';
 import { resolveAuthConfig } from './auth-keys';
-import { createPlatformHttpClient, type PlatformHttpClient } from './platform-http';
+import { defaultPlatformHttpClient, type PlatformHttpClient } from './platform-http';
 import { managedAddress, managedContext, managedDiscovery, managedPage, type Contextual, type ManagedReadOptions, type NativePositionQuery, type NativePositionPage } from './managed-solana';
 import type {
   ConnectionState,
@@ -1135,18 +1135,17 @@ export class Arete<TStack extends StackDefinition> {
 
   /**
    * The authenticated Arete API client, when the auth carries an API
-   * credential (a secret key, or `tokenKind: 'api'`); `undefined` otherwise.
+   * credential (a secret key, or `tokenKind: 'api'`) that may reach `apiUrl`;
+   * `undefined` otherwise.
    */
   get platform(): PlatformHttpClient | undefined {
     if (!this.platformResolved) {
       this.platformResolved = true;
-      if (this.auth?.secretKey !== undefined || isApiCredentialAuth(this.auth)) {
-        this.platformClient = createPlatformHttpClient({
-          apiUrl: this.apiUrl,
-          auth: this.auth,
-          fetch: this.fetchImpl,
-        });
-      }
+      this.platformClient = defaultPlatformHttpClient({
+        apiUrl: this.apiUrl,
+        auth: this.auth,
+        fetch: this.fetchImpl,
+      });
     }
     return this.platformClient;
   }

@@ -79,8 +79,12 @@ The SDK sends that credential only to Arete API routes and to session
 endpoints. For the Solana gateway, Program Read, protocol and hosted stack
 transports it mints binding-scoped sessions at each binding's session endpoint,
 caches them per target and scope, and sends only those to the transport. When
-a session endpoint refuses the credential with a 401, it fetches the credential
-again once and retries. `getToken` is called as `getToken({ scopes: [],
+a session endpoint refuses the credential with a 401, it drops it, fetches the
+credential again once and retries; other requests wait for the new one, and a
+late 401 for a credential already replaced does not fetch again. With no
+`token`, `getToken` or `tokenEndpoint` the credential falls back to
+`ARETE_API_KEY`, then the `a4` login, whose key goes only to the Arete API it
+was stored for. `getToken` is called as `getToken({ scopes: [],
 forceRefresh })`; `tokenEndpoint` is POSTed `{"scopes": [], "forceRefresh":
 false}` and answers with the credential as a string or `{ token, expiresAt }`.
 
@@ -97,7 +101,8 @@ provider with its own cache must bypass that cache when it is set. With
 
 `session.platform` and `client.platform` are an authenticated Arete API client
 when `auth` carries an API credential (a secret key, or `tokenKind: 'api'`),
-and `undefined` otherwise. `createSession` and `Arete.connect` options take
+and `undefined` otherwise (also when the only credential is an `a4` login key
+and `apiUrl` names another API). `createSession` and `Arete.connect` options take
 `apiUrl` (default `https://api.arete.run`) and `platform` (a client to use
 instead). To call the API without a session:
 

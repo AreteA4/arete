@@ -1,6 +1,6 @@
 import { resolveAuthConfig } from './auth-keys';
-import { isApiCredentialAuth, shareApiCredential } from './api-credential';
-import { createPlatformHttpClient, type PlatformHttpClient } from './platform-http';
+import { shareApiCredential } from './api-credential';
+import { defaultPlatformHttpClient, type PlatformHttpClient } from './platform-http';
 import {
   Arete,
   validateProgramReadDescriptor,
@@ -1038,10 +1038,7 @@ function withSessionCredential<T extends SessionOptions<any, any> | undefined>(o
   const fetchForAuth = ((input: RequestInfo | URL, init?: RequestInit) =>
     (options.fetch ?? globalThis.fetch)(input, init)) as typeof fetch;
   const auth = shareApiCredential(resolveAuthConfig(options.auth), fetchForAuth);
-  const hasApiCredential = auth?.secretKey !== undefined || isApiCredentialAuth(auth);
   const platform = options.platform
-    ?? (hasApiCredential
-      ? createPlatformHttpClient({ apiUrl: options.apiUrl, auth, fetch: fetchForAuth })
-      : undefined);
+    ?? defaultPlatformHttpClient({ apiUrl: options.apiUrl, auth, fetch: fetchForAuth });
   return { ...options, auth, platform } as T;
 }

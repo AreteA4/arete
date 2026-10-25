@@ -1,4 +1,8 @@
-import { describe, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createSession } from './session';
 import { withProgramRead } from './program-sdk';
@@ -140,6 +144,48 @@ describe('session API credential', () => {
     const session = await createSession({ programs: { squads: program } }, { fetch });
     expect(session.platform).toBeUndefined();
     expect(() => session.programs.squads.read.overview()).toThrow('no platform client');
+    session.close();
+  });
+});
+
+describe('session credential fallbacks', () => {
+  let credentialsDir: string | undefined;
+  let savedProfile: string | undefined;
+
+  /** An `a4` login on disk, found implicitly as on a developer's machine. */
+  function useSavedLogin(key: string): void {
+    credentialsDir = mkdtempSync(join(tmpdir(), 'arete-session-credential-'));
+    const path = join(credentialsDir, 'credentials.toml');
+    writeFileSync(path, `api_key = "${key}"\n`);
+    vi.stubEnv('ARETE_API_KEY', '');
+    vi.stubEnv('ARETE_CREDENTIALS_PATH', path);
+    savedProfile = process.env['ARETE_PROFILE'];
+    delete process.env['ARETE_PROFILE'];
+  }
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (savedProfile !== undefined) process.env['ARETE_PROFILE'] = savedProfile;
+    savedProfile = undefined;
+    if (credentialsDir) rmSync(credentialsDir, { recursive: true, force: true });
+    credentialsDir = undefined;
+  });
+
+  it('never sends a saved a4 login to session endpoints or an API on another host', async () => {
+    const saved = 'a4_sk_savedlogin';
+    useSavedLogin(saved);
+    const { fetch, calls } = fakeNetwork();
+    const session = await createSession(
+      { programs: { squads: program } },
+      { fetch, apiUrl: 'https://api.example.test', auth: { tokenKind: 'api' } }
+    );
+
+    // The saved key is for the Arete API, not api.example.test.
+    expect(session.platform).toBeUndefined();
+    await expect(session.programs.squads.read.multisig('address')).resolves.toEqual({ threshold: 2 });
+    await expect(session.programs.squads.read.exists('address')).resolves.toBe(true);
+    expect(calls.filter((call) => call.url === SESSIONS).map((call) => call.authorization)).toEqual([null, null]);
+    expect(calls.some((call) => call.authorization?.includes(saved))).toBe(false);
     session.close();
   });
 });

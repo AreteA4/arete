@@ -9,6 +9,8 @@
  * needs; it never sends it to a stack, gateway or program read endpoint.
  */
 
+import { isA4LoginKeyDestination } from './a4-profile';
+import { secretKeyFromA4Login } from './auth-keys';
 import { AreteError, parseApiProblem, parseErrorCode, type AuthConfig, type AuthTokenResult } from './types';
 
 /** `auth.tokenKind` when it is `'api'`. */
@@ -39,8 +41,18 @@ export function sessionMintEndpoint(auth: AuthConfig | undefined): string | unde
 export interface ApiBearerSource {
   /** Whether a fresh credential can be fetched (after a 401). */
   readonly refreshable: boolean;
-  /** The bearer, or `undefined` when the auth carries no API credential. */
-  get(forceRefresh?: boolean): Promise<string | undefined>;
+  /**
+   * The bearer to send to `destination`, or `undefined` when the auth
+   * carries no API credential for it. A key taken from the `a4` login is
+   * only handed out for the Arete API it was stored for.
+   *
+   * After a 401, pass the credential that request actually sent as
+   * `refused`: if it is still the current one it is dropped and a fresh one
+   * fetched (once, however many requests were refused with it); if it was
+   * already replaced, the replacement is returned without another fetch.
+   * While a fetch is running every caller waits for it.
+   */
+  get(destination: string, refused?: string): Promise<string | undefined>;
 }
 
 const REFRESH_BUFFER_MS = 30_000;
@@ -95,6 +107,9 @@ export function createApiBearerSource(
   if (auth?.getToken || auth?.tokenEndpoint) {
     let cached: { token: string; expiresAt?: number } | undefined;
     let inFlight: Promise<string> | undefined;
+    // Set when the current credential was refused: the provider's own cached
+    // credential is stale too, so the next fetch forces a refresh.
+    let refusedCurrent = false;
     const mint = async (forceRefresh: boolean): Promise<string> => {
       let result: AuthTokenResult;
       if (auth.getToken) {
@@ -124,18 +139,28 @@ export function createApiBearerSource(
         result = normalize(body, 'Token endpoint');
       }
       cached = { token: result.token, expiresAt: expiryOf(result) };
+      refusedCurrent = false;
       return result.token;
     };
     return {
       refreshable: true,
-      async get(forceRefresh = false) {
+      async get(_destination, refused) {
+        if (refused !== undefined && cached?.token === refused) {
+          // Drop it now, so no other request sends it while the fresh one is
+          // fetched.
+          cached = undefined;
+          refusedCurrent = true;
+        }
+        // A fetch is running (first use, expiry or a refusal): wait for it
+        // rather than send what it replaces.
+        if (inFlight) return inFlight;
         const fresh = cached
           && (cached.expiresAt === undefined || cached.expiresAt - REFRESH_BUFFER_MS > Date.now());
-        if (!forceRefresh && fresh) return cached!.token;
+        if (fresh) return cached!.token;
         // A provider's cached credential is stale once ours was refused or
         // expired.
-        const stale = forceRefresh || cached !== undefined;
-        inFlight ??= mint(stale).finally(() => {
+        const stale = refusedCurrent || cached !== undefined;
+        inFlight = mint(stale).finally(() => {
           inFlight = undefined;
         });
         return inFlight;
@@ -144,7 +169,14 @@ export function createApiBearerSource(
   }
   if (auth?.secretKey !== undefined) {
     const key = auth.secretKey;
-    return { refreshable: false, get: async () => key };
+    // A key from the a4 login only goes to the Arete API it was stored for,
+    // never to a session endpoint a stack or binding names on another host.
+    const fromLogin = secretKeyFromA4Login(auth);
+    return {
+      refreshable: false,
+      get: async (destination) =>
+        fromLogin && !isA4LoginKeyDestination(destination) ? undefined : key,
+    };
   }
   return { refreshable: false, get: async () => undefined };
 }

@@ -17,7 +17,7 @@
  */
 
 import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
-import { createApiBearerSource, sharedApiCredential } from './api-credential';
+import { createApiBearerSource, isApiCredentialAuth, sharedApiCredential } from './api-credential';
 import { DEFAULT_A4_API_URL } from './a4-profile';
 import { AreteError, parseApiProblem, parseErrorCode, type AuthConfig } from './types';
 
@@ -88,6 +88,30 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
+/**
+ * True when `auth` holds a credential that may be sent to the Arete API at
+ * `base`: a token, provider or token endpoint, or a key. A key taken from the
+ * `a4` login only counts for the Arete API it was stored for.
+ */
+function platformCredentialAvailable(auth: AuthConfig | undefined, base: string): boolean {
+  if (auth?.token !== undefined || auth?.getToken || auth?.tokenEndpoint) return true;
+  return auth?.secretKey !== undefined && tokenEndpointApiKey(auth, base) !== undefined;
+}
+
+/**
+ * The platform client a client or session builds for itself: one when `auth`
+ * carries an API credential (a secret key, or `tokenKind: 'api'`) that may
+ * reach the Arete API at `apiUrl`, otherwise `undefined`.
+ */
+export function defaultPlatformHttpClient(
+  options: PlatformHttpClientOptions
+): PlatformHttpClient | undefined {
+  const { auth } = options;
+  if (auth?.secretKey === undefined && !isApiCredentialAuth(auth)) return undefined;
+  if (!platformCredentialAvailable(auth, apiBase(options.apiUrl))) return undefined;
+  return createPlatformHttpClient(options);
+}
+
 /** Create a {@link PlatformHttpClient}. */
 export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}): PlatformHttpClient {
   const fetchImpl = resolveFetch(options.fetch);
@@ -107,20 +131,13 @@ export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}
       'INVALID_CONFIG'
     );
   }
-  // A secret key from the a4 login only goes to the Arete API it was stored for.
-  const credentialAuth = auth?.secretKey !== undefined
-    && auth.token === undefined && !auth.getToken && !auth.tokenEndpoint
-    ? { ...auth, secretKey: tokenEndpointApiKey(auth, base) }
-    : auth;
-  const source = sharedApiCredential(credentialAuth) ?? createApiBearerSource(credentialAuth, fetchImpl);
-  if (credentialAuth?.secretKey === undefined && credentialAuth?.token === undefined
-    && !credentialAuth?.getToken && !credentialAuth?.tokenEndpoint) {
+  const source = sharedApiCredential(auth) ?? createApiBearerSource(auth, fetchImpl);
+  if (!platformCredentialAvailable(auth, base)) {
     throw new AreteError(
       'No Arete credential: pass auth.secretKey, auth.token, auth.getToken or auth.tokenEndpoint',
       'AUTH_REQUIRED'
     );
   }
-  const bearer = (forceRefresh: boolean) => source.get(forceRefresh);
   const refreshable = source.refreshable;
 
   return {
@@ -128,8 +145,10 @@ export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}
     async request<T>(request: PlatformHttpRequest): Promise<PlatformHttpResponse<T>> {
       const path = request.path.startsWith('/') ? request.path : `/${request.path}`;
       const body = request.body === undefined ? undefined : JSON.stringify(request.body);
-      const attempt = async (forceRefresh: boolean) => {
-        const token = await bearer(forceRefresh);
+      let sent: string | undefined;
+      const attempt = async (refused?: string) => {
+        const token = await source.get(base, refused);
+        sent = token;
         const headers = new Headers({ Accept: 'application/json' });
         if (token) headers.set('Authorization', `Bearer ${token}`);
         if (body !== undefined) headers.set('Content-Type', 'application/json');
@@ -140,8 +159,8 @@ export function createPlatformHttpClient(options: PlatformHttpClientOptions = {}
           signal: request.signal,
         });
       };
-      let response = await attempt(false);
-      if (response.status === 401 && refreshable) response = await attempt(true);
+      let response = await attempt();
+      if (response.status === 401 && refreshable && sent) response = await attempt(sent);
       const parsed = parseBody(await response.text());
       if (!response.ok) {
         const wireErrorCode = response.headers.get('X-Error-Code')

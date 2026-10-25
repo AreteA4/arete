@@ -820,10 +820,10 @@ export class ConnectionManager {
   private async fetchTokenFromEndpoint(
     tokenEndpoint: string,
     request: AuthTokenRequest,
-    refreshCredential = false
+    refusedCredential?: string
   ): Promise<TokenEndpointResponse> {
     const apiKey = this.apiBearer
-      ? await this.apiBearer.get(refreshCredential)
+      ? await this.apiBearer.get(tokenEndpoint, refusedCredential)
       : tokenEndpointApiKey(this.authConfig, tokenEndpoint);
     const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
@@ -840,10 +840,12 @@ export class ConnectionManager {
       !response.ok
       && response.status === 401
       && this.apiBearer?.refreshable
-      && !refreshCredential
+      && apiKey
+      && refusedCredential === undefined
     ) {
-      // The API credential may have expired: fetch it again, once.
-      return this.fetchTokenFromEndpoint(tokenEndpoint, request, true);
+      // The API credential may have expired: retry once with a fresh one
+      // (or with the one another request already replaced it with).
+      return this.fetchTokenFromEndpoint(tokenEndpoint, request, apiKey);
     }
 
     if (!response.ok) {
