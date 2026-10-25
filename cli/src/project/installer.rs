@@ -337,7 +337,13 @@ fn add_to_manifest_and_install(
             .target
             .map(|target| vec![target])
             .unwrap_or_else(|| manifest.sdk.targets.clone());
-        preflight_sdk_targets(kind, &package, &alias, &targets)?;
+        preflight_sdk_targets(
+            kind,
+            &package,
+            &alias,
+            supplied_requirement.as_deref(),
+            &targets,
+        )?;
     }
     let requirement = match supplied_requirement {
         Some(requirement) => {
@@ -364,11 +370,14 @@ fn add_to_manifest_and_install(
 /// against the SDK targets its catalog entry publishes. Every package
 /// publishes TypeScript, so only a Rust or Python target is looked up. A
 /// package outside the public catalog, or a failed lookup, is left to the
-/// resolver.
+/// resolver. SDK targets belong to a release, and the entry describes its
+/// active release, so a requested version that release doesn't satisfy is
+/// left to the resolver too.
 fn preflight_sdk_targets(
     kind: DependencyKind,
     package: &str,
     alias: &str,
+    requirement: Option<&str>,
     targets: &[InstallTarget],
 ) -> Result<()> {
     if kind == DependencyKind::Protocol
@@ -378,23 +387,40 @@ fn preflight_sdk_targets(
     {
         return Ok(());
     }
+    // An invalid requirement is reported after this check.
+    let requirement = match requirement.map(semver::VersionReq::parse) {
+        Some(Ok(requirement)) => Some(requirement),
+        Some(Err(_)) => return Ok(()),
+        None => None,
+    };
     let Ok(entry) =
         ApiClient::new().and_then(|client| client.catalog_entry(kind.as_str(), package))
     else {
         return Ok(());
     };
-    check_catalog_sdk_targets(kind, package, alias, targets, &entry)
+    check_catalog_sdk_targets(kind, package, alias, requirement.as_ref(), targets, &entry)
 }
 
 /// Refuse `targets` a catalog entry's `sdkTargets` doesn't list, naming the
-/// package, what it publishes and the fix.
+/// package, what it publishes and the fix. Only when the entry's release is
+/// the one the install would get: no `requirement`, or one its `version`
+/// satisfies.
 fn check_catalog_sdk_targets(
     kind: DependencyKind,
     package: &str,
     alias: &str,
+    requirement: Option<&semver::VersionReq>,
     targets: &[InstallTarget],
     entry: &serde_json::Value,
 ) -> Result<()> {
+    if let Some(requirement) = requirement {
+        let version = entry["version"]
+            .as_str()
+            .and_then(|version| semver::Version::parse(version).ok());
+        if !version.is_some_and(|version| requirement.matches(&version)) {
+            return Ok(());
+        }
+    }
     let published: Vec<&str> = entry["sdkTargets"]
         .as_array()
         .into_iter()
@@ -10101,10 +10127,60 @@ targets = ["typescript"]
             DependencyKind::Program,
             "save",
             "save",
+            None,
             &[InstallTarget::TypeScript],
             &json!({ "sdkTargets": ["typescript"] }),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn the_preflight_checks_only_the_release_the_install_would_get() {
+        let entry = json!({ "version": "2.0.0", "sdkTargets": ["typescript"] });
+        let check = |requirement: Option<&str>, entry: &Value| {
+            check_catalog_sdk_targets(
+                DependencyKind::Program,
+                "save",
+                "save",
+                requirement
+                    .map(|requirement| semver::VersionReq::parse(requirement).unwrap())
+                    .as_ref(),
+                &[InstallTarget::TypeScript, InstallTarget::Rust],
+                entry,
+            )
+        };
+        // The active release is the one requested, or the latest.
+        assert!(check(None, &entry).is_err());
+        assert!(check(Some("^2"), &entry).is_err());
+        // An older release may publish Rust: the resolver decides.
+        assert!(check(Some("^1.0.0"), &entry).is_ok());
+        assert!(check(Some("=1.4.0"), &entry).is_ok());
+        // Without a version the entry can't be matched to the request.
+        assert!(check(Some("^2"), &json!({ "sdkTargets": ["typescript"] })).is_ok());
+    }
+
+    #[test]
+    fn an_older_release_is_left_to_the_resolver() {
+        // The catalog entry's active release is 1.0.0. Resolution is then
+        // refused by the sandbox, which shows the preflight let it through.
+        let sandbox = RegistrySandbox::new(
+            vec![
+                catalog_entry(&["typescript"]),
+                (500, json!({"error": "resolver reached"}).to_string()),
+            ],
+            false,
+        );
+        let manifest = two_target_project(&sandbox);
+        let error = add_and_install(
+            &manifest,
+            DependencyKind::Program,
+            "save@^0.9.0",
+            AddDependencyOptions::default(),
+        )
+        .expect_err("the sandbox refuses resolution");
+        let text = format!("{error:#}");
+        assert!(!text.contains("publishes no rust SDK"), "{text}");
+        assert!(text.contains("resolver reached"), "{text}");
     }
 
     #[test]

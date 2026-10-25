@@ -1027,7 +1027,7 @@ mod tests {
         // and why arete.toml can't take the protocol's sections again.
         let error = scaffold(&args).unwrap_err().to_string();
         assert!(
-            error.contains("already has arete.toml (has [dev]), package.json"),
+            error.contains("already has arete.toml (has [dev], [sdk]), package.json"),
             "{error}"
         );
         assert!(scaffold(&InitArgs {
@@ -1059,7 +1059,7 @@ mod tests {
         assert_eq!(
             manifest,
             format!(
-                "{}\n\n[sdk]\ntargets = [\"typescript\"]\n\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
+                "{}\n\n[sdk]\ntargets = [\"typescript\"]\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
                 init_manifest.trim_end()
             ),
             "the project table a4 init wrote is kept as it is"
