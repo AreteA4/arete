@@ -226,7 +226,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -288,7 +289,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -348,7 +350,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -410,7 +413,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -430,6 +434,67 @@
         "message": "Chain reads are not available for my-env",
         "fix": "Dev environments are not enabled for this account.",
         "failingSurface": "chain",
+        "otherSurfacesUsable": true,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-surface-unavailable: a stack target without an HTTP URL fails queries only",
+      "input": {
+        "source": "resolve",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        },
+        "surface": "stackQuery"
+      },
+      "expect": {
+        "code": "devenv-surface-unavailable",
+        "failingSurface": "stackQuery",
         "otherSurfacesUsable": true,
         "productionRequests": 0
       }

@@ -57,6 +57,8 @@ lists, per surface:
 - `tokenRequest`: the body sent to `sessionEndpoint`, or `null` when no token
   is minted and no `Authorization` header is sent;
 - `pathReleaseHash`: the release hash in the Program Read request path;
+- for the stack, `queryBaseUrl` and `queryParams`: where stack HTTP queries
+  go and the query parameters added to each (`{}`: none);
 - for the protocol, `deploymentPathSegment` (the deployment id, or
   `package:<package>` through the edge before the first publish) and
   `instancesUrl`, the URL of one real request (listing instances);

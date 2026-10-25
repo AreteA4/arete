@@ -89,7 +89,8 @@
       "stack": {
         "name": "klend",
         "endpoints": {
-          "ws": "wss://klend.stack.arete.run"
+          "ws": "wss://klend.stack.arete.run",
+          "http": "https://klend.stack.arete.run"
         },
         "release": {
           "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -194,7 +195,8 @@
       "stack": {
         "name": "klend",
         "endpoints": {
-          "ws": "wss://klend.stack.arete.run"
+          "ws": "wss://klend.stack.arete.run",
+          "http": "https://klend.stack.arete.run"
         },
         "release": {
           "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -261,6 +263,8 @@
         },
         "stack": {
           "websocketUrl": "wss://klend.stack.arete.run",
+          "queryBaseUrl": "https://klend.stack.arete.run",
+          "queryParams": {},
           "sessionRequired": true,
           "sessionRequest": {
             "websocket_url": "wss://klend.stack.arete.run",
@@ -314,6 +318,10 @@
         },
         "stack": {
           "websocketUrl": "ws://127.0.0.1:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "queryBaseUrl": "http://127.0.0.1:8911/stacks/default",
+          "queryParams": {
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
           "sessionRequired": false,
           "sessionRequest": null,
           "sessionEndpoint": null
@@ -360,6 +368,10 @@
         },
         "stack": {
           "websocketUrl": "ws://localhost:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "queryBaseUrl": "http://localhost:8911/stacks/default",
+          "queryParams": {
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
           "sessionRequired": false,
           "sessionRequest": null,
           "sessionEndpoint": null
@@ -406,6 +418,10 @@
         },
         "stack": {
           "websocketUrl": "wss://[::1]:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "queryBaseUrl": "https://[::1]:8911/stacks/default",
+          "queryParams": {
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
           "sessionRequired": false,
           "sessionRequest": null,
           "sessionEndpoint": null
@@ -456,7 +472,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -547,6 +564,8 @@
         },
         "stack": {
           "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryBaseUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryParams": {},
           "sessionRequired": true,
           "sessionRequest": {
             "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
@@ -605,7 +624,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -696,6 +716,8 @@
         },
         "stack": {
           "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryBaseUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryParams": {},
           "sessionRequired": true,
           "sessionRequest": {
             "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
@@ -754,7 +776,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
               "releaseDiffers": true,
               "source": "override",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0fedcba987654321-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -845,6 +868,8 @@
         },
         "stack": {
           "websocketUrl": "wss://s0fedcba987654321-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryBaseUrl": "https://s0fedcba987654321-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryParams": {},
           "sessionRequired": true,
           "sessionRequest": {
             "websocket_url": "wss://s0fedcba987654321-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
@@ -903,7 +928,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -994,6 +1020,8 @@
         },
         "stack": {
           "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryBaseUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryParams": {},
           "sessionRequired": true,
           "sessionRequest": {
             "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
@@ -1052,7 +1080,8 @@
               "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
               "releaseDiffers": false,
               "source": "manifest",
-              "loadedAtSlot": 412345678
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
             }
           ],
           "protocols": [
@@ -1142,6 +1171,8 @@
         },
         "stack": {
           "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryBaseUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+          "queryParams": {},
           "sessionRequired": true,
           "sessionRequest": {
             "websocket_url": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
@@ -1196,6 +1227,10 @@
         },
         "stack": {
           "websocketUrl": "ws://127.0.0.1:8911/stacks/default?stackManifestHash=arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "queryBaseUrl": "http://127.0.0.1:8911/stacks/default",
+          "queryParams": {
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
           "sessionRequired": false,
           "sessionRequest": null,
           "sessionEndpoint": null

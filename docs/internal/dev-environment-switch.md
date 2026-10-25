@@ -122,6 +122,7 @@ token. A page or process using the edge needs no Arete credential.
 | Transactions | `gateway.transactions.endpoint` | `<edge>`, same paths (`/transactions/v1/…`) |
 | Program Read | `programReads.<p>.transport.binding.endpoint` | `<edge>`, same path `/v1/releases/<installed release>/…` |
 | Stack | `endpoints.ws` + `release` | `ws(s)://<edge host>/stacks/<liveAlias>?stackManifestHash=<hash>` |
+| Stack queries | `endpoints.http` + `release` | `<edge>/stacks/<liveAlias>`, same paths, with `stackManifestHash=<hash>` added to the query string |
 | Protocol API and sessions | `deployment.apiUrl`, `deployment.sessionEndpoint` | `<edge>/api`, `<edge>/ws/sessions`, same deployment id |
 | JSON-RPC, subscriptions | — | `<edge>` (POST) and `<edge>` upgraded to WebSocket |
 
@@ -173,6 +174,7 @@ targets:
 | Transactions | `transactions.endpoint`, same paths |
 | Program Read | `programReads[i].endpoint`, path `/v1/releases/<programReads[i].programReleaseHash>/…` |
 | Stack | `stacks[i].websocketUrl` |
+| Stack queries | `stacks[i].httpUrl`, same paths, with the stack's environment token; no `httpUrl` in the answer fails queries (not the stream) with `devenv-surface-unavailable` |
 | Protocol | `protocols[i].deploymentId`, `apiUrl`, `sessionEndpoint` |
 
 Tokens come from the same session endpoint the descriptor names
@@ -240,6 +242,7 @@ either a target or a refusal:
     {
       "status": "target",
       "websocketUrl": "wss://s…-….devstack.arete.run",
+      "httpUrl": "https://s…-….devstack.arete.run",
       "stackManifestHash": "arete:h1:stack-manifest:sha256:…",
       "releaseDiffers": false,
       "source": "manifest",
@@ -262,6 +265,9 @@ either a target or a refusal:
   override, a project stack loaded under the dependency's alias, a protocol
   built locally). The SDK uses the returned release; types still follow the
   installed SDK.
+- `stacks[i].httpUrl` is where the stack answers HTTP queries
+  (`endpoints.http` in production). It is absent when the environment's stack
+  serves only the stream.
 - `stacks[i].source` is `override` (a stack loaded under the dependency's
   alias) or `manifest` (the environment's deployment of exactly that
   manifest). `loadedAtSlot` is the slot it started streaming from: a stack in
