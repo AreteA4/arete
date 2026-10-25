@@ -25,11 +25,14 @@ export type RemoteCheckOutcome =
       kind: "passed";
       releaseHash: string;
       /** `pending` while a pinned program spec is not on the server yet. */
-      templateCheck: string;
+      templateCheck: "passed" | "pending";
       missingProgramSpecs: Array<{ alias?: string; programSpecHash?: string }>;
     }
   | { kind: "rejected"; status: number; code?: string; error: string; errors: RemoteCheckError[] }
-  /** The server has no check route; only an upload runs its checks. */
+  /**
+   * The server did not check the release: it has no check route, gave an
+   * answer that is not a check result, or did not answer in time.
+   */
   | { kind: "unavailable"; reason: string };
 
 /**
@@ -61,30 +64,63 @@ function errorList(problem: Record<string, unknown>): RemoteCheckError[] {
   });
 }
 
+/** How long a remote check may take, request and response body together. */
+export const REMOTE_CHECK_TIMEOUT_MS = 30_000;
+
 /** Send `body` (the upload body) to the server's release check. */
 export async function checkRemotely(
   body: { spec: unknown; bundleBase64?: string },
   target: RemoteCheckTarget,
   fetchImpl: typeof fetch = fetch,
+  timeoutMs: number = REMOTE_CHECK_TIMEOUT_MS,
 ): Promise<RemoteCheckOutcome> {
-  const response = await fetchImpl(`${target.apiUrl}/api/protocols/check`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const text = await response.text();
+  const url = `${target.apiUrl}/api/protocols/check`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let response: Response;
+  let text: string;
+  try {
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: { authorization: `Bearer ${target.apiKey}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+    text = await response.text();
+  } catch (error) {
+    if (controller.signal.aborted) {
+      return { kind: "unavailable", reason: `the release check at ${url} did not answer within ${timeoutMs / 1000}s` };
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
   let parsed: unknown;
+  let json = true;
   try {
     parsed = text === "" ? {} : JSON.parse(text);
   } catch {
+    json = false;
     parsed = { error: text };
   }
-  const problem = (parsed ?? {}) as Record<string, unknown>;
+  const problem = (parsed !== null && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>;
   if (response.ok) {
+    const { releaseHash, templateCheck } = problem;
+    if (
+      !json ||
+      typeof releaseHash !== "string" ||
+      releaseHash === "" ||
+      (templateCheck !== "passed" && templateCheck !== "pending")
+    ) {
+      return {
+        kind: "unavailable",
+        reason: `unexpected answer from ${url} (HTTP ${response.status}, no release hash and template check status); check ARETE_API_URL`,
+      };
+    }
     return {
       kind: "passed",
-      releaseHash: String(problem.releaseHash ?? ""),
-      templateCheck: String(problem.templateCheck ?? "passed"),
+      releaseHash,
+      templateCheck,
       missingProgramSpecs: Array.isArray(problem.missingProgramSpecs)
         ? (problem.missingProgramSpecs as Array<{ alias?: string; programSpecHash?: string }>)
         : [],

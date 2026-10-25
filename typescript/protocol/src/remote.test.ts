@@ -88,4 +88,39 @@ describe("checkRemotely", () => {
     );
     expect(coded.kind).toBe("rejected");
   });
+
+  it("does not pass a successful answer that is not a check result", async () => {
+    for (const body of [undefined, {}, { releaseHash: "", templateCheck: "passed" }, { releaseHash: "h", templateCheck: "failed" }]) {
+      const outcome = await checkRemotely({ spec: {} }, target, fakeFetch(200, body));
+      expect(outcome.kind, JSON.stringify(body)).toBe("unavailable");
+    }
+    const html = (async () => new Response("<!doctype html><p>proxy</p>", { status: 200 })) as unknown as typeof fetch;
+    const outcome = await checkRemotely({ spec: {} }, target, html);
+    expect(outcome).toEqual({
+      kind: "unavailable",
+      reason: expect.stringContaining("unexpected answer from https://api.example.test/api/protocols/check"),
+    });
+  });
+
+  it("gives up when the server stalls, on the request or its body", async () => {
+    const stalledRequest = ((_url: string, init: RequestInit) =>
+      new Promise((_resolve, reject) => {
+        init.signal!.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      })) as unknown as typeof fetch;
+    const request = await checkRemotely({ spec: {} }, target, stalledRequest, 20);
+    expect(request).toEqual({ kind: "unavailable", reason: expect.stringContaining("did not answer within 0.02s") });
+
+    const stalledBody = (async (_url: string, init: RequestInit) =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("{"));
+            init.signal!.addEventListener("abort", () => controller.error(new DOMException("aborted", "AbortError")));
+          },
+        }),
+        { status: 200 },
+      )) as unknown as typeof fetch;
+    const body = await checkRemotely({ spec: {} }, target, stalledBody, 20);
+    expect(body.kind).toBe("unavailable");
+  });
 });

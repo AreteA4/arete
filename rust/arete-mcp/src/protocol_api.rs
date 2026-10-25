@@ -467,7 +467,9 @@ impl ProtocolApi {
     /// handler bundle when a step has a handler) with the API key, storing
     /// nothing. A rejection is an outcome:
     /// `{passed: false, status, code, error, errors, templateCheck?}`; an
-    /// accepted release is the server's check body with `passed: true`.
+    /// accepted release is the server's check body with `passed: true`. A
+    /// success without a release hash and template check status is an error,
+    /// never a pass.
     pub async fn check_release(&self, spec: &Value, bundle_base64: Option<&str>) -> Result<Value> {
         let mut body = json!({ "spec": spec });
         if let Some(bundle) = bundle_base64 {
@@ -482,10 +484,23 @@ impl ProtocolApi {
             )
             .await?;
         if status.is_success() {
-            if let Some(object) = response.as_object_mut() {
-                object.insert("passed".into(), json!(true));
+            let is_check_result = response
+                .get("releaseHash")
+                .and_then(Value::as_str)
+                .is_some_and(|hash| !hash.is_empty())
+                && matches!(
+                    response.get("templateCheck").and_then(Value::as_str),
+                    Some("passed" | "pending")
+                );
+            match response.as_object_mut() {
+                Some(object) if is_check_result => {
+                    object.insert("passed".into(), json!(true));
+                    return Ok(response);
+                }
+                _ => bail!(
+                    "The release check answered {status} without a release hash and template check status; check ARETE_API_URL"
+                ),
             }
-            return Ok(response);
         }
         if status == reqwest::StatusCode::BAD_REQUEST && response.is_object() {
             let errors = response

@@ -117,6 +117,10 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
         return (200, json!({ "token": "session-token" }));
     }
     if path_only == "/api/protocols/check" {
+        if body["spec"]["name"] == "proxied" {
+            // A 200 that is not a check result (a proxy page, a wrong route).
+            return (200, json!({ "ok": true }));
+        }
         if body["spec"]["name"] == "broken" {
             return (
                 400,
@@ -922,6 +926,17 @@ async fn protocol_check_sends_the_built_release_and_reports_the_servers_errors()
         .body
         .get("bundleBase64")
         .is_none());
+
+    let proxied = agent
+        .check(None, Some(json!({ "name": "proxied" })))
+        .await
+        .unwrap_err();
+    assert!(
+        proxied
+            .to_string()
+            .contains("without a release hash and template check status"),
+        "{proxied}"
+    );
 
     let missing = agent.check(Some("/nonexistent"), None).await.unwrap_err();
     assert!(
