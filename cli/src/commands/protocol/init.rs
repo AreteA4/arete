@@ -601,10 +601,26 @@ fn scaffold_with(
     let slug = crate::commands::protocol::derive_slug(&name)?;
     // An `arete.toml` that `a4 init` wrote is kept as it is and gains the
     // protocol's sections, exactly as a new one would.
+    //
+    // A protocol project is TypeScript: its spec, handlers, automations and
+    // app. Requesting the Rust SDK target too would make every program it
+    // installs need a published Rust SDK, which several catalog programs
+    // don't have. A mergeable manifest never has `[sdk]`, so appending it is
+    // safe.
     let existing_manifest = existing_manifest(&dir.join("arete.toml"))?;
     let base_manifest = match &existing_manifest {
-        ExistingManifest::Mergeable(existing) => existing.clone(),
-        _ => crate::commands::config::new_manifest_contents(&absolute, Some(dir_name.clone()))?,
+        ExistingManifest::Mergeable(existing) => {
+            format!(
+                "{}\n\n[sdk]\ntargets = [\"typescript\"]\n",
+                existing.trim_end()
+            )
+        }
+        _ => {
+            let mut project_manifest =
+                crate::commands::config::build_manifest(&absolute, Some(dir_name.clone()))?;
+            project_manifest.sdk.targets = vec![InstallTarget::TypeScript];
+            project_manifest.to_toml_pretty()?
+        }
     };
     let manifest = format!(
         "{}\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
@@ -1043,7 +1059,7 @@ mod tests {
         assert_eq!(
             manifest,
             format!(
-                "{}\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
+                "{}\n\n[sdk]\ntargets = [\"typescript\"]\n\n[dev.automations]\nentry = \"{AUTOMATIONS_ENTRY}\"\n",
                 init_manifest.trim_end()
             ),
             "the project table a4 init wrote is kept as it is"
@@ -1053,7 +1069,13 @@ mod tests {
             std::fs::read_to_string(root.join("AGENTS.md")).unwrap(),
             "# Mine\n"
         );
-        crate::project::manifest::ProjectManifest::load(root.join("arete.toml")).unwrap();
+        let project =
+            crate::project::manifest::ProjectManifest::load(root.join("arete.toml")).unwrap();
+        assert_eq!(
+            project.document.sdk.targets,
+            vec![InstallTarget::TypeScript],
+            "a merged manifest is TypeScript-only, like a new one"
+        );
     }
 
     #[test]
@@ -1303,6 +1325,14 @@ mod tests {
             .unwrap()
             .expect("[dev.automations] survives the install");
         assert_eq!(config.entry.as_deref(), Some(AUTOMATIONS_ENTRY));
+        // A protocol project generates TypeScript only, so a program that
+        // publishes no Rust SDK installs into it.
+        let project =
+            crate::project::manifest::ProjectManifest::load(root.join("arete.toml")).unwrap();
+        assert_eq!(
+            project.document.sdk.targets,
+            vec![InstallTarget::TypeScript]
+        );
         // An existing fallback IDL refuses init before anything is written.
         let other = dir.path().join("other");
         std::fs::create_dir_all(other.join("idl")).unwrap();
