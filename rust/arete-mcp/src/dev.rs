@@ -76,7 +76,9 @@ pub struct EnvRef {
 }
 
 /// `.arete/dev/session.json`: what an app, a test or an agent needs while
-/// `a4 dev up` runs. It holds no key and no token.
+/// `a4 dev up` runs. It holds no API key and no environment token, but it
+/// does hold a short-lived stack read session (`stackSession`: a token and
+/// a stream URL carrying it), so keep it out of version control and logs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DevSession {
@@ -142,6 +144,54 @@ pub struct StackSession {
     /// `stackWsUrl` with the token as `hs_token`: pass it to
     /// `a4 stream <View> --url`.
     pub stream_url: String,
+}
+
+/// `text` with every `hs_token=<token>` value replaced by `<redacted>`.
+/// Idempotent: a value already redacted is left as it is.
+pub fn redact_hs_tokens(text: &str) -> String {
+    const MARKER: &str = "hs_token=";
+    const REDACTED: &str = "<redacted>";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find(MARKER) {
+        let (head, tail) = rest.split_at(index + MARKER.len());
+        out.push_str(head);
+        out.push_str(REDACTED);
+        let tail = tail.strip_prefix(REDACTED).unwrap_or(tail);
+        let end = tail
+            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '%')))
+            .unwrap_or(tail.len());
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Remove credentials from a report before it is printed: every
+/// `hs_token=` value, every `Bearer <token>` and every string field named
+/// `token`, at any depth. `a4 dev token` is the way to get a token.
+pub fn redact_secrets(value: &mut Value) {
+    match value {
+        Value::String(text) => {
+            let mut redacted = redact_hs_tokens(text);
+            if let Some(index) = redacted.find("Bearer ") {
+                redacted.truncate(index + "Bearer ".len());
+                redacted.push_str("<redacted>");
+            }
+            *text = redacted;
+        }
+        Value::Array(items) => items.iter_mut().for_each(redact_secrets),
+        Value::Object(fields) => {
+            for (key, field) in fields.iter_mut() {
+                if key == "token" && field.is_string() {
+                    *field = json!("<redacted>");
+                } else {
+                    redact_secrets(field);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 /// `ws_url` with `token` as its `hs_token` query parameter.
@@ -1161,7 +1211,7 @@ impl DevClient {
         let stack = match self.stack_session(60).await {
             Ok(Some(session)) => json!({
                 "wsUrl": self.session.stack_ws_url,
-                "streamUrl": session.stream_url,
+                "streamUrl": redact_hs_tokens(&session.stream_url),
                 "expiresAt": session.expires_at,
             }),
             Ok(None) => Value::Null,
@@ -1169,14 +1219,16 @@ impl DevClient {
                 json!({ "wsUrl": self.session.stack_ws_url, "error": format!("{error:#}") })
             }
         };
-        json!({
+        let mut report = json!({
             "project": self.project.root.display().to_string(),
             "environment": environment,
             "upRunning": !self.session.rpc_url.is_empty(),
             "session": self.session.redacted(),
             "chain": chain,
             "stack": stack,
-        })
+        });
+        redact_secrets(&mut report);
+        report
     }
 
     /// The dev wallet `name`, created on first use and funded whenever it
@@ -1562,6 +1614,34 @@ impl DevClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_lose_every_credential() {
+        let mut report = json!({
+            "stack": { "streamUrl": "wss://s.example.test/?a=1&hs_token=abc.def-ghi&b=2" },
+            "session": { "stackSession": { "token": "abc.def-ghi", "expiresAt": 5 } },
+            "errors": ["Authorization: Bearer abc.def-ghi"],
+        });
+        redact_secrets(&mut report);
+        let text = report.to_string();
+        assert!(!text.contains("abc.def-ghi"), "{text}");
+        assert_eq!(
+            report["stack"]["streamUrl"],
+            "wss://s.example.test/?a=1&hs_token=<redacted>&b=2"
+        );
+        assert_eq!(report["session"]["stackSession"]["expiresAt"], 5);
+
+        // Scrubbing again (status scrubs the URL, then the report, then the
+        // CLI scrubs it once more) leaves one marker.
+        let once = report.clone();
+        redact_secrets(&mut report);
+        redact_secrets(&mut report);
+        assert_eq!(report, once);
+        assert_eq!(
+            redact_hs_tokens(&redact_hs_tokens("x?hs_token=abc&hs_token=def")),
+            "x?hs_token=<redacted>&hs_token=<redacted>"
+        );
+    }
 
     fn key(seed: u8) -> SigningKey {
         SigningKey::from_bytes(&[seed; 32])

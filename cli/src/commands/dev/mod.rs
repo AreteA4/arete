@@ -222,6 +222,11 @@ pub struct UpArgs {
     #[arg(long, conflicts_with = "no_ui")]
     pub open: bool,
 
+    /// Print the environment token in the ready summary (only when stdout
+    /// is a terminal; `a4 dev token` prints one anywhere)
+    #[arg(long)]
+    pub show_token: bool,
+
     /// Don't serve the dev UI or its event feed (the `dev_events` MCP tool
     /// reads that feed)
     #[arg(long)]
@@ -1070,45 +1075,59 @@ async fn status(args: EnvArgs, json: bool) -> Result<()> {
             }
         }
     }
+    // Status never prints a credential: `a4 dev token` is the way to get one.
+    arete_mcp::dev::redact_secrets(&mut report);
     print(json, &report, || print_status(&report));
     Ok(())
 }
 
 fn print_status(report: &Value) {
+    print!("{}", render_status(report));
+}
+
+/// `a4 dev status`'s readable report.
+fn render_status(report: &Value) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
     let env = &report["environment"];
     if let Some(error) = env["error"].as_str() {
-        println!("{} {}", "environment".bold(), error.red());
+        let _ = writeln!(out, "{} {}", "environment".bold(), error.red());
     } else {
-        println!(
+        let _ = writeln!(
+            out,
             "{} {}",
             "environment".bold(),
             arete_mcp::dev_env::describe_env(env)
         );
         if let Some(slept) = env["sleptAt"].as_str() {
             if env["state"] == "sleeping" {
-                println!("  slept       {slept} (any call or `a4 dev up` wakes it)");
+                let _ = writeln!(
+                    out,
+                    "  slept       {slept} (any call or `a4 dev up` wakes it)"
+                );
             }
         }
         if let Some(bytes) = env["storageBytes"].as_i64() {
-            println!("  storage     {bytes} bytes");
+            let _ = writeln!(out, "  storage     {bytes} bytes");
         }
     }
     let session = &report["session"];
     match (&report["up"], session["rpcUrl"].as_str()) {
         (up, Some(rpc)) if !up.is_null() && !rpc.is_empty() => {
-            println!("  a4 dev up   running (pid {})", up["pid"]);
-            println!("  RPC         {rpc}");
-            println!(
+            let _ = writeln!(out, "  a4 dev up   running (pid {})", up["pid"]);
+            let _ = writeln!(out, "  RPC         {rpc}");
+            let _ = writeln!(
+                out,
                 "  WebSocket   {}",
                 session["rpcWsUrl"].as_str().unwrap_or_default()
             );
             if let Some(ui) = session["uiUrl"].as_str() {
-                println!("  UI          {ui}");
+                let _ = writeln!(out, "  UI          {ui}");
             }
         }
         _ => {
             if !session.is_null() {
-                println!("  a4 dev up   not running");
+                let _ = writeln!(out, "  a4 dev up   not running");
             }
         }
     }
@@ -1116,10 +1135,10 @@ fn print_status(report: &Value) {
         .as_str()
         .filter(|url| !url.is_empty())
     {
-        println!("  Env RPC     {url}   (needs a token: `a4 dev token`)");
+        let _ = writeln!(out, "  Env RPC     {url}   (needs a token: `a4 dev token`)");
     }
     if let Some(deployment) = session["deploymentId"].as_str() {
-        println!("  deployment  {deployment} (active)");
+        let _ = writeln!(out, "  deployment  {deployment} (active)");
     }
     for earlier in report["deployments"].as_array().into_iter().flatten() {
         let state = earlier["state"].as_str().unwrap_or_default();
@@ -1131,28 +1150,34 @@ fn print_status(report: &Value) {
         } else {
             format!("{state} (disable failed; retried on the next deploy)").yellow()
         };
-        println!(
+        let _ = writeln!(
+            out,
             "              {} {state}",
             earlier["id"].as_str().unwrap_or_default()
         );
     }
     if let Some(url) = report["stack"]["streamUrl"].as_str() {
-        println!(
+        let _ = writeln!(out,
             "  stream      a4 stream --dev   (lists the protocol's views; --tui browses them; mints its own tokens)"
         );
-        println!("  stream URL  {url}");
+        let _ = writeln!(
+            out,
+            "  stream URL  {url}   (token redacted; `a4 stream --dev` mints one)"
+        );
     } else if let Some(error) = report["stack"]["error"].as_str() {
-        println!("  stream      {}", error.red());
+        let _ = writeln!(out, "  stream      {}", error.red());
     }
     let chain = &report["chain"];
     if chain["healthy"] == true {
-        println!(
+        let _ = writeln!(
+            out,
             "  chain       slot {} clock {}",
             chain["slot"], chain["unixTimestamp"]
         );
     } else if let Some(error) = chain["error"].as_str() {
-        println!("  chain       {}", error.red());
+        let _ = writeln!(out, "  chain       {}", error.red());
     }
+    out
 }
 
 fn up(args: UpArgs, json: bool) -> Result<()> {
@@ -1220,6 +1245,7 @@ fn up(args: UpArgs, json: bool) -> Result<()> {
         json,
         ui: !args.no_ui,
         open_ui: args.open,
+        show_token: args.show_token,
         ui_dev_url: args.ui_dev_url.clone(),
     };
     block_on(up::run(config))
@@ -1264,6 +1290,48 @@ mod tests {
     struct Cli {
         #[command(subcommand)]
         command: DevCommands,
+    }
+
+    #[test]
+    fn dev_status_prints_no_token() {
+        const STACK_TOKEN: &str = "eyJhbGciOiJFZERTQSJ9.c3RhY2s.c2ln";
+        const ENV_TOKEN: &str = "denvtok_9f8e7d6c5b4a";
+        let mut report = json!({
+            "environment": { "id": "denv_01hzx3k8m9q2r4s5t6v7w8x9yz", "state": "running" },
+            "session": {
+                "rpcUrl": "http://127.0.0.1:48700",
+                "stackSession": { "token": STACK_TOKEN, "expiresAt": 1 },
+            },
+            "up": { "pid": 1, "ports": [48700, 48701, 48702] },
+            "stack": {
+                "wsUrl": "wss://stack.example.test",
+                "streamUrl": format!("wss://stack.example.test/?hs_token={STACK_TOKEN}"),
+            },
+            "chain": { "healthy": false, "error": format!("401 for Bearer {ENV_TOKEN}") },
+        });
+        // The steps `a4 dev status` runs before printing.
+        arete_mcp::dev::redact_secrets(&mut report);
+        let json_output = report.to_string();
+        let plain_output = render_status(&report);
+        for output in [&json_output, &plain_output] {
+            assert!(!output.contains(STACK_TOKEN), "{output}");
+            assert!(!output.contains(ENV_TOKEN), "{output}");
+        }
+        assert!(json_output.contains("hs_token=<redacted>"), "{json_output}");
+        assert!(plain_output.contains("stream URL"), "{plain_output}");
+    }
+
+    #[test]
+    fn dev_up_shows_the_token_only_on_request() {
+        let args = match parse(&["up"]).unwrap() {
+            DevCommands::Up(args) => args,
+            other => panic!("{other:?}"),
+        };
+        assert!(!args.show_token);
+        match parse(&["up", "--show-token"]).unwrap() {
+            DevCommands::Up(args) => assert!(args.show_token),
+            other => panic!("{other:?}"),
+        }
     }
 
     fn parse(args: &[&str]) -> Result<DevCommands, clap::Error> {

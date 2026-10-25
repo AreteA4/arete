@@ -70,6 +70,7 @@ a4 dev up
 | `--fee-policy <file>`      | `[protocol].fee_policy`, else a zero-fee policy | the fee policy for new deployments (see [Fee policy and resources](#fee-policy-and-resources))                                                       |
 | `--resource <name>=<file>` | `[protocol.resources]`                          | a value for a resource the spec declares; repeatable                                                                                                 |
 | `--port-base <n>`          | `48700`                                         | the first of three local ports: the RPC endpoint, its WebSocket (+1) and the dev UI (+2, which moves to a free port when busy). `0` picks free ports |
+| `--show-token`             |                                                 | print the environment token in the ready summary; only when stdout is a terminal (`a4 dev token` prints one anywhere)                                |
 | `--open`                   |                                                 | open the [dev UI](#the-dev-ui-and-its-event-feed) once the session is ready                                                                          |
 | `--no-ui`                  |                                                 | don't serve the dev UI or its event feed                                                                                                             |
 | `--no-watch`               |                                                 | deploy once and keep running without watching                                                                                                        |
@@ -108,8 +109,11 @@ a4 dev is ready: dev environment my-protocol (denv_01k…)
   UI          http://127.0.0.1:48702/
   Deployment  0b6f…
   Session     /…/my-protocol/.arete/dev/session.json
-  Token       eyJ…
+  Token       `a4 dev token` prints one for the environment RPC above (`Authorization: Bearer`); `a4 dev up --show-token` shows it here on a terminal
 ```
+
+The summary never prints the environment token unless you pass
+`--show-token` in a terminal, and `--json` output never carries it.
 
 Each change rebuilds. An unchanged release does nothing. A **new release
 creates a new deployment** with a new id and short id, and `session.json`
@@ -196,26 +200,26 @@ pages get CORS headers for their origin.
 Every command takes `--env <name|id>` (default `ARETE_DEV_ENV`, else the
 project's environment) and `--json`. None needs `a4 dev up` to be running.
 
-| Command                                                      | What it does                                                                                                                                                                                                         |
-| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `a4 dev status`                                              | the environment (state, tier, storage, when it slept), the running `a4 dev up` and its URLs, the deployments, the protocol stack and a stream URL with a valid token (`stack.streamUrl`), the chain's slot and clock |
-| `a4 dev list`                                                | your environments (`*` marks the project's), your plan's limits and usage                                                                                                                                            |
-| `a4 dev use <name\|id>`                                      | points the project at another of your environments                                                                                                                                                                   |
-| `a4 dev wake` / `a4 dev sleep`                               | wakes the environment, or puts it to sleep now (its state is kept)                                                                                                                                                   |
-| `a4 dev delete`                                              | deletes it with its state and checkpoints (asks first; `--yes` without a terminal)                                                                                                                                   |
-| `a4 dev checkpoint [name]`                                   | saves a checkpoint; `--list` lists them, `--delete <id\|name>` deletes one. Plans limit how many each environment keeps                                                                                              |
-| `a4 dev restore <checkpoint>`                                | restores a checkpoint (id or name): everything written since is undone                                                                                                                                               |
-| `a4 dev branch <checkpoint> <name> [--use]`                  | creates a new environment from a checkpoint; `--use` points the project at it                                                                                                                                        |
-| `a4 dev rebase [--keep <pubkey>]…`                           | refetches every account the environment never wrote (and did not pin) from mainnet and moves the clock to mainnet's. Use it when pools or oracles went stale (swaps failing on slippage)                             |
-| `a4 dev reset`                                               | a fresh fork: every account you wrote, funded or pinned is dropped (checkpoints stay; asks first). `--account <pubkey> [--include-owned]` drops one account instead, so its next read refetches it                   |
-| `a4 dev fund <account> [sol]`                                | sets an account's SOL balance (default 100; owner and data stay). `<account>` is a public key or a dev wallet name (created on first use)                                                                            |
-| `a4 dev fund <account> --mint <mint> --amount <base units>`  | sets the account's token balance of a mint (its token account is created if needed); `--token-program` for Token-2022 mints                                                                                          |
-| `a4 dev pin <pubkey> [--include-owned]` / `--unpin`          | pins an account: never refreshed from mainnet, kept by rebase                                                                                                                                                        |
-| `a4 dev follow <pubkey>` / `--stop`                          | follows an account: refetched from mainnet every block (an oracle or a pool that should stay live while everything else stays put). Plans cap how many, and follows count as mainnet reads                           |
-| `a4 dev warp <+2h \| unix-seconds \| slot:<n> \| epoch:<n>>` | moves the chain clock forward (`time-travel` is an alias); protocol states that depend on time, such as deadlines, follow real time instead                                                                          |
-| `a4 dev pause` / `a4 dev resume`                             | pauses or resumes the clock                                                                                                                                                                                          |
-| `a4 dev events [--after <id>] [-f]`                          | the environment's lifecycle: created, woken, slept (and why), checkpointed, branched, restored, rebased, reset, deleted                                                                                              |
-| `a4 dev token`                                               | mints an environment token and prints the environment's RPC and WebSocket URLs                                                                                                                                       |
+| Command                                                      | What it does                                                                                                                                                                                                                |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 dev status`                                              | the environment (state, tier, storage, when it slept), the running `a4 dev up` and its URLs, the deployments, the protocol stack and its stream URL with the token redacted (`stack.streamUrl`), the chain's slot and clock |
+| `a4 dev list`                                                | your environments (`*` marks the project's), your plan's limits and usage                                                                                                                                                   |
+| `a4 dev use <name\|id>`                                      | points the project at another of your environments                                                                                                                                                                          |
+| `a4 dev wake` / `a4 dev sleep`                               | wakes the environment, or puts it to sleep now (its state is kept)                                                                                                                                                          |
+| `a4 dev delete`                                              | deletes it with its state and checkpoints (asks first; `--yes` without a terminal)                                                                                                                                          |
+| `a4 dev checkpoint [name]`                                   | saves a checkpoint; `--list` lists them, `--delete <id\|name>` deletes one. Plans limit how many each environment keeps                                                                                                     |
+| `a4 dev restore <checkpoint>`                                | restores a checkpoint (id or name): everything written since is undone                                                                                                                                                      |
+| `a4 dev branch <checkpoint> <name> [--use]`                  | creates a new environment from a checkpoint; `--use` points the project at it                                                                                                                                               |
+| `a4 dev rebase [--keep <pubkey>]…`                           | refetches every account the environment never wrote (and did not pin) from mainnet and moves the clock to mainnet's. Use it when pools or oracles went stale (swaps failing on slippage)                                    |
+| `a4 dev reset`                                               | a fresh fork: every account you wrote, funded or pinned is dropped (checkpoints stay; asks first). `--account <pubkey> [--include-owned]` drops one account instead, so its next read refetches it                          |
+| `a4 dev fund <account> [sol]`                                | sets an account's SOL balance (default 100; owner and data stay). `<account>` is a public key or a dev wallet name (created on first use)                                                                                   |
+| `a4 dev fund <account> --mint <mint> --amount <base units>`  | sets the account's token balance of a mint (its token account is created if needed); `--token-program` for Token-2022 mints                                                                                                 |
+| `a4 dev pin <pubkey> [--include-owned]` / `--unpin`          | pins an account: never refreshed from mainnet, kept by rebase                                                                                                                                                               |
+| `a4 dev follow <pubkey>` / `--stop`                          | follows an account: refetched from mainnet every block (an oracle or a pool that should stay live while everything else stays put). Plans cap how many, and follows count as mainnet reads                                  |
+| `a4 dev warp <+2h \| unix-seconds \| slot:<n> \| epoch:<n>>` | moves the chain clock forward (`time-travel` is an alias); protocol states that depend on time, such as deadlines, follow real time instead                                                                                 |
+| `a4 dev pause` / `a4 dev resume`                             | pauses or resumes the clock                                                                                                                                                                                                 |
+| `a4 dev events [--after <id>] [-f]`                          | the environment's lifecycle: created, woken, slept (and why), checkpointed, branched, restored, rebased, reset, deleted                                                                                                     |
+| `a4 dev token`                                               | mints an environment token and prints the environment's RPC and WebSocket URLs                                                                                                                                              |
 
 ### Scenarios, previews and repro exports
 
@@ -321,7 +325,9 @@ dev status` shows it once it does.
 
 Other WebSocket clients need a stack session token (`?hs_token=<token>` or
 `Authorization: Bearer <token>`). `a4 dev status` prints the stack URL with
-a valid token (`stack.streamUrl` in `--json`). To mint one yourself, send
+the token redacted (`stack.streamUrl` in `--json`); `a4 dev up` keeps a
+valid one in `.arete/dev/session.json` (`stackSession`). To mint one
+yourself, send
 `POST <apiUrl>/ws/sessions` with your key and:
 
 ```json

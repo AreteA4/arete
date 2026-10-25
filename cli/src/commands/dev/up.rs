@@ -7,6 +7,7 @@
 //! change. Ctrl-C (or `a4 dev down`) stops what runs locally; the
 //! environment keeps its state and sleeps when idle.
 
+use std::io::IsTerminal;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -211,6 +212,9 @@ pub struct UpConfig {
     pub ui: bool,
     /// Open the dev UI in the browser once the session is ready.
     pub open_ui: bool,
+    /// `--show-token`: print the environment token when stdout is a
+    /// terminal. Otherwise `a4 dev token` is named instead.
+    pub show_token: bool,
     /// A Vite dev server to proxy the UI's files to (UI development).
     pub ui_dev_url: Option<String>,
 }
@@ -251,21 +255,18 @@ impl Events {
 }
 
 /// `text` with every `hs_token=<token>` value replaced, for the log file.
-pub fn redact_hs_tokens(text: &str) -> String {
-    const MARKER: &str = "hs_token=";
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(index) = rest.find(MARKER) {
-        let (head, tail) = rest.split_at(index + MARKER.len());
-        out.push_str(head);
-        out.push_str("<redacted>");
-        let end = tail
-            .find(|c: char| !(c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '%')))
-            .unwrap_or(tail.len());
-        rest = &tail[end..];
+pub use arete_mcp::dev::redact_hs_tokens;
+
+/// The ready summary's token line: the environment token itself only when
+/// `show` (`--show-token` on a terminal), else how to get one.
+fn token_line(token: &str, expires_at: &str, show: bool) -> String {
+    if show {
+        format!(
+            "  Token       {token}\n              (for the environment RPC above as `Authorization: Bearer`; expires at {expires_at}; `a4 dev token` mints another)"
+        )
+    } else {
+        "  Token       `a4 dev token` prints one for the environment RPC above (`Authorization: Bearer`); `a4 dev up --show-token` shows it here on a terminal".to_string()
     }
-    out.push_str(rest);
-    out
 }
 
 /// How the environment came to be running.
@@ -806,10 +807,15 @@ impl Session<'_> {
             }),
         );
         if !config.json {
-            // The token goes to the terminal only, never to a4.log.
+            // The token goes to an interactive terminal only, on request, and
+            // never to a4.log.
             println!(
-                "  Token       {}\n              (for the environment RPC above as `Authorization: Bearer`; expires at {}; `a4 dev token` mints another)",
-                token.token, token.expires_at
+                "{}",
+                token_line(
+                    &token.token,
+                    &token.expires_at.to_string(),
+                    config.show_token && std::io::stdout().is_terminal(),
+                )
             );
         }
         if let (true, Some(url)) = (config.open_ui, self.ui.url.as_deref()) {
@@ -1530,6 +1536,15 @@ mod tests {
             "ready: --url 'ws://127.0.0.1:9/?hs_token=<redacted>' done"
         );
         assert_eq!(redact_hs_tokens("no token"), "no token");
+    }
+
+    #[test]
+    fn the_ready_summary_names_a4_dev_token_unless_asked_on_a_terminal() {
+        let hidden = token_line("secret-token", "1700000000", false);
+        assert!(!hidden.contains("secret-token"), "{hidden}");
+        assert!(hidden.contains("a4 dev token"), "{hidden}");
+        let shown = token_line("secret-token", "1700000000", true);
+        assert!(shown.contains("secret-token"), "{shown}");
     }
 
     #[test]

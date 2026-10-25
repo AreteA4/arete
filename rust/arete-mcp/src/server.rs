@@ -1556,7 +1556,10 @@ impl AreteMcp {
                           `environmentRpcUrl`: the environment's own endpoint, which needs a \
                           token; the protocol deployment, stack and dev UI URLs), the chain's \
                           slot and clock when running and, when the protocol stack is loaded, \
-                          `stack.streamUrl` with a read session token for WebSocket clients. \
+                          `stack.streamUrl` with its read session token redacted. A WebSocket \
+                          client gets a valid URL from `.arete/dev/session.json` \
+                          (`stackSession.streamUrl`, kept fresh while `a4 dev up` runs) or \
+                          uses `a4 stream --dev`. \
                           Environments sleep when idle and keep their state; any RPC call or \
                           `dev_wake` wakes one. Start `a4 dev up` in a terminal to create one; \
                           these tools never start or stop local processes."
