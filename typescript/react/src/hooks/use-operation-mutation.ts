@@ -11,6 +11,8 @@ import {
   type WalletAdapter,
 } from '@usearete/sdk';
 
+import { useOptionalAreteSession } from '../session-provider';
+
 /**
  * Where an operation run is:
  *
@@ -47,8 +49,9 @@ export interface OperationExecutor {
 
 /**
  * The executor, or a function that resolves it when a run starts (for
- * example a session opened on first use). `null`/`undefined` while it is not
- * available yet: a run then fails with `not-ready`.
+ * example a session opened on first use). `null` while it is not available
+ * yet: a run then fails with `not-ready`. Omitted (or `undefined`), the hook
+ * uses the nearest `AreteSessionProvider`'s session, waiting for it to open.
  */
 export type OperationExecutorSource =
   | OperationExecutor
@@ -70,7 +73,11 @@ export type OperationPrepareFn<TInput, TPrepared extends PreparedOperation> = (
 
 /** Per-run settings; each also has a hook-level default. */
 export interface OperationRunOptions {
-  /** The wallet that signs; defaults to the executor's own wallet. */
+  /**
+   * The wallet that signs. Without one the run fails with `not-ready` and
+   * nothing is prepared or signed, unless the hook sets
+   * `allowExecutorWallet`.
+   */
   readonly wallet?: WalletAdapter;
   /** Extra local signers for this run, added to the hook's and `prepare`'s. */
   readonly signers?: readonly unknown[];
@@ -80,7 +87,14 @@ export interface OperationRunOptions {
 
 export interface UseOperationMutationOptions<TPrepared extends PreparedOperation>
   extends OperationRunOptions {
-  readonly executor: OperationExecutorSource;
+  /** What runs the operation; defaults to the nearest `AreteSessionProvider`'s session. */
+  readonly executor?: OperationExecutorSource;
+  /**
+   * Sign with the executor's own wallet (`session.wallet`, the client's
+   * wallet) when neither the run nor the hook names one. Off by default, so
+   * a run never signs with a wallet the component did not pass.
+   */
+  readonly allowExecutorWallet?: boolean;
   readonly onSuccess?: (
     result: OperationReceiptFor<TPrepared>,
     prepared: TPrepared
@@ -101,11 +115,16 @@ export interface UseOperationMutationOptions<TPrepared extends PreparedOperation
  * How a run failed:
  *
  * - `busy`: a run of this hook is already in progress; nothing was started.
- * - `not-ready`: no executor (or no wallet) to run with.
+ * - `not-ready`: no executor, or no wallet, to run with; nothing was
+ *   prepared or signed.
  * - `prepare-failed`: `prepare` threw; nothing was signed.
  * - `wallet-rejected`: the user declined (or closed) the wallet prompt.
- * - `wallet-unsupported`: the wallet cannot sign this (it only signs and
- *   sends in one step, or not this transaction version).
+ * - `wallet-feature-unsupported`: the wallet cannot sign without sending
+ *   (it lacks `solana:signTransaction`), so Arete cannot relay for it.
+ * - `wallet-chain-unsupported`: the wallet (or the account) does not sign
+ *   for the chain it was asked to.
+ * - `wallet-version-unsupported`: the wallet signs, but not this
+ *   transaction version (a v0-only wallet and a V1 transaction).
  * - `wallet-modified`: the wallet changed the transaction it was asked to
  *   sign (for example to add a priority fee), so it was not sent.
  * - `not-submitted`: failed before anything reached the chain.
@@ -118,7 +137,9 @@ export type OperationMutationErrorKind =
   | 'not-ready'
   | 'prepare-failed'
   | 'wallet-rejected'
-  | 'wallet-unsupported'
+  | 'wallet-feature-unsupported'
+  | 'wallet-chain-unsupported'
+  | 'wallet-version-unsupported'
   | 'wallet-modified'
   | 'not-submitted'
   | 'submitted-unknown'
@@ -188,6 +209,7 @@ export function isWalletRejection(error: unknown): boolean {
     if (typeof item !== 'object' || item === null) return false;
     const { code, name, message } = item as { code?: unknown; name?: unknown; message?: unknown };
     if (USER_REJECTION_CODES.includes(code)) return true;
+    if (name === 'WalletStandardSignerError') return code === 'user_rejected';
     if (typeof name === 'string' && /rejected/i.test(name)) return true;
     return typeof message === 'string'
       && /user (rejected|declined|denied|cancel)|rejected the request|request (was )?(rejected|declined)/i
@@ -244,8 +266,13 @@ export function toOperationMutationError<TPrepared extends PreparedOperation = P
     case 'wallet_returned_invalid_transaction':
       return make('wallet-modified');
     case 'sign_transaction_unsupported':
+      return make('wallet-feature-unsupported');
+    case 'chain_unsupported':
+      return make('wallet-chain-unsupported');
     case 'transaction_version_unsupported':
-      return make('wallet-unsupported');
+      return make('wallet-version-unsupported');
+    case 'user_rejected':
+      return make('wallet-rejected');
   }
   if (isWalletRejection(error)) return make('wallet-rejected');
   return make('not-submitted');
@@ -337,11 +364,14 @@ const IDLE_STATE: OperationMutationState<never> = {
  *   },
  *   { executor: session, wallet },
  * );
+ * // Inside an AreteSessionProvider, `executor` can be left out.
  * // createMultisig.mutate(input); createMultisig.isAwaitingWallet → "Approve in your wallet"
  * ```
  *
  * Signers returned by `prepare`, given to the hook and given to the run are
- * all passed to `execute`. A second run while one is in progress rejects
+ * all passed to `execute`. A run without a wallet fails with `not-ready`
+ * before `prepare` is called; set `allowExecutorWallet` to sign with the
+ * executor's own wallet instead. A second run while one is in progress rejects
  * with `busy` and leaves the first alone, so a double click never opens two
  * wallet prompts.
  */
@@ -350,10 +380,13 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
   options: UseOperationMutationOptions<TPrepared>
 ): UseOperationMutationResult<TInput, TPrepared> {
   const [state, setState] = useState<OperationMutationState<TPrepared>>(IDLE_STATE);
+  const sessionContext = useOptionalAreteSession();
   const prepareRef = useRef(prepare);
   const optionsRef = useRef(options);
+  const sessionReadyRef = useRef(sessionContext?.ready);
   prepareRef.current = prepare;
   optionsRef.current = options;
+  sessionReadyRef.current = sessionContext?.ready;
   const generationRef = useRef(0);
   const runningRef = useRef(false);
   const mountedRef = useRef(true);
@@ -413,8 +446,11 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
     update({ status: 'preparing' });
     try {
       let executor: OperationExecutor | null;
+      const source = hookOptions.executor !== undefined
+        ? hookOptions.executor
+        : sessionReadyRef.current ?? null;
       try {
-        executor = await resolveExecutor(hookOptions.executor);
+        executor = await resolveExecutor(source);
       } catch (cause) {
         throw await fail(new OperationMutationError<TPrepared>({
           kind: 'not-ready', message: messageOf(cause), cause,
@@ -424,6 +460,20 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
         throw await fail(new OperationMutationError<TPrepared>({
           kind: 'not-ready',
           message: 'Nothing to execute the operation with yet',
+          cause: undefined,
+        }));
+      }
+
+      // No wallet, no run: nothing is prepared, nothing is signed.
+      const wallet = runOptions.wallet
+        ?? hookOptions.wallet
+        ?? (hookOptions.allowExecutorWallet
+          ? (executor as { wallet?: WalletAdapter }).wallet
+          : undefined);
+      if (!wallet) {
+        throw await fail(new OperationMutationError<TPrepared>({
+          kind: 'not-ready',
+          message: 'Connect a wallet to run this operation',
           cause: undefined,
         }));
       }
@@ -444,14 +494,11 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
       }
       update({ prepared });
 
-      const wallet = runOptions.wallet
-        ?? hookOptions.wallet
-        ?? (executor as { wallet?: WalletAdapter }).wallet;
       // A wallet that reports its activity says when its prompt opens; until
       // then the transaction is still being built (blockhash, budgets).
       const reportsActivity = hasActivity(wallet);
       if (reportsActivity) {
-        stopActivity = (wallet as WalletActivitySource).onActivity((activity) => {
+        stopActivity = wallet.onActivity((activity) => {
           if (activity.stage === 'signing' || activity.stage === 'sending'
             || activity.stage === 'confirming') {
             update({ status: activity.stage });
@@ -468,7 +515,7 @@ export function useOperationMutation<TInput, TPrepared extends PreparedOperation
       let result: OperationReceiptFor<TPrepared>;
       try {
         result = await executor.execute(prepared, {
-          ...(wallet ? { wallet } : {}),
+          wallet,
           ...(signers.length > 0 ? { signers } : {}),
           ...(send ? { send } : {}),
           onTransactionStart: (event) => {

@@ -10,7 +10,9 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  WalletStandardSignerError,
   createWalletStandardWalletAdapter,
+  isWalletStandardSignerError,
   type AdapterTransportSelection,
   type KitWalletAdapter,
   type WalletStandardAccount,
@@ -50,11 +52,18 @@ export interface UseWalletStandardWalletResult {
   /** The wallet's approval prompt is open: show "check your wallet". */
   readonly isPromptOpen: boolean;
   /**
-   * Why the account cannot sign for Arete, for example a
-   * `WalletStandardSignerError` with code `sign_transaction_unsupported`
-   * (the wallet only signs and sends in one step).
+   * Why the account cannot sign for Arete; switch on `error.code`:
+   *
+   * - `sign_transaction_unsupported`: the wallet lacks
+   *   `solana:signTransaction` (it only signs and sends in one step).
+   * - `chain_unsupported`: the account does not sign for `options.chain`.
+   * - `account_unavailable`: the account could not be read, or its wallet is
+   *   no longer registered.
+   *
+   * A declined prompt is not reported here: it fails the run
+   * (`useOperationMutation`'s `wallet-rejected`), and the wallet stays usable.
    */
-  readonly error: Error | null;
+  readonly error: WalletStandardSignerError | null;
 }
 
 function isSelection(
@@ -95,7 +104,12 @@ export function useWalletStandardWallet(
   source: UiWalletAccount | WalletStandardSelection | null | undefined,
   options: UseWalletStandardWalletOptions = {}
 ): UseWalletStandardWalletResult {
-  const [openPrompts, setOpenPrompts] = useState(0);
+  // Open prompts, counted per adapter: a prompt left open by a previous
+  // account does not belong to the current one.
+  const [prompts, setPrompts] = useState<{
+    readonly adapter: KitWalletAdapter | null;
+    readonly open: number;
+  }>({ adapter: null, open: 0 });
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -105,55 +119,74 @@ export function useWalletStandardWallet(
   }, []);
 
   let selection: WalletStandardSelection | null = null;
-  let resolveError: Error | null = null;
+  let resolveError: WalletStandardSignerError | null = null;
   if (source) {
     try {
       selection = resolveSelection(source);
-    } catch (error) {
-      resolveError = error instanceof Error ? error : new Error(String(error));
+    } catch (cause) {
+      resolveError = new WalletStandardSignerError(
+        'account_unavailable',
+        cause instanceof Error && cause.message
+          ? cause.message
+          : 'The wallet account is not available',
+        { cause }
+      );
     }
   }
 
   const wallet = selection?.wallet;
   const account = selection?.account;
   const { chain, transport } = options;
-  const created = useMemo((): { adapter?: KitWalletAdapter; error: Error | null } => {
+  const created = useMemo((): {
+    adapter?: KitWalletAdapter;
+    error: WalletStandardSignerError | null;
+  } => {
     if (!wallet || !account) return { error: null };
+    let adapter: KitWalletAdapter | null = null;
     const adjust = (delta: number) => {
-      if (mountedRef.current) setOpenPrompts((count) => Math.max(0, count + delta));
+      if (!mountedRef.current) return;
+      setPrompts((current) => {
+        const open = current.adapter === adapter ? current.open : 0;
+        return { adapter, open: Math.max(0, open + delta) };
+      });
     };
     try {
-      return {
-        adapter: createWalletStandardWalletAdapter({
-          wallet,
-          account,
-          chain,
-          transport,
-          onPromptOpen: () => adjust(1),
-          onPromptClose: () => adjust(-1),
-        }),
-        error: null,
-      };
+      adapter = createWalletStandardWalletAdapter({
+        wallet,
+        account,
+        chain,
+        transport,
+        onPromptOpen: () => adjust(1),
+        onPromptClose: () => adjust(-1),
+      });
+      return { adapter, error: null };
     } catch (error) {
-      return { error: error instanceof Error ? error : new Error(String(error)) };
+      return {
+        error: isWalletStandardSignerError(error)
+          ? error
+          : new WalletStandardSignerError(
+            'account_unavailable',
+            error instanceof Error ? error.message : String(error),
+            { cause: error }
+          ),
+      };
     }
   }, [wallet, account, chain, transport]);
-
-  // A prompt left open by a previous account does not belong to this one.
-  useEffect(() => {
-    setOpenPrompts(0);
-  }, [created]);
 
   return {
     wallet: created.adapter,
     address: account?.address ?? null,
-    isPromptOpen: openPrompts > 0,
+    isPromptOpen: created.adapter !== undefined
+      && prompts.adapter === created.adapter
+      && prompts.open > 0,
     error: resolveError ?? created.error,
   };
 }
 
+export { WalletStandardSignerError, isWalletStandardSignerError } from '@usearete/adapter-kit';
 export type {
   KitWalletAdapter,
   WalletStandardAccount,
+  WalletStandardSignerErrorCode,
   WalletStandardWallet,
 } from '@usearete/adapter-kit';

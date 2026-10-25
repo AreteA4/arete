@@ -29,6 +29,7 @@ import {
 
 import { useOperationMutation, type OperationExecutor } from './hooks/use-operation-mutation';
 import {
+  WalletStandardSignerError,
   useWalletStandardWallet,
   type UseWalletStandardWalletResult,
   type WalletStandardSelection,
@@ -50,8 +51,11 @@ afterAll(() => {
 const MEMO = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const SIGN_TRANSACTION = 'solana:signTransaction';
 
-async function fakeWallet(features: readonly `${string}:${string}`[] = [SIGN_TRANSACTION]) {
-  const keypair = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(3));
+async function fakeWallet(
+  features: readonly `${string}:${string}`[] = [SIGN_TRANSACTION],
+  seed = 3
+) {
+  const keypair = await createKeyPairSignerFromPrivateKeyBytes(new Uint8Array(32).fill(seed));
   let release: (() => void) | null = null;
   let decline: ((error: unknown) => void) | null = null;
   const account: WalletAccount = {
@@ -259,6 +263,95 @@ describe('useWalletStandardWallet', () => {
     });
     expect(current.wallet?.isPromptOpen).toBe(false);
     expect(current.operation?.error?.kind).toBe('wallet-rejected');
+    // The signer typed the decline; the wallet's own error is its cause.
+    let signerError: unknown = current.operation?.error;
+    while (signerError && !(signerError instanceof WalletStandardSignerError)) {
+      signerError = (signerError as { cause?: unknown }).cause;
+    }
+    expect(signerError).toBeInstanceOf(WalletStandardSignerError);
+    expect(signerError).toMatchObject({ code: 'user_rejected' });
+    // A decline is the run's failure; the wallet stays usable.
+    expect(current.wallet?.error).toBeNull();
+    expect(current.wallet?.wallet).toBeDefined();
+  });
+
+  it('does not carry an open prompt over to the next account', async () => {
+    const first = await fakeWallet();
+    const second = await fakeWallet([SIGN_TRANSACTION], 4);
+    const executor = relayExecutor(fakeRelay());
+    const promptOpen: { account: string; open: boolean }[] = [];
+    const current: {
+      operation?: ReturnType<typeof useOperationMutation<void, PreparedInstruction<{ note: string }>>>;
+    } = {};
+    function Harness({ account }: { account: UiWalletAccount }) {
+      const wallet = useWalletStandardWallet(account, { chain: 'solana:devnet' });
+      promptOpen.push({ account: account.address, open: wallet.isPromptOpen });
+      current.operation = useOperationMutation(
+        async () => memoInstruction(first.keypair.address),
+        { executor, wallet: wallet.wallet }
+      );
+      return null;
+    }
+    let renderer!: ReactTestRenderer;
+    act(() => {
+      renderer = create(React.createElement(Harness, { account: first.uiAccount }));
+    });
+    act(() => {
+      void current.operation!.run().catch(() => undefined);
+    });
+    await flush();
+    expect(promptOpen[promptOpen.length - 1]).toEqual({ account: first.uiAccount.address, open: true });
+
+    act(() => {
+      renderer.update(React.createElement(Harness, { account: second.uiAccount }));
+    });
+    // Not even for one render.
+    expect(promptOpen.filter((entry) => entry.account === second.uiAccount.address))
+      .toEqual(expect.not.arrayContaining([expect.objectContaining({ open: true })]));
+
+    await act(async () => {
+      first.approve();
+    });
+    await flush();
+    expect(promptOpen[promptOpen.length - 1]).toEqual({ account: second.uiAccount.address, open: false });
+    act(() => {
+      renderer.unmount();
+    });
+  });
+
+  it('refuses an account that does not sign for the chain, with its own code', async () => {
+    const fake = await fakeWallet();
+    let result!: UseWalletStandardWalletResult;
+    function Harness() {
+      result = useWalletStandardWallet(fake.uiAccount, { chain: 'solana:mainnet' });
+      return null;
+    }
+    act(() => {
+      create(React.createElement(Harness));
+    });
+    expect(result.wallet).toBeUndefined();
+    expect(result.error).toBeInstanceOf(WalletStandardSignerError);
+    expect(result.error?.code).toBe('chain_unsupported');
+  });
+
+  it('reports a UI account whose wallet is not registered as account_unavailable', () => {
+    const stray = {
+      address: 'Stray11111111111111111111111111111111111111',
+      publicKey: new Uint8Array(32),
+      chains: ['solana:devnet'],
+      features: [SIGN_TRANSACTION],
+    } as unknown as UiWalletAccount;
+    let result!: UseWalletStandardWalletResult;
+    function Harness() {
+      result = useWalletStandardWallet(stray);
+      return null;
+    }
+    act(() => {
+      create(React.createElement(Harness));
+    });
+    expect(result.wallet).toBeUndefined();
+    expect(result.error).toBeInstanceOf(WalletStandardSignerError);
+    expect(result.error?.code).toBe('account_unavailable');
   });
 
   it('explains an account that can only sign and send', async () => {

@@ -21,6 +21,7 @@ import {
   type OperationMutationStatus,
   type UseOperationMutationResult,
 } from './use-operation-mutation';
+import { AreteSessionProvider, type AnySession } from '../session-provider';
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -138,12 +139,14 @@ function renderOperationHook(
     PreparedFlow<CreateArtifacts> | { operation: PreparedFlow<CreateArtifacts>; signers?: readonly unknown[] }
   >,
   options: {
-    executor: OperationExecutorSource;
+    executor?: OperationExecutorSource;
     wallet?: WalletAdapter;
+    allowExecutorWallet?: boolean;
     signers?: readonly unknown[];
     onSuccess?: jest.Mock;
     onError?: jest.Mock;
-  }
+  },
+  wrap: (children: React.ReactElement) => React.ReactElement = (children) => children
 ) {
   const seen: OperationMutationStatus[] = ['idle'];
   const current: { hook: Hook | null } = { hook: null };
@@ -157,7 +160,7 @@ function renderOperationHook(
   }
   let renderer!: ReactTestRenderer;
   act(() => {
-    renderer = create(React.createElement(Harness));
+    renderer = create(wrap(React.createElement(Harness)));
   });
   return {
     get hook(): Hook {
@@ -253,14 +256,17 @@ describe('useOperationMutation', () => {
     expect(onError).toHaveBeenCalledWith(view.hook.error);
   });
 
-  it('classifies a wallet that changed the transaction and one that cannot sign', async () => {
+  it('classifies each wallet failure by its signer error code', async () => {
     const signerError = (code: string) => Object.assign(new Error(code), {
       name: 'WalletStandardSignerError',
       code,
     });
     for (const [code, kind] of [
       ['wallet_returned_invalid_transaction', 'wallet-modified'],
-      ['transaction_version_unsupported', 'wallet-unsupported'],
+      ['sign_transaction_unsupported', 'wallet-feature-unsupported'],
+      ['chain_unsupported', 'wallet-chain-unsupported'],
+      ['transaction_version_unsupported', 'wallet-version-unsupported'],
+      ['user_rejected', 'wallet-rejected'],
     ] as const) {
       const wallet: WalletAdapter = {
         publicKey: PAYER,
@@ -270,7 +276,7 @@ describe('useOperationMutation', () => {
           });
         },
       };
-      const view = renderOperationHook(async () => twoStepFlow(), { executor: executorFor(wallet) });
+      const view = renderOperationHook(async () => twoStepFlow(), { executor: executorFor(), wallet });
       await act(async () => {
         await view.hook.run({ threshold: 1 }).catch(() => undefined);
       });
@@ -290,7 +296,7 @@ describe('useOperationMutation', () => {
         });
       },
     };
-    const view = renderOperationHook(async () => twoStepFlow(), { executor: executorFor(wallet) });
+    const view = renderOperationHook(async () => twoStepFlow(), { executor: executorFor(), wallet });
     await act(async () => {
       await view.hook.run({ threshold: 1 }).catch(() => undefined);
     });
@@ -306,7 +312,7 @@ describe('useOperationMutation', () => {
       publicKey: PAYER,
       signAndSend: async () => ({ signature: 'sig' }),
     };
-    const view = renderOperationHook(async () => twoStepFlow(), { executor: executorFor(wallet) });
+    const view = renderOperationHook(async () => twoStepFlow(), { executor: executorFor(), wallet });
     await act(async () => {
       await view.hook.run({ threshold: 1 });
     });
@@ -343,9 +349,10 @@ describe('useOperationMutation', () => {
     expect(missing.hook.error?.kind).toBe('not-ready');
     expect(prepare).not.toHaveBeenCalled();
 
+    const wallet: WalletAdapter = { publicKey: PAYER, signAndSend: async () => ({ signature: 's' }) };
     const broken = renderOperationHook(async () => {
       throw new Error('threshold above members');
-    }, { executor: executorFor() });
+    }, { executor: executorFor(), wallet });
     await act(async () => {
       await broken.hook.run({ threshold: 9 }).catch(() => undefined);
     });
@@ -357,8 +364,8 @@ describe('useOperationMutation', () => {
 
   it('resolves a lazy executor once per run and resets to idle', async () => {
     const wallet: WalletAdapter = { publicKey: PAYER, signAndSend: async () => ({ signature: 's' }) };
-    const open = jest.fn(async () => executorFor(wallet));
-    const view = renderOperationHook(async () => twoStepFlow(), { executor: open });
+    const open = jest.fn(async () => executorFor());
+    const view = renderOperationHook(async () => twoStepFlow(), { executor: open, wallet });
     await act(async () => {
       await view.hook.run({ threshold: 1 });
     });
@@ -369,12 +376,102 @@ describe('useOperationMutation', () => {
   });
 });
 
+describe('useOperationMutation without a wallet', () => {
+  it('fails with not-ready and prepares and signs nothing, even when the executor has a wallet', async () => {
+    const executorWallet: WalletAdapter = {
+      publicKey: PAYER,
+      signAndSend: jest.fn(async () => ({ signature: 'sig' })),
+    };
+    const executor = executorFor(executorWallet);
+    const execute = jest.spyOn(executor, 'execute');
+    const prepare = jest.fn(async () => twoStepFlow());
+    const onError = jest.fn();
+    const view = renderOperationHook(prepare, { executor, onError });
+
+    let failure: unknown;
+    await act(async () => {
+      failure = await view.hook.run({ threshold: 1 }).catch((error: unknown) => error);
+    });
+
+    expect(failure).toBeInstanceOf(OperationMutationError);
+    expect(view.hook.status).toBe('error');
+    expect(view.hook.error?.kind).toBe('not-ready');
+    expect(onError).toHaveBeenCalledWith(view.hook.error);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(executorWallet.signAndSend).not.toHaveBeenCalled();
+  });
+
+  it("signs with the executor's wallet only when allowExecutorWallet is set", async () => {
+    const executorWallet: WalletAdapter = {
+      publicKey: PAYER,
+      signAndSend: jest.fn(async () => ({ signature: 'sig' })),
+    };
+    const view = renderOperationHook(async () => twoStepFlow(), {
+      executor: executorFor(executorWallet),
+      allowExecutorWallet: true,
+    });
+    await act(async () => {
+      await view.hook.run({ threshold: 1 });
+    });
+    expect(view.hook.status).toBe('done');
+    expect(executorWallet.signAndSend).toHaveBeenCalledTimes(2);
+
+    const without = renderOperationHook(async () => twoStepFlow(), {
+      executor: executorFor(),
+      allowExecutorWallet: true,
+    });
+    await act(async () => {
+      await without.hook.run({ threshold: 1 }).catch(() => undefined);
+    });
+    expect(without.hook.error?.kind).toBe('not-ready');
+  });
+
+  it('a wallet given to the run is enough', async () => {
+    const wallet: WalletAdapter = { publicKey: PAYER, signAndSend: async () => ({ signature: 's' }) };
+    const view = renderOperationHook(async () => twoStepFlow(), { executor: executorFor() });
+    await act(async () => {
+      await view.hook.run({ threshold: 1 }, { wallet });
+    });
+    expect(view.hook.status).toBe('done');
+  });
+});
+
+describe('useOperationMutation inside an AreteSessionProvider', () => {
+  it("runs on the provider's session when no executor is given", async () => {
+    const wallet: WalletAdapter = { publicKey: PAYER, signAndSend: async () => ({ signature: 's' }) };
+    const session = executorFor() as unknown as AnySession;
+    const execute = jest.spyOn(session, 'execute');
+    const view = renderOperationHook(
+      async () => twoStepFlow(),
+      { wallet },
+      (children) => React.createElement(AreteSessionProvider, { session }, children)
+    );
+    await act(async () => {
+      await view.hook.run({ threshold: 1 });
+    });
+    expect(view.hook.status).toBe('done');
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('is not-ready without a provider or an executor', async () => {
+    const wallet: WalletAdapter = { publicKey: PAYER, signAndSend: async () => ({ signature: 's' }) };
+    const view = renderOperationHook(async () => twoStepFlow(), { wallet });
+    await act(async () => {
+      await view.hook.run({ threshold: 1 }).catch(() => undefined);
+    });
+    expect(view.hook.error?.kind).toBe('not-ready');
+  });
+});
+
 describe('isWalletRejection', () => {
   it.each([
     [{ code: 4001, message: 'x' }, true],
     [new Error('User rejected the request.'), true],
     [Object.assign(new Error('wrapped'), { cause: { name: 'WalletSignTransactionRejectedError' } }), true],
     [new Error('Blockhash not found'), false],
+    [Object.assign(new Error('declined'), { name: 'WalletStandardSignerError', code: 'user_rejected' }), true],
+    [Object.assign(new Error('x'), { name: 'WalletStandardSignerError', code: 'chain_unsupported' }), false],
     ['nope', false],
   ])('%p -> %p', (error, expected) => {
     expect(isWalletRejection(error)).toBe(expected);

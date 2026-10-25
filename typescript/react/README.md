@@ -367,7 +367,7 @@ Program and read hooks are safe to call while the client is still connecting: mu
 
 ### Running an operation or flow: `useOperationMutation`
 
-`useOperationMutation(prepare, { executor, wallet?, signers? })` runs any prepared instruction, transaction or flow through anything with `execute(prepared, options)`: a connected client or a session, so it works without a stack. `prepare` returns the operation, or `{ operation, signers }` when it creates signers (a create key):
+`useOperationMutation(prepare, { executor?, wallet, signers? })` runs any prepared instruction, transaction or flow through anything with `execute(prepared, options)`: a connected client or a session, so it works without a stack. Inside an [`AreteSessionProvider`](#sessions-aretesessionprovider-and-usearetesession) `executor` can be left out: the hook runs on the provider's session, waiting for it to open. `prepare` returns the operation, or `{ operation, signers }` when it creates signers (a create key):
 
 ```tsx
 import { generateKeyPairSigner } from '@solana/kit';
@@ -387,7 +387,27 @@ const create = useOperationMutation(
 {create.error?.kind === 'wallet-rejected' && <p>You declined the request.</p>}
 ```
 
-`status` walks `idle` → `preparing` → `signing` → `sending` → `confirming` → `done` (or `error`), once per transaction of a flow (`transactionIndex` of `transactionCount`). `sending` and `confirming` come from wallets that report their activity, as the `@usearete/adapter-kit` adapters do; any other wallet stays `signing` until it confirms. `prepared`, `artifacts`, `result` (the receipt) and `signatures` hold the latest run. `error` is an `OperationMutationError` whose `kind` is one of `busy`, `not-ready`, `prepare-failed`, `wallet-rejected`, `wallet-unsupported`, `wallet-modified`, `not-submitted`, `submitted-unknown` or `chain-failed`, with the transaction `failure`, `programError` and the signatures that confirmed before it. `executor` may be a function that resolves it (a session opened on first use). A second run while one is in progress is refused with `busy`, so a double click never opens two wallet prompts. `run()` rejects; `mutate()` keeps the error in state.
+`status` walks `idle` → `preparing` → `signing` → `sending` → `confirming` → `done` (or `error`), once per transaction of a flow (`transactionIndex` of `transactionCount`). `sending` and `confirming` come from wallets that report their activity, as the `@usearete/adapter-kit` adapters do; any other wallet stays `signing` until it confirms. `prepared`, `artifacts`, `result` (the receipt) and `signatures` hold the latest run. `executor` may be a function that resolves it (a session opened on first use). A second run while one is in progress is refused with `busy`, so a double click never opens two wallet prompts. `run()` rejects; `mutate()` keeps the error in state.
+
+**No wallet, no run.** The run signs with the `wallet` given to `run(input, { wallet })` or to the hook. Without one (`wallet` is `undefined` while no wallet is connected) it fails with `not-ready` before `prepare` is called, so nothing is prepared or signed. The executor's own wallet (`session.wallet`, the provider's) is used only with `allowExecutorWallet: true`.
+
+`error` is an `OperationMutationError`; switch on its `kind`:
+
+| `kind` | Meaning |
+| --- | --- |
+| `busy` | A run of this hook is already in progress; nothing was started. |
+| `not-ready` | No executor, or no wallet; nothing was prepared or signed. |
+| `prepare-failed` | `prepare` threw; nothing was signed. |
+| `wallet-rejected` | The user declined or closed the wallet prompt. |
+| `wallet-feature-unsupported` | The wallet cannot sign without sending (no `solana:signTransaction`). |
+| `wallet-chain-unsupported` | The wallet does not sign for the chain it was asked to. |
+| `wallet-version-unsupported` | The wallet signs, but not this transaction version. |
+| `wallet-modified` | The wallet changed the transaction, so it was not sent. |
+| `not-submitted` | Failed before anything reached the chain. |
+| `submitted-unknown` | Sent, but the confirmation did not arrive; check the chain before trying again. |
+| `chain-failed` | Failed on chain; see `programError`. |
+
+It also carries the transaction `failure`, `programError` and the signatures that confirmed before it. `toOperationMutationError(error)` classifies a failure from an imperative `session.execute` the same way.
 
 ### Wallet Standard wallets: `@usearete/react/wallet-standard`
 
@@ -402,7 +422,25 @@ const { wallet, isPromptOpen, error } = useWalletStandardWallet(account, { chain
 <AreteProvider wallet={wallet}>…</AreteProvider>;
 ```
 
-`wallet` is `undefined` until an account is connected, and when it cannot sign for Arete: `error` is then a `WalletStandardSignerError` (`sign_transaction_unsupported` for a wallet that only signs and sends). `isPromptOpen` is true while the wallet's approval prompt is open. A raw `{ wallet, account }` pair from the Wallet Standard registry is accepted too.
+`wallet` is `undefined` until an account is connected, and when it cannot sign for Arete. `error` then says why: a `WalletStandardSignerError` (exported from this entry) whose `code` is
+
+- `sign_transaction_unsupported`: the wallet lacks `solana:signTransaction` (it only signs and sends in one step);
+- `chain_unsupported`: the account does not list `chain` (a devnet account asked for `solana:mainnet`);
+- `account_unavailable`: the account could not be read, or its wallet is no longer registered.
+
+A declined prompt is not an `error` here: it fails the run (`wallet-rejected`, with a `user_rejected` signer error in its `cause` chain) and the wallet stays usable. `isPromptOpen` is true while the wallet's approval prompt is open, and only for the current account. A raw `{ wallet, account }` pair from the Wallet Standard registry is accepted too.
+
+With a session provider:
+
+```tsx
+const { wallet, error } = useWalletStandardWallet(account, { chain: 'solana:mainnet' });
+
+<AreteSessionProvider definition={SQUADS} options={{ auth }} wallet={wallet}>…</AreteSessionProvider>;
+
+// below it
+const propose = useOperationMutation(prepareProposal, { wallet });
+if (error?.code === 'chain_unsupported') return <p>Switch your wallet to mainnet.</p>;
+```
 
 ## Protocols
 

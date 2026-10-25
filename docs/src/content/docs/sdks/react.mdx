@@ -254,6 +254,36 @@ const signer = createWalletStandardSigner({ wallet, account, chain: 'solana:main
 const arete = createWalletAdapter({ transport: 'auto', signer });
 ```
 
+## Sessions and wallet flows without a stack
+
+For a [`createSession`](/sdks/typescript/) session, put an `AreteSessionProvider` above the components that use it, and run operations on it with `useOperationMutation`. `useWalletStandardWallet` from `@usearete/react/wallet-standard` (which needs `@usearete/adapter-kit`, `@solana/kit` and `@wallet-standard/ui-registry`) turns a `@wallet-standard/react` account into the sign-only wallet:
+
+```tsx
+import { AreteSessionProvider, useAreteSession, useOperationMutation } from '@usearete/react';
+import { useWalletStandardWallet } from '@usearete/react/wallet-standard';
+
+const SQUADS = { programs: { squads: SQUADS_V4_PROGRAM } };
+
+function Shell({ account, children }) {
+  const { wallet } = useWalletStandardWallet(account, { chain: 'solana:mainnet' });
+  return (
+    <AreteSessionProvider definition={SQUADS} options={{ auth }} wallet={wallet}>
+      {children}
+    </AreteSessionProvider>
+  );
+}
+
+function Propose({ wallet }) {
+  const { session } = useAreteSession<typeof SQUADS>(); // session?.programs.squads is typed
+  const propose = useOperationMutation(prepareProposal, { wallet }); // runs on the provider's session
+  …
+}
+```
+
+The provider opens the session when it mounts and closes it when it unmounts. `options.auth` and `options.fetch` default to the enclosing `AreteProvider`'s. Changing the definition or the options closes the session and opens a new one (`session` is `null` meanwhile); changing `wallet` only calls `session.setWallet`. Pass `session={existing}` instead of `definition` to share a session the app opened and closes.
+
+A `useOperationMutation` run without a `wallet` fails with `not-ready` before anything is prepared or signed; set `allowExecutorWallet: true` to sign with the session's own wallet instead. Failures are an `OperationMutationError` whose `kind` tells the wallet cases apart: `wallet-rejected` (declined), `wallet-feature-unsupported` (no `solana:signTransaction`), `wallet-chain-unsupported`, `wallet-version-unsupported` and `wallet-modified`. `useWalletStandardWallet`'s `error` is a `WalletStandardSignerError` with a `code` (`sign_transaction_unsupported`, `chain_unsupported`, `account_unavailable`). The [React SDK README](https://github.com/AreteA4/arete/tree/main/typescript/react#sessions-aretesessionprovider-and-usearetesession) has the full reference.
+
 ## `useArete` result
 
 The hook returns:
