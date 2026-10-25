@@ -173,7 +173,7 @@ automations.on("raise.failed", async (event, ctx) => {
 ## Consent and limits
 
 Nothing runs for a wallet until its owner signs a consent message
-(`arete.automation-consent/v1`) that states the steps, per-asset limits,
+(`arete.automation-consent/v2`) that states the steps, per-asset limits,
 settings and expiry.
 
 ```ts

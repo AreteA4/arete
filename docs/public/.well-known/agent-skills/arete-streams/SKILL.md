@@ -90,8 +90,9 @@ a4 stream --dev --tui                            # browse protocols, views, rows
   before interpreting data after such an operation.
 - The usual filters (`--where`, `--select`, `--ops`, `--take`, `--first`,
   `--no-snapshot`, `--duration`) apply. For another WebSocket client,
-  `a4 dev status --json` prints a stack URL with a valid token
-  (`stackSession.streamUrl`) for `a4 stream --url` or your own code.
+  `a4 dev up` keeps a stack URL with a valid token in
+  `.arete/dev/session.json` (`stackSession.streamUrl`) for
+  `a4 stream --url` or your own code.
 
 ## Install and Inspect Generated Code
 
