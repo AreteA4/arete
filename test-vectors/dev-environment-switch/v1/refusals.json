@@ -1,0 +1,770 @@
+{
+  "version": 1,
+  "description": "Every refusal: where it starts (`switch`, `edge`, `resolve` or a `service` answer) and the SDK error it becomes. `code` is the SDK error's code; `fix` and `details` are carried in its details. `productionRequests: 0` means the SDK makes no request to a production endpoint after the refusal (no fallback); `devRequests: 0` the same for dev endpoints.",
+  "cases": [
+    {
+      "name": "devenv-not-configured: dev mode with no target",
+      "input": {
+        "source": "switch",
+        "switch": {
+          "browser": false,
+          "option": null,
+          "variables": {
+            "ARETE_ENVIRONMENT": "dev"
+          },
+          "sessionFile": null,
+          "secretKey": false
+        }
+      },
+      "expect": {
+        "code": "devenv-not-configured",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-not-configured: direct mode in a browser",
+      "input": {
+        "source": "switch",
+        "switch": {
+          "browser": true,
+          "option": {
+            "kind": "dev",
+            "env": "denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "variables": {},
+          "sessionFile": null,
+          "secretKey": false
+        }
+      },
+      "expect": {
+        "code": "devenv-not-configured",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "INVALID_CONFIG: an unknown switch value",
+      "input": {
+        "source": "switch",
+        "switch": {
+          "browser": false,
+          "option": null,
+          "variables": {
+            "ARETE_ENVIRONMENT": "staging"
+          },
+          "sessionFile": null,
+          "secretKey": false
+        }
+      },
+      "expect": {
+        "code": "INVALID_CONFIG",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-edge-unreachable: nothing listens on the edge",
+      "input": {
+        "source": "edge",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "edgeAnswer": {
+          "kind": "connection-refused"
+        }
+      },
+      "expect": {
+        "code": "devenv-edge-unreachable",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-edge-unreachable: something that is not an edge answers",
+      "input": {
+        "source": "edge",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "edgeAnswer": {
+          "kind": "response",
+          "status": 200,
+          "headers": {},
+          "body": {
+            "result": 1
+          }
+        }
+      },
+      "expect": {
+        "code": "devenv-edge-unreachable",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-edge-unreachable: a socket's edge check gets something that is not an edge",
+      "input": {
+        "source": "edge",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "surface": "stack",
+        "edgeAnswer": {
+          "kind": "response",
+          "request": "GET /.well-known/arete-dev-edge",
+          "status": 200,
+          "headers": {
+            "Content-Type": "text/html"
+          },
+          "body": "<!doctype html><title>Vite</title>"
+        }
+      },
+      "expect": {
+        "code": "devenv-edge-unreachable",
+        "failingSurface": "stack",
+        "socketsOpened": 0,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-stack-not-loaded: from resolve",
+      "input": {
+        "source": "resolve",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "refused",
+              "code": "devenv-stack-not-loaded",
+              "message": "klend (arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd) is not loaded in my-env",
+              "fix": "Run `a4 dev up`: it loads every stack in arete.lock."
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "code": "devenv-stack-not-loaded",
+        "message": "klend (arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd) is not loaded in my-env",
+        "fix": "Run `a4 dev up`: it loads every stack in arete.lock.",
+        "failingSurface": "stack",
+        "otherSurfacesUsable": true,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-program-release-mismatch: from resolve",
+      "input": {
+        "source": "resolve",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "refused",
+              "code": "devenv-program-release-mismatch",
+              "message": "Program KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD in my-env runs another executable than arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "fix": "Run `a4 dev up` with the program's local IDL to register it, or reset the environment."
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "code": "devenv-program-release-mismatch",
+        "message": "Program KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD in my-env runs another executable than arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "fix": "Run `a4 dev up` with the program's local IDL to register it, or reset the environment.",
+        "failingSurface": "programReads.klend",
+        "otherSurfacesUsable": true,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-protocol-not-deployed: from resolve",
+      "input": {
+        "source": "resolve",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
+            }
+          ],
+          "protocols": [
+            {
+              "status": "refused",
+              "code": "devenv-protocol-not-deployed",
+              "message": "token-raise is not deployed in my-env",
+              "fix": "Run `a4 dev up` in the protocol's project."
+            }
+          ]
+        }
+      },
+      "expect": {
+        "code": "devenv-protocol-not-deployed",
+        "message": "token-raise is not deployed in my-env",
+        "fix": "Run `a4 dev up` in the protocol's project.",
+        "failingSurface": "protocol",
+        "otherSurfacesUsable": true,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-protocol-not-owned: from resolve",
+      "input": {
+        "source": "resolve",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
+            }
+          ],
+          "protocols": [
+            {
+              "status": "refused",
+              "code": "devenv-protocol-not-owned",
+              "message": "token-raise belongs to another account; only your own protocols run in an environment",
+              "fix": "Call it in production (unset ARETE_ENVIRONMENT)."
+            }
+          ]
+        }
+      },
+      "expect": {
+        "code": "devenv-protocol-not-owned",
+        "message": "token-raise belongs to another account; only your own protocols run in an environment",
+        "fix": "Call it in production (unset ARETE_ENVIRONMENT).",
+        "failingSurface": "protocol",
+        "otherSurfacesUsable": true,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-surface-unavailable: from resolve",
+      "input": {
+        "source": "resolve",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "refused",
+            "code": "devenv-surface-unavailable",
+            "message": "Chain reads are not available for my-env",
+            "fix": "Dev environments are not enabled for this account."
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678,
+              "httpUrl": "https://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run"
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        }
+      },
+      "expect": {
+        "code": "devenv-surface-unavailable",
+        "message": "Chain reads are not available for my-env",
+        "fix": "Dev environments are not enabled for this account.",
+        "failingSurface": "chain",
+        "otherSurfacesUsable": true,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-surface-unavailable: a stack target without an HTTP URL fails queries only",
+      "input": {
+        "source": "resolve",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "installed": "default",
+        "resolveResponse": {
+          "environment": {
+            "id": "denv_01jabcdefghjkmnpqrstvwxyz0",
+            "name": "my-env"
+          },
+          "chain": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "transactions": {
+            "status": "target",
+            "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0"
+          },
+          "programReads": [
+            {
+              "status": "target",
+              "endpoint": "https://devenv.arete.run",
+              "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "releaseDiffers": false
+            }
+          ],
+          "stacks": [
+            {
+              "status": "target",
+              "websocketUrl": "wss://s0123456789abcdef-01jabcdefghjkmnpqrstvwxyz0.devstack.arete.run",
+              "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+              "releaseDiffers": false,
+              "source": "manifest",
+              "loadedAtSlot": 412345678
+            }
+          ],
+          "protocols": [
+            {
+              "status": "target",
+              "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+              "apiUrl": "https://api.arete.run/api",
+              "sessionEndpoint": "https://api.arete.run/ws/sessions",
+              "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+              "releaseDiffers": false
+            }
+          ]
+        },
+        "surface": "stackQuery"
+      },
+      "expect": {
+        "code": "devenv-surface-unavailable",
+        "failingSurface": "stackQuery",
+        "otherSurfacesUsable": true,
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-stack-not-loaded: relayed by the edge",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "response": {
+          "status": 409,
+          "headers": {
+            "X-Arete-Dev-Edge": "1"
+          },
+          "body": {
+            "schemaVersion": 1,
+            "error": "refused",
+            "code": "devenv-stack-not-loaded",
+            "retryable": false,
+            "fix": "the fix"
+          }
+        }
+      },
+      "expect": {
+        "code": "devenv-stack-not-loaded",
+        "fix": "the fix",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-program-release-mismatch: relayed by the edge",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "response": {
+          "status": 409,
+          "headers": {
+            "X-Arete-Dev-Edge": "1"
+          },
+          "body": {
+            "schemaVersion": 1,
+            "error": "refused",
+            "code": "devenv-program-release-mismatch",
+            "retryable": false,
+            "fix": "the fix"
+          }
+        }
+      },
+      "expect": {
+        "code": "devenv-program-release-mismatch",
+        "fix": "the fix",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-protocol-not-deployed: relayed by the edge",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "response": {
+          "status": 409,
+          "headers": {
+            "X-Arete-Dev-Edge": "1"
+          },
+          "body": {
+            "schemaVersion": 1,
+            "error": "refused",
+            "code": "devenv-protocol-not-deployed",
+            "retryable": false,
+            "fix": "the fix"
+          }
+        }
+      },
+      "expect": {
+        "code": "devenv-protocol-not-deployed",
+        "fix": "the fix",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-protocol-not-owned: relayed by the edge",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "response": {
+          "status": 403,
+          "headers": {
+            "X-Arete-Dev-Edge": "1"
+          },
+          "body": {
+            "schemaVersion": 1,
+            "error": "refused",
+            "code": "devenv-protocol-not-owned",
+            "retryable": false,
+            "fix": "the fix"
+          }
+        }
+      },
+      "expect": {
+        "code": "devenv-protocol-not-owned",
+        "fix": "the fix",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-surface-unavailable: relayed by the edge",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "response": {
+          "status": 503,
+          "headers": {
+            "X-Arete-Dev-Edge": "1"
+          },
+          "body": {
+            "schemaVersion": 1,
+            "error": "refused",
+            "code": "devenv-surface-unavailable",
+            "retryable": false,
+            "fix": "the fix"
+          }
+        }
+      },
+      "expect": {
+        "code": "devenv-surface-unavailable",
+        "fix": "the fix",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "devenv-program-release-mismatch: from Program Read",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "response": {
+          "status": 409,
+          "headers": {
+            "X-Error-Code": "devenv-program-release-mismatch"
+          },
+          "body": {
+            "error": {
+              "code": "devenv-program-release-mismatch",
+              "detail": {
+                "message": "Program KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD in this environment runs another executable than release arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa was built for.",
+                "fix": "Register the changed program with the environment (run `a4 dev up` with its local IDL), or reset the environment.",
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "installedExecutableIdentitySha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                "liveExecutableIdentitySha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                "liveDeploymentSlot": 412345000
+              }
+            }
+          }
+        }
+      },
+      "expect": {
+        "code": "devenv-program-release-mismatch",
+        "fix": "Register the changed program with the environment (run `a4 dev up` with its local IDL), or reset the environment.",
+        "details": {
+          "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "installedExecutableIdentitySha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "liveExecutableIdentitySha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "liveDeploymentSlot": 412345000
+        },
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "environment-token-required: a dev service got a production token",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "response": {
+          "status": 401,
+          "headers": {},
+          "body": {
+            "error": {
+              "code": "environment-token-required",
+              "detail": {
+                "message": "This Program Read serves dev environments and needs an environment token.",
+                "fix": "Mint the token with `environment` (direct mode) or read through the `a4 dev up` edge."
+              }
+            }
+          }
+        }
+      },
+      "expect": {
+        "code": "environment-token-required",
+        "productionRequests": 0
+      }
+    },
+    {
+      "name": "environment-token-refused: a production service got an environment token",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "production",
+          "devInputsRead": false
+        },
+        "response": {
+          "status": 403,
+          "headers": {},
+          "body": {
+            "schemaVersion": 1,
+            "error": "environment tokens are not accepted here",
+            "code": "environment-token-refused",
+            "retryable": false,
+            "fix": "Unset ARETE_ENVIRONMENT, or use the token's own environment."
+          }
+        }
+      },
+      "expect": {
+        "code": "environment-token-refused",
+        "devRequests": 0
+      }
+    },
+    {
+      "name": "environment-token-refused: a dev service got a token for another environment",
+      "input": {
+        "source": "service",
+        "mode": {
+          "mode": "dev",
+          "via": "direct",
+          "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
+        },
+        "response": {
+          "status": 403,
+          "headers": {},
+          "body": {
+            "schemaVersion": 1,
+            "error": "environment token is for a different environment",
+            "code": "environment-token-refused",
+            "retryable": false,
+            "fix": "Mint a token for this environment."
+          }
+        }
+      },
+      "expect": {
+        "code": "environment-token-refused",
+        "productionRequests": 0
+      }
+    }
+  ]
+}
