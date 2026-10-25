@@ -56,6 +56,105 @@ one. `secretKey` throws in a browser, as does a secret or agent key passed as
 `publishableKey`; a publishable key passed as `secretKey` is refused everywhere.
 Keys are never included in error messages or logs.
 
+### Arete API credentials (`tokenKind: 'api'`)
+
+By default `token`, `getToken` and `tokenEndpoint` hand out Arete session
+tokens. An app whose users are signed in to Arete can hand out the user's own
+Arete API credential instead:
+
+```ts
+const session = await createSession(
+  { stacks: { myStack: MY_STACK } },
+  {
+    auth: {
+      tokenKind: 'api',
+      tokenEndpoint: '/api/arete-credential', // returns the user's credential
+      tokenEndpointCredentials: 'include',
+    },
+  },
+);
+```
+
+The SDK sends that credential only to Arete API routes and to session
+endpoints. For the Solana gateway, Program Read, protocol and hosted stack
+transports it mints binding-scoped sessions at each binding's session endpoint,
+caches them per target and scope, and sends only those to the transport. When
+a session endpoint refuses the credential with a 401, it fetches the credential
+again once and retries. `getToken` is called as `getToken({ scopes: [],
+forceRefresh })`; `tokenEndpoint` is POSTed `{"scopes": [], "forceRefresh":
+false}` and answers with the credential as a string or `{ token, expiresAt }`.
+
+A session (or an `Arete.connect` client) shares one credential source across
+every member, transport and its Arete API client, so the app is asked once per
+credential expiry. A member with its own `auth` gets its own.
+
+Every `getToken` request carries `forceRefresh`, `true` when the SDK needs a
+new token (the last was refused, expired or did not cover the scopes). A
+provider with its own cache must bypass that cache when it is set. With
+`tokenKind: 'api'`, `tokenEndpoint` bodies carry it too.
+
+### Arete API client
+
+`session.platform` and `client.platform` are an authenticated Arete API client
+when `auth` carries an API credential (a secret key, or `tokenKind: 'api'`),
+and `undefined` otherwise. `createSession` and `Arete.connect` options take
+`apiUrl` (default `https://api.arete.run`) and `platform` (a client to use
+instead). To call the API without a session:
+
+```ts
+import { createPlatformHttpClient } from '@usearete/sdk';
+
+const platform = createPlatformHttpClient({ auth: { secretKey: process.env.ARETE_API_KEY } });
+// A hypothetical route, for illustration only.
+const { status, body } = await platform.request<{ items: string[] }>({ path: '/example/items' });
+```
+
+`createPlatformHttpClient({ apiUrl?, auth?, fetch? })` reads `secretKey`,
+`token`, `getToken` and `tokenEndpoint` as API credentials (outside browsers an
+unset `auth` falls back to `ARETE_API_KEY`, then the `a4` login), never mints a
+session, and refuses publishable keys with `INVALID_CONFIG`. `request({ path,
+method?, body?, signal? })` resolves to `{ status, body }`, retries once after
+a 401 when the credential comes from `getToken` or `tokenEndpoint`, and rejects
+a non-2xx answer with an `AreteError` whose `details` carry `status`,
+`wireErrorCode`, `body` and `apiProblem`.
+
+### Arete API calls from SDK extensions
+
+Program extensions receive the client's Arete API client as `context.platform`
+in `ProgramOperationContext` (stack extensions read `client.platform`). It is
+there only with an API credential: a secret key on a server, or
+`tokenKind: 'api'`. A publishable key identifies a visitor to an app, never the
+account, so with one `context.platform` is `undefined`; public data reaches the
+browser through the program's own session transports. Check for it and say
+what the app must configure:
+
+```ts
+import { defineProgramExtensions } from '@usearete/sdk/program';
+
+export default defineProgramExtensions<typeof VAULT>()({
+  createRead(context) {
+    return {
+      async watchedVaults() {
+        if (!context.platform) {
+          throw new Error(
+            "read.watchedVaults calls the Arete API: use a secret key on a server or auth.tokenKind 'api'",
+          );
+        }
+        // A hypothetical route, for illustration only.
+        const { body } = await context.platform.request<{ addresses: string[] }>({
+          path: '/example/watchlist',
+        });
+        return context.program.accounts.Vault.fetchMany(body.addresses);
+      },
+    };
+  },
+});
+```
+
+`PlatformHttpClient` and its request and response types are exported as types
+from `@usearete/sdk/program`, so extension code never imports the client
+runtime.
+
 ## SDK Shapes
 
 ### Mental Model

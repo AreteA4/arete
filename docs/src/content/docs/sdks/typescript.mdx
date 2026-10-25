@@ -205,14 +205,16 @@ const client = await Arete.connect(MY_STACK, {
 });
 ```
 
-| Option                   | Type             | Default     | Description                                               |
-| ------------------------ | ---------------- | ----------- | --------------------------------------------------------- |
-| `url`                    | `string`         | `stack.url` | Override the stack's default URL                          |
-| `maxEntriesPerView`      | `number \| null` | `10000`     | Max entries per view before LRU eviction                  |
-| `autoConnect`            | `boolean`        | `true`      | Start the initial WebSocket connection                    |
-| `autoReconnect`          | `boolean`        | `true`      | Recover after an established WebSocket connection is lost |
-| `validateFrames`         | `boolean`        | `true`      | Log generated-schema frame rejections                     |
-| `onFrameValidationError` | `function`       | —           | Observe structured generated-schema frame rejections      |
+| Option                   | Type                 | Default                 | Description                                                        |
+| ------------------------ | -------------------- | ----------------------- | ------------------------------------------------------------------ |
+| `url`                    | `string`             | `stack.url`             | Override the stack's default URL                                   |
+| `maxEntriesPerView`      | `number \| null`     | `10000`                 | Max entries per view before LRU eviction                           |
+| `autoConnect`            | `boolean`            | `true`                  | Start the initial WebSocket connection                             |
+| `autoReconnect`          | `boolean`            | `true`                  | Recover after an established WebSocket connection is lost          |
+| `validateFrames`         | `boolean`            | `true`                  | Log generated-schema frame rejections                              |
+| `onFrameValidationError` | `function`           | —                       | Observe structured generated-schema frame rejections               |
+| `apiUrl`                 | `string`             | `https://api.arete.run` | Arete API origin for `client.platform`                             |
+| `platform`               | `PlatformHttpClient` | built from `auth`       | Arete API client to use; see [Arete API client](#arete-api-client) |
 
 `autoConnect` and `autoReconnect` control separate lifecycle phases. Set `autoConnect: false` to create a disconnected client that the application connects later. Set `autoReconnect: false` when the application will handle a later connection loss itself.
 
@@ -237,6 +239,235 @@ unsubscribe();
 ```typescript
 session.close();
 ```
+
+---
+
+## Authentication
+
+Choose the credential by where the code runs and who it acts for:
+
+| `auth`                                                         | Runs in             | Acts for                                             |
+| -------------------------------------------------------------- | ------------------- | ---------------------------------------------------- |
+| `publishableKey` (`a4_pk_...`)                                 | A browser           | A visitor to your app, bound to its origins          |
+| `secretKey` (`a4_ak_...` or `a4_sk_...`)                       | A server or script  | Your Arete account                                   |
+| `token`, `getToken` or `tokenEndpoint`                         | Anywhere            | The target your backend minted the session token for |
+| `token`, `getToken` or `tokenEndpoint` with `tokenKind: 'api'` | A browser or server | An Arete user signed in to your app                  |
+
+[Connect to Live Views](/using-stacks/connect/#typescript-session) covers keys and
+the `a4` login fallback. This section covers the API credential and the Arete
+API client built from it.
+
+### Sign in with an Arete API credential
+
+By default (`tokenKind: 'session'`), `token`, `getToken` and `tokenEndpoint`
+hand out Arete session tokens, and the SDK sends them to stack, gateway,
+Program Read and protocol endpoints as they are. When your app's users are
+signed in to Arete, hand the SDK the user's own Arete API credential instead
+and set `tokenKind: 'api'`:
+
+```typescript
+import { createSession } from "@usearete/sdk";
+
+// Your backend returns the signed-in user's Arete API credential.
+const session = await createSession(
+  { stacks: { app: MY_STACK } },
+  {
+    auth: {
+      tokenKind: "api",
+      tokenEndpoint: "/api/arete-credential",
+      tokenEndpointCredentials: "include",
+    },
+  },
+);
+```
+
+A `getToken` provider or a static `token` works the same way. With
+`tokenKind: 'api'`:
+
+- **Where the credential goes.** The SDK sends it only to Arete API routes and
+  to session endpoints. A stack, gateway or Program Read endpoint never
+  receives it.
+- **Binding-scoped sessions.** For each hosted transport (the Solana gateway's
+  chain reads and transactions, Program Read, protocol clients and hosted
+  stack WebSockets) the SDK mints a session at that binding's session
+  endpoint, with the credential as the bearer, and sends only that session to
+  the transport.
+- **Caching.** Minted sessions are cached per target and scope, and renewed
+  before they expire.
+- **Refusals.** When a session endpoint refuses the credential with a 401, the
+  SDK fetches the credential again, once, with `forceRefresh: true`, and
+  retries. A static `token` cannot be refetched, so its 401 is returned as an
+  error.
+
+`getToken` is called with no target, as `getToken({ scopes: [], forceRefresh })`.
+`tokenEndpoint` is POSTed `{"scopes": [], "forceRefresh": false}` with your
+`tokenEndpointHeaders` and `tokenEndpointCredentials`. Either can answer with
+the credential as a string or as `{ "token": "...", "expiresAt": 1767225600 }`
+(seconds since the epoch). Without `expiresAt` the SDK reads a JWT's `exp`; a
+credential with neither is kept until it is refused.
+
+### One credential per session
+
+A session builds one credential source from its `auth` and shares it with every
+member, transport and its Arete API client. A page that opens several stacks,
+Program Reads and gateway transports therefore asks your `getToken` or
+`tokenEndpoint` once per credential expiry, and concurrent requests wait on
+the same fetch. A client from `Arete.connect` shares one source across its own
+connections in the same way. A session member configured with its own `auth`
+gets its own source and its own Arete API client.
+
+### `forceRefresh`
+
+Every `getToken` request carries `forceRefresh`. It is `true` when the SDK
+needs a new token: the last one was refused, has expired, or did not cover the
+scopes now needed. A provider with its own cache must bypass that cache when
+the flag is set, because returning the cached token again gets the same
+refusal:
+
+```typescript
+import type { AuthTokenRequest, AuthTokenResult } from "@usearete/sdk";
+
+let cached: AuthTokenResult | undefined;
+
+async function getToken(request?: AuthTokenRequest): Promise<AuthTokenResult> {
+  const fresh =
+    cached?.expiresAt !== undefined &&
+    cached.expiresAt * 1000 > Date.now() + 30_000;
+  if (cached && fresh && !request?.forceRefresh) return cached;
+  cached = await signIn.fetchAreteCredential(); // your app's sign-in
+  return cached;
+}
+
+const session = await createSession(
+  { stacks: { app: MY_STACK } },
+  { auth: { tokenKind: "api", getToken } },
+);
+```
+
+With `tokenKind: 'api'`, `tokenEndpoint` request bodies carry `forceRefresh`
+too, so a token endpoint that caches can do the same.
+
+### Arete API client
+
+A client or session whose `auth` carries an API credential (a `secretKey`, or
+`tokenKind: 'api'`) builds an authenticated Arete API client and exposes it as
+`session.platform` or `client.platform`. With a publishable key, Arete session
+tokens or no auth, `platform` is `undefined`. `createSession` options and
+`Arete.connect` options take two related settings:
+
+- `apiUrl`: the Arete API origin, with or without `/api`. Defaults to
+  `https://api.arete.run`.
+- `platform`: an Arete API client to use instead of the one built from `auth`.
+
+To make Arete API calls without a session, create a client directly:
+
+```typescript
+import { AreteError, createPlatformHttpClient } from "@usearete/sdk";
+
+const platform = createPlatformHttpClient({
+  auth: { secretKey: process.env.ARETE_API_KEY },
+});
+
+try {
+  // A hypothetical route, for illustration only.
+  const { body } = await platform.request<{ items: string[] }>({
+    path: "/example/items",
+  });
+  console.log(body.items);
+} catch (error) {
+  if (error instanceof AreteError) console.error(error.code, error.apiProblem());
+  throw error;
+}
+```
+
+`createPlatformHttpClient(options)` takes:
+
+- `apiUrl`: as above.
+- `auth`: `secretKey`, `token`, `getToken` or `tokenEndpoint`, each read as an
+  API credential. Outside browsers an unset `auth` falls back to
+  `ARETE_API_KEY`, then to the `a4` login, which is sent only to the Arete API
+  it was stored for.
+- `fetch`: a custom fetch implementation.
+
+It refuses a publishable key with `INVALID_CONFIG`, because a publishable key
+identifies a visitor to an app, not an account. It also refuses
+`tokenKind: 'session'` with a token strategy, since Arete API routes don't take
+stack or gateway sessions, and throws `AUTH_REQUIRED` when there is no
+credential at all. It never mints a session.
+
+`platform.request({ path, method, body, signal })` sends `path` under
+`platform.apiUrl` (which ends in `/api`), with `body` serialized as JSON, and
+resolves to `{ status, body }`. A non-2xx answer rejects with an `AreteError`
+whose `details` carry `status`, `wireErrorCode`, the parsed `body` and
+`apiProblem`. After a 401, a client whose credential comes from `getToken` or
+`tokenEndpoint` fetches a fresh one and retries once.
+
+---
+
+## Arete API calls in SDK extensions
+
+An SDK extension's program operations and reads receive a
+`ProgramOperationContext` with `chain`, `wallet`, `program` and `platform`.
+`context.platform` is the client's Arete API client, so an extension can call
+the Arete API without handling credentials or `fetch` itself. Stack extensions
+receive the connected client and read `client.platform`.
+
+`platform` exists only when the app's `auth` carries an API credential: a
+secret key on a server, or `tokenKind: 'api'` for a signed-in Arete user. With
+a publishable key it is `undefined`. A publishable key identifies a visitor to
+an app, never the account, so it never gets an Arete API client. Public data
+reaches the browser through the program's own session transports instead:
+Program Read, the Solana gateway and stack views.
+
+Check for it and fail with a message that says what the app must configure:
+
+```typescript
+import { defineProgramExtensions } from "@usearete/sdk/program";
+import type { VAULT } from "./vault-core.js";
+
+interface Watchlist {
+  addresses: string[];
+}
+
+export default defineProgramExtensions<typeof VAULT>()({
+  createRead(context) {
+    return {
+      async watchedVaults() {
+        const platform = context.platform;
+        if (!platform) {
+          throw new Error(
+            "read.watchedVaults calls the Arete API: authenticate with a " +
+              "secret key on a server, or auth.tokenKind 'api' for a signed-in " +
+              "Arete user. A publishable key cannot call it.",
+          );
+        }
+        // A hypothetical route, for illustration only.
+        const { body } = await platform.request<Watchlist>({
+          path: "/example/watchlist",
+        });
+        return context.program.accounts.Vault.fetchMany(body.addresses);
+      },
+    };
+  },
+});
+```
+
+The app calls it like any other extension read:
+
+```typescript
+const session = await createSession(
+  { programs: { vault: VAULT_PROGRAM } },
+  { auth: { secretKey: process.env.ARETE_API_KEY } },
+);
+
+const vaults = await session.programs.vault.read.watchedVaults();
+```
+
+Extension code imports only types for this (`PlatformHttpClient`,
+`PlatformHttpRequest`, `PlatformHttpResponse` and `AuthConfig` are exported
+from `@usearete/sdk/program`), so it never bundles the client runtime. An
+extension can also accept a `PlatformHttpClient` the app passes in, for code
+that runs outside a connected client.
 
 ---
 
@@ -925,6 +1156,24 @@ Subscribe to connection state changes. Returns unsubscribe function.
 ### `session.close()`
 
 Closes every connection owned by the session.
+
+### `session.platform` and `client.platform`
+
+The authenticated Arete API client, a `PlatformHttpClient`, when the `auth`
+carries an API credential (a secret key, or `tokenKind: 'api'`), and
+`undefined` otherwise. A session shares its client with every member that has
+no `auth` of its own, and SDK extensions receive it as `context.platform`. Set
+`apiUrl` or pass your own `platform` in the session or connect options. See
+[Arete API client](#arete-api-client).
+
+### `createPlatformHttpClient(options?)`
+
+Creates a `PlatformHttpClient` for Arete API calls with the caller's own
+credential. `options.apiUrl` defaults to `https://api.arete.run`;
+`options.auth` takes `secretKey`, `token`, `getToken` or `tokenEndpoint`, and a
+publishable key throws `INVALID_CONFIG`; `options.fetch` overrides fetch.
+`request({ path, method?, body?, signal? })` resolves to `{ status, body }`. See
+[Arete API client](#arete-api-client).
 
 ---
 
