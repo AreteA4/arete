@@ -1,26 +1,37 @@
 <!-- BEGIN:arete v2 -->
 ## Arete
 
-This project uses Arete for typed Solana views and program operations. The
-`a4` CLI is the interface; the installed `arete`, `arete-streams`,
-`arete-programs`, `arete-stack-authoring`, and `arete-deploy` skills hold the
-detailed workflows.
+This project uses Arete for Solana protocols, typed views and program
+operations. The `a4` CLI is the interface; the six installed skills hold the
+detailed workflows: `arete` (discovery and dependencies), `arete-streams`
+(live views), `arete-programs` (accounts and transactions),
+`arete-protocols` (authoring, running and calling protocols),
+`arete-stack-authoring` (custom read models) and `arete-deploy` (publication
+and deployment).
 
-What Arete can do, for Solana programs and data: find programs and live-data
-stacks from intent in a public catalog; read live views once (`a4 get`, MCP
-`read_view`) or stream them; generate typed TypeScript/React, Rust and Python
-SDKs; read program accounts and chain state; derive PDAs and build
-instructions, transactions and multi-step flows, signed and submitted through
-application wallets; and author and deploy custom live read models (stacks).
+What Arete can do, for Solana programs and data: compose existing programs
+into protocols with typed steps, guards and roles, develop them in cloud
+mainnet forks (`a4 dev`), and call them from apps and agents; find programs
+and live-data stacks from intent in a public catalog; read live views once
+(`a4 get`, MCP `read_view`) or stream them; generate typed TypeScript/React,
+Rust and Python SDKs; read program accounts and chain state; derive PDAs and
+build instructions, transactions and multi-step flows, signed and submitted
+through application wallets; and author and deploy custom live read models
+(stacks).
 
 - Health check first: `a4 doctor --summary --json` (ready when top-level
   `status` is `"ok"`; exit 0 can include warnings; `checks` lists only what
   needs attention, and an `info` check there is optional unless you need
   that capability). If `a4` is missing:
   `curl -fsSL https://arete.run/install.sh | sh`
-- Start from intent with `a4 know search --query "..." --json`, then inspect
-  exact descriptors with `a4 explore stack <ref> --json` or
-  `a4 explore program <ref> --json`.
+- Catalog or knowledge: the catalog (`a4 explore catalog --query "..."
+  --json`) finds installable programs and stacks; knowledge
+  (`a4 know search --query "..." --json`) explains what an on-chain protocol
+  does and what its instructions mean. Installs always come from the catalog
+  descriptor (`a4 explore stack <ref> --json`,
+  `a4 explore program <ref> --json`), never from knowledge results.
+- New protocol: `a4 protocol init <dir> && cd <dir>`, then `a4 init -y`
+  inside it; the `arete-protocols` skill has the workflow.
 - One-off live read, no code: `a4 explore stack <ref> --json` lists the
   views, then `a4 get <Entity>/<view> --stack <ref> --limit 1 --select
   <paths>` (or the MCP `read_view` tool). `<Entity>/latest` is the current
@@ -47,6 +58,9 @@ application wallets; and author and deploy custom live read models (stacks).
 - Live data in your loop: the `arete` MCP server
   (`a4 --profile agent mcp`) is configured;
   use it for exploration, use generated SDKs for shipped code.
+- MCP servers load when the host restarts. Until then, use the `a4` CLI
+  equivalents (`a4 get`, `a4 know`, `a4 explore`, `a4 protocol actions`,
+  `a4 dev step`). Don't wait for a restart.
 - Building or preparing does not authorize transaction submission or hosted
   deployment. Keep external mutations within the user's request.
 - Never `cargo install a4-cli`; update with `a4 self update`.

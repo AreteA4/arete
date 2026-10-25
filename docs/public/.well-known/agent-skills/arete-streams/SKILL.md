@@ -1,9 +1,9 @@
 ---
 name: arete-streams
-description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server. Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
+description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server, and stream a local protocol's stack from a4 dev with a4 stream --dev (including its TUI). Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
 metadata:
-  version: "1.8.2"
-  min-cli: ">=0.36.0"
+  version: "1.9.0"
+  min-cli: ">=0.42.0"
 ---
 
 # Query and Subscribe to Arete Views
@@ -53,6 +53,45 @@ a4 stream <Entity>/<view> --stack <stack-ref> --ops snapshot,upsert,patch,remove
 `a4 get` also takes `--where` and `--timeout`. Run `a4 stream --help` for the current filtering, selection, cursor, history, snapshot, and TUI options. Do not invent MCP tool names; inspect the configured server's exposed tools.
 
 Before reporting token amounts, check each field's `amount` in `a4 explore stack <stack-ref> --views <Entity>/<view> --json` (or MCP `explore_stack_schema`): `scale: "ui"` values are whole tokens, `scale: "raw"` values are base units (divide by `10^decimals`; for SOL these are lamports), and `counterpart` names the same amount at the other scale. When the stack does not fix the decimals, `amount` has `decimalsFrom` instead of `decimals`: read the decimals from that field (for example the mint's metadata) before converting, and if it is unavailable, report the raw amount rather than guessing.
+
+## Stream a Local Protocol (`a4 dev`)
+
+While `a4 dev up` runs a protocol project, `a4 stream --dev` streams that
+protocol's generated stack from the selected cloud dev environment. It finds the session
+(`.arete/dev/session.json` at or above the current directory, or
+`--project <dir>`), mints its own session tokens, and follows redeploys
+instead of exiting (`— redeployed: … → …` on stderr):
+
+```bash
+a4 stream --dev                                  # protocols, versions, deployments, counts and views
+a4 stream --dev <protocol>                       # every top-level view, one labelled feed
+a4 stream --dev <protocol> Activity              # one view: Instances, Activity, Participants, or an id
+a4 stream --dev <protocol> --instance <id>       # one instance's state row and its activity
+a4 stream --dev --all                            # every view of the stack, one feed
+a4 stream --dev --tui                            # browse protocols, views, rows and instances
+```
+
+- A protocol is named by its spec name, slug, stack or deployment short id;
+  with one protocol it can be left out. `--instance` takes the instance UUID
+  (what `a4 dev step` and the protocol API print) or the short id rows are
+  keyed by.
+- Rows carry the short id as `instance`; `a4 stream` adds the UUID as
+  `instance_id` in every output but `--raw`. Activity rows name the step's
+  account as `activity_account`; instance rows carry per-step counters such
+  as `<step>_protocol_amount`. Each JSON line is labelled with `stack`,
+  `protocol` and (with `--raw`) `view`.
+- The TUI opens on the protocol's views when there is one. Enter opens a
+  view or an instance (its state, machine state in the header, and its
+  per-instance views), Esc goes back, Tab switches panes or tabs, `/`
+  filters, `q` quits. `--all --tui` adds Shift-Tab and `1`-`9` to jump
+  between view tabs.
+- The cloud environment persists across CLI restarts. Resetting or restoring
+  it can change the chain state underlying the rows; inspect the environment
+  before interpreting data after such an operation.
+- The usual filters (`--where`, `--select`, `--ops`, `--take`, `--first`,
+  `--no-snapshot`, `--duration`) apply. For another WebSocket client,
+  `a4 dev status --json` prints a stack URL with a valid token
+  (`stackSession.streamUrl`) for `a4 stream --url` or your own code.
 
 ## Install and Inspect Generated Code
 

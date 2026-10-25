@@ -59,7 +59,7 @@ fn install_fake_npx(bin: &Path) {
 # (PATH holds only this directory, so use absolute tool paths)
 printf '%s\n' "$@" > npx-args.txt
 for agent in .agents .claude; do
-  for skill in arete arete-streams arete-programs arete-stack-authoring arete-deploy; do
+  for skill in arete arete-streams arete-programs arete-stack-authoring arete-deploy arete-protocols; do
     /bin/mkdir -p "$agent/skills/$skill"
     printf '# %s\n' "$skill" > "$agent/skills/$skill/SKILL.md"
   done
@@ -206,10 +206,16 @@ fn init_in_empty_dir_without_node_then_doctor_warns_on_skills() {
         .starts_with("npx skills add AreteA4/skills"));
     assert_eq!(items["mcp:claude-code"]["status"], "created");
     assert_eq!(items["mcp:claude-code"]["path"], ".mcp.json");
+    let warnings = report["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 2, "{warnings:?}");
     assert_eq!(
-        report["warnings"],
-        serde_json::json!(["No coding agent detected; wrote agent-independent files only."])
+        warnings[0],
+        "No coding agent detected; wrote agent-independent files only."
     );
+    assert!(warnings[1]
+        .as_str()
+        .unwrap()
+        .starts_with("MCP servers load when the host restarts."));
     assert_eq!(
         report["next"],
         serde_json::json!(["a4 doctor --json", "a4 explore --json"])

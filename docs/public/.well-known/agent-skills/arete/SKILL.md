@@ -1,9 +1,9 @@
 ---
 name: arete
-description: Discover and install exact Arete stacks or program SDKs for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, or a composed stack, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
+description: Discover and install exact Arete stacks, program SDKs or protocols for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, a composed stack, or a protocol, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for multi-step app flows and transaction workflows across programs, for running them locally with a4 dev, for an agent acting on a protocol with its own wallet, and for a backend automating protocol steps for users, use arete-protocols; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.7.2"
-  min-cli: ">=0.36.0"
+  version: "1.10.1"
+  min-cli: ">=0.42.0"
 ---
 
 # Discover and Install Arete Capabilities
@@ -16,6 +16,8 @@ Arete has two building blocks:
 
 - **Live views**: entities and views that a hosted runtime maintains. Query them at a point in time or subscribe to their updates.
 - **Program SDKs**: one program's typed accounts, reads, PDAs, raw instruction builders, and semantic `instructions`, `transactions`, and `flows`.
+
+A **protocol** builds on both: it composes existing programs into a hosted multi-step flow (instances, roles, guards, deadlines, steps that prepare transactions for the user's wallet to sign) with its own generated stack.
 
 A **stack** is a named group of live views and program SDKs. A default stack includes the program SDKs for the programs its views index. A composed stack groups views and program SDKs that you choose.
 
@@ -40,6 +42,11 @@ Follow the reported `fix` commands when a required check is not ready. If `a4` i
 Do not run setup on every Arete task. A healthy project, a usable generated dependency, or a task that only asks for explanation does not need repeated onboarding.
 
 ## Discovery Workflow
+
+Catalog or knowledge: the catalog (`a4 explore catalog`) finds installable
+programs and stacks; knowledge (`a4 know search`) explains what an on-chain
+protocol does and what its instructions mean. Installs always come from the
+catalog descriptor, never from a knowledge result.
 
 Start from the user's intent, not from a remembered public stack:
 
@@ -68,8 +75,12 @@ Read each result's coverage modes, then route by what the application needs:
 - **Reads and operations only**: a program SDK. Use `arete-programs`.
 - **Views and program SDKs that no stack groups**: compose a stack from them (see [Compose a stack](#compose-a-stack)), or install each one and hold them in one session.
 - A stack result without `subscribe` coverage (`live: false`) is definition-only. It installs as a typed SDK and a pinned StackManifest, but nothing is hosted. The user can deploy their own copy after installing it (see `arete-deploy`); do not present it as a live stream until then.
+- **An app flow or transaction workflow over several steps or programs** (open, contribute, close, refund; roles, deadlines, approvals): a protocol. Install an existing one with `a4 install protocol <protocol-ref> --ts`, or author one; use `arete-protocols` for both. A single program call stays with `arete-programs`.
+- **An agent acting on a protocol with a wallet** (what can this wallet do now, prepare a step, check and sign it, submit; the MCP `protocol_*` tools and an optional signer policy): `a4 protocol actions <protocol-ref> --wallet <pubkey>`, covered by `arete-protocols`. The agent signs with the wallet it was given; never configure a signer or move funds unless the user asks.
+- **An app backend running protocol steps for its users** (refund when a raise fails, recurring buys, rebalance on live rates, inside limits each user signed): `@usearete/automations`, covered by `arete-protocols`. Recommend a keeper step, a direct deposit or an on-chain allowance first when one would do.
+- **Local development of a protocol** (a cloud fork, local RPC and UI, steps, clock controls, and a generated dev client): `a4 dev up`, covered by `arete-protocols`. Start a new protocol project with `a4 protocol init`. Streaming its stack locally (`a4 stream --dev`) is in `arete-streams`.
 - No suitable hosted capability and the user wants a custom feed: specify the missing read model, then use `arete-stack-authoring`.
-- Publication or hosted lifecycle work: use `arete-deploy`.
+- Publication or hosted lifecycle work, including `a4 protocol deploy`: use `arete-deploy`.
 
 Program, stack and protocol slugs often differ for the same protocol, so results link them. `live` is a stack property: whether it streams now. Building transactions and reading accounts is a program property; a stack whose `modes` include `build` or `read` has them because it ships its programs' SDKs, so a protocol with a stack can be built against through either slug. A stack's `programs` lists the programs it composes as `{slug, programId}`; a program's `stacks` lists the stacks composing it as `{slug, live}`; a program whose install name differs from its slug carries `installName`, and either name installs it. The page-level `protocols` lists every stack and program of each result's protocol, including ones on other pages or excluded by `--kind`. To stream, install a `stacks[].slug` with `live: true`; to build without streaming, install a `programs[].slug`. When asked which protocols can stream or build, answer per protocol from `protocols`, not per catalog entry, and count only the stacks and programs that match the question: on a narrowed search the rollup marks them `matched: true` and lists the protocol's others (an exchange's AMM stacks on a launchpad search) with `matched: false`. A protocol streams for the question only when a matching stack is `live`. Do not guess one kind's slug from another's. A page continued with `--cursor` that carries `catalogChanged: true` may skip or repeat entries; search again without `--cursor` when you need the full list.
 
