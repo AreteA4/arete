@@ -83,6 +83,7 @@ describe('@usearete/sdk/program', () => {
   it('exports every runtime helper a generated program module or its extensions import', () => {
     expect(Object.keys(program).sort()).toEqual([
       'ASSOCIATED_TOKEN_PROGRAM_ADDRESS',
+      'AreteError',
       'InstructionParamsError',
       'PROGRAM_OPERATION_EXTENSIONS',
       'ReadRequestError',

@@ -102,7 +102,7 @@ pub use entity::Stack;
 pub use error::{
     ApiProblemV1, AreteError, AuthErrorCode, GapCode, ReadyRecoveryAction, ReadyRecoveryActionV1,
     RecoveryAction, SocketIssue, StackVersionRefusal, StreamGap, UsageLimit,
-    API_PROBLEM_SCHEMA_VERSION, CLAIM_AGENT_MATERIALIZER_PATH,
+    API_PROBLEM_SCHEMA_VERSION, CLAIM_AGENT_MATERIALIZER_PATH, UNTRUSTED_CREDENTIAL_DESTINATION,
 };
 pub use frame::{
     parse_frame, parse_server_message, parse_snapshot_entities, try_parse_subscribed_frame, Frame,

@@ -1,3 +1,7 @@
+import { resolveAuthConfig } from './auth-keys';
+import { shareApiCredential } from './api-credential';
+import { withTrustedApiUrl } from './credential-destination';
+import { defaultPlatformHttpClient, type PlatformHttpClient } from './platform-http';
 import {
   Arete,
   validateProgramReadDescriptor,
@@ -166,6 +170,10 @@ export interface SessionOptions<
   transport?: 'ws' | 'http';
   /** Shared fallback endpoints used when a member defines none of its own. */
   endpoints?: { http?: string; ws?: string };
+  /** Arete API origin for the session's platform client. Defaults to `https://api.arete.run`. */
+  apiUrl?: string;
+  /** The session's Arete API client; built from `auth` when omitted. */
+  platform?: PlatformHttpClient;
   /** Default execution settings shared by transaction/plan helpers on the session. */
   execution?: OperationExecutionOptions<any>;
   /** Signers available to every transaction executed through this session. */
@@ -390,6 +398,12 @@ export interface Session<
   readonly signerRegistry: SignerRegistry<any>;
   readonly chain: ChainClient;
   readonly transactions: TransactionTransport;
+  /**
+   * The session's authenticated Arete API client, shared with every member
+   * (`context.platform` in SDK extensions); `undefined` unless the auth
+   * carries an API credential (a secret key, or `tokenKind: 'api'`).
+   */
+  readonly platform: PlatformHttpClient | undefined;
   transaction(
     instructions: readonly BuiltInstruction[],
     options?: TransactionOptions
@@ -418,6 +432,8 @@ type SessionConnectionMemberOptions = Pick<
 type SessionConnectionOptions = Pick<
   SessionOptions,
   | 'wallet'
+  | 'apiUrl'
+  | 'platform'
   | 'auth'
   | 'fetch'
   | 'transport'
@@ -510,6 +526,8 @@ function resolveMemberConnectOptions(
     httpUrl,
     transport,
     auth: member?.auth ?? options?.auth,
+    // A member with its own auth builds its own API client.
+    ...(member?.auth ? { apiUrl: options?.apiUrl } : { apiUrl: options?.apiUrl, platform: options?.platform }),
     storage: member?.storage,
     autoConnect: member?.autoConnect,
     autoReconnect: member?.autoReconnect,
@@ -593,7 +611,7 @@ export async function createSession<
     : [options?: SessionOptions<TDef, TStackPrograms, TAuth, TProtocolKeyClass>]
 ): Promise<Session<TDef, TStackPrograms, SessionProtocolKeyClass<TAuth, TProtocolKeyClass>>> {
   type TKeyClass = SessionProtocolKeyClass<TAuth, TProtocolKeyClass>;
-  const options = args[0] as SessionOptions<TDef, TStackPrograms> | undefined;
+  const options = withSessionCredential(args[0] as SessionOptions<TDef, TStackPrograms> | undefined);
   const explicitStackEntries = Object.entries(definition.stacks ?? {});
   const explicitProgramEntries = Object.entries(definition.programs ?? {});
   const protocolEntries = Object.entries(definition.protocols ?? {});
@@ -954,6 +972,7 @@ export async function createSession<
     signerRegistry,
     chain,
     transactions,
+    platform: options?.platform,
     transaction(instructions, transactionOptions) {
       const defaults = options?.execution;
       const configuredSigners = transactionOptions?.signers ?? defaults?.signers;
@@ -1008,4 +1027,21 @@ export async function createSession<
   };
 
   return session;
+}
+
+/**
+ * The session's options with one shared API credential source in `auth`
+ * (every member, transport and the platform client fetch the credential
+ * through it) and the session's platform client. Omitted options are
+ * treated as `{}`, so the credential fallbacks apply the same way.
+ */
+function withSessionCredential<T extends SessionOptions<any, any>>(given: T | undefined): T {
+  const options = (given ?? {}) as T;
+  const fetchForAuth = ((input: RequestInfo | URL, init?: RequestInit) =>
+    (options.fetch ?? globalThis.fetch)(input, init)) as typeof fetch;
+  // An explicit apiUrl is trusted for a credential the app passed in `auth`.
+  const auth = shareApiCredential(withTrustedApiUrl(resolveAuthConfig(options.auth), options.apiUrl), fetchForAuth);
+  const platform = options.platform
+    ?? defaultPlatformHttpClient({ apiUrl: options.apiUrl, auth, fetch: fetchForAuth });
+  return { ...options, auth, platform } as T;
 }

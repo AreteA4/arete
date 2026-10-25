@@ -1,5 +1,6 @@
 import { createChainClient, type ChainClient } from './chain';
 import { ConnectionManager } from './connection';
+import { isApiCredentialAuth, withSessionMintEndpoint } from './api-credential';
 import { resolveAuthConfig } from './auth-keys';
 import {
   createTransactionTransport,
@@ -99,6 +100,11 @@ function bindingAuthConfig(
   // Resolve ARETE_API_KEY before the binding endpoint is filled in, so an
   // otherwise unconfigured client still authenticates.
   const runtimeAuth = resolveAuthConfig(configuredAuth);
+  // An API credential never reaches the gateway: the binding's session
+  // endpoint mints a binding-scoped session with it.
+  if (isApiCredentialAuth(runtimeAuth)) {
+    return withSessionMintEndpoint(runtimeAuth!, binding.auth.sessionEndpoint);
+  }
   if (hasRuntimeAuthStrategy(runtimeAuth)) return runtimeAuth;
   if (!binding.auth.required) return runtimeAuth;
   return { ...runtimeAuth, tokenEndpoint: binding.auth.sessionEndpoint };
@@ -131,7 +137,8 @@ export function createHostedSolanaGatewayTransports(
     binding: HostedSolanaGatewayCapabilityBinding
   ): BindingAuthentication => {
     const auth = bindingAuthConfig(binding, options.auth);
-    if (auth?.token !== undefined) {
+    const apiCredential = isApiCredentialAuth(auth);
+    if (auth?.token !== undefined && !apiCredential) {
       if (!auth.token) {
         throw new AreteError('Authentication token is empty', 'TOKEN_INVALID');
       }
@@ -145,8 +152,8 @@ export function createHostedSolanaGatewayTransports(
     }
 
     let manager: ConnectionManager | undefined;
-    if (auth && (auth.getToken || auth.tokenEndpoint)) {
-      const identity = hasRuntimeAuthStrategy(options.auth)
+    if (auth && (auth.getToken || auth.tokenEndpoint || apiCredential)) {
+      const identity = hasRuntimeAuthStrategy(options.auth) && !apiCredential
         ? 'runtime-auth-strategy'
         : `session-endpoint:${binding.auth.sessionEndpoint}`;
       manager = managers.get(identity);

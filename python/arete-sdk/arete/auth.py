@@ -25,11 +25,14 @@ from typing import (
 
 import httpx
 
-from arete._a4_profile import (
-    ProfileKey,
-    is_login_key_destination,
-)
+from arete._a4_profile import ProfileKey
 from arete._a4_profile import read_profile_key as read_profile_key_default
+from arete._credential_destination import (
+    A4_LOGIN,
+    ENV_API_KEY,
+    EXPLICIT_SECRET_KEY,
+    ensure_credential_may_reach,
+)
 from arete.errors import AreteError, AuthError
 
 if TYPE_CHECKING:  # arete.stack imports this module through arete.gateway.
@@ -331,6 +334,12 @@ class AuthConfig:
     copied by ``dataclasses.replace`` (binding paths copy the resolved config)
     and only applies while ``secret_key`` is still that key. Per config, so
     the same key passed explicitly elsewhere is unaffected."""
+    _env_secret_key: Optional[str] = field(default=None, repr=False, compare=False)
+    """Internal: set to ``secret_key`` when ``ARETE_API_KEY`` supplied it,
+    with the same lifetime rules as ``_a4_login_secret_key``."""
+    _explicit_api_url: Optional[str] = field(default=None, compare=False)
+    """Internal: an API URL the app configured in code (never one from a
+    descriptor). Its origin may receive an explicitly passed ``secret_key``."""
 
     @classmethod
     def from_api_key(cls, api_key: str, **kwargs) -> "AuthConfig":
@@ -440,7 +449,7 @@ def resolve_auth_config(
     env_key = (os.environ.get(ARETE_API_KEY_ENV) or "").strip()
     if env_key:
         if classify_api_key(env_key) != "publishable":
-            return _with_secret_key(config, env_key)
+            return replace(_with_secret_key(config, env_key), _env_secret_key=env_key)
         _warn_once(
             "publishable-in-env",
             f"{ARETE_API_KEY_ENV} holds a publishable key (a4_pk_...) and was "
@@ -605,20 +614,40 @@ def _stack_version_refusal_error(
     )
 
 
+def account_credential_source(config: Optional[AuthConfig]) -> Optional[str]:
+    """Which account credential ``config`` sends, if any: ``"a4 login"``,
+    ``"ARETE_API_KEY"`` or ``"secret key"`` (passed in code, including a
+    secret-class key given as ``publishable_key``). Publishable keys and tokens
+    are not account credentials."""
+    if config is None:
+        return None
+    if config.secret_key is None:
+        publishable = config.publishable_key
+        if publishable is not None and classify_api_key(publishable) == "secret":
+            return EXPLICIT_SECRET_KEY
+        return None
+    if config._a4_login_secret_key == config.secret_key:
+        return A4_LOGIN
+    if config._env_secret_key == config.secret_key:
+        return ENV_API_KEY
+    return EXPLICIT_SECRET_KEY
+
+
 def api_key_for_endpoint(config: Optional[AuthConfig], endpoint: str) -> Optional[str]:
     """The key sent as the bearer credential to ``endpoint``, if any.
 
-    A key taken from the ``a4`` login is only sent to the Arete API it was
-    stored for.
+    An account credential is only sent to a trusted Arete API origin (see
+    :mod:`arete._credential_destination`); any other destination raises
+    :class:`AuthError` with code ``UNTRUSTED_CREDENTIAL_DESTINATION`` before
+    anything is sent.
     """
     if config is None:
         return None
-    from_login = (
-        config.secret_key is not None
-        and config._a4_login_secret_key == config.secret_key
-    )
-    if from_login and not is_login_key_destination(endpoint):
-        return None
+    source = account_credential_source(config)
+    if source is not None:
+        ensure_credential_may_reach(
+            endpoint, source, api_url=config._explicit_api_url
+        )
     return config.api_key
 
 

@@ -117,6 +117,10 @@ set `ARETE_PROFILE` to pick one.
 origin-bound `publishableKey` instead, as in the React example below. Create
 one with `a4 auth keys create-publishable --origin <scheme://host[:port]>`.
 
+When your app's users are signed in to Arete, the session can act for the user
+instead: hand it the user's Arete API credential with `tokenKind: 'api'`. See
+[Sign in with an Arete API credential](/sdks/typescript/#sign-in-with-an-arete-api-credential).
+
 The stack already contains its default endpoints. Override them only when you
 deliberately want a local or alternate connection.
 

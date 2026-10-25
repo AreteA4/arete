@@ -403,10 +403,16 @@ export type AuthTokenRequest =
       readonly stackManifestHash?: string;
       /** Live alias paired with `stackManifestHash`, forwarded as `liveAlias`. */
       readonly liveAlias?: string;
+      /**
+       * True when the SDK needs a fresh token: the previous one was refused
+       * or is about to expire. A provider with its own cache should bypass
+       * it. Set on every request the SDK makes.
+       */
+      readonly forceRefresh?: boolean;
     }
-  | ({ readonly scopes: readonly string[] } & ProgramReadBindingAuthTarget)
-  | ({ readonly scopes: readonly string[] } & SolanaGatewayBindingAuthTarget)
-  | ({ readonly scopes: readonly string[] } & ProtocolDeploymentAuthTarget);
+  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & ProgramReadBindingAuthTarget)
+  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & SolanaGatewayBindingAuthTarget)
+  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & ProtocolDeploymentAuthTarget);
 
 export interface WebSocketFactoryInit {
   headers?: Record<string, string>;
@@ -435,6 +441,20 @@ export interface AuthConfig {
   secretKey?: string;
   /** Pre-minted static token (for server-side use) */
   token?: string;
+  /**
+   * What `token`, `getToken` and `tokenEndpoint` hand out.
+   *
+   * - `'session'` (the default): Arete session tokens, sent to stack,
+   *   gateway, program read and protocol endpoints as they are. A
+   *   targeted request tells `getToken` which binding a token is for.
+   * - `'api'`: the caller's own Arete API credential, for example the bearer
+   *   of a user signed in to an Arete dashboard. The SDK sends it only to
+   *   Arete API routes and to the session endpoints that mint the
+   *   binding-scoped sessions it needs (`getToken` is called with no target,
+   *   `tokenEndpoint` is POSTed `{"scopes": []}`); a stack, gateway or program
+   *   read endpoint only ever receives the minted session.
+   */
+  tokenKind?: 'session' | 'api';
   /** How the websocket token is sent to the server */
   tokenTransport?: 'query' | 'bearer';
   /** Custom websocket factory for non-browser environments */

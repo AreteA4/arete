@@ -101,8 +101,8 @@ export interface WebSocketHarnessOptions {
   readonly autoOpen?: boolean;
   /**
    * Install {@link FakeWebSocket} as `globalThis.WebSocket` when the runtime has
-   * none (Node 20 and older), because the SDK reads the standard readyState
-   * constants from it. Default `true`; `restore()` removes it again.
+   * none (Node 20 and older), for code that opens sockets without a
+   * `websocketFactory`. Default `true`; `restore()` removes it again.
    */
   readonly installGlobal?: boolean;
 }

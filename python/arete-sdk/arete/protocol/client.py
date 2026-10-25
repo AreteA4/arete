@@ -306,6 +306,10 @@ class ProtocolClient:
         )
 
         resolved = resolve_auth_config(auth)
+        # An api_url passed here may receive an explicitly passed key; the
+        # descriptor's URLs make nothing trusted.
+        if resolved is not None and _non_empty(api_url):
+            resolved = replace(resolved, _explicit_api_url=_non_empty(api_url))
         self.key_class: str = _runtime_key_class(resolved, key_class)
         if resolved is not None and resolved.token is not None and not resolved.token:
             raise AuthError("Authentication token is empty", AuthErrorCode.TOKEN_INVALID_FORMAT)

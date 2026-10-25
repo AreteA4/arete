@@ -215,7 +215,8 @@ async def test_create_steps_post_to_the_deployment_and_secret_keys_prepare_any_s
         assert str(request.url) == f"{API}/protocol-deployments/{DEPLOYMENT}/steps/create/prepare"
         return httpx.Response(200, json={"intent": INTENT, "transactions": []})
 
-    client, server = make_client(route, auth=AuthConfig(secret_key="a4_sk_test"))
+    # A secret key goes only to an API origin the app configured.
+    client, server = make_client(route, auth=AuthConfig(secret_key="a4_sk_test"), api_url=API)
     assert client.key_class == "secret"
     result = await client.prepare("create", wallet=WALLET, args={"deadline": "1"})
     assert result.ok
@@ -723,7 +724,7 @@ async def test_squads_onboarding_reads_the_proposer_builds_the_proposal_and_chec
             )
         raise AssertionError(f"unexpected {request.url}")
 
-    client, server = make_client(route, auth=AuthConfig(secret_key="a4_sk_test"))
+    client, server = make_client(route, auth=AuthConfig(secret_key="a4_sk_test"), api_url=API)
     proposer = await client.squads.proposer()
     assert proposer == {"pubkey": "Proposer1", "permissions": "initiate", "rootKeyId": "root-1"}
     built = await client.squads.add_proposer(

@@ -23,7 +23,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
-from urllib.parse import urlsplit
 
 if sys.version_info >= (3, 11):  # pragma: no cover - version dependent
     import tomllib as _toml
@@ -33,9 +32,10 @@ else:  # pragma: no cover - version dependent
     except ImportError:
         _toml = None  # type: ignore[assignment]
 
+from arete._credential_destination import A4_LOGIN, DEFAULT_API_URL, credential_may_reach
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_API_URL = "https://api.arete.run"
 PROFILE_ENV = "ARETE_PROFILE"
 CREDENTIALS_PATH_ENV = "ARETE_CREDENTIALS_PATH"
 AGENT_PROFILE = "agent"
@@ -50,19 +50,7 @@ def is_login_key_destination(url: str) -> bool:
     A login key is never sent anywhere else, such as a session endpoint a
     stack names on another host.
     """
-    try:
-        parts = urlsplit(url)
-        port = parts.port
-    except ValueError:
-        return False
-    host = (parts.hostname or "").rstrip(".").lower()
-    return (
-        parts.scheme == "https"
-        and host == urlsplit(DEFAULT_API_URL).hostname
-        and port in (None, 443)
-        and parts.username is None
-        and parts.password is None
-    )
+    return credential_may_reach(url, A4_LOGIN)
 
 
 @dataclass(frozen=True)

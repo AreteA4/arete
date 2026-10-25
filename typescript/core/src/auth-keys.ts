@@ -1,6 +1,10 @@
-import { isA4LoginKeyDestination, readA4ProfileKey } from './a4-profile';
+import { readA4ProfileKey } from './a4-profile';
+import { assertCredentialDestination, implicitSecretKeySource, withImplicitSecretKey } from './credential-destination';
+import { isBrowserEnvironment, readEnvironmentVariable } from './environment';
 import type { AuthConfig } from './types';
 import { AreteError } from './types';
+
+export { isBrowserEnvironment, readEnvironmentVariable };
 
 /** Environment variable read for a secret-class key outside browsers. */
 export const ARETE_API_KEY_ENV = 'ARETE_API_KEY';
@@ -25,65 +29,11 @@ export function classifyApiKey(key: string): ApiKeyClass {
   return 'unknown';
 }
 
-/**
- * True in a browser page: both `window` and `document` exist. Web workers,
- * service workers, edge runtimes, SSR (Node/Bun) and Deno have no `document`
- * and count as server-side.
- */
-export function isBrowserEnvironment(): boolean {
-  const scope = globalThis as { window?: unknown; document?: unknown };
-  return typeof scope.window === 'object'
-    && scope.window !== null
-    && typeof scope.document === 'object'
-    && scope.document !== null;
-}
-
-interface DenoEnvironment {
-  env?: { get?: (name: string) => string | undefined };
-  permissions?: {
-    querySync?: (descriptor: { name: 'env'; variable: string }) => { state?: string };
-  };
-}
-
-/**
- * Read an environment variable in Node, Bun or Deno without prompting for or
- * failing on missing permissions. Browsers have no environment.
- */
-export function readEnvironmentVariable(name: string): string | undefined {
-  try {
-    const deno = (globalThis as { Deno?: DenoEnvironment }).Deno;
-    if (deno) {
-      // Reading without --allow-env throws or prompts; ask first.
-      const state = deno.permissions?.querySync?.({ name: 'env', variable: name })?.state;
-      if (state !== 'granted') return undefined;
-      const value = deno.env?.get?.(name);
-      return typeof value === 'string' ? value : undefined;
-    }
-    const value = (globalThis as { process?: { env?: Record<string, string | undefined> } })
-      .process?.env?.[name];
-    return typeof value === 'string' ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 const warned = new Set<string>();
-
-/**
- * Marks a resolved config whose `secretKey` came from the `a4` login. It holds
- * that key, so the mark is carried through object spreads (binding paths copy
- * the resolved config) and only applies while `secretKey` is still that key:
- * a copy given another `secretKey` is no longer restricted. Per config, never
- * process-wide, so the same key passed explicitly elsewhere is unaffected.
- */
-const A4_LOGIN_SECRET_KEY: unique symbol = Symbol('arete.a4LoginSecretKey');
-
-type MarkedAuthConfig = AuthConfig & { [A4_LOGIN_SECRET_KEY]?: string };
 
 /** True when `auth.secretKey` was supplied by the `a4` login fallback. */
 export function secretKeyFromA4Login(auth: AuthConfig | undefined): boolean {
-  const marked = auth as MarkedAuthConfig | undefined;
-  return marked?.secretKey !== undefined && marked[A4_LOGIN_SECRET_KEY] === marked.secretKey;
+  return implicitSecretKeySource(auth) === 'a4 login';
 }
 
 function warnOnce(id: string, message: string): void {
@@ -173,7 +123,7 @@ export function resolveAuthConfig(
   const environmentKey = readEnvironmentVariable(ARETE_API_KEY_ENV)?.trim();
   if (environmentKey) {
     if (classifyApiKey(environmentKey) !== 'publishable') {
-      return { ...auth, secretKey: environmentKey };
+      return withImplicitSecretKey(auth, environmentKey, 'ARETE_API_KEY');
     }
     warnOnce(
       'publishable-in-env',
@@ -191,12 +141,7 @@ export function resolveAuthConfig(
     );
   }
   if (profile.key && classifyApiKey(profile.key) === 'secret') {
-    const resolved: MarkedAuthConfig = {
-      ...auth,
-      secretKey: profile.key,
-      [A4_LOGIN_SECRET_KEY]: profile.key,
-    };
-    return resolved;
+    return withImplicitSecretKey(auth, profile.key, 'a4 login');
   }
   return auth;
 }
@@ -210,15 +155,25 @@ export const NO_API_KEY_HINT =
   + 'or set ARETE_API_KEY, or pass auth.secretKey.';
 
 /**
- * The key sent as the bearer credential to `endpoint`, if any. A key taken
- * from the `a4` login is only sent to the Arete API it was stored for.
+ * The key sent as the bearer credential to `endpoint`, if any. A secret key
+ * (or a secret-class key given as `publishableKey`) is an account
+ * credential: for an endpoint off the trusted Arete API origins this throws `UNTRUSTED_CREDENTIAL_DESTINATION` rather than send it
+ * (see `credential-destination.ts`). A publishable key goes as it is.
  */
 export function tokenEndpointApiKey(
   auth: AuthConfig | undefined,
   endpoint: string
 ): string | undefined {
-  if (secretKeyFromA4Login(auth) && !isA4LoginKeyDestination(endpoint)) return undefined;
-  return auth?.secretKey ?? auth?.publishableKey;
+  if (auth?.secretKey !== undefined) {
+    assertCredentialDestination(auth, endpoint, implicitSecretKeySource(auth) ?? 'auth.secretKey');
+    return auth.secretKey;
+  }
+  // A secret-class key given as publishableKey (allowed outside browsers) is
+  // still an account credential.
+  if (auth?.publishableKey !== undefined && classifyApiKey(auth.publishableKey) === 'secret') {
+    assertCredentialDestination(auth, endpoint, 'auth.publishableKey');
+  }
+  return auth?.publishableKey;
 }
 
 /** True when `headers` carries its own `Authorization` header. */

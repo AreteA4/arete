@@ -1,6 +1,6 @@
 use arete_a4_sdk::{
-    Arete, AreteError, AuthErrorCode, ConnectionState, SocketIssue, Stack, StackVersionRefusal,
-    TokenTransport, ViewBuilder, Views,
+    Arete, AreteError, AuthConfig, AuthErrorCode, ConnectionState, SocketIssue, Stack,
+    StackVersionRefusal, TokenTransport, ViewBuilder, Views, UNTRUSTED_CREDENTIAL_DESTINATION,
 };
 use axum::{
     extract::State,
@@ -245,10 +245,20 @@ async fn forwards_secret_key_to_the_token_endpoint() {
     let ws_server = spawn_websocket_server(handshake_tx, refresh_tx).await;
     let token_endpoint = spawn_token_endpoint(vec![3600]).await;
 
+    // The token endpoint is on the API the app configured in code, so the
+    // key passed in code may go there.
+    let api_url = token_endpoint
+        .url
+        .trim_end_matches("/ws/sessions")
+        .to_string();
     let client = Arete::<TestStack>::builder()
         .url(&ws_server.url)
-        .secret_key("a4_ak_test_123")
-        .token_endpoint(token_endpoint.url.clone())
+        .auth(
+            AuthConfig::default()
+                .with_secret_key("a4_ak_test_123")
+                .with_token_endpoint(token_endpoint.url.clone())
+                .with_api_url(api_url),
+        )
         .connect()
         .await
         .expect("client should connect with a secret key");
@@ -272,6 +282,52 @@ async fn forwards_secret_key_to_the_token_endpoint() {
 
     client.disconnect().await;
     ws_server.shutdown().await;
+    token_endpoint.shutdown().await;
+}
+
+#[tokio::test]
+async fn refuses_to_send_a_secret_key_to_an_unconfigured_token_endpoint() {
+    let token_endpoint = spawn_token_endpoint(vec![3600]).await;
+
+    // The refusal comes before any connection, so the socket URL is never
+    // dialled.
+    let error = Arete::<TestStack>::builder()
+        .url("ws://127.0.0.1:9/never-dialled")
+        .secret_key("a4_ak_test_123")
+        .token_endpoint(token_endpoint.url.clone())
+        .connect()
+        .await
+        .err()
+        .expect("a secret key must not go to a token endpoint on another origin");
+
+    let origin = token_endpoint.url.trim_end_matches("/ws/sessions");
+    match &error {
+        AreteError::UntrustedCredentialDestination {
+            origin: refused,
+            credential,
+            ..
+        } => {
+            assert_eq!(refused, origin);
+            assert_eq!(*credential, "secret key");
+        }
+        other => panic!("expected an untrusted destination refusal, got {other:?}"),
+    }
+    let message = error.to_string();
+    assert!(
+        message.starts_with(UNTRUSTED_CREDENTIAL_DESTINATION),
+        "{message}"
+    );
+    assert!(!message.contains("test_123"), "{message}");
+    assert!(
+        token_endpoint
+            .state
+            .authorization_headers
+            .lock()
+            .await
+            .is_empty(),
+        "nothing should reach the token endpoint"
+    );
+
     token_endpoint.shutdown().await;
 }
 

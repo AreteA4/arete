@@ -24,7 +24,7 @@ function binding(
     auth: {
       required: true,
       mode: 'signed_session',
-      sessionEndpoint: 'https://api.example.test/ws/sessions',
+      sessionEndpoint: 'https://api.arete.run/ws/sessions',
       jwksUrl: 'https://api.example.test/.well-known/jwks.json',
       tokenTransport: 'bearer',
       audience: 'arete:solana-gateway',
@@ -176,16 +176,18 @@ describe('hosted Solana gateway transports', () => {
       .resolves.toEqual({ signature: 'signature' });
 
     expect(tokenRequests).toEqual([
-      { targetKind: 'solana-gateway-binding', targetId: GATEWAY_ID, scopes: ['read'] },
+      { targetKind: 'solana-gateway-binding', targetId: GATEWAY_ID, scopes: ['read'], forceRefresh: false },
       {
         targetKind: 'solana-gateway-binding',
         targetId: GATEWAY_ID,
         scopes: ['transaction:inspect'],
+        forceRefresh: false,
       },
       {
         targetKind: 'solana-gateway-binding',
         targetId: GATEWAY_ID,
         scopes: ['transaction:send'],
+        forceRefresh: false,
       },
     ]);
     expect(gatewayRequests.map(({ url }) => url)).toEqual([
@@ -258,5 +260,105 @@ describe('hosted Solana gateway transports', () => {
     await expect(transactions.sendTransaction('signed')).rejects.toMatchObject({ status: 401 });
     expect(getToken).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('hosted Solana gateway transports with an API credential (tokenKind: api)', () => {
+  const SESSION_ENDPOINT = 'https://api.arete.run/ws/sessions';
+
+  function gatewayFetch(options: { rejectFirstMint?: boolean } = {}) {
+    const mints: Array<{ authorization: string | null; body: Record<string, unknown> }> = [];
+    const gateway: Array<{ url: string; authorization: string | null }> = [];
+    let rejectMint = options.rejectFirstMint ?? false;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const authorization = new Headers(init?.headers).get('authorization');
+      if (url === SESSION_ENDPOINT) {
+        const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+        mints.push({ authorization, body });
+        if (rejectMint) {
+          rejectMint = false;
+          return new Response(JSON.stringify({ error: 'expired', code: 'token-expired' }), { status: 401 });
+        }
+        const scopes = body.scopes as string[];
+        return new Response(JSON.stringify({
+          token: `gateway-session:${scopes.join('+')}`,
+          expires_at: Math.floor(Date.now() / 1000) + 300,
+          scopes,
+        }), { status: 200 });
+      }
+      gateway.push({ url, authorization });
+      if (url.endsWith('/chain/exists/account')) {
+        return new Response(JSON.stringify({ exists: true }), { status: 200 });
+      }
+      if (url.endsWith('/transactions/v1/send')) {
+        return new Response(JSON.stringify({ signature: 'signature' }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    return { fetch: fetchMock as typeof fetch, mints, gateway };
+  }
+
+  it('mints binding sessions with a static API bearer and never sends it to the gateway', async () => {
+    const { fetch, mints, gateway } = gatewayFetch();
+    const transports = createHostedSolanaGatewayTransports(BINDINGS, {
+      auth: { token: 'dashboard-login', tokenKind: 'api' },
+      fetch,
+    });
+
+    await transports.chain.exists('account');
+    await transports.chain.exists('account');
+    await expect(transports.transactions.sendTransaction('signed'))
+      .resolves.toEqual({ signature: 'signature' });
+
+    expect(mints).toEqual([
+      {
+        authorization: 'Bearer dashboard-login',
+        body: { targetKind: 'solana-gateway-binding', targetId: GATEWAY_ID, scopes: ['read'] },
+      },
+      {
+        authorization: 'Bearer dashboard-login',
+        body: { targetKind: 'solana-gateway-binding', targetId: GATEWAY_ID, scopes: ['transaction:send'] },
+      },
+    ]);
+    expect(gateway.map(({ authorization }) => authorization)).toEqual([
+      'Bearer gateway-session:read',
+      'Bearer gateway-session:read',
+      'Bearer gateway-session:transaction:send',
+    ]);
+  });
+
+  it('asks getToken for the API credential with no target, and again when a mint is refused', async () => {
+    const { fetch, mints, gateway } = gatewayFetch({ rejectFirstMint: true });
+    const requests: Array<AuthTokenRequest | undefined> = [];
+    let issued = 0;
+    const transports = createHostedSolanaGatewayTransports(BINDINGS, {
+      auth: {
+        tokenKind: 'api',
+        getToken: async (request) => {
+          requests.push(request);
+          issued += 1;
+          return `login-${issued}`;
+        },
+      },
+      fetch,
+    });
+
+    await transports.chain.exists('account');
+
+    expect(requests).toEqual([{ scopes: [], forceRefresh: false }, { scopes: [], forceRefresh: true }]);
+    expect(mints.map(({ authorization }) => authorization)).toEqual(['Bearer login-1', 'Bearer login-2']);
+    expect(gateway.map(({ authorization }) => authorization)).toEqual(['Bearer gateway-session:read']);
+  });
+
+  it('keeps tokenKind session (the default) as a gateway-session provider', async () => {
+    const { fetch, mints, gateway } = gatewayFetch();
+    const transports = createHostedSolanaGatewayTransports(BINDINGS, {
+      auth: { token: 'gateway-session-from-app' },
+      fetch,
+    });
+    await transports.chain.exists('account');
+    expect(mints).toEqual([]);
+    expect(gateway.map(({ authorization }) => authorization)).toEqual(['Bearer gateway-session-from-app']);
   });
 });

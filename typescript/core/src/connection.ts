@@ -1,11 +1,23 @@
 import type { Frame } from './frame';
 import {
+  createApiBearerSource,
+  isApiCredentialAuth,
+  sessionMintEndpoint,
+  sharedApiCredential,
+  type ApiBearerSource,
+} from './api-credential';
+import {
   hasAuthorizationHeader,
   isBrowserEnvironment,
   NO_API_KEY_HINT,
   resolveAuthConfig,
   tokenEndpointApiKey,
 } from './auth-keys';
+import {
+  accountCredentialSource,
+  assertCredentialDestination,
+  UNTRUSTED_CREDENTIAL_DESTINATION,
+} from './credential-destination';
 import { CursorTracker, parseFrame, parseFrameFromBlob } from './frame';
 import type {
   AuthConfig,
@@ -45,6 +57,11 @@ const TOKEN_REFRESH_BUFFER_SECONDS = 60;
 const MIN_REFRESH_DELAY_MS = 1_000;
 const DEFAULT_QUERY_PARAMETER = 'hs_token';
 const DEFAULT_HOSTED_TOKEN_ENDPOINT = 'https://api.arete.run/ws/sessions';
+
+// WebSocket readyState values, defined here so that a socket from
+// auth.websocketFactory works without a global WebSocket (Node 20 has none).
+const WS_CONNECTING = 0;
+const WS_OPEN = 1;
 const HOSTED_WEBSOCKET_SUFFIX = '.stack.arete.run';
 /**
  * Extra suffixes treated as hosted Arete, beyond the default.
@@ -158,9 +175,13 @@ function closeReasonWireCode(reason: string | undefined): string | undefined {
   return isKnownWireErrorCode(bare) ? bare : undefined;
 }
 
-/** A stack version refusal ends the connection: no retry or reconnect can fix it. */
+/**
+ * A stack version refusal, or an account credential refused for an untrusted
+ * destination, ends the connection: no retry or reconnect can fix it.
+ */
 function isTerminalRefusal(error: unknown): error is AreteError {
-  return error instanceof AreteError && isStackVersionRefusalCode(error.code);
+  return error instanceof AreteError
+    && (isStackVersionRefusalCode(error.code) || error.code === UNTRUSTED_CREDENTIAL_DESTINATION);
 }
 
 function normalizeStackRelease(release: StackRelease | undefined): StackRelease | undefined {
@@ -424,6 +445,8 @@ export class ConnectionManager {
 
   private authConfig?: AuthConfig;
   private readonly authFetch: typeof fetch;
+  /** With `auth.tokenKind: 'api'`: the credential sessions are minted with. */
+  private readonly apiBearer?: ApiBearerSource;
   private currentToken?: string;
   private tokenExpiry?: number;
   private tokenScopes = new Set<string>();
@@ -456,6 +479,10 @@ export class ConnectionManager {
       }
       return globalThis.fetch(input, init);
     });
+    if (isApiCredentialAuth(this.authConfig)) {
+      this.apiBearer = sharedApiCredential(this.authConfig)
+        ?? createApiBearerSource(this.authConfig, this.authFetch);
+    }
 
     if (config.initialSubscriptions) {
       for (const subscription of config.initialSubscriptions) {
@@ -465,6 +492,12 @@ export class ConnectionManager {
   }
 
   private getTokenEndpoint(): string | undefined {
+    if (this.apiBearer) {
+      // The app's tokenEndpoint returns its API credential; sessions are
+      // minted where the binding (or the hosted stack) says.
+      return sessionMintEndpoint(this.authConfig)
+        ?? (this.hostedAreteUrl ? DEFAULT_HOSTED_TOKEN_ENDPOINT : undefined);
+    }
     if (this.authConfig?.tokenEndpoint) {
       return this.authConfig.tokenEndpoint;
     }
@@ -480,6 +513,10 @@ export class ConnectionManager {
   }
 
   private getAuthStrategy(): AuthStrategy {
+    if (this.apiBearer) {
+      const endpoint = this.getTokenEndpoint();
+      return endpoint ? { kind: 'token-endpoint', endpoint } : { kind: 'none' };
+    }
     if (this.authConfig?.token) {
       return { kind: 'static-token', token: this.authConfig.token };
     }
@@ -565,11 +602,15 @@ export class ConnectionManager {
       );
     }
 
+    // A provider's cached token is stale once this one was refused, expired
+    // or did not cover the scopes.
+    const freshNeeded = forceRefresh || this.currentToken !== undefined;
     let request!: Promise<string | undefined>;
     request = Promise.resolve().then(() =>
       this.fetchAuthToken(
         normalizeScopes([...this.tokenScopes, ...this.requestedScopes]),
-        () => this.tokenRequestInFlight === request
+        () => this.tokenRequestInFlight === request,
+        freshNeeded
       )
     );
     this.tokenRequestInFlight = request;
@@ -591,10 +632,12 @@ export class ConnectionManager {
 
   private async fetchAuthToken(
     scopes: readonly string[],
-    isCurrent: () => boolean
+    isCurrent: () => boolean,
+    forceRefresh: boolean
   ): Promise<string | undefined> {
     const request: AuthTokenRequest = {
       scopes: normalizeScopes(scopes),
+      forceRefresh,
       ...(this.release
         ? {
             stackManifestHash: this.release.stackManifestHash,
@@ -711,10 +754,14 @@ export class ConnectionManager {
     }
 
     const tokenState = state;
+    const targetedRequest = {
+      ...request,
+      forceRefresh: forceRefresh || tokenState.token !== undefined,
+    } as AuthTokenRequest & AuthTokenTarget;
     let inFlight!: Promise<string | undefined>;
     inFlight = Promise.resolve().then(async () => {
       const result = await this.requestAuthToken(
-        request,
+        targetedRequest,
         () => this.httpAuthTokenStates.get(identity) === tokenState
           && tokenState.inFlight === inFlight
       );
@@ -786,9 +833,19 @@ export class ConnectionManager {
 
   private async fetchTokenFromEndpoint(
     tokenEndpoint: string,
-    request: AuthTokenRequest
+    request: AuthTokenRequest,
+    refusedCredential?: string
   ): Promise<TokenEndpointResponse> {
-    const apiKey = tokenEndpointApiKey(this.authConfig, tokenEndpoint);
+    // An account credential goes only to a trusted Arete API origin: a
+    // session endpoint elsewhere is refused before anything is sent.
+    let apiKey: string | undefined;
+    if (this.apiBearer) {
+      const source = accountCredentialSource(this.authConfig, true);
+      if (source) assertCredentialDestination(this.authConfig, tokenEndpoint, source);
+      apiKey = await this.apiBearer.get(refusedCredential);
+    } else {
+      apiKey = tokenEndpointApiKey(this.authConfig, tokenEndpoint);
+    }
     const response = await this.authFetch(tokenEndpoint, {
       method: 'POST',
       headers: {
@@ -799,6 +856,18 @@ export class ConnectionManager {
       credentials: this.authConfig?.tokenEndpointCredentials,
       body: JSON.stringify(this.createTokenEndpointRequestBody(request)),
     });
+
+    if (
+      !response.ok
+      && response.status === 401
+      && this.apiBearer?.refreshable
+      && apiKey
+      && refusedCredential === undefined
+    ) {
+      // The API credential may have expired: retry once with a fresh one
+      // (or with the one another request already replaced it with).
+      return this.fetchTokenFromEndpoint(tokenEndpoint, request, apiKey);
+    }
 
     if (!response.ok) {
       const rawError = await response.text();
@@ -941,7 +1010,7 @@ export class ConnectionManager {
           previousToken &&
           this.currentToken &&
           this.currentToken !== previousToken &&
-          this.ws?.readyState === WebSocket.OPEN
+          this.ws?.readyState === WS_OPEN
         ) {
           // Try in-band auth refresh first
           const refreshed = await this.sendInBandAuthRefresh(this.currentToken);
@@ -971,7 +1040,7 @@ export class ConnectionManager {
   }
 
   private async sendInBandAuthRefresh(token: string): Promise<boolean> {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    if (!this.ws || this.ws.readyState !== WS_OPEN) {
       return false;
     }
 
@@ -1018,7 +1087,7 @@ export class ConnectionManager {
   }
 
   private rotateConnectionForTokenRefresh(): void {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.reconnectForTokenRefresh) {
+    if (!this.ws || this.ws.readyState !== WS_OPEN || this.reconnectForTokenRefresh) {
       return;
     }
 
@@ -1080,7 +1149,15 @@ export class ConnectionManager {
       return this.authConfig.websocketFactory(url);
     }
 
-    return new WebSocket(url);
+    const NativeWebSocket = (globalThis as { WebSocket?: typeof WebSocket }).WebSocket;
+    if (typeof NativeWebSocket !== 'function') {
+      throw new AreteError(
+        'This runtime has no global WebSocket: pass auth.websocketFactory (for example one '
+          + 'built on the `ws` package) or use transport: "http"',
+        'INVALID_CONFIG'
+      );
+    }
+    return new NativeWebSocket(url);
   }
 
   getState(): ConnectionState {
@@ -1243,8 +1320,8 @@ export class ConnectionManager {
     this.requireWebsocketUrl();
 
     if (
-      this.ws?.readyState === WebSocket.OPEN ||
-      this.ws?.readyState === WebSocket.CONNECTING ||
+      this.ws?.readyState === WS_OPEN ||
+      this.ws?.readyState === WS_CONNECTING ||
       this.currentState === 'connecting'
     ) {
       return;
@@ -1471,6 +1548,13 @@ export class ConnectionManager {
           }
         };
       } catch (error) {
+        // A configuration problem (no WebSocket to construct) keeps its own
+        // message; anything else is a connection failure.
+        if (error instanceof AreteError && error.code === 'INVALID_CONFIG') {
+          this.updateState('error', error.message);
+          finish(() => reject(error));
+          return;
+        }
         const hsError = new AreteError(
           'Failed to create WebSocket connection',
           'CONNECTION_ERROR',
@@ -1524,7 +1608,7 @@ export class ConnectionManager {
       return;
     }
 
-    if (this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN) {
+    if (this.currentState === 'connected' && this.ws?.readyState === WS_OPEN) {
       try {
         this.ws.send(JSON.stringify(normalized));
       } catch (error) {
@@ -1553,7 +1637,7 @@ export class ConnectionManager {
     if (this.activeSubscriptions.has(subscriptionId)) {
       this.activeSubscriptions.delete(subscriptionId);
 
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.ws?.readyState === WS_OPEN) {
         const unsubMsg = { type: 'unsubscribe', protocolVersion: 2, subscriptionId };
         this.ws.send(JSON.stringify(unsubMsg));
       }
@@ -1593,7 +1677,7 @@ export class ConnectionManager {
   }
 
   isConnected(): boolean {
-    return this.currentState === 'connected' && this.ws?.readyState === WebSocket.OPEN;
+    return this.currentState === 'connected' && this.ws?.readyState === WS_OPEN;
   }
 
   private flushSubscriptionQueue(): void {
@@ -1606,7 +1690,7 @@ export class ConnectionManager {
 
   private resubscribeActive(): void {
     for (const subscription of this.activeSubscriptions.values()) {
-      if (this.ws?.readyState !== WebSocket.OPEN) continue;
+      if (this.ws?.readyState !== WS_OPEN) continue;
       // Re-sending the original `after` would replay what was already
       // delivered; sending none would skip whatever the drop cost us.
       const after = this.cursors.last(subscription.subscriptionId);
@@ -1728,7 +1812,7 @@ export class ConnectionManager {
   private startPingInterval(): void {
     this.stopPingInterval();
     this.pingInterval = setInterval(() => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
+      if (this.ws?.readyState === WS_OPEN) {
         this.ws.send('{"type":"ping"}');
       }
     }, 15000);

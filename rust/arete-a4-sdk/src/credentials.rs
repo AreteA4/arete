@@ -83,23 +83,6 @@ const AMBIGUOUS_PROFILES_PREFIX: &str = "multiple Arete profiles match";
 
 static WARNED_AMBIGUOUS_PROFILE: AtomicBool = AtomicBool::new(false);
 
-/// True when `url` is on the API the `a4` login key was stored for
-/// ([`DEFAULT_API_URL`]). A login key is never sent anywhere else, such as a
-/// session endpoint a stack names on another host.
-pub(crate) fn is_login_key_destination(url: &str) -> bool {
-    let (Ok(url), Ok(api)) = (url::Url::parse(url), url::Url::parse(DEFAULT_API_URL)) else {
-        return false;
-    };
-    let host = url
-        .host_str()
-        .map(|host| host.trim_end_matches('.').to_ascii_lowercase());
-    url.scheme() == "https"
-        && host.as_deref() == api.host_str()
-        && url.port_or_known_default() == Some(443)
-        && url.username().is_empty()
-        && url.password().is_none()
-}
-
 /// Where [`cli_profile_secret_key_with`] reads the outside world from.
 pub(crate) struct ProfileSources<'a> {
     pub read_env: &'a dyn Fn(&str) -> Option<String>,
@@ -543,10 +526,15 @@ mod tests {
 
     #[test]
     fn login_keys_go_only_to_the_arete_api() {
-        assert!(is_login_key_destination(
-            "https://api.arete.run/ws/sessions"
-        ));
-        assert!(is_login_key_destination("https://API.arete.run.:443/x"));
+        use crate::auth::{check_credential_destination, AccountCredential};
+        // ARETE_API_URL never widens where the login key goes.
+        let env =
+            |name: &str| (name == "ARETE_API_URL").then(|| "https://other.arete.run".to_string());
+        let allowed = |url: &str| {
+            check_credential_destination(AccountCredential::A4Login, url, Some(url), &env).is_ok()
+        };
+        assert!(allowed("https://api.arete.run/ws/sessions"));
+        assert!(allowed("https://API.arete.run.:443/x"));
         for url in [
             "http://api.arete.run/ws/sessions",
             "https://api.arete.run:8443/ws/sessions",
@@ -555,7 +543,7 @@ mod tests {
             "https://other.arete.run/",
             "not a url",
         ] {
-            assert!(!is_login_key_destination(url), "{url}");
+            assert!(!allowed(url), "{url}");
         }
     }
 

@@ -58,6 +58,13 @@ create one with `a4 auth keys create-publishable --origin <scheme://host[:port]>
 A publishable key passed as `secret_key` raises `AreteError` (`INVALID_CONFIG`);
 keys never appear in errors or logs.
 
+Agent and secret keys are only sent to `https://api.arete.run`, the
+`ARETE_API_URL` origin, or (for a key passed in code) the origin of an
+`api_url` you pass in code. The `a4` login key only goes to
+`https://api.arete.run`. A session endpoint on any other origin raises
+`AuthError` with code `UNTRUSTED_CREDENTIAL_DESTINATION` before anything is
+sent. Publishable keys and session tokens are not restricted.
+
 ## Program SDKs
 
 Raw builders are pure and work offline — no connection required. Instruction

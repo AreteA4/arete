@@ -224,6 +224,41 @@ fn endpoints_come_from_options_then_arete_api_url_then_the_descriptor() {
     );
 }
 
+/// A secret key never follows a session endpoint the generated descriptor
+/// (or an option on another origin than the configured API) names.
+#[tokio::test]
+async fn a_secret_key_is_not_sent_to_a_foreign_session_endpoint() {
+    if std::env::var_os(ARETE_API_URL_ENV).is_some() {
+        // ARETE_API_URL would replace the descriptor's endpoints.
+        return;
+    }
+    let refused = |options: ProtocolClientOptions| async move {
+        let client = ProtocolClient::new(&definition(), options).unwrap();
+        let error = client
+            .list_instances(ProtocolInstanceListFilter::default())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.wire_code(),
+            Some(crate::error::UNTRUSTED_CREDENTIAL_DESTINATION),
+            "{error}"
+        );
+        assert!(!error.to_string().contains("a4_sk_test"), "{error}");
+        error.to_string()
+    };
+    // The descriptor's own api_url is not an app configuration.
+    let message = refused(ProtocolClientOptions::default().with_secret_key("a4_sk_test")).await;
+    assert!(message.contains("https://unused.example.test"), "{message}");
+    // An explicit api_url does not admit a session endpoint elsewhere.
+    refused(
+        ProtocolClientOptions::default()
+            .with_secret_key("a4_sk_test")
+            .with_api_url("https://api.example.test/api")
+            .with_session_endpoint("https://sessions.example.test/ws/sessions"),
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn the_deployment_id_option_is_the_deployment_called() {
     let (mock, base) = mock(|request, index| {
