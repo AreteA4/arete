@@ -129,20 +129,37 @@ In edge mode the SDK sends **no** `Authorization` header and mints no token:
 auth metadata in the descriptor is ignored. The edge resolves installed
 identities (§4) and answers with the production-shaped body, or with a refusal
 (§6). The installed identities (release hash, manifest hash, deployment id)
-stay in the request exactly as generated; the edge rewrites them. A protocol
-client with no deployment id yet (before the first publish) calls the edge
-with none, and the edge supplies the environment's.
+stay in the request exactly as generated; the edge rewrites them.
 
-Every edge response carries `X-Arete-Dev-Edge: 1`. The edge also answers
-`POST /ws/sessions` with a token that only the edge accepts, for code paths
-that always mint; SDKs implementing this contract don't call it.
+A protocol client with no deployment id yet (before the first publish) names
+the protocol by package instead: wherever the protocol API path has the
+deployment id segment (`/api/protocol-deployments/{deploymentId}/…`), it
+sends `package:<package>`, percent-encoded as one segment
+(`/api/protocol-deployments/package:token-raise/instances`). The edge maps it
+to the environment's deployment of that package, so two unpublished
+protocols behind one edge stay apart. Only the edge accepts this form; in
+direct mode resolve returns a deployment id (§4).
+
+Every edge HTTP response carries `X-Arete-Dev-Edge: 1` and, for loopback
+origins, `Access-Control-Expose-Headers: X-Arete-Dev-Edge`, so browser
+`fetch` can read it. WebSocket clients can't read upgrade response headers,
+so before a client opens its first socket (stack streams, JSON-RPC
+subscriptions) it checks the edge once with
+`GET <edge>/.well-known/arete-dev-edge`. The edge answers `200` with
+`{"edge": 1}` and the header. Any other answer fails the socket with
+`devenv-edge-unreachable`, and no socket is opened.
+
+The edge also answers `POST /ws/sessions` with a token that only the edge
+accepts, for code paths that always mint; SDKs implementing this contract
+don't call it.
 
 A stack definition without `release` (not installed from the registry) has no
 identity to resolve and fails with `devenv-stack-not-loaded`.
 
-If the edge does not answer (connection refused, or a response without the
-`X-Arete-Dev-Edge: 1` header), the SDK fails with `devenv-edge-unreachable`.
-It never falls back.
+If the edge does not answer (connection refused, a response without the
+`X-Arete-Dev-Edge: 1` header, or a failed `/.well-known/arete-dev-edge`
+check before a socket), the SDK fails with `devenv-edge-unreachable`. It
+never falls back.
 
 ### 3.2 Direct
 
@@ -294,8 +311,8 @@ the API problem envelope (`schemaVersion`, `error`, `code`, `retryable`) plus
 `fix`: one sentence naming the command or change that resolves it. Program
 Read keeps its own envelope, `{"error": {"code", "detail": {"message", "fix",
 …}}}`, with the code also in `X-Error-Code`. SDKs read either and raise their
-error type with `code` equal to the wire code, the message, and `fix` (and
-any other detail fields) in the error details.
+error type with `code` equal to the wire code, the message, and `fix` and
+every other detail field in the error details.
 
 | Code | Raised by | HTTP | Meaning | Fix |
 |---|---|---|---|---|

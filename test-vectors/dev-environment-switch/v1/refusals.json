@@ -102,6 +102,33 @@
       }
     },
     {
+      "name": "devenv-edge-unreachable: a socket's edge check gets something that is not an edge",
+      "input": {
+        "source": "edge",
+        "mode": {
+          "mode": "dev",
+          "via": "edge",
+          "edgeUrl": "http://127.0.0.1:8911"
+        },
+        "surface": "stack",
+        "edgeAnswer": {
+          "kind": "response",
+          "request": "GET /.well-known/arete-dev-edge",
+          "status": 200,
+          "headers": {
+            "Content-Type": "text/html"
+          },
+          "body": "<!doctype html><title>Vite</title>"
+        }
+      },
+      "expect": {
+        "code": "devenv-edge-unreachable",
+        "failingSurface": "stack",
+        "socketsOpened": 0,
+        "productionRequests": 0
+      }
+    },
+    {
       "name": "devenv-stack-not-loaded: from resolve",
       "input": {
         "source": "resolve",
@@ -586,8 +613,11 @@
         "code": "devenv-program-release-mismatch",
         "fix": "Register the changed program with the environment (run `a4 dev up` with its local IDL), or reset the environment.",
         "details": {
+          "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+          "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
           "installedExecutableIdentitySha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
-          "liveExecutableIdentitySha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+          "liveExecutableIdentitySha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "liveDeploymentSlot": 412345000
         },
         "productionRequests": 0
       }

@@ -8,7 +8,8 @@ itself run these files.
 
 Each file is `{ "version": 1, "description": "...", "cases": [{ "name", "input", "expect" }] }`.
 Compare `expect` exactly, except that a missing `message` or `fix` in an
-expected refusal means "any".
+expected refusal means "any". An expected refusal's `details` is exact too: it
+lists every detail field the answer carries besides `message` and `fix`.
 
 ## Files
 
@@ -56,6 +57,9 @@ lists, per surface:
 - `tokenRequest`: the body sent to `sessionEndpoint`, or `null` when no token
   is minted and no `Authorization` header is sent;
 - `pathReleaseHash`: the release hash in the Program Read request path;
+- for the protocol, `deploymentPathSegment` (the deployment id, or
+  `package:<package>` through the edge before the first publish) and
+  `instancesUrl`, the URL of one real request (listing instances);
 - `resolveRequest`: what direct mode sends to resolve (`null`: no request).
 
 ## `refusals.json`
@@ -67,4 +71,7 @@ answer to the first request on that surface). `expect.code` is the SDK
 error's code; `fix` and `details` are in its details. `failingSurface` names
 the surface that fails, and `otherSurfacesUsable` that the rest still work.
 `productionRequests: 0` (or `devRequests: 0`) means the SDK makes no request
-to the other world afterwards.
+to the other world afterwards. An edge answer with a `request` is the answer to
+that request (`GET /.well-known/arete-dev-edge`, the check before a socket),
+`input.surface` names the surface being used, and `socketsOpened: 0` means no
+WebSocket is opened.

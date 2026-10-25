@@ -275,7 +275,9 @@
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
         }
       }
     },
@@ -319,7 +321,9 @@
         "protocol": {
           "apiUrl": "http://127.0.0.1:8911/api",
           "sessionEndpoint": null,
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "instancesUrl": "http://127.0.0.1:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
         }
       }
     },
@@ -363,7 +367,9 @@
         "protocol": {
           "apiUrl": "http://localhost:8911/api",
           "sessionEndpoint": null,
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "instancesUrl": "http://localhost:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
         }
       }
     },
@@ -407,7 +413,9 @@
         "protocol": {
           "apiUrl": "https://[::1]:8911/api",
           "sessionEndpoint": null,
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
+          "instancesUrl": "https://[::1]:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
         }
       }
     },
@@ -554,7 +562,9 @@
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
         }
       }
     },
@@ -701,7 +711,9 @@
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
         }
       }
     },
@@ -848,7 +860,9 @@
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
         }
       }
     },
@@ -995,7 +1009,9 @@
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
         }
       }
     },
@@ -1141,12 +1157,14 @@
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
-          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9"
+          "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
         }
       }
     },
     {
-      "name": "edge: a protocol before its first publish keeps no deployment id; the edge resolves it",
+      "name": "edge: a protocol before its first publish is named by package in the path; the edge resolves it",
       "input": {
         "mode": {
           "mode": "dev",
@@ -1185,7 +1203,9 @@
         "protocol": {
           "apiUrl": "http://127.0.0.1:8911/api",
           "sessionEndpoint": null,
-          "deploymentId": null
+          "deploymentId": null,
+          "deploymentPathSegment": "package:token-raise",
+          "instancesUrl": "http://127.0.0.1:8911/api/protocol-deployments/package:token-raise/instances"
         }
       }
     }
