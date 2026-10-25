@@ -1,4 +1,15 @@
 export { AreteProvider, useAreteContext, useConnectionState } from './provider';
+export { AreteSessionProvider, useAreteSession } from './session-provider';
+export type {
+  AnySession,
+  AreteSessionOptions,
+  AreteSessionProviderProps,
+  AreteSessionStatus,
+  ExternalAreteSessionProviderProps,
+  OwnedAreteSessionProviderProps,
+  SessionOf,
+  UseAreteSessionResult,
+} from './session-provider';
 export { useArete } from './stack';
 export type { UseAreteResult, AreteDefaultStackRegistry } from './stack';
 export { createAreteReact } from './bound-stack';
@@ -208,6 +219,9 @@ export type {
   OperationTransactionReceipt,
   AuthConfig,
   AuthTokenRequest,
+  Session,
+  SessionDefinition,
+  SessionOptions,
   PlatformHttpClient,
   PlatformHttpRequest,
   PlatformHttpResponse,

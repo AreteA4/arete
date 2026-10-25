@@ -151,6 +151,41 @@ const auth = { tokenKind: 'api', tokenEndpoint: '/api/arete-token', tokenEndpoin
 
 `getToken` works the same (`{ tokenKind: 'api', getToken: async () => session.accessToken }`). `usePlatformHttpClient({ apiUrl })` returns a client for the Arete API's account routes with that same auth, to hand to SDK extensions that take an `http` client.
 
+## Sessions: `AreteSessionProvider` and `useAreteSession`
+
+`AreteProvider` manages stack clients. For a [`createSession`](../core/README.md) session (programs, stacks and protocols behind one auth and one wallet), put an `AreteSessionProvider` above the components that use it:
+
+```tsx
+import { AreteSessionProvider, useAreteSession, useOperationMutation } from '@usearete/react';
+import { SQUADS_V4_PROGRAM } from './sdk/squads-v4';
+
+// Module level, so their identity is stable.
+const SQUADS = { programs: { squads: SQUADS_V4_PROGRAM } };
+const auth = { tokenKind: 'api', tokenEndpoint: '/api/arete-token', tokenEndpointCredentials: 'same-origin' } as const;
+
+<AreteSessionProvider definition={SQUADS} options={{ auth }} wallet={wallet}>
+  <Squads />
+</AreteSessionProvider>;
+
+function Squads() {
+  const { session, status, error } = useAreteSession<typeof SQUADS>();
+  const squads = session?.programs.squads; // typed from the definition
+  …
+}
+```
+
+`useAreteSession()` returns `{ session, status, error, ready, retry }`. `status` is `opening`, `open` or `error`; `session` is `null` until it is `open`. `ready()` resolves with the session once it is open, waiting through a reopen; it is stable, so it can be a `useOperationMutation` executor. `retry()` opens it again after a failure. Type it with the definition (`useAreteSession<typeof SQUADS>()`) or with a session type (`useAreteSession<MySession>()`). It throws outside an `AreteSessionProvider`.
+
+How the provider manages the session:
+
+- **Opened once, closed on unmount.** Given `definition` (and `options`, as for `createSession(definition, options)`), the provider opens the session when it mounts and closes it when it unmounts.
+- **Auth from `AreteProvider`.** `options.auth` and `options.fetch` default to the enclosing `AreteProvider`'s, so one `auth` drives both.
+- **A change reopens it.** When the definition or the options change, the old session is closed at once and a new one is opened; `session` is `null` until the new one is ready, so nothing runs against a session opened with credentials that no longer apply. A run waiting on `ready()` gets the new session. Options are compared by shape two levels deep: an inline `options={{ auth: { tokenKind: 'api', … } }}` with the same fields is the same options. Functions (`getToken`, `fetch`) compare by identity, so keep them stable (module level or `useCallback`).
+- **The wallet does not reopen it.** `wallet` is a prop, not an option: changing it calls `session.setWallet`.
+- **An existing session.** Pass `session={mySession}` instead of `definition` to share a session the app opened. The provider never closes it, and sets `wallet` on it only when the `wallet` prop is passed. `session={null}` while the app is still opening it leaves the provider `opening`.
+
+Under React StrictMode in development the provider opens, closes and reopens the session once on mount, like any effect.
+
 ## `useArete(stack?, options?)`
 
 `useArete` returns the connected React surface for a stack. With no arguments it resolves the provider's `stack`/`stackOptions`. Passing the same stack explicitly keeps the provider's `stackOptions`; per-call options override them, while another explicit stack is isolated from the provider stack's options. It throws a descriptive error when no stack is passed and no default is configured.

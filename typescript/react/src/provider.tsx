@@ -247,6 +247,11 @@ export function AreteProvider({
   );
 }
 
+/** The enclosing `AreteProvider`'s context, or `null` outside one. */
+export function useOptionalAreteContext(): AreteContextValue | null {
+  return useContext(AreteContext);
+}
+
 export function useAreteContext() {
   const context = useContext(AreteContext);
   if (!context) {
