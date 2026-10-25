@@ -22,7 +22,7 @@ test("the expression reference page is generated from the current JSON", async (
 
 test("the page lists every function, operator and check code", () => {
   for (const fn of reference.functions) assert.ok(page.includes(`\`${fn.signature}\``), fn.name);
-  for (const op of reference.operators.binary) {
+  for (const op of [...reference.operators.binary, ...reference.operators.prefix]) {
     assert.ok(page.includes(`\`${op.symbol.replaceAll("|", "\\|")}\``), op.symbol);
   }
   for (const entry of reference.checkCodes) assert.ok(page.includes(`\`${entry.code}\``), entry.code);

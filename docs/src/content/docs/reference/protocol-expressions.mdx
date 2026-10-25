@@ -170,31 +170,31 @@ sources but not in protocols.
 
 ## Names
 
-| Name                        | Type                       | What it is                                                                                             |
-| --------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `now`                       | i64                        | The current Unix time in seconds.                                                                      |
-| `deployment.id`             | string                     | The deployment's id.                                                                                   |
-| `deployment.attestation`    | pubkey                     | The deployment's attestation public key.                                                               |
-| `deployment.squadsProposer` | pubkey?                    | The calling account's Squads proposer; null when no step uses squadsProposer.                          |
-| `params.<name>`             | the param's schema type    | An instance param, fixed when the instance is created (nested object fields as params.<name>.<field>). |
-| `resources.<name>`          | the resource's schema type | A deployment resource, published before activation (nested fields as resources.<name>.<field>).        |
-| `wallet`                    | pubkey                     | The wallet calling the step (in a participant machine, the participant's wallet).                      |
-| `args.<name>`               | the arg's schema type      | An argument of the step being called.                                                                  |
-| `ephemeral.<name>`          | pubkey                     | A fresh keypair the step allocates (step.ephemeral).                                                   |
-| `reads.<read>.exists`       | bool                       | Whether the read account exists.                                                                       |
-| `reads.<read>.address`      | pubkey                     | The read account's address.                                                                            |
-| `reads.<read>.lamports`     | u64                        | The read account's lamports.                                                                           |
-| `reads.<read>.amount`       | u64                        | A token account read's balance (tokenAccount reads).                                                   |
-| `reads.<read>.mint`         | pubkey                     | A token account read's mint (tokenAccount reads).                                                      |
-| `reads.<read>.owner`        | pubkey                     | A token account read's owner (tokenAccount reads).                                                     |
-| `reads.<read>.<field>`      | any                        | A decoded field of a program account read (account reads), typed by the program's IDL at run time.     |
-| `instance.id`               | string                     | The instance's id.                                                                                     |
-| `instance.state`            | string                     | The instance machine's current state.                                                                  |
-| `instance.accounts.<name>`  | pubkey                     | An account the create step bound (create step bind.accounts).                                          |
-| `instance.roles.<role>`     | pubkey                     | The wallet holding a role.                                                                             |
-| `participant.id`            | string                     | The participant's id.                                                                                  |
-| `participant.state`         | string                     | The participant machine's current state.                                                               |
-| `participant.wallet`        | pubkey                     | The participant's wallet.                                                                              |
+| Name                        | Type                       | What it is                                                                                                 |
+| --------------------------- | -------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `now`                       | i64                        | The current Unix time in seconds.                                                                          |
+| `deployment.id`             | string                     | The deployment's id.                                                                                       |
+| `deployment.attestation`    | pubkey                     | The deployment's attestation public key.                                                                   |
+| `deployment.squadsProposer` | pubkey?                    | The calling account's Squads proposer; null when no step uses squadsProposer.                              |
+| `params.<name>`             | the param's schema type    | An instance param, fixed when the instance is created (nested object fields as params.\<name\>.\<field\>). |
+| `resources.<name>`          | the resource's schema type | A deployment resource, published before activation (nested fields as resources.\<name\>.\<field\>).        |
+| `wallet`                    | pubkey                     | The wallet calling the step (in a participant machine, the participant's wallet).                          |
+| `args.<name>`               | the arg's schema type      | An argument of the step being called.                                                                      |
+| `ephemeral.<name>`          | pubkey                     | A fresh keypair the step allocates (step.ephemeral).                                                       |
+| `reads.<read>.exists`       | bool                       | Whether the read account exists.                                                                           |
+| `reads.<read>.address`      | pubkey                     | The read account's address.                                                                                |
+| `reads.<read>.lamports`     | u64                        | The read account's lamports.                                                                               |
+| `reads.<read>.amount`       | u64                        | A token account read's balance (tokenAccount reads).                                                       |
+| `reads.<read>.mint`         | pubkey                     | A token account read's mint (tokenAccount reads).                                                          |
+| `reads.<read>.owner`        | pubkey                     | A token account read's owner (tokenAccount reads).                                                         |
+| `reads.<read>.<field>`      | any                        | A decoded field of a program account read (account reads), typed by the program's IDL at run time.         |
+| `instance.id`               | string                     | The instance's id.                                                                                         |
+| `instance.state`            | string                     | The instance machine's current state.                                                                      |
+| `instance.accounts.<name>`  | pubkey                     | An account the create step bound (create step bind.accounts).                                              |
+| `instance.roles.<role>`     | pubkey                     | The wallet holding a role.                                                                                 |
+| `participant.id`            | string                     | The participant's id.                                                                                      |
+| `participant.state`         | string                     | The participant machine's current state.                                                                   |
+| `participant.wallet`        | pubkey                     | The participant's wallet.                                                                                  |
 
 ## Where each name is in scope
 
@@ -264,7 +264,7 @@ pointer into the spec), `code` and `message`.
 | `unsupported-feature`                | A function, operator or character the language does not have, float math in a protocol, or a `??` default that is not a literal.                                                                    | Use a listed function or operator; see what is not supported, with its workaround.                                       |
 | `expression-type-mismatch`           | The expression has the wrong type for its place (a guard that is not boolean, an account that is not a public key, a wrap amount that is not an integer) or a function got the wrong argument type. | Compare the message's expected and found types; cast with u64(...), string(...), etc. where a conversion is meant.       |
 | `source-limit-exceeded`              | The expression is over a limit: source bytes, nodes or nesting depth.                                                                                                                               | Split the logic: derive a value in a machine state, or move a constant into a resource.                                  |
-| `squads-multisig-not-from-resources` | A Squads step's multisig reads something other than resources.\* and literals.                                                                                                                      | Declare the multisig as a resource and use resources.<name>.                                                             |
+| `squads-multisig-not-from-resources` | A Squads step's multisig reads something other than resources.\* and literals.                                                                                                                      | Declare the multisig as a resource and use resources.\<name\>.                                                           |
 
 ### Template codes
 

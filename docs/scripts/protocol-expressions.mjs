@@ -26,9 +26,15 @@ function code(text) {
   return `\`${String(text).replaceAll("|", "\\|")}\``;
 }
 
-/** Plain text for a table cell. */
-function cell(text) {
-  return String(text).replaceAll("|", "\\|").replaceAll("\n", " ");
+/**
+ * Plain text for a table cell. MDX reads `<` as a JSX tag and `{` as an
+ * expression, so placeholders such as `params.<name>` are escaped.
+ */
+export function cell(text) {
+  return String(text)
+    .replaceAll("|", "\\|")
+    .replaceAll("\n", " ")
+    .replace(/[<>{}]/g, (ch) => `\\${ch}`);
 }
 
 function table(head, rows) {
