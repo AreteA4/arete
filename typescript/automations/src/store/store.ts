@@ -193,7 +193,11 @@ export interface AutomationStore {
     completeDelivery(id: string, worker: string, steps: readonly NewStepJob[], now: number): Promise<boolean>;
     /** When this wallet last completed this step in this deployment, or `null`. */
     lastCompleted(input: { wallet: string; deploymentId: string; step: string }): Promise<number | null>;
-    list(filter?: { kind?: Job['kind']; state?: JobState }): Promise<Job[]>;
+    /**
+     * Jobs in creation order. `wallet` keeps step jobs for that wallet;
+     * `finished` keeps jobs in a final state (`true`) or still active (`false`).
+     */
+    list(filter?: { kind?: Job['kind']; state?: JobState; wallet?: string; finished?: boolean }): Promise<Job[]>;
     /** Delete finished jobs last updated before `before`; returns how many. */
     prune(before: number): Promise<number>;
   };

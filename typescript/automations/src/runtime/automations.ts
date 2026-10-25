@@ -1615,12 +1615,21 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     consent,
     outcomes: {
       async get(jobId) {
+        await bound();
         const job = await store.jobs.get(jobId);
         return job?.kind === 'step' ? stepOutcome<TTypes>(job) : null;
       },
       async list(filter = {}) {
-        const jobs = (await store.jobs.list({ kind: 'step' })) as StepJob[];
+        await bound();
+        // The store filters by wallet and final state; the checks below also
+        // cover a custom store that ignores those filters.
+        const jobs = (await store.jobs.list({
+          kind: 'step',
+          finished: true,
+          ...(filter.wallet !== undefined ? { wallet: filter.wallet } : {}),
+        })) as StepJob[];
         return jobs
+          .filter((job) => job.kind === 'step')
           .filter((job) => filter.wallet === undefined || job.request.wallet === filter.wallet)
           .map((job) => stepOutcome<TTypes>(job))
           .filter((outcome): outcome is AutomationOutcome<TTypes> => outcome !== null);

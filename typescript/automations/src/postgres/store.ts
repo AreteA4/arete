@@ -479,8 +479,12 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
       async list(filter = {}) {
         await ready();
         const { rows } = await executor.query(
-          `SELECT * FROM ${s}.jobs WHERE ($1::text IS NULL OR kind = $1) AND ($2::text IS NULL OR state = $2) ORDER BY seq`,
-          [filter.kind ?? null, filter.state ?? null],
+          `SELECT * FROM ${s}.jobs
+           WHERE ($1::text IS NULL OR kind = $1) AND ($2::text IS NULL OR state = $2)
+             AND ($3::text IS NULL OR wallet = $3)
+             AND ($4::boolean IS NULL OR (state IN ${FINISHED}) = $4)
+           ORDER BY seq`,
+          [filter.kind ?? null, filter.state ?? null, filter.wallet ?? null, filter.finished ?? null],
         );
         return rows.map(rowToJob);
       },

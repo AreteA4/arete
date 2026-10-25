@@ -8,7 +8,7 @@ import type { ProtocolSigner } from '../signer/signer';
 import { SignerRefusal } from '../signer/signer';
 import { runStoreConformance } from '../store/conformance';
 import { memoryStore, memoryStoreState } from '../store/memory';
-import type { AutomationStore } from '../store/store';
+import { type AutomationStore, StoreDeploymentError } from '../store/store';
 import { DEPLOYMENT, fakeProtocol, feeOnlySimulator, policy, stepKeyPrefix } from '../test-support/fake-protocol';
 import { ALICE, BOB, harness, SECRET, storedGrant, walletsSigner } from '../test-support/harness';
 import { type AutomationOutcome, clientCluster, createAutomations } from './automations';
@@ -901,6 +901,14 @@ describe('outcome args', () => {
     const restarted = harness({}, { store: restored }).automations;
     expect(await restarted.outcomes.get(h.outcomes[0]!.jobId)).toEqual(h.outcomes[0]);
     expect((await restarted.outcomes.get(h.outcomes[0]!.jobId))!.args).toEqual({ amount: '1000' });
+  });
+
+  it("refuses to read another deployment's outcomes", async () => {
+    const store = memoryStore();
+    await store.bindDeployment('dep-other');
+    const { automations } = harness({}, { store });
+    await expect(automations.outcomes.get('any')).rejects.toBeInstanceOf(StoreDeploymentError);
+    await expect(automations.outcomes.list({ wallet: ALICE })).rejects.toBeInstanceOf(StoreDeploymentError);
   });
 
   it('is null for a job that has not finished', async () => {

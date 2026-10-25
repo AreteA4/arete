@@ -156,6 +156,21 @@ export function runStoreConformance(
       expect(saved.outcome).toEqual({ code: 'insufficient_balance' });
     });
 
+    it('lists jobs by wallet and by whether they are finished', async () => {
+      const store = await createStore();
+      const [alice, bob] = await seedSteps(store, 'd1', [step('d1', 'alice'), step('d1', 'bob')]);
+      const claimed = await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      expect(claimed?.id).toBe(alice);
+      await store.jobs.transition(alice!, { worker: 'w1', from: 'running', to: 'rejected', now: T0 + 1, outcome: { code: 'x' } });
+      const ids = async (filter: Parameters<AutomationStore['jobs']['list']>[0]) =>
+        (await store.jobs.list(filter)).map((job) => job.id);
+      expect(await ids({ kind: 'step', wallet: 'alice' })).toEqual([alice]);
+      expect(await ids({ kind: 'step', finished: true })).toEqual([alice]);
+      expect(await ids({ kind: 'step', finished: false })).toEqual([bob]);
+      expect(await ids({ wallet: 'bob', finished: true })).toEqual([]);
+      expect(await ids({ finished: true })).toEqual(['d1', alice]);
+    });
+
     it('completes a delivery and creates its step jobs in one step', async () => {
       const store = await createStore();
       await store.deliveries.accept(delivery('d1'), T0);
