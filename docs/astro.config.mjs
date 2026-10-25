@@ -36,6 +36,7 @@ export default defineConfig({
             "deploying-protocols/trust",
             "agent-skills/protocols",
             "reference/protocols",
+            "reference/protocol-expressions",
             "using-programs/overview",
           ],
         }),
@@ -165,6 +166,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { slug: "reference/protocols" },
+            { slug: "reference/protocol-expressions" },
             {
               label: "SDKs",
               items: [
