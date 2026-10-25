@@ -1091,7 +1091,7 @@ a handler; the server derives the stack source and release from them.
 a4 protocol deploy                       # the protocol in the current directory
 a4 protocol deploy ./my-protocol         # builds first, then deploys
 a4 protocol deploy --no-build            # upload the existing build, if it is current
-a4 protocol deploy --dry-run             # print the plan; changes nothing
+a4 protocol deploy --dry-run             # print the plan and run the server's checks; changes nothing
 a4 protocol deploy \
   --fee-policy fee-policy.json \
   --resource launchDefaults=launch-defaults.json
@@ -1143,6 +1143,14 @@ The command:
    yet, the client is generated from the deployed build with the new
    deployment id and `arete.lock` marks it `local_build` (the command says so).
    Run `a4 install` once the package is published.
+
+With `--dry-run` and a secret key, Arete also runs the upload's checks on
+the built release without storing it: the expression type checks, and the
+template checks against the pinned program specs. If the server would reject
+the release, the dry run fails and prints each error's spec path, message and
+code. A template check that is `pending` (Arete does not have a pinned program
+spec yet) is a warning. The `--json` plan includes the check as
+`plan.releaseCheck`.
 
 What happens at activation depends on the protocol:
 

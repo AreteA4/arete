@@ -686,10 +686,23 @@ fn a_new_deployment_without_a_fee_policy_explains_the_document() {
     assert!(!message.contains("<wallet address>"), "{message}");
 }
 
+fn check_json(release_hash: &str, template_check: &str) -> Value {
+    json!({
+        "schema": "arete.protocol-release-check/v1",
+        "releaseHash": release_hash,
+        "specHash": "arete:h1:protocol-spec:sha256:00",
+        "stackSourceHash": "arete:h1:protocol-stack-source:sha256:00",
+        "handlerBundleHash": null,
+        "hasHandlers": false,
+        "templateCheck": template_check
+    })
+}
+
 #[test]
-fn dry_run_with_a_key_only_reads() {
+fn dry_run_with_a_key_checks_the_release_and_otherwise_only_reads() {
     let dir = project(&escrow_spec(), None);
     let server = responses(vec![
+        (200, check_json(ESCROW_RELEASE, "passed")),
         (200, json!([protocol_json("escrow-resolution")])),
         (
             200,
@@ -706,7 +719,15 @@ fn dry_run_with_a_key_only_reads() {
 
     let outcome = execute(&client(&server), &args, true).unwrap();
 
-    for request in take(&server, 2) {
+    let requests = take(&server, 3);
+    // The check stores nothing; it sends the release body an upload would.
+    assert_eq!(line(&requests[0]), "POST /api/protocols/check");
+    assert_eq!(
+        body(&requests[0])["spec"],
+        serde_json::from_slice::<Value>(&escrow_spec()).unwrap()
+    );
+    assert!(body(&requests[0]).get("bundleBase64").is_none());
+    for request in &requests[1..] {
         assert!(
             request.request_line.starts_with("GET "),
             "{}",
@@ -715,12 +736,83 @@ fn dry_run_with_a_key_only_reads() {
     }
     assert_eq!(outcome.status, "dry-run");
     let plan = outcome.plan.unwrap();
+    assert_eq!(
+        plan.release_check
+            .as_ref()
+            .map(|check| check.template_check.as_str()),
+        Some("passed")
+    );
     assert!(plan.checked_remote);
     assert_eq!(plan.protocol, "exists");
     assert_eq!(plan.deployment, "reuse");
     assert_eq!(plan.reuse_deployment_id.as_deref(), Some(DEPLOYMENT_ID));
     assert_eq!(plan.activation, "already active");
     assert_eq!(outcome.release.expected_release_hash, ESCROW_RELEASE);
+}
+
+#[test]
+fn a_dry_run_fails_on_a_release_the_server_would_reject() {
+    let dir = project(&escrow_spec(), None);
+    let server = responses(vec![(
+        400,
+        json!({
+            "schemaVersion": 1,
+            "error": "The spec's expressions do not type-check",
+            "code": "protocol-spec-check-failed",
+            "retryable": false,
+            "errors": [{
+                "code": "unknown-reference",
+                "path": "/steps/open/guards/0/expr",
+                "message": "Expression references unknown source field 'args.amout'"
+            }]
+        }),
+    )]);
+    let mut args = args(dir.path());
+    args.dry_run = true;
+
+    let error = execute(&client(&server), &args, true).unwrap_err();
+    let text = format!("{error:#}");
+    assert!(text.contains("would reject this release"), "{text}");
+    assert!(
+        text.contains("/steps/open/guards/0/expr: Expression references unknown source field 'args.amout' (unknown-reference)"),
+        "{text}"
+    );
+    assert_eq!(take(&server, 1).len(), 1);
+}
+
+#[test]
+fn a_dry_run_against_a_server_without_the_check_still_plans() {
+    let dir = project(&escrow_spec(), None);
+    let server =
+        MockServer::json_sequence(vec![(404, String::new()), (200, json!([]).to_string())]);
+    let mut args = args(dir.path());
+    args.dry_run = true;
+
+    let outcome = execute(&client(&server), &args, true).unwrap();
+    let plan = outcome.plan.unwrap();
+    assert!(plan.release_check.is_none());
+    assert_eq!(plan.protocol, "create");
+    assert!(outcome
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("no release check")));
+}
+
+#[test]
+fn a_pending_template_check_is_a_dry_run_warning() {
+    let dir = project(&escrow_spec(), None);
+    let mut pending = check_json(ESCROW_RELEASE, "pending");
+    pending["missingProgramSpecs"] =
+        json!([{ "alias": "escrowVault", "programSpecHash": "arete:h1:program-spec:sha256:00" }]);
+    let server = responses(vec![(200, pending), (200, json!([]))]);
+    let mut args = args(dir.path());
+    args.dry_run = true;
+
+    let outcome = execute(&client(&server), &args, true).unwrap();
+    assert!(outcome
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("'escrowVault'")));
 }
 
 #[test]

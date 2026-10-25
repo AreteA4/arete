@@ -116,6 +116,33 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
     if path_only == "/ws/sessions" {
         return (200, json!({ "token": "session-token" }));
     }
+    if path_only == "/api/protocols/check" {
+        if body["spec"]["name"] == "broken" {
+            return (
+                400,
+                json!({
+                    "schemaVersion": 1,
+                    "error": "The spec's templates do not resolve against their pinned ProgramSpecs",
+                    "code": "protocol-template-check-failed",
+                    "retryable": false,
+                    "templateCheck": { "errors": [{
+                        "code": "template_unknown_instruction",
+                        "path": "/steps/open/build/instructions/0/instruction",
+                        "message": "'vault' has no instruction 'withdraw'"
+                    }] }
+                }),
+            );
+        }
+        return (
+            200,
+            json!({
+                "schema": "arete.protocol-release-check/v1",
+                "releaseHash": "arete:h1:protocol-release:sha256:00",
+                "hasHandlers": body.get("bundleBase64").is_some(),
+                "templateCheck": "passed"
+            }),
+        );
+    }
     if path_only == "/rpc" {
         let params = &body["params"];
         let result = match body["method"].as_str().unwrap_or_default() {
@@ -831,6 +858,7 @@ fn the_execute_tool_is_listed_only_with_a_signer() {
         "protocol_squads_status",
         "squads_status",
         "squads_attach",
+        "protocol_check",
         "dev_actions",
     ] {
         assert!(listed.iter().any(|name| name == tool), "{tool} missing");
@@ -854,6 +882,52 @@ fn the_execute_tool_is_listed_only_with_a_signer() {
     );
     let with = crate::AreteMcp::with_protocol_agent(ProtocolAgent::new(Some(signer)));
     assert!(names(&with).iter().any(|name| name == "protocol_execute"));
+}
+
+#[tokio::test]
+async fn protocol_check_sends_the_built_release_and_reports_the_servers_errors() {
+    let (origin, state) = mock_api();
+    let agent = ProtocolAgent::new(None).with_api(&origin, "a4_sk_test");
+    let project = tempfile::tempdir().unwrap();
+    let build = project.path().join(".arete/protocol");
+    std::fs::create_dir_all(&build).unwrap();
+    std::fs::write(build.join("protocol-spec.json"), r#"{"name":"tips"}"#).unwrap();
+    std::fs::write(build.join("handlers.mjs"), b"export {};\n").unwrap();
+
+    let passed = agent
+        .check(Some(project.path().to_str().unwrap()), None)
+        .await
+        .unwrap();
+    assert_eq!(passed["passed"], true);
+    assert_eq!(passed["hasHandlers"], true);
+    let sent = seen(&state).pop().unwrap();
+    assert_eq!(sent.method, "POST");
+    assert_eq!(sent.path, "/api/protocols/check");
+    assert_eq!(sent.body["spec"]["name"], "tips");
+    assert_eq!(sent.body["bundleBase64"], b64(b"export {};\n"));
+
+    let rejected = agent
+        .check(None, Some(json!({ "name": "broken" })))
+        .await
+        .unwrap();
+    assert_eq!(rejected["passed"], false);
+    assert_eq!(rejected["code"], "protocol-template-check-failed");
+    assert_eq!(
+        rejected["errors"][0]["path"],
+        "/steps/open/build/instructions/0/instruction"
+    );
+    assert!(seen(&state)
+        .pop()
+        .unwrap()
+        .body
+        .get("bundleBase64")
+        .is_none());
+
+    let missing = agent.check(Some("/nonexistent"), None).await.unwrap_err();
+    assert!(
+        missing.to_string().contains("Build the protocol first"),
+        "{missing}"
+    );
 }
 
 #[tokio::test]

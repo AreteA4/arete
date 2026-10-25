@@ -37,7 +37,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api_client::{
-    api_error_details, ApiClient, ProtocolDeployment, ProtocolRecord, ProtocolReleaseUpload,
+    api_error_details, ApiClient, ProtocolDeployment, ProtocolRecord, ProtocolReleaseCheck,
+    ProtocolReleaseUpload,
 };
 use crate::ui;
 
@@ -127,7 +128,9 @@ pub struct DeployArgs {
     #[arg(long)]
     pub no_build: bool,
 
-    /// Print the plan without changing anything on the server
+    /// Print the plan without changing anything on the server. With a
+    /// secret key the server also runs the upload's checks on the built
+    /// release, and a release it would reject fails the dry run
     #[arg(long)]
     pub dry_run: bool,
 
@@ -997,6 +1000,10 @@ pub struct PlanOutcome {
     pub activation: String,
     /// Inputs a new deployment needs but that are not configured.
     pub missing_inputs: Vec<String>,
+    /// The server's checks of the built release (with a secret key, on a
+    /// server that has the check route).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_check: Option<ProtocolReleaseCheck>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1128,7 +1135,9 @@ pub fn execute(client: &ApiClient, args: &DeployArgs, json: bool) -> Result<Depl
     };
 
     if args.dry_run {
-        let plan = dry_run_plan(client, &local, &settings, args, &mut reporter);
+        let release_check = server_check(client, &local, &mut reporter)?;
+        let mut plan = dry_run_plan(client, &local, &settings, args, &mut reporter);
+        plan.release_check = release_check;
         print_plan(&reporter, &settings, &plan);
         outcome.status = "dry-run".into();
         outcome.plan = Some(plan);
@@ -1643,6 +1652,7 @@ fn dry_run_plan(
         reuse_deployment_id: None,
         activation: String::new(),
         missing_inputs: missing_inputs(local, settings),
+        release_check: None,
     };
     let mut reused: Option<ProtocolDeployment> = None;
     if client.has_api_key() && !client.api_key_is_publishable() {
@@ -1678,6 +1688,67 @@ fn dry_run_plan(
     plan
 }
 
+/// Run the upload's checks on the built release, without uploading it. A
+/// rejection fails the dry run with the server's errors; without a secret
+/// key, or on a server without the check route, it is skipped.
+fn server_check(
+    client: &ApiClient,
+    local: &LocalRelease,
+    reporter: &mut Reporter,
+) -> Result<Option<ProtocolReleaseCheck>> {
+    if !client.has_api_key() || client.api_key_is_publishable() {
+        return Ok(None);
+    }
+    let bundle_base64 = local.bundle.as_deref().map(encode_base64);
+    match client.check_protocol_release(&local.spec_value, bundle_base64.as_deref()) {
+        Ok(check) => {
+            match check.template_check.as_str() {
+                "pending" => reporter.warn(format!(
+                    "The server's checks passed, but its template check is pending: it does not have {} yet, and activation waits for them.",
+                    missing_program_specs(&check.missing_program_specs)
+                )),
+                _ => reporter.success("The server's checks passed"),
+            }
+            if check.release_hash != local.expected_release_hash {
+                reporter.warn(format!(
+                    "The server would derive release {} but this CLI expected {}; the server may use a newer derivation.",
+                    check.release_hash, local.expected_release_hash
+                ));
+            }
+            Ok(Some(check))
+        }
+        Err(error)
+            if api_error_details(&error)
+                .is_some_and(|details| details.status == 404 && details.code.is_none()) =>
+        {
+            reporter.warn(
+                "This server has no release check yet: the upload will run its checks.".into(),
+            );
+            Ok(None)
+        }
+        Err(error) => Err(error.context(
+            "The server would reject this release; fix the errors above, rebuild and run the dry run again",
+        )),
+    }
+}
+
+fn missing_program_specs(missing: &[Value]) -> String {
+    let names: Vec<String> = missing
+        .iter()
+        .map(|entry| {
+            format!(
+                "the program spec of '{}'",
+                entry["alias"].as_str().unwrap_or("?")
+            )
+        })
+        .collect();
+    if names.is_empty() {
+        "every pinned program spec".to_string()
+    } else {
+        names.join(", ")
+    }
+}
+
 fn remote_state(
     client: &ApiClient,
     settings: &Settings,
@@ -1709,6 +1780,18 @@ fn print_plan(reporter: &Reporter, settings: &Settings, plan: &PlanOutcome) {
         None => println!("  Deployment: {} (private)", plan.deployment),
     }
     println!("  Activation: {}", plan.activation);
+    match &plan.release_check {
+        Some(check) => println!(
+            "  Server check: {} (release {})",
+            if check.template_check == "pending" {
+                "passed; template check pending"
+            } else {
+                "passed"
+            },
+            check.release_hash
+        ),
+        None => println!("  Server check: skipped"),
+    }
     if !plan.missing_inputs.is_empty() && plan.deployment != "reuse" {
         println!(
             "  {} {}",

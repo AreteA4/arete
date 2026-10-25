@@ -260,12 +260,21 @@ arguments differ, or when calls are left over.
 ## CLI
 
 ```sh
-arete-protocol check [protocol.ts]
+arete-protocol check [protocol.ts] [--remote | --offline]
 arete-protocol build [protocol.ts] --out .arete/protocol [--server-release]
 ```
 
 The entry module default-exports `defineProtocol(...)`. `check` lowers and
 validates the spec and runs the expression reference and static checks.
+These local checks cover syntax and names only. With a secret key in
+`ARETE_API_KEY`, `check` also sends the release (the spec, plus the handler
+bundle when a step has one) to Arete's release check (`POST
+/api/protocols/check`). That check runs the expression type checks and the
+template checks an upload runs and stores nothing. A rejection prints the
+server's code and one `path: message [code]` line per error and exits 1.
+`--remote` requires that check, and `--offline` skips it. `ARETE_API_URL`
+points it at another API. Without a key, `check` says its result is syntax
+only.
 `build` also bundles the handlers (only when a step has one) with pinned
 esbuild into one deterministic ESM file and writes, as canonical JSON with
 no trailing newline:

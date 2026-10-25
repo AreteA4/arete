@@ -45,6 +45,30 @@ pub struct ProtocolReleaseUpload {
     pub created: bool,
 }
 
+/// What the server's release check reports for a release it would accept:
+/// the identities an upload of the same body derives, and its template
+/// check. A rejected release is an API error with the upload's problem.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtocolReleaseCheck {
+    #[serde(default)]
+    pub schema: Option<String>,
+    pub release_hash: String,
+    #[serde(default)]
+    pub spec_hash: Option<String>,
+    #[serde(default)]
+    pub stack_source_hash: Option<String>,
+    #[serde(default)]
+    pub handler_bundle_hash: Option<String>,
+    pub has_handlers: bool,
+    /// `passed`, or `pending` while a pinned program spec is not on the
+    /// server yet.
+    pub template_check: String,
+    /// `{alias, programSpecHash}` of each program spec the server lacks.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_program_specs: Vec<Value>,
+}
+
 /// A draft or published resource version.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -362,6 +386,20 @@ impl ApiClient {
             &body,
             "upload protocol release",
         )
+    }
+
+    /// Run the upload's checks on a spec (and bundle) without uploading it
+    /// or naming a protocol. A rejection is the upload's own API error.
+    pub fn check_protocol_release(
+        &self,
+        spec: &Value,
+        bundle_base64: Option<&str>,
+    ) -> Result<ProtocolReleaseCheck> {
+        let mut body = json!({ "spec": spec });
+        if let Some(bundle) = bundle_base64 {
+            body["bundleBase64"] = Value::String(bundle.to_string());
+        }
+        self.protocol_post("/api/protocols/check", &body, "check protocol release")
     }
 
     pub fn create_protocol_resource_version(

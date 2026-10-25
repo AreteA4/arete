@@ -4212,6 +4212,28 @@ mod tests {
         );
         assert_eq!(problem_error_lines(None), "");
         assert_eq!(problem_error_lines(Some(&json!("not a list"))), "");
+
+        // A failed template check from a server that only nests its errors.
+        let problem: ApiProblemV1 = serde_json::from_value(json!({
+            "schemaVersion": 1,
+            "error": "The spec's templates do not resolve against their pinned ProgramSpecs",
+            "code": "protocol-template-check-failed",
+            "retryable": false,
+            "templateCheck": { "errors": [{
+                "code": "template_unknown_instruction",
+                "message": "'vault' has no instruction 'withdraw'",
+                "path": "/steps/open/build/instructions/0/instruction"
+            }] }
+        }))
+        .unwrap();
+        let error = ApiClientError {
+            status: reqwest::StatusCode::BAD_REQUEST,
+            headers: reqwest::header::HeaderMap::new(),
+            problem,
+        };
+        assert!(error.to_string().ends_with(
+            "\n  - /steps/open/build/instructions/0/instruction: 'vault' has no instruction 'withdraw' (template_unknown_instruction)"
+        ));
         let many: Vec<_> = (0..25).map(|i| json!(format!("e{i}"))).collect();
         let lines = problem_error_lines(Some(&json!(many)));
         assert_eq!(lines.matches("\n  - ").count(), MAX_PROBLEM_ERRORS);

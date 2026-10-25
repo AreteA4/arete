@@ -1,7 +1,7 @@
 /**
  * `arete-protocol`: check and build an Arete protocol.
  *
- *   arete-protocol check [entry]
+ *   arete-protocol check [entry] [--remote | --offline]
  *   arete-protocol build [entry] [--out <dir>] [--root <dir>] [--server-release]
  *   arete-protocol serve-handlers --review-key <id>=<pubkey> --ctx-url <url> [...]
  *
@@ -15,7 +15,15 @@ import { join, resolve } from "node:path";
 import { ProtocolContractError } from "./contracts/errors.js";
 import { ProtocolDefinitionError } from "./define.js";
 import { StackGenerationError } from "./stack/generate.js";
-import { BUILD_FILES, ProtocolBuildError, buildProtocol, checkProtocol, writeBuild } from "./build/build.js";
+import {
+  BUILD_FILES,
+  ProtocolBuildError,
+  buildProtocol,
+  checkProtocol,
+  releaseUploadBody,
+  writeBuild,
+} from "./build/build.js";
+import { checkRemotely, remoteCheckTarget } from "./remote.js";
 import {
   DEFAULT_PREPARE_TIMEOUT_MS,
   HANDLER_HOST_READY_SCHEMA,
@@ -31,7 +39,7 @@ import { PACKAGE_VERSION } from "./version.js";
 const USAGE = `arete-protocol ${PACKAGE_VERSION}
 
 Usage:
-  arete-protocol check [entry] [--root <dir>]
+  arete-protocol check [entry] [--root <dir>] [--remote | --offline]
   arete-protocol build [entry] [--out <dir>] [--root <dir>] [--server-release]
   arete-protocol serve-handlers --review-key <keyId>=<pubkey> --ctx-url <url> [options]
 
@@ -39,6 +47,13 @@ entry   a module that default-exports defineProtocol(...) (default: protocol.ts)
 --out   output directory for build (default: .arete/protocol)
 --root  project root; artifact paths are relative to it (default: the entry's directory)
 --server-release  also print the release hash a hosted service derives from the upload
+--remote   require the server's check (fails without a secret key)
+--offline  skip the server's check
+
+check runs the local checks (syntax and names only), then, when ARETE_API_KEY
+holds a secret key, the server's own upload checks (expression types and
+templates against their program specs) without uploading anything.
+ARETE_API_URL overrides the API (default https://api.arete.run).
 
 To deploy, upload protocol-spec.json, plus handlers.mjs when a step has a
 handler. The service derives the stack source and the release itself, so its
@@ -75,22 +90,33 @@ interface Parsed {
   out: string;
   root?: string;
   serverRelease: boolean;
+  remote: boolean;
+  offline: boolean;
 }
 
 function parse(argv: string[]): Parsed {
-  const parsed: Parsed = { entry: "protocol.ts", out: ".arete/protocol", serverRelease: false };
+  const parsed: Parsed = {
+    entry: "protocol.ts",
+    out: ".arete/protocol",
+    serverRelease: false,
+    remote: false,
+    offline: false,
+  };
   const positional: string[] = [];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     if (arg === "--out" || arg === "-o") parsed.out = argv[++i] ?? fail("--out needs a directory");
     else if (arg === "--root") parsed.root = argv[++i] ?? fail("--root needs a directory");
     else if (arg === "--server-release") parsed.serverRelease = true;
+    else if (arg === "--remote") parsed.remote = true;
+    else if (arg === "--offline") parsed.offline = true;
     else if (arg === "--help" || arg === "-h") parsed.command = "help";
     else if (arg.startsWith("-")) fail(`unknown option ${arg}`);
     else positional.push(arg);
   }
   parsed.command ??= positional[0];
   if (positional[1] !== undefined) parsed.entry = positional[1];
+  if (parsed.remote && parsed.offline) fail("--remote and --offline cannot be combined");
   return parsed;
 }
 
@@ -200,6 +226,57 @@ function describe(finding: Record<string, unknown>): string {
   return String(finding.message);
 }
 
+const SYNTAX_ONLY =
+  "syntax only; run with credentials for the full check (set ARETE_API_KEY to a secret key, or run `a4 protocol deploy --dry-run`)";
+
+async function check(args: Parsed, options: { entry: string; root?: string }): Promise<number> {
+  const result = await checkProtocol(options);
+  for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
+  const findings = [...result.expressionFindings, ...result.staticFindings];
+  for (const finding of findings) process.stderr.write(`${describe(finding as never)}\n`);
+  const label = `${result.lowered.spec.name}@${result.lowered.spec.version}`;
+  const target = args.offline ? { reason: "--offline" } : remoteCheckTarget();
+  if ("reason" in target) {
+    if (args.remote) fail(`--remote needs a secret key: ${target.reason}`);
+    if (findings.length > 0) return 1;
+    process.stdout.write(`ok: ${label} (${SYNTAX_ONLY})\n`);
+    return 0;
+  }
+  const outcome = await checkRemotely(await releaseUploadBody(options, result), target);
+  if (outcome.kind === "unavailable") {
+    if (args.remote) {
+      process.stderr.write(`error: ${outcome.reason}\n`);
+      return 1;
+    }
+    process.stderr.write(`warning: ${outcome.reason}; only the local checks ran\n`);
+    if (findings.length > 0) return 1;
+    process.stdout.write(`ok: ${label} (${SYNTAX_ONLY})\n`);
+    return 0;
+  }
+  if (outcome.kind === "rejected") {
+    process.stderr.write(`server: ${outcome.error}${outcome.code ? ` [${outcome.code}]` : ""}\n`);
+    for (const error of outcome.errors) {
+      const where = error.path ? `${error.path}: ` : "";
+      process.stderr.write(`  ${where}${error.message}${error.code ? ` [${error.code}]` : ""}\n`);
+    }
+    return 1;
+  }
+  if (findings.length > 0) {
+    process.stderr.write(
+      "note: the server accepts this spec, but the local checker reported the findings above, and `arete-protocol build` refuses a spec with findings\n",
+    );
+    return 1;
+  }
+  if (outcome.templateCheck === "pending") {
+    const missing = outcome.missingProgramSpecs.map((entry) => entry.alias ?? "?").join(", ");
+    process.stderr.write(
+      `warning: the server's template check is pending until it has the program specs of ${missing || "the pinned programs"}; activation waits for them\n`,
+    );
+  }
+  process.stdout.write(`ok: ${label} (checked by the server; release ${outcome.releaseHash})\n`);
+  return 0;
+}
+
 async function main(): Promise<number> {
   if (process.argv[2] === "serve-handlers") return serveHandlers(process.argv.slice(3));
   const args = parse(process.argv.slice(2));
@@ -209,15 +286,7 @@ async function main(): Promise<number> {
   }
   const options = { entry: resolve(args.entry), ...(args.root ? { root: resolve(args.root) } : {}) };
   try {
-    if (args.command === "check") {
-      const result = await checkProtocol(options);
-      for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
-      const findings = [...result.expressionFindings, ...result.staticFindings];
-      for (const finding of findings) process.stderr.write(`${describe(finding as never)}\n`);
-      if (findings.length > 0) return 1;
-      process.stdout.write(`ok: ${result.lowered.spec.name}@${result.lowered.spec.version}\n`);
-      return 0;
-    }
+    if (args.command === "check") return await check(args, options);
     if (args.command === "build") {
       const result = await buildProtocol(options);
       for (const warning of result.warnings) process.stderr.write(`warning: ${warning}\n`);
