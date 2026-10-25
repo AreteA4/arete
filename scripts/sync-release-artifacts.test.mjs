@@ -17,13 +17,24 @@ test("synchronizes release and linked package locks without changing registry re
     fs.writeFileSync(target, JSON.stringify(value, null, 2) + "\n");
   };
   write("core/package.json", { name: "@example/sdk", version: "0.29.1", dependencies: { zod: "^4" } });
-  write("react/package.json", { name: "@example/react", version: "0.29.1", devDependencies: { "@example/sdk": "^0.29.0" } });
+  write("adapter/package.json", { name: "@example/adapter", version: "0.29.1", peerDependencies: { "@example/sdk": "^0.29.0" } });
+  write("react/package.json", {
+    name: "@example/react", version: "0.29.1",
+    peerDependencies: { "@example/adapter": "^0.29.0", "@example/sdk": "^0.29.0" },
+    devDependencies: { "@example/adapter": "^0.29.0", "@example/sdk": "^0.29.0" },
+  });
   const registry = { version: "4.0.0", resolved: "https://registry.npmjs.org/zod/-/zod-4.0.0.tgz", integrity: "fixture-integrity" };
   write("react/package-lock.json", {
     name: "@example/react", version: "0.29.0", lockfileVersion: 3,
     packages: {
-      "": { name: "@example/react", version: "0.29.0", devDependencies: { "@example/sdk": "^0.29.0" } },
+      "": {
+        name: "@example/react", version: "0.29.0",
+        peerDependencies: { "@example/adapter": "^0.29.0", "@example/sdk": "^0.29.0" },
+        devDependencies: { "@example/adapter": "^0.29.0", "@example/sdk": "^0.29.0" },
+      },
+      "../adapter": { name: "@example/adapter", version: "0.29.0", dev: true, peerDependencies: { "@example/sdk": "^0.29.0" } },
       "../core": { name: "@example/sdk", version: "0.29.0", dev: true, dependencies: { zod: "^3" } },
+      "node_modules/@example/adapter": { resolved: "../adapter", link: true },
       "node_modules/@example/sdk": { resolved: "../core", link: true },
       "node_modules/zod": registry,
     },
@@ -41,6 +52,15 @@ test("synchronizes release and linked package locks without changing registry re
   assert.equal(lock.version, "0.29.1");
   assert.equal(lock.packages[""].version, "0.29.1");
   assert.equal(lock.packages[""].devDependencies["@example/sdk"], "^0.29.1");
+  // React's peer and dev ranges on a sibling adapter follow the release too.
+  const react = JSON.parse(fs.readFileSync(path.join(root, "react/package.json"), "utf8"));
+  for (const section of ["peerDependencies", "devDependencies"]) {
+    assert.equal(react[section]["@example/adapter"], "^0.29.1", section);
+    assert.equal(react[section]["@example/sdk"], "^0.29.1", section);
+    assert.equal(lock.packages[""][section]["@example/adapter"], "^0.29.1", section);
+  }
+  assert.equal(lock.packages["../adapter"].version, "0.29.1");
+  assert.deepEqual(lock.packages["../adapter"].peerDependencies, { "@example/sdk": "^0.29.1" });
   assert.equal(lock.packages["../core"].version, "0.29.1");
   assert.equal(lock.packages["../core"].dev, true);
   assert.deepEqual(lock.packages["../core"].dependencies, { zod: "^4" });
