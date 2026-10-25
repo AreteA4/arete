@@ -46,6 +46,7 @@ pub struct Detection {
 }
 
 impl Detection {
+    #[cfg(test)]
     pub fn ids(&self) -> Vec<String> {
         self.agents.iter().map(|agent| agent.id.clone()).collect()
     }
