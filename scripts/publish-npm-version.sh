@@ -17,7 +17,7 @@ Examples:
 Notes:
   - Copies only the npm package directories into a temporary repo snapshot.
   - Rewrites the staged package metadata to the target version.
-  - Publishes in dependency order: hash -> protocol -> sdk -> react -> adapters -> automations -> a4 -> mcp.
+  - Publishes in dependency order: hash -> protocol -> sdk -> kit adapter -> react -> web3.js adapter -> automations -> a4 -> mcp.
   - Keeps the independently versioned hash and protocol packages at their
     checked-in versions.
   - Skips packages that are already published at that exact version.
@@ -283,8 +283,12 @@ if [[ "$DRY_RUN" != "--dry-run" ]]; then
   wait_for_package "@usearete/sdk" "$VERSION"
 fi
 
-publish_package "$STAGING_DIR/typescript/react" "@usearete/react" "npm install ../core --no-save --package-lock=false"
 publish_package "$STAGING_DIR/typescript/adapters/kit" "@usearete/adapter-kit" "npm install ../../core --no-save --package-lock=false"
+# @usearete/react/wallet-standard compiles against the staged Kit adapter's
+# types. Staging drops dist, and neither the SDK nor the adapter is rebuilt
+# when it is already published, so build whichever is missing here.
+publish_package "$STAGING_DIR/typescript/react" "@usearete/react" \
+  "([ -d ../core/dist ] || (cd ../core && npm ci && npm run build)) && ([ -d ../adapters/kit/dist ] || (cd ../adapters/kit && npm ci && npm install ../../core --no-save --package-lock=false && npm run build)) && npm install ../core ../adapters/kit --no-save --package-lock=false"
 publish_package "$STAGING_DIR/typescript/adapters/web3js" "@usearete/adapter-web3js" "npm install ../../core --no-save --package-lock=false"
 if [[ -n "$AUTOMATIONS" ]]; then
   # Staging drops dist, and the SDK is not rebuilt when it is already
