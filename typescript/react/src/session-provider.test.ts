@@ -12,6 +12,8 @@ import type { AuthConfig, SessionDefinition, WalletAdapter } from '@usearete/sdk
 import { AreteProvider } from './provider';
 import {
   AreteSessionProvider,
+  AreteSessionUnavailableError,
+  isAreteSessionUnavailableError,
   useAreteSession,
   type AnySession,
   type AreteSessionProviderProps,
@@ -227,6 +229,52 @@ describe('AreteSessionProvider', () => {
     const close = jest.spyOn(session, 'close');
     view.unmount();
     expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a caller waiting on ready() when the provider is removed before the session opens', async () => {
+    const view = renderSession({ definition: DEFINITION, options: { auth: AUTH_A }, children: null });
+    const { ready } = view.current;
+    const waiting = ready();
+    view.unmount();
+    await settle();
+
+    const failure = await waiting.catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(AreteSessionUnavailableError);
+    expect(isAreteSessionUnavailableError(failure)).toBe(true);
+    expect(failure).toMatchObject({ code: 'provider_unmounted', name: 'AreteSessionUnavailableError' });
+    // Asked after the provider is gone, it fails at once too.
+    await expect(ready()).rejects.toBeInstanceOf(AreteSessionUnavailableError);
+  });
+
+  it('fails a caller waiting through a reopen when the provider is removed before the new session opens', async () => {
+    const view = renderSession({ definition: DEFINITION, options: { auth: AUTH_A }, children: null });
+    const waiting = view.current.ready();
+    view.update({ definition: DEFINITION, options: { auth: AUTH_B }, children: null });
+    view.unmount();
+    await settle();
+    await expect(waiting).rejects.toMatchObject({ code: 'provider_unmounted' });
+  });
+
+  it('fails a caller waiting for a session the app never gave', async () => {
+    const view = renderSession({ session: null, children: null });
+    const waiting = view.current.ready();
+    view.unmount();
+    await settle();
+    await expect(waiting).rejects.toBeInstanceOf(AreteSessionUnavailableError);
+  });
+
+  it('hands a caller waiting from the first render the session StrictMode opens', async () => {
+    const view = renderSession(
+      { definition: DEFINITION, children: null },
+      (node) => React.createElement(React.StrictMode, null, node)
+    );
+    // Asked in the first render, before StrictMode's simulated remount.
+    const waiting = view.seen[0].ready();
+    await settle();
+    const session = view.current.session as AnySession;
+    expect(session).not.toBeNull();
+    await expect(waiting).resolves.toBe(session);
+    view.unmount();
   });
 
   it('throws outside a provider', () => {

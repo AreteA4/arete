@@ -59,7 +59,9 @@ export interface UseAreteSessionResult<TSession extends AnySession = AnySession>
   readonly error: Error | null;
   /**
    * The session once it is open. Waits through a reopen (new auth or
-   * options) and resolves with the new session; rejects when opening fails.
+   * options) and resolves with the new session; rejects when opening fails,
+   * and with an {@link AreteSessionUnavailableError} when the provider is
+   * unmounted first.
    * Stable, so it can be a `useOperationMutation` executor:
    * `{ executor: ready }`.
    */
@@ -103,6 +105,27 @@ export type AreteSessionProviderProps<TDef extends SessionDefinition = SessionDe
   | ExternalAreteSessionProviderProps;
 
 const AreteSessionContext = createContext<UseAreteSessionResult | null>(null);
+
+/**
+ * `ready()` rejects with this when its `AreteSessionProvider` was removed
+ * before the session opened (or is called after the provider is gone): no
+ * session will come. `code` is `provider_unmounted`.
+ */
+export class AreteSessionUnavailableError extends Error {
+  readonly code = 'provider_unmounted' as const;
+
+  constructor(message = 'The AreteSessionProvider was unmounted before its session opened') {
+    super(message);
+    this.name = 'AreteSessionUnavailableError';
+  }
+}
+
+/** Whether `error` is an {@link AreteSessionUnavailableError}. */
+export function isAreteSessionUnavailableError(
+  error: unknown
+): error is AreteSessionUnavailableError {
+  return error instanceof AreteSessionUnavailableError;
+}
 
 interface Deferred {
   readonly promise: Promise<AnySession>;
@@ -254,13 +277,45 @@ export function AreteSessionProvider<TDef extends SessionDefinition>(
   const syncsWallet = !isExternal || 'wallet' in props;
 
   const deferredsRef = useRef(new WeakMap<SessionKey, Deferred>());
+  // Every waiter that may still be pending, so unmounting can settle them.
+  const pendingRef = useRef(new Set<Deferred>());
+  const unmountedRef = useRef(false);
   const deferredFor = useCallback((forKey: SessionKey): Deferred => {
     let deferred = deferredsRef.current.get(forKey);
     if (!deferred) {
       deferred = createDeferred();
+      if (unmountedRef.current) deferred.reject(new AreteSessionUnavailableError());
       deferredsRef.current.set(forKey, deferred);
+      for (const pending of pendingRef.current) {
+        if (pending.settled) pendingRef.current.delete(pending);
+      }
+      if (!deferred.settled) pendingRef.current.add(deferred);
     }
     return deferred;
+  }, []);
+
+  // Removed for good, nothing will open: the waiters fail instead of
+  // hanging. The check waits a microtask because StrictMode (and a tree
+  // that is hidden and shown again) runs this cleanup and then mounts the
+  // same provider again, which keeps the waiters for the session it opens.
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    unmountedRef.current = false;
+    const waiters = pendingRef.current;
+    return () => {
+      mountedRef.current = false;
+      void Promise.resolve().then(() => {
+        if (mountedRef.current) return;
+        unmountedRef.current = true;
+        const pending = [...waiters];
+        waiters.clear();
+        // Mounted again later (a hidden tree shown again), `ready()` waits
+        // for the session opened then rather than repeating this failure.
+        deferredsRef.current = new WeakMap();
+        for (const deferred of pending) deferred.reject(new AreteSessionUnavailableError());
+      });
+    };
   }, []);
 
   const [opened, setOpened] = useState<OpenedSession | null>(null);

@@ -257,8 +257,10 @@ does the same; see the
 - `session` is `null` until the session is open, after a failure, and while
   it reopens.
 - `ready()` resolves with the session once it is open, waiting through a
-  reopen, and rejects when opening fails. It is stable, so it is safe in
-  callbacks and dependency arrays.
+  reopen, and rejects when opening fails. If the provider unmounts before
+  the session opens, it rejects with an `AreteSessionUnavailableError`
+  (`code: "provider_unmounted"`). StrictMode's extra mount doesn't count as
+  an unmount. It is stable, so it is safe in callbacks and dependency arrays.
 - `retry()` opens the session again after a failure.
 
 ```tsx

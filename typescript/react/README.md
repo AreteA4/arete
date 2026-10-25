@@ -174,7 +174,7 @@ function Squads() {
 }
 ```
 
-`useAreteSession()` returns `{ session, status, error, ready, retry }`. `status` is `opening`, `open` or `error`; `session` is `null` until it is `open`. `ready()` resolves with the session once it is open, waiting through a reopen; it is stable, so it can be a `useOperationMutation` executor. `retry()` opens it again after a failure. Type it with the definition (`useAreteSession<typeof SQUADS>()`) or with a session type (`useAreteSession<MySession>()`). It throws outside an `AreteSessionProvider`.
+`useAreteSession()` returns `{ session, status, error, ready, retry }`. `status` is `opening`, `open` or `error`; `session` is `null` until it is `open`. `ready()` resolves with the session once it is open, waiting through a reopen. If the provider unmounts before then, it rejects with an `AreteSessionUnavailableError` (`code: 'provider_unmounted'`; StrictMode's extra mount doesn't count). It is stable, so it can be a `useOperationMutation` executor. `retry()` opens it again after a failure. Type it with the definition (`useAreteSession<typeof SQUADS>()`) or with a session type (`useAreteSession<MySession>()`). It throws outside an `AreteSessionProvider`.
 
 How the provider manages the session:
 

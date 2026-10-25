@@ -1,5 +1,10 @@
 export { AreteProvider, useAreteContext, useConnectionState } from './provider';
-export { AreteSessionProvider, useAreteSession } from './session-provider';
+export {
+  AreteSessionProvider,
+  AreteSessionUnavailableError,
+  isAreteSessionUnavailableError,
+  useAreteSession,
+} from './session-provider';
 export type {
   AnySession,
   AreteSessionOptions,
