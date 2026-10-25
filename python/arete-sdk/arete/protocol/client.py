@@ -37,6 +37,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
     Union,
 )
@@ -81,6 +82,7 @@ from arete.protocol.types import (
     ProtocolStepAvailability,
     ProtocolStreamEvent,
     ProtocolWalletActions,
+    ProtocolWalletInstanceActions,
 )
 
 PROTOCOL_READ_SCOPE = "protocol:read"
@@ -88,6 +90,7 @@ PROTOCOL_SUBMIT_SCOPE = "protocol:submit"
 PROTOCOL_PREPARE_ANY_SCOPE = "protocol:prepare:*"
 
 MAX_RECONNECT_DELAY_SECONDS = 30.0
+_WALLET_ACTIONS_PAGE_LIMIT = 50  # the most instances one wallet actions page returns
 _STREAM_EVENT_TYPES = ("transition", "participant", "observation")
 _ACCESS_CODES = frozenset(PROTOCOL_ACCESS_REJECTION_CODES)
 _STATE_CODES = frozenset(PROTOCOL_STATE_REJECTION_CODES)
@@ -730,6 +733,34 @@ class ProtocolClient:
             entry.setdefault("participantState", None)
             entry.setdefault("steps", [])
         return body
+
+    async def instances_for_wallet(
+        self, wallet: str, *, relation: Optional[str] = None
+    ) -> List[ProtocolWalletInstanceActions]:
+        """Every instance ``wallet`` relates to, read through all pages of
+        :meth:`actions`. With ``relation``, only the instances it relates to
+        that way: ``creator`` for the ones it created, ``role:<name>`` for
+        the ones where it holds that role, ``participant`` for the ones it
+        joined."""
+        found: List[ProtocolWalletInstanceActions] = []
+        seen: Set[str] = set()
+        cursor: Optional[str] = None
+        while True:
+            page = await self.actions(wallet, cursor=cursor, limit=_WALLET_ACTIONS_PAGE_LIMIT)
+            found.extend(
+                entry
+                for entry in page["instances"]
+                if relation is None or relation in entry["relation"]
+            )
+            cursor = page["nextCursor"]
+            if cursor is None:
+                return found
+            if cursor in seen:
+                raise AreteError(
+                    f"Protocol wallet actions returned the cursor {cursor} twice",
+                    "PROTOCOL_REQUEST_FAILED",
+                )
+            seen.add(cursor)
 
     # ------------------------------------------------------------------
     # Metadata

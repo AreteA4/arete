@@ -19,6 +19,17 @@ as creator, participant, or role holder. Each step reports whether it is
 allowed, a rejection reason when it is not, and typed arguments. Pass
 `nextCursor` back as `cursor` to page the instances.
 
+To list a wallet's instances, such as the raises it created, let the client
+read every page:
+
+```ts
+const created = await client.instances.forWallet(wallet, { relation: 'creator' });
+```
+
+`relation` is `creator`, `participant` or `role:<name>`; leave it out for every
+instance the wallet relates to. Each entry is the same instance entry
+`actions` returns, with its state and the wallet's steps there.
+
 `argsDependent` identifies checks that need arguments before they can be
 resolved. Discovery helps explain your UI; preparation remains authoritative.
 

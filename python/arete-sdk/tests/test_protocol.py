@@ -526,6 +526,61 @@ async def test_wallet_actions_read_the_wallet_route_with_a_read_session():
     assert [mint["body"]["scopes"] for mint in server.mints] == [["protocol:read"]]
 
 
+def _wallet_instance(instance_id: str, relation: List[str]) -> Dict:
+    return {"instanceId": instance_id, "state": "open", "relation": relation, "participantState": None, "steps": []}
+
+
+@pytest.mark.asyncio
+async def test_instances_for_wallet_finds_the_instances_a_wallet_created_across_pages():
+    pages = {
+        None: (
+            [
+                _wallet_instance("inst_1", ["creator"]),
+                _wallet_instance("inst_2", ["participant"]),
+                _wallet_instance("inst_3", ["participant", "creator"]),
+            ],
+            "c2",
+        ),
+        "c2": ([_wallet_instance("inst_4", ["role:admin"]), _wallet_instance("inst_5", ["creator", "role:admin"])], "c3"),
+        "c3": ([_wallet_instance("inst_6", ["participant"])], None),
+    }
+
+    def route(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == f"/api/protocol-deployments/{DEPLOYMENT}/wallets/{WALLET}/actions"
+        instances, next_cursor = pages[request.url.params.get("cursor")]
+        return httpx.Response(
+            200, json={"deploymentId": DEPLOYMENT, "wallet": WALLET, "instances": instances, "nextCursor": next_cursor}
+        )
+
+    client, server = make_client(route)
+    created = await client.instances_for_wallet(WALLET, relation="creator")
+    assert [entry["instanceId"] for entry in created] == ["inst_1", "inst_3", "inst_5"]
+    assert created[0] == _wallet_instance("inst_1", ["creator"])
+    assert [dict(call.url.params) for call in server.calls()] == [
+        {"limit": "50"},
+        {"cursor": "c2", "limit": "50"},
+        {"cursor": "c3", "limit": "50"},
+    ]
+
+    admin = await client.instances_for_wallet(WALLET, relation="role:admin")
+    assert [entry["instanceId"] for entry in admin] == ["inst_4", "inst_5"]
+    everything = await client.instances_for_wallet(WALLET)
+    assert [entry["instanceId"] for entry in everything] == ["inst_1", "inst_2", "inst_3", "inst_4", "inst_5", "inst_6"]
+    with pytest.raises(Exception, match="wallet must be a non-empty string"):
+        await client.instances_for_wallet("")
+
+
+@pytest.mark.asyncio
+async def test_instances_for_wallet_stops_on_a_repeated_cursor():
+    def route(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"deploymentId": DEPLOYMENT, "wallet": WALLET, "instances": [], "nextCursor": "same"})
+
+    client, server = make_client(route)
+    with pytest.raises(Exception, match="returned the cursor same twice"):
+        await client.instances_for_wallet(WALLET)
+    assert len(server.calls()) == 2
+
+
 @pytest.mark.asyncio
 async def test_metadata_updates_sign_the_proof_message():
     sent: List[Dict] = []

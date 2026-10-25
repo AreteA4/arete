@@ -42,6 +42,7 @@ an application session.
 | `actions({ wallet, instance?, cursor?, limit? })`        | Wallet actions and related instances                             |
 | `allowedSteps({ instance, wallet })`                     | Step availability for one instance                               |
 | `instances.list(filter?)`, `instances.get(id, options?)` | Canonical instance reads                                         |
+| `instances.forWallet(wallet, { relation? })`             | Every instance a wallet relates to, across pages of `actions`    |
 | `instances.use(id, options?)`                            | Reactive instance handle with optional live row                  |
 | `participants.get({ instance, wallet })`                 | Canonical participant read                                       |
 | `submit(intent, signedTransactions)`                     | Submit exact wallet-signed transactions                          |
@@ -82,7 +83,10 @@ Install verified targets with `a4 install protocol <package> --rust` or
 names and typed step arguments. Read their generated README for construction,
 imports, steps, rejection types, and event payloads.
 
-Wallet action discovery uses `actions` in each language. Receipt helpers use
+Wallet action discovery uses `actions` in each language. A wallet's
+instances across every page are `instances_for_wallet(wallet, relation)` in
+Rust (`Option<&str>`) and `instances_for_wallet(wallet, relation=...)` in
+Python. Receipt helpers use
 `verify_receipt` and `verify_receipt_on_chain` in Rust and Python.
 Python's repository implementation is available for development; check its
 [publication status](/sdks/python/) before selecting it for distribution.

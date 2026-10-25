@@ -16,7 +16,10 @@ participants, wallet actions, metadata, event streams, submission tracking,
 and execution receipts.
 
 `actions(ProtocolWalletActionsRequest::new(wallet))` discovers the wallet's
-create steps and related instances. Handle the typed prepare result, sign the
+create steps and related instances, one page at a time.
+`instances_for_wallet(wallet, Some("creator"))` reads every page and returns
+the instances the wallet created (`Some("role:<name>")` for a role it holds,
+`None` for every related instance). Handle the typed prepare result, sign the
 returned transactions locally without rebuilding messages, submit, and follow
 the execution id. Receipt verification uses `verify_receipt` and
 `verify_receipt_on_chain`.

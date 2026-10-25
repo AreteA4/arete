@@ -373,6 +373,18 @@ account's keypair: TS `signers`, Rust `PreparedTransactionBody::signers` set wit
   (+ optional `inspect_transaction`); adapters for platform wallet ecosystems live in
   separate packages.
 - Post-write reconciliation: `wait_for_processed_slot` bridges writes to view state.
+- **Protocol clients** (one protocol deployment): typed step `prepare`, `submit`,
+  intents, instance and participant reads, metadata, events and receipts.
+  Wallet discovery has two verbs with the same semantics in every SDK:
+  - `actions(wallet, instance?, cursor?, limit?)` reads one page of
+    `GET …/wallets/{wallet}/actions`: the create steps and the instances the wallet
+    relates to, each with its `relation` list (`participant`, `creator`,
+    `role:<name>`).
+  - `instances_for_wallet(wallet, relation?)` (TypeScript `instances.forWallet`) reads every page of `actions`
+    (limit 50, following `nextCursor` until it is null) and returns the instance
+    entries, in server order. With `relation`, only entries whose `relation` list
+    contains it are returned. A cursor the server returns twice is an error, not a
+    loop.
 
 ## 8. Program reads (`client.read` / program `accounts`)
 
@@ -623,6 +635,7 @@ standard style (casing, error, async, and options conventions).
 | prepare | `ore.instructions.deploy.prepare(input)` | `…deploy.useMutation()` | `prepare` on generated ops | `ore.instructions.deploy.prepare(**input)` |
 | PDA | `ore.pdas.miner.deriveSync({accounts})` | same | `ore::pdas::miner(authority)` | `ore.pdas.miner.derive(authority=…)` |
 | accounts | `ore.accounts.Miner.fetch(addr)` | `…use()` read hooks | `…miner_accounts().fetch(addr)` | `await ore.accounts.miner.fetch(addr)` |
+| protocol wallet instances | `client.instances.forWallet(wallet, { relation })` | — | `client.instances_for_wallet(wallet, Some("creator")).await?` | `await client.instances_for_wallet(wallet, relation="creator")` |
 | execute | `await a4.execute(prepared, opts)` | mutation phase machine + reconciliation | `a4.execute(prepared, opts).await` | `await a4.execute(prepared, **opts)` |
 | errors | thrown `Error` subclasses / result objects | status unions | `Result<_, thiserror enums>` → `AreteError` | `AreteError` exception hierarchy |
 | absent vs empty | `undefined` vs `null`/`[]` | `isPending` vs `isEmpty` | `None` vs `Some(empty)` (nested `Option`) | sentinel `UNSET` vs `None`/`[]` (see Python doc) |
