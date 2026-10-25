@@ -158,15 +158,21 @@ def test_login_key_goes_only_to_the_arete_api(monkeypatch):
 
     from arete._a4_profile import is_login_key_destination
     from arete.auth import api_key_for_endpoint
+    from arete.errors import AuthError
 
     monkeypatch.delenv("ARETE_API_KEY", raising=False)
     login_key = "a4_ak_loginonlyforarete"
     resolved = resolve_auth_config(None, lambda: ProfileKey(key=login_key))
     assert api_key_for_endpoint(resolved, "https://api.arete.run/ws/sessions") == login_key
     rebound = replace(resolved, token_endpoint="https://evil.example/sessions")
-    assert api_key_for_endpoint(rebound, "https://evil.example/sessions") is None
-    explicit = AuthConfig(secret_key=HUMAN)
-    assert api_key_for_endpoint(explicit, "https://evil.example/sessions") == HUMAN
+    with pytest.raises(AuthError) as refused:
+        api_key_for_endpoint(rebound, "https://evil.example/sessions")
+    assert refused.value.code == "UNTRUSTED_CREDENTIAL_DESTINATION"
+    assert login_key not in str(refused.value)
+    # Even ARETE_API_URL does not widen the login key.
+    monkeypatch.setenv("ARETE_API_URL", "https://evil.example")
+    with pytest.raises(AuthError):
+        api_key_for_endpoint(rebound, "https://evil.example/sessions")
 
     assert is_login_key_destination("https://API.arete.run.:443/x")
     for url in [
@@ -209,22 +215,34 @@ def test_restriction_follows_the_config_not_the_key_value(monkeypatch):
     from dataclasses import replace
 
     from arete.auth import api_key_for_endpoint
+    from arete.errors import AuthError
 
     monkeypatch.delenv("ARETE_API_KEY", raising=False)
+    monkeypatch.delenv("ARETE_API_URL", raising=False)
     key = "a4_ak_sharedbetweenclients"
     custom = "https://auth.example.com/token"
     discovered = resolve_auth_config(None, lambda: ProfileKey(key=key))
-    # Another client in the same process passes the same key explicitly.
+    # Another client in the same process passes the same key explicitly,
+    # with its own API URL configured in code.
     explicit = resolve_auth_config(
-        AuthConfig(secret_key=key, token_endpoint=custom), lambda: ProfileKey(key=key)
+        AuthConfig(secret_key=key, token_endpoint=custom, _explicit_api_url=custom),
+        lambda: ProfileKey(key=key),
     )
     assert api_key_for_endpoint(explicit, custom) == key
-    assert api_key_for_endpoint(discovered, custom) is None
-    # Giving the discovered config its own key lifts the restriction.
-    assert api_key_for_endpoint(replace(discovered, secret_key=HUMAN), custom) == HUMAN
-    # ARETE_API_KEY keys are not restricted.
+    with pytest.raises(AuthError) as refused:
+        api_key_for_endpoint(discovered, custom)
+    assert refused.value.details["credential"] == "a4 login"
+    # Giving the discovered config its own key makes it an explicit key.
+    with pytest.raises(AuthError) as refused:
+        api_key_for_endpoint(replace(discovered, secret_key=HUMAN), custom)
+    assert refused.value.details["credential"] == "secret key"
+    # ARETE_API_KEY keys may reach the ARETE_API_URL origin.
     monkeypatch.setenv("ARETE_API_KEY", AGENT)
     from_env = resolve_auth_config(None, lambda: ProfileKey(key=key))
+    with pytest.raises(AuthError) as refused:
+        api_key_for_endpoint(from_env, custom)
+    assert refused.value.details["credential"] == "ARETE_API_KEY"
+    monkeypatch.setenv("ARETE_API_URL", "https://auth.example.com")
     assert api_key_for_endpoint(from_env, custom) == AGENT
     # The marker stays out of repr and equality.
     assert "a4_ak_" not in repr(discovered)

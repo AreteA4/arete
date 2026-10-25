@@ -15,6 +15,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional, Set, Tuple
 
+from arete._credential_destination import UNTRUSTED_CREDENTIAL_DESTINATION
 from arete.auth import (
     AuthConfig,
     AuthErrorCode,
@@ -96,8 +97,10 @@ def _is_socket_issue_message(value: Any) -> bool:
 
 
 def _is_terminal(error: BaseException) -> bool:
-    """A stack version refusal: no retry or reconnect can resolve it."""
-    return is_stack_version_refusal(getattr(error, "code", None))
+    """A stack version refusal or an untrusted credential destination: no
+    retry or reconnect can resolve it."""
+    code = getattr(error, "code", None)
+    return is_stack_version_refusal(code) or code == UNTRUSTED_CREDENTIAL_DESTINATION
 
 
 def _camel_or_snake(message: Mapping[str, Any], camel: str, snake: str) -> Any:
