@@ -394,7 +394,9 @@ These tools act on an Arete cloud dev environment: the project's (the
 nearest `.arete/dev/environment.json` at or above the server's working
 directory, or `project`), `ARETE_DEV_ENV`, or the one `environment` names
 (a name or an id). They never start or stop processes; `a4 dev up` in a
-terminal creates or wakes the project's environment and serves it locally.
+terminal creates or wakes the project's environment and serves it locally. The account key goes only to `https://api.arete.run`, the `ARETE_API_URL`
+origin, or the API your a4 login is stored for: a project file naming any
+other API gets no key, and the tool fails before sending anything.
 
 | Tool                     | Arguments                                                                           | What it does                                                                                                                                                                                         |
 | ------------------------ | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

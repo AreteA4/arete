@@ -331,7 +331,8 @@ impl std::fmt::Debug for EnvApi {
 
 impl EnvApi {
     /// `origin` must be an Arete origin (or loopback) so the key never goes
-    /// anywhere else.
+    /// anywhere else. The caller vouches that `key` may go to `origin`; an
+    /// ambient key goes through [`Self::for_origin`].
     pub fn new(http: reqwest::Client, origin: &str, key: &str) -> Result<Self> {
         let origin = api_origin(origin);
         if !crate::registry::is_arete_origin(&origin) {
@@ -356,13 +357,17 @@ impl EnvApi {
     }
 
     /// `origin` with the key the a4 login (or `ARETE_API_KEY`) has for it.
+    /// `origin` may come from a project file, so the key must be one that
+    /// may go there ([`credentials::check_key_destination`]).
     pub fn for_origin(http: reqwest::Client, origin: &str) -> Result<Self> {
-        let key = credentials::resolve_key_for_api(origin)?.ok_or_else(|| {
+        let origin = api_origin(origin);
+        let key = credentials::resolve_key_for_api(&origin)?.ok_or_else(|| {
             anyhow!(
                 "Cloud dev environments need an Arete secret key for {origin}: run `a4 auth login` (or `a4 auth signup`), or set ARETE_API_KEY."
             )
         })?;
-        Self::new(http, origin, &key)
+        credentials::check_key_destination(&key, &origin)?;
+        Self::new(http, &origin, &key.key)
     }
 
     pub fn origin(&self) -> &str {
