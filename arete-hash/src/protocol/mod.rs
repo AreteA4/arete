@@ -6,6 +6,7 @@
 //! vectors in `test-vectors/protocol-v1.json` and must agree on every hash
 //! and every error code.
 
+mod builtins;
 mod derive;
 mod error;
 mod handler;
@@ -19,6 +20,7 @@ mod stack;
 
 use serde_json::Value;
 
+pub use builtins::{builtin_modules_typescript, BUILTIN_MODULES_TYPESCRIPT_PATH};
 pub use derive::*;
 pub use error::*;
 pub use handler::*;

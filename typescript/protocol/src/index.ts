@@ -42,10 +42,13 @@ export { compareUtf8, decodeBase58, decodeBase64, encodeBase64, isPubkey } from 
 export * from "./abi.js";
 export * from "./define.js";
 export {
+  builtinProgramModule,
   builtins,
   checkTemplateShape,
+  isBuiltinProgramModule,
   isInstalledProgram,
   ix,
+  type BuiltinProgramModule,
   type InstalledProgram,
   type InstructionAccountShape,
   type InstructionName,
@@ -56,8 +59,10 @@ export {
   type ProgramInstallSource,
   type ProgramTemplateInstruction,
   type RequiredAccounts,
+  type TemplateProgram,
   type TemplateShapeProblem,
 } from "./programs.js";
+export { BUILTIN_PROGRAM_MODULES } from "./builtins.generated.js";
 export * from "./webhooks.js";
 export {
   EXPRESSION_FUNCTIONS,

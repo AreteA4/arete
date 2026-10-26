@@ -14,8 +14,8 @@ The package contains:
   `path`, and the same hashes. Both languages run every vector in
   [`test-vectors/protocol-v1.json`](../../test-vectors/protocol-v1.json).
 - **`defineProtocol`**, the authoring API, which lowers to the canonical spec,
-  with `ix` for typed instruction templates of installed programs and
-  `builtins` for builtin programs.
+  with `ix` for typed instruction templates of installed programs and of
+  the builtin programs `builtins(...)` returns.
 - **The handler ABI** (`ProtocolHandlerV1`, `ProtocolContextV1`,
   `PrepareInputV1`) and `wirePreparedOperation`.
 - **Events and webhooks**: event payload types and `verifyWebhook`.
@@ -153,13 +153,53 @@ guard codes.
 
 ### Programs
 
-`programs` takes installed program modules and `builtins(...)` entries
-(`builtins("system", "splToken")` is
-`{ system: { builtin: "system" }, splToken: { builtin: "splToken" } }`).
-A module lowers to `{ kind: "programSpec", programId, programSpecHash }`,
-plus `programReleaseHash` when it was installed from the registry. The raw
+`programs` takes installed program modules and builtin modules from
+`builtins(...)`. A module lowers to
+`{ kind: "programSpec", programId, programSpecHash }`, plus
+`programReleaseHash` when it was installed from the registry; a builtin
+lowers to `{ kind: "builtin", builtin }`. The raw
 `{ programId, programSpecHash, programReleaseHash? }` and `{ builtin }`
 forms are still accepted.
+
+#### Builtin programs
+
+`builtins(...)` returns typed modules for the five programs Arete knows
+without an install, each under one name:
+
+| Builtin | Program | Other names |
+| --- | --- | --- |
+| `system` | System Program | `system-program`, `systemProgram` |
+| `splToken` | SPL Token | `spl-token` |
+| `associatedToken` | Associated Token Account | `spl-ata`, `splAta` |
+| `computeBudget` | Compute Budget | `compute-budget` |
+| `memo` | SPL Memo | `spl-memo`, `splMemo` |
+
+Using another name is an error that names the builtin (`'spl-ata' is the
+builtin 'associatedToken'`). Each module carries its program id, a pinned
+ProgramSpec hash and `instructionShapes`, so `ix` checks builtin
+instructions like installed ones. System, SPL Token, Associated Token and
+Memo use the registry's `system-program`, `spl-token`, `spl-ata` and
+`spl-memo` ProgramSpecs; Arete checks templates against the same pinned
+specs.
+
+```ts
+const { associatedToken } = builtins("associatedToken");
+
+ix(associatedToken, "createIdempotent", {
+  accounts: {
+    fundingAddress: "wallet",
+    associatedTokenAccountAddress: "ata(wallet, params.mint)",
+    walletAddress: "wallet",
+    tokenMintAddress: "params.mint",
+    systemProgram: '"11111111111111111111111111111111"',
+    tokenProgram: '"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"',
+  },
+});
+```
+
+Instruction, argument and account names are the IDL's (SPL Token's are
+`Transfer`, `TransferChecked`, ...). The step's `glue` still creates
+associated token accounts and wraps SOL without a template instruction.
 
 `a4 install program --ts` generates the module. Besides its `programId`
 and `programSpecHash`, its default export carries two plain properties, the

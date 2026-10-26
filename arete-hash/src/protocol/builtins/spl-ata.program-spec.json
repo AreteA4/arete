@@ -1,0 +1,576 @@
+{
+  "idlContentHash": "arete:h1:idl-content:sha256:f277bd09e7cdf4ba08e911ef6898d93f28db4e1d89de81d6f73b7acfec718202",
+  "idlSnapshot": {
+    "accounts": [],
+    "discriminant_size": 8,
+    "errors": [
+      {
+        "code": 0,
+        "msg": "Associated token account owner does not match address derivation",
+        "name": "InvalidOwner"
+      }
+    ],
+    "events": [],
+    "instructions": [
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [],
+            "name": "fundingAddress",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "associatedTokenAccountAddress",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "walletAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "tokenMintAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "systemProgram",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "tokenProgram",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          }
+        ],
+        "args": [],
+        "discriminant": null,
+        "discriminator": [
+          192,
+          186,
+          75,
+          246,
+          38,
+          35,
+          32,
+          204
+        ],
+        "docs": [
+          "Legacy create variant accepted when instruction data is empty."
+        ],
+        "name": "createLegacy"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [],
+            "name": "fundingAddress",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "associatedTokenAccountAddress",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "walletAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "tokenMintAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "systemProgram",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "tokenProgram",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          }
+        ],
+        "args": [],
+        "discriminant": null,
+        "discriminator": [
+          0
+        ],
+        "docs": [
+          "Creates an associated token account."
+        ],
+        "name": "create"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [],
+            "name": "fundingAddress",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "associatedTokenAccountAddress",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "walletAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "tokenMintAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "systemProgram",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "tokenProgram",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          }
+        ],
+        "args": [],
+        "discriminant": null,
+        "discriminator": [
+          1
+        ],
+        "docs": [
+          "Creates an associated token account if it does not already exist."
+        ],
+        "name": "createIdempotent"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [],
+            "name": "nestedAssociatedAccountAddress",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "nestedTokenMintAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "destinationAssociatedAccountAddress",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "ownerAssociatedAccountAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "ownerTokenMintAddress",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "walletAddress",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [],
+            "name": "tokenProgram",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          }
+        ],
+        "args": [],
+        "discriminant": null,
+        "discriminator": [
+          2
+        ],
+        "docs": [
+          "Transfers from and closes a nested associated token account."
+        ],
+        "name": "recoverNested"
+      }
+    ],
+    "name": "spl_associated_token_account",
+    "normalizationVersion": 1,
+    "program_id": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+    "types": [],
+    "version": "1.1.2"
+  },
+  "instructions": [
+    {
+      "accounts": [
+        {
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "fundingAddress",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "associatedTokenAccountAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "walletAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "tokenMintAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "systemProgram",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "tokenProgram",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        192,
+        186,
+        75,
+        246,
+        38,
+        35,
+        32,
+        204
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Legacy create variant accepted when instruction data is empty."
+      ],
+      "name": "createLegacy",
+      "program_id": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    },
+    {
+      "accounts": [
+        {
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "fundingAddress",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "associatedTokenAccountAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "walletAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "tokenMintAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "systemProgram",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "tokenProgram",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Creates an associated token account."
+      ],
+      "name": "create",
+      "program_id": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    },
+    {
+      "accounts": [
+        {
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "fundingAddress",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "associatedTokenAccountAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "walletAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "tokenMintAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "systemProgram",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "tokenProgram",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        1
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Creates an associated token account if it does not already exist."
+      ],
+      "name": "createIdempotent",
+      "program_id": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    },
+    {
+      "accounts": [
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "nestedAssociatedAccountAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "nestedTokenMintAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "destinationAssociatedAccountAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "ownerAssociatedAccountAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "ownerTokenMintAddress",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "walletAddress",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "tokenProgram",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        2
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Transfers from and closes a nested associated token account."
+      ],
+      "name": "recoverNested",
+      "program_id": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+    }
+  ],
+  "normalizedIdlHash": "arete:h1:idl-normalized:sha256:ca8b30b52ac065ca11643d63959b39fdfd5873f20558451f95f6ebd6ffb3eafd",
+  "pdas": {},
+  "portableIdlHash": "arete:h1:idl-portable:sha256:9c1d93863e33c117dff199dcb9dae0baa6c182423eefd660f14b8048abc4a12f",
+  "programId": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+  "schema": "arete.program-spec/v1"
+}

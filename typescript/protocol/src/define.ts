@@ -14,9 +14,17 @@
 import type { ProtocolHandler } from "./abi.js";
 import { validateProtocolSpec } from "./contracts/spec.js";
 import { compareUtf8 } from "./contracts/shape.js";
-import { checkTemplateShape, isInstalledProgram, type InstalledProgram, type ProgramInstall } from "./programs.js";
+import {
+  builtinProgramModule,
+  checkTemplateShape,
+  isInstalledProgram,
+  type InstalledProgram,
+  type ProgramInstall,
+  type TemplateProgram,
+} from "./programs.js";
 import type { StackProgramSource } from "./stack/generate.js";
 import {
+  BUILTIN_PROGRAMS,
   PROTOCOL_CTX_V1,
   PROTOCOL_HANDLER_ABI_V1,
   PROTOCOL_SPEC_SCHEMA_V1,
@@ -101,8 +109,8 @@ export type GuardsInput =
   | Readonly<Record<string, string | { expr: string; message?: string }>>;
 
 export interface TemplateInstructionInput {
-  /** A program alias of the definition's `programs`, or the installed program module itself (`ix` passes the module). */
-  program: string | InstalledProgram;
+  /** A program alias of the definition's `programs`, or the installed or builtin program module itself (`ix` passes the module). */
+  program: string | TemplateProgram;
   /** The instruction name. `ix` is an alias. */
   instruction?: string;
   ix?: string;
@@ -384,21 +392,40 @@ function lowerGuards(guards: GuardsInput | undefined): GuardV1[] {
   );
 }
 
-/** The definition's programs: installed modules by identity, and aliases. */
+/**
+ * The definition's programs: installed and builtin modules by identity,
+ * installed modules by alias, and every alias's instruction shapes.
+ */
 interface ProgramTable {
-  aliases: Map<InstalledProgram, string>;
+  aliases: Map<TemplateProgram, string>;
   modules: Map<string, InstalledProgram>;
+  shapes: Map<string, TemplateProgram>;
 }
 
 function programTable(programs: ProtocolDefinition["programs"]): ProgramTable {
-  const table: ProgramTable = { aliases: new Map(), modules: new Map() };
+  const table: ProgramTable = { aliases: new Map(), modules: new Map(), shapes: new Map() };
   for (const [alias, program] of Object.entries(programs ?? {})) {
-    if (!isInstalledProgram(program)) continue;
-    if (table.aliases.has(program)) {
-      definitionError(`/programs/${alias}`, `the same program module is also declared as '${table.aliases.get(program)}'`);
+    const builtin = "builtin" in program && typeof program.builtin === "string" ? program.builtin : undefined;
+    let shapes: TemplateProgram | undefined;
+    if (isInstalledProgram(program)) {
+      table.modules.set(alias, program);
+      shapes = program;
+    } else if (builtin !== undefined && (BUILTIN_PROGRAMS as readonly string[]).includes(builtin)) {
+      shapes = builtinProgramModule(builtin as BuiltinProgram);
     }
-    table.aliases.set(program, alias);
-    table.modules.set(alias, program);
+    if (shapes === undefined) continue;
+    table.shapes.set(alias, shapes);
+    // `ix` passes the declared object by identity: an installed module, or a
+    // builtin module from `builtins(...)` (detected by its shapes, since the
+    // definition may load another copy of this package). A plain
+    // `{ builtin }` is called by alias.
+    if (isInstalledProgram(program) || "instructionShapes" in program) {
+      const key = program as TemplateProgram;
+      if (table.aliases.has(key)) {
+        definitionError(`/programs/${alias}`, `the same program module is also declared as '${table.aliases.get(key)}'`);
+      }
+      table.aliases.set(key, alias);
+    }
   }
   return table;
 }
@@ -415,18 +442,22 @@ function lowerTemplate(instruction: TemplateInstructionInput, path: string, prog
   } else {
     const alias = programs.aliases.get(instruction.program);
     if (alias === undefined) {
-      const install = isInstalledProgram(instruction.program) ? ` ('${instruction.program.programInstall.alias}')` : "";
+      const install = isInstalledProgram(instruction.program)
+        ? ` ('${instruction.program.programInstall.alias}')`
+        : "builtin" in instruction.program
+          ? ` ('${String(instruction.program.builtin)}')`
+          : "";
       definitionError(`${path}/program`, `the program${install} is not declared in 'programs'`);
     }
     program = alias;
   }
-  const module = programs.modules.get(program);
+  const module = programs.shapes.get(program);
   if (module !== undefined) {
-    const problem = checkTemplateShape(module, {
-      instruction: name,
-      args: instruction.args ?? {},
-      accounts: instruction.accounts ?? {},
-    });
+    const problem = checkTemplateShape(
+      module,
+      { instruction: name, args: instruction.args ?? {}, accounts: instruction.accounts ?? {} },
+      program,
+    );
     if (problem !== undefined) definitionError(`${path}/${problem.path}`, problem.message);
   }
   const remaining = (instruction.remainingAccounts ?? []).map((account, i) => {

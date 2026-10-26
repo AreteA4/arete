@@ -19,7 +19,8 @@
  * their meaning.
  */
 
-import { BUILTIN_PROGRAMS, type BuiltinProgram } from "./contracts/types.js";
+import { BUILTIN_PROGRAM_MODULES } from "./builtins.generated.js";
+import { BUILTIN_PROGRAMS, builtinForAlias, type BuiltinProgram } from "./contracts/types.js";
 
 /** Where an installed program comes from. */
 export type ProgramInstallSource =
@@ -69,13 +70,26 @@ export interface InstructionShape {
   readonly accounts: Readonly<Record<string, InstructionAccountShape>>;
 }
 
-/** A generated program module, as a protocol reads it. */
-export interface InstalledProgram {
+/**
+ * A program a template can call: a generated program module or a builtin
+ * module. Both pin the ProgramSpec Arete checks the template against.
+ */
+export interface TemplateProgram {
   readonly programId: string;
   readonly programSpecHash: string;
-  readonly programInstall: ProgramInstall;
   readonly instructionShapes: Readonly<Record<string, InstructionShape>>;
 }
+
+/** A generated program module, as a protocol reads it. */
+export interface InstalledProgram extends TemplateProgram {
+  readonly programInstall: ProgramInstall;
+}
+
+/**
+ * A builtin program module, as `builtins(...)` returns it: the builtin's
+ * name, program id, pinned ProgramSpec hash and instruction shapes.
+ */
+export type BuiltinProgramModule<K extends BuiltinProgram = BuiltinProgram> = (typeof BUILTIN_PROGRAM_MODULES)[K];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object";
@@ -99,21 +113,46 @@ export function isInstalledProgram(value: unknown): value is InstalledProgram {
 }
 
 /**
- * Builtin program entries for `programs`, keyed by builtin name:
- * `builtins("system", "splToken")` is
- * `{ system: { builtin: "system" }, splToken: { builtin: "splToken" } }`.
+ * Builtin program modules for `programs`, keyed by builtin name. Templates
+ * call them with `ix` like installed programs:
+ *
+ * ```ts
+ * const { associatedToken } = builtins("associatedToken");
+ * ix(associatedToken, "createIdempotent", { accounts: { ... } })
+ * ```
+ *
+ * Each builtin has one name: `spl-ata` and `splAta` are `associatedToken`,
+ * `spl-token` is `splToken`, `system-program` is `system`, `spl-memo` is
+ * `memo` and `compute-budget` is `computeBudget`.
  */
 export function builtins<const N extends readonly BuiltinProgram[]>(
   ...names: N
-): { readonly [K in N[number]]: { readonly builtin: K } } {
-  const out: Record<string, { builtin: BuiltinProgram }> = {};
+): { readonly [K in N[number]]: BuiltinProgramModule<K> } {
+  const out: Record<string, BuiltinProgramModule> = {};
   for (const name of names) {
     if (!(BUILTIN_PROGRAMS as readonly string[]).includes(name)) {
-      throw new TypeError(`'${String(name)}' is not a builtin program (${BUILTIN_PROGRAMS.join(", ")})`);
+      const canonical = builtinForAlias(String(name));
+      throw new TypeError(
+        canonical !== undefined
+          ? `'${String(name)}' is the builtin '${canonical}': use builtins("${canonical}")`
+          : `'${String(name)}' is not a builtin program (${BUILTIN_PROGRAMS.join(", ")})`,
+      );
     }
-    out[name] = { builtin: name };
+    out[name] = BUILTIN_PROGRAM_MODULES[name];
   }
-  return out as { readonly [K in N[number]]: { readonly builtin: K } };
+  return out as { readonly [K in N[number]]: BuiltinProgramModule<K> };
+}
+
+/** Whether `value` is a builtin module `builtins(...)` returned. */
+export function isBuiltinProgramModule(value: unknown): value is BuiltinProgramModule {
+  if (!isRecord(value) || typeof value.builtin !== "string") return false;
+  const name = value.builtin;
+  return (BUILTIN_PROGRAMS as readonly string[]).includes(name) && value === BUILTIN_PROGRAM_MODULES[name as BuiltinProgram];
+}
+
+/** The template program for a declared builtin name. */
+export function builtinProgramModule(name: BuiltinProgram): BuiltinProgramModule {
+  return BUILTIN_PROGRAM_MODULES[name];
 }
 
 // ---------------------------------------------------------------------------
@@ -128,6 +167,12 @@ function normalize(name: string): string {
 function findName<T>(names: Iterable<[string, T]>, name: string): [string, T] | undefined {
   const entries = [...names];
   return entries.find(([key]) => key === name) ?? entries.find(([key]) => normalize(key) === normalize(name));
+}
+
+function programName(program: TemplateProgram): string {
+  if (isInstalledProgram(program)) return program.programInstall.alias;
+  if (isBuiltinProgramModule(program)) return program.builtin;
+  return program.programId;
 }
 
 /** One template problem: a JSON-Pointer-like path under the template and a message. */
@@ -147,14 +192,16 @@ export interface TemplateShapeProblem {
  *   or a PDA whose seed accounts are each supplied or derivable in turn.
  */
 export function checkTemplateShape(
-  program: InstalledProgram,
+  program: TemplateProgram,
   template: { instruction: string; args: Readonly<Record<string, string>>; accounts: Readonly<Record<string, string>> },
+  alias?: string,
 ): TemplateShapeProblem | undefined {
   const found = findName(Object.entries(program.instructionShapes), template.instruction);
   if (found === undefined) {
+    const name = alias ?? programName(program);
     return {
       path: "instruction",
-      message: `program '${program.programInstall.alias}' has no instruction '${template.instruction}'`,
+      message: `program '${name}' has no instruction '${template.instruction}'`,
     };
   }
   const [name, shape] = found;
@@ -222,11 +269,11 @@ export type IxInput<S extends InstructionShape> = ([ArgNames<S>] extends [never]
     readonly remainingAccounts?: readonly { pubkey: string; isWritable?: boolean; isSigner?: false }[];
   };
 
-/** The instruction names of an installed program. */
-export type InstructionName<P extends InstalledProgram> = keyof P["instructionShapes"] & string;
+/** The instruction names of an installed or builtin program. */
+export type InstructionName<P extends TemplateProgram> = keyof P["instructionShapes"] & string;
 
 /** A template instruction `ix` returns: its program is the module itself. */
-export interface ProgramTemplateInstruction<P extends InstalledProgram = InstalledProgram> {
+export interface ProgramTemplateInstruction<P extends TemplateProgram = TemplateProgram> {
   readonly program: P;
   readonly instruction: string;
   readonly args?: Readonly<Record<string, string>>;
@@ -235,7 +282,8 @@ export interface ProgramTemplateInstruction<P extends InstalledProgram = Install
 }
 
 /**
- * A template instruction of an installed program, checked at compile time:
+ * A template instruction of an installed or builtin program, checked at
+ * compile time:
  * the instruction name, every argument name and every account name come
  * from the program's IDL (as written there, e.g. `creator_withdraw`), every
  * argument must be given, and every account the program can't derive must
@@ -253,6 +301,9 @@ export interface ProgramTemplateInstruction<P extends InstalledProgram = Install
  * the program's runtime shapes, which catches plain JavaScript and stale
  * type declarations.
  *
+ * Builtins work the same way, through `builtins(...)`:
+ * `ix(associatedToken, "createIdempotent", { accounts: { ... } })`.
+ *
  * ```ts
  * ix(meteoraPresale, "creator_withdraw", {
  *   args: { remaining_accounts_info: "resources.noRemainingAccounts" },
@@ -260,7 +311,7 @@ export interface ProgramTemplateInstruction<P extends InstalledProgram = Install
  * })
  * ```
  */
-export function ix<P extends InstalledProgram, N extends InstructionName<P>>(
+export function ix<P extends TemplateProgram, N extends InstructionName<P>>(
   program: P,
   instruction: N,
   input: IxInput<P["instructionShapes"][N]>,

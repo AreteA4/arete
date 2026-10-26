@@ -77,6 +77,40 @@ export const BUILTIN_PROGRAM_IDS: Readonly<Record<BuiltinProgram, string>> = {
   memo: "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
 };
 
+/** Other names for each builtin: registry package names and the program SDK names generated from them. */
+const BUILTIN_ALIASES: Readonly<Record<string, BuiltinProgram>> = {
+  "system-program": "system",
+  systemProgram: "system",
+  "spl-token": "splToken",
+  token: "splToken",
+  "spl-ata": "associatedToken",
+  splAta: "associatedToken",
+  ata: "associatedToken",
+  "associated-token": "associatedToken",
+  "spl-associated-token-account": "associatedToken",
+  "compute-budget": "computeBudget",
+  "spl-memo": "memo",
+  splMemo: "memo",
+};
+
+function normalizeBuiltinName(name: string): string {
+  return name.replace(/[-_]/g, "").toLowerCase();
+}
+
+/**
+ * The builtin another name refers to (`spl-ata`, `splAta` →
+ * `associatedToken`), for error messages. `undefined` for a canonical name
+ * written exactly, and for names that are no builtin.
+ */
+export function builtinForAlias(name: string): BuiltinProgram | undefined {
+  if ((BUILTIN_PROGRAMS as readonly string[]).includes(name)) return undefined;
+  const normalized = normalizeBuiltinName(name);
+  return (
+    BUILTIN_PROGRAMS.find((builtin) => normalizeBuiltinName(builtin) === normalized) ??
+    Object.entries(BUILTIN_ALIASES).find(([alias]) => normalizeBuiltinName(alias) === normalized)?.[1]
+  );
+}
+
 export type ProtocolProgramV1 =
   | {
       kind: "programSpec";

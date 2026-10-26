@@ -43,9 +43,9 @@
       "stage": "expression"
     },
     {
-      "cause": "The template's program alias has no pinned ProgramSpec: it is undeclared, or it is a builtin program, which templates cannot call yet.",
+      "cause": "The template's program alias is not declared in the spec's programs, so there is no pinned ProgramSpec to check it against.",
       "code": "template_program_spec_missing",
-      "fix": "Install the program and use its alias; for token accounts use the step's glue.",
+      "fix": "Declare the program: install it and use its alias, or declare a builtin with builtins(...) (system, splToken, associatedToken, computeBudget, memo). Registry names such as spl-ata map to the builtin associatedToken.",
       "stage": "template"
     },
     {
@@ -544,6 +544,7 @@
         },
         {
           "name": "seed",
+          "optional": true,
           "type": "any"
         }
       ],
@@ -551,7 +552,7 @@
       "example": "pda(\"vault\", \"escrow\", wallet, args.amount)",
       "name": "pda",
       "returns": "pubkey",
-      "signature": "pda(program, name, seed, ...)",
+      "signature": "pda(program, name, [seed, ...])",
       "summary": "Derives a PDA the program's IDL names: the program alias, the PDA's name, then its non-constant seeds in order. A PDA with no non-constant seeds takes none.",
       "variadic": true
     },

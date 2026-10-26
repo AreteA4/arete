@@ -17,6 +17,7 @@ import { isHashId } from "@usearete/hash";
 import {
   BUILTIN_PROGRAMS,
   BUILTIN_PROGRAM_IDS,
+  builtinForAlias,
   PROTOCOL_CTX_V1,
   PROTOCOL_HANDLER_ABI_V1,
   PROTOCOL_SPEC_SCHEMA_V1,
@@ -216,7 +217,12 @@ function shapePrograms(value: unknown, path: string): void {
       }
       idPath = obj.pathOf("programId");
     } else {
-      const builtin = oneOf(obj.req("builtin"), obj.pathOf("builtin"), BUILTIN_PROGRAMS);
+      const name = obj.req("builtin");
+      const canonical = typeof name === "string" ? builtinForAlias(name) : undefined;
+      if (canonical !== undefined) {
+        err("invalid-value", obj.pathOf("builtin"), `'${name as string}' is the builtin '${canonical}'`);
+      }
+      const builtin = oneOf(name, obj.pathOf("builtin"), BUILTIN_PROGRAMS);
       id = BUILTIN_PROGRAM_IDS[builtin as BuiltinProgram];
       idPath = obj.pathOf("builtin");
     }
@@ -736,7 +742,12 @@ function checkHandlerAbi(spec: ProtocolSpecV1): void {
 }
 
 function specProgram(spec: ProtocolSpecV1, alias: string, path: string) {
-  if (!has(spec.programs, alias)) err("unknown-program", path, `program '${alias}' is not declared`);
+  if (!has(spec.programs, alias)) {
+    const builtin = builtinForAlias(alias) ?? ((BUILTIN_PROGRAMS as readonly string[]).includes(alias) ? alias : undefined);
+    const hint =
+      builtin === undefined ? "" : `; '${alias}' is the builtin '${builtin}', declared as {"kind": "builtin", "builtin": "${builtin}"}`;
+    err("unknown-program", path, `program '${alias}' is not declared${hint}`);
+  }
   return spec.programs[alias]!;
 }
 
