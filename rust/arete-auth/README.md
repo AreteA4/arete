@@ -222,6 +222,39 @@ Never repurpose `metering_key` as a consumer limiter for new tokens; it is an
 account attribution key. Keep fallback logic in these helpers rather than
 duplicating it in runtimes.
 
+### Sealed Claims for Browser Sessions
+
+A session token is signed, not encrypted, so whoever holds it can read every
+claim. A token handed to a browser should not tell its visitor about the
+account behind it. `TokenSigner::sign_sealed` moves the account claims
+(`ACCOUNT_CLAIMS`: `metering_key`, `limits`, `plan`, `actor_key`,
+`account_key`, `consumer_key`, `policy_version`, `account_limits`) into one
+`sealed` claim, encrypted with XChaCha20-Poly1305 under a key the issuer and
+the verifying services share. The ciphertext is bound to the token's `iss`,
+`aud` and `jti`.
+
+Verifiers given the keys open the sealed claim after the signature check, so
+`AuthContext` and every limit built from it are the same as for an unsealed
+token. A verifier without the keys refuses a sealed token.
+
+```rust,ignore
+use arete_auth::{ClaimSealKey, ClaimSealKeys, TokenSigner, TokenVerifier};
+
+let seal = ClaimSealKey::from_base64("2026-10", &key_base64)?;
+let token = TokenSigner::new(signing_key, "issuer").sign_sealed(claims, &seal)?;
+
+// `id=base64[,id=base64...]`; the first key seals, all of them open.
+let keys = ClaimSealKeys::parse(&configured_keys)?;
+let context = TokenVerifier::new(verifying_key, "issuer", "audience")
+    .with_claim_seal_keys(keys)
+    .verify(&token, None, None)?;
+```
+
+Issuers that build claims as JSON can call `seal_claims` and `unseal_claims`
+directly on the claims object. To rotate, add the new key behind the current
+one on every verifier, then put it first on the issuer, then drop the old key
+once the tokens it sealed have expired.
+
 ### JWKS Key Rotation
 
 ```rust

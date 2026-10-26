@@ -88,16 +88,21 @@ fn build_inner_verifier(
     issuer: &str,
     audiences: &crate::AudienceSet,
     require_origin: bool,
+    claim_seal_keys: Option<&crate::sealed::ClaimSealKeys>,
 ) -> TokenVerifier {
     let verifier = match audiences.as_single() {
         Some(single) => TokenVerifier::new(key, issuer, single),
         None => TokenVerifier::with_audiences(key, issuer, audiences.iter())
             .expect("an AudienceSet is never empty"),
     };
-    if require_origin {
+    let verifier = if require_origin {
         verifier.with_origin_validation()
     } else {
         verifier
+    };
+    match claim_seal_keys {
+        Some(keys) => verifier.with_claim_seal_keys(keys.clone()),
+        None => verifier,
     }
 }
 
@@ -108,6 +113,7 @@ pub struct MultiKeyVerifier {
     require_origin: bool,
     cleanup_interval: Duration,
     last_cleanup: Arc<RwLock<Instant>>,
+    claim_seal_keys: Option<crate::sealed::ClaimSealKeys>,
 }
 
 impl MultiKeyVerifier {
@@ -125,6 +131,7 @@ impl MultiKeyVerifier {
             issuer: issuer.into(),
             audiences: crate::AudienceSet::single(audience),
             require_origin: false,
+            claim_seal_keys: None,
             cleanup_interval: Duration::from_secs(3600), // 1 hour default
             last_cleanup: Arc::new(RwLock::new(Instant::now())),
         }
@@ -143,6 +150,13 @@ impl MultiKeyVerifier {
     /// Require origin validation
     pub fn with_origin_validation(mut self) -> Self {
         self.require_origin = true;
+        self
+    }
+
+    /// Open sealed claims with these keys. Without them, a token that carries
+    /// sealed claims is refused.
+    pub fn with_claim_seal_keys(mut self, keys: crate::sealed::ClaimSealKeys) -> Self {
+        self.claim_seal_keys = Some(keys);
         self
     }
 
@@ -250,6 +264,7 @@ impl MultiKeyVerifier {
                 &self.issuer,
                 &self.audiences,
                 self.require_origin,
+                self.claim_seal_keys.as_ref(),
             );
 
             match verifier.verify(token, expected_origin, expected_client_ip) {
@@ -301,6 +316,7 @@ impl MultiKeyVerifier {
                 &self.issuer,
                 &self.audiences,
                 self.require_origin,
+                self.claim_seal_keys.as_ref(),
             );
 
             match verifier.verify(token, expected_origin, expected_client_ip) {

@@ -1,6 +1,7 @@
 use crate::claims::{AuthContext, SessionClaims};
 use crate::error::VerifyError;
 use crate::keys::{SigningKey, VerifyingKey};
+use crate::sealed::{seal_claims, unseal_claims, ClaimSealKey, ClaimSealKeys, ACCOUNT_CLAIMS};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -44,6 +45,27 @@ impl TokenSigner {
 
     /// Sign a session token using Ed25519
     pub fn sign(&self, claims: SessionClaims) -> Result<String, TokenError> {
+        self.sign_value(&serde_json::to_value(&claims)?)
+    }
+
+    /// Sign a session token whose account-only claims ([`ACCOUNT_CLAIMS`])
+    /// are sealed with `key`, for tokens handed to a party that should not
+    /// read them, such as a browser visitor.
+    pub fn sign_sealed(
+        &self,
+        claims: SessionClaims,
+        key: &ClaimSealKey,
+    ) -> Result<String, TokenError> {
+        let mut claims = serde_json::to_value(&claims)?;
+        let object = claims
+            .as_object_mut()
+            .ok_or_else(|| TokenError::InvalidFormat("claims must be an object".to_string()))?;
+        seal_claims(object, ACCOUNT_CLAIMS, key)
+            .map_err(|error| TokenError::InvalidFormat(error.to_string()))?;
+        self.sign_value(&claims)
+    }
+
+    fn sign_value(&self, claims: &serde_json::Value) -> Result<String, TokenError> {
         // Create header with key ID
         let header = JwtHeader {
             kid: Some(self.signing_key.key_id()),
@@ -56,7 +78,7 @@ impl TokenSigner {
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(header_json.as_bytes());
 
         // Encode claims
-        let claims_json = serde_json::to_string(&claims)?;
+        let claims_json = serde_json::to_string(claims)?;
         let claims_b64 =
             base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(claims_json.as_bytes());
 
@@ -117,6 +139,7 @@ pub struct TokenVerifier {
     audiences: crate::AudienceSet,
     require_origin: bool,
     require_client_ip: bool,
+    claim_seal_keys: Option<ClaimSealKeys>,
 }
 
 impl TokenVerifier {
@@ -135,6 +158,7 @@ impl TokenVerifier {
             audiences: crate::AudienceSet::single(audience),
             require_origin: false,
             require_client_ip: false,
+            claim_seal_keys: None,
         }
     }
 
@@ -160,6 +184,7 @@ impl TokenVerifier {
             audiences: crate::AudienceSet::new(audiences)?,
             require_origin: false,
             require_client_ip: false,
+            claim_seal_keys: None,
         })
     }
 
@@ -172,6 +197,13 @@ impl TokenVerifier {
     /// Require client IP validation
     pub fn with_client_ip_validation(mut self) -> Self {
         self.require_client_ip = true;
+        self
+    }
+
+    /// Open sealed claims with these keys. Without them, a token that carries
+    /// sealed claims is refused.
+    pub fn with_claim_seal_keys(mut self, keys: ClaimSealKeys) -> Self {
+        self.claim_seal_keys = Some(keys);
         self
     }
 
@@ -215,8 +247,6 @@ impl TokenVerifier {
         let claims_json = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(claims_b64)
             .map_err(|e| VerifyError::InvalidFormat(format!("Invalid claims base64: {}", e)))?;
-        let claims: SessionClaims = serde_json::from_slice(&claims_json)
-            .map_err(|e| VerifyError::InvalidFormat(format!("Invalid claims JSON: {}", e)))?;
 
         // Decode signature
         let signature_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -234,6 +264,9 @@ impl TokenVerifier {
         self.verifying_key
             .verify(message.as_bytes(), &signature)
             .map_err(|_| VerifyError::InvalidSignature)?;
+
+        // Only a signed token's sealed claims are opened.
+        let claims = decode_claims(&claims_json, self.claim_seal_keys.as_ref())?;
 
         // Check issuer
         if claims.iss != self.issuer {
@@ -344,6 +377,21 @@ impl TokenVerifier {
     }
 }
 
+/// Parse a signed token's claims, opening sealed claims with `keys`.
+pub(crate) fn decode_claims(
+    claims_json: &[u8],
+    keys: Option<&ClaimSealKeys>,
+) -> Result<SessionClaims, VerifyError> {
+    let mut claims: serde_json::Value = serde_json::from_slice(claims_json)
+        .map_err(|e| VerifyError::InvalidFormat(format!("Invalid claims JSON: {}", e)))?;
+    let object = claims
+        .as_object_mut()
+        .ok_or_else(|| VerifyError::InvalidFormat("Invalid claims JSON: not an object".into()))?;
+    unseal_claims(object, keys)?;
+    serde_json::from_value(claims)
+        .map_err(|e| VerifyError::InvalidFormat(format!("Invalid claims JSON: {}", e)))
+}
+
 /// JWKS structure for key rotation
 #[derive(Debug, Clone, Deserialize)]
 pub struct Jwks {
@@ -366,6 +414,7 @@ pub struct JwksVerifier {
     issuer: String,
     audiences: crate::AudienceSet,
     require_origin: bool,
+    claim_seal_keys: Option<ClaimSealKeys>,
 }
 
 impl JwksVerifier {
@@ -380,6 +429,7 @@ impl JwksVerifier {
             issuer: issuer.into(),
             audiences,
             require_origin: false,
+            claim_seal_keys: None,
         }
     }
 
@@ -390,12 +440,19 @@ impl JwksVerifier {
             issuer: issuer.into(),
             audiences: crate::AudienceSet::single(audience),
             require_origin: false,
+            claim_seal_keys: None,
         }
     }
 
     /// Require origin validation
     pub fn with_origin_validation(mut self) -> Self {
         self.require_origin = true;
+        self
+    }
+
+    /// Open sealed claims with these keys.
+    pub fn with_claim_seal_keys(mut self, keys: ClaimSealKeys) -> Self {
+        self.claim_seal_keys = Some(keys);
         self
     }
 
@@ -451,6 +508,7 @@ impl JwksVerifier {
             audiences: self.audiences.clone(),
             require_origin: self.require_origin,
             require_client_ip: false,
+            claim_seal_keys: self.claim_seal_keys.clone(),
         };
 
         verifier.verify(token, expected_origin, expected_client_ip)
@@ -561,6 +619,91 @@ mod tests {
         assert_eq!(context.subject, "test-subject");
         assert_eq!(context.issuer, "test-issuer");
         assert_eq!(context.metering_key, "meter-123");
+    }
+
+    fn account_claims() -> SessionClaims {
+        SessionClaims::builder("test-issuer", "anon:visitor", "test-audience")
+            .with_ttl(300)
+            .with_scope("read")
+            .with_metering_key("account:42")
+            .with_key_class(KeyClass::Publishable)
+            .with_plan("pro")
+            .with_limits(Limits {
+                max_connections: Some(10),
+                ..Limits::default()
+            })
+            .with_actor_key("user:7")
+            .with_account_key("account:42")
+            .with_consumer_key("consumer:abc")
+            .with_policy_version(4)
+            .with_account_limits(Limits {
+                max_connections: Some(500),
+                ..Limits::default()
+            })
+            .build()
+    }
+
+    fn decoded_payload(token: &str) -> serde_json::Value {
+        let payload = token.split('.').nth(1).unwrap();
+        serde_json::from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(payload)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn sealed_tokens_hide_account_claims_and_verify_with_the_key() {
+        let signing_key = crate::keys::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let seal = ClaimSealKey::new("k1", [9; 32]).unwrap();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+        let token = signer.sign_sealed(account_claims(), &seal).unwrap();
+
+        let payload = decoded_payload(&token);
+        for name in ACCOUNT_CLAIMS {
+            assert!(payload.get(*name).is_none(), "{name} visible in {payload}");
+        }
+        let text = payload.to_string();
+        for secret in ["account:42", "user:7", "pro", "500"] {
+            assert!(!text.contains(secret), "{secret} visible in {text}");
+        }
+        assert_eq!(payload["sub"], "anon:visitor");
+
+        let context = TokenVerifier::new(verifying_key.clone(), "test-issuer", "test-audience")
+            .with_claim_seal_keys(ClaimSealKeys::new(seal))
+            .verify(&token, None, None)
+            .unwrap();
+        assert_eq!(context.metering_key, "account:42");
+        assert_eq!(context.account_key(), "account:42");
+        assert_eq!(context.plan.as_deref(), Some("pro"));
+        assert_eq!(context.limits.max_connections, Some(10));
+        assert_eq!(context.account_limits.max_connections, Some(500));
+        assert_eq!(context.policy_version, Some(4));
+
+        let unkeyed = TokenVerifier::new(verifying_key, "test-issuer", "test-audience")
+            .verify(&token, None, None)
+            .unwrap_err();
+        assert_eq!(
+            unkeyed,
+            VerifyError::SealedClaims(crate::sealed::SealError::KeyRequired)
+        );
+    }
+
+    #[test]
+    fn sealed_claims_are_opened_only_after_the_signature_checks() {
+        let signing_key = crate::keys::SigningKey::generate();
+        let other = crate::keys::SigningKey::generate();
+        let seal = ClaimSealKey::new("k1", [9; 32]).unwrap();
+        let token = TokenSigner::new(other, "test-issuer")
+            .sign_sealed(account_claims(), &seal)
+            .unwrap();
+        let error = TokenVerifier::new(signing_key.verifying_key(), "test-issuer", "test-audience")
+            .with_claim_seal_keys(ClaimSealKeys::new(seal))
+            .verify(&token, None, None)
+            .unwrap_err();
+        assert_eq!(error, VerifyError::InvalidSignature);
     }
 
     #[test]

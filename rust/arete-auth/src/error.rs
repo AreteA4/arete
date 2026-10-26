@@ -185,6 +185,7 @@ impl From<&VerifyError> for AuthErrorCode {
             VerifyError::InvalidFormat(_) => AuthErrorCode::TokenInvalidFormat,
             VerifyError::Revoked => AuthErrorCode::TokenExpired,
             VerifyError::InvalidPolicyClaims(_) => AuthErrorCode::TokenInvalidFormat,
+            VerifyError::SealedClaims(_) => AuthErrorCode::TokenInvalidFormat,
         }
     }
 }
@@ -246,4 +247,7 @@ pub enum VerifyError {
 
     #[error("invalid policy claims: {0}")]
     InvalidPolicyClaims(String),
+
+    #[error("sealed claims: {0}")]
+    SealedClaims(#[from] crate::sealed::SealError),
 }

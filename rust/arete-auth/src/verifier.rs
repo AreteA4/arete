@@ -1,6 +1,7 @@
 use crate::claims::AuthContext;
 use crate::error::VerifyError;
 use crate::keys::VerifyingKey;
+use crate::sealed::ClaimSealKeys;
 use crate::token::{JwksVerifier, TokenVerifier};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -24,6 +25,7 @@ pub struct AsyncVerifier {
     /// Audience for JWKS-based verification
     audiences: crate::AudienceSet,
     require_origin: bool,
+    claim_seal_keys: Option<ClaimSealKeys>,
 }
 
 enum VerifierInner {
@@ -52,6 +54,7 @@ impl AsyncVerifier {
             issuer: issuer_str,
             audiences: crate::AudienceSet::single(audience_str),
             require_origin: false,
+            claim_seal_keys: None,
         }
     }
 
@@ -75,6 +78,7 @@ impl AsyncVerifier {
             issuer: issuer_str,
             audiences: crate::AudienceSet::single(audience_str),
             require_origin: false,
+            claim_seal_keys: None,
         }
     }
 
@@ -99,6 +103,7 @@ impl AsyncVerifier {
             cache_duration: Duration::from_secs(3600),
             cached_jwks: Arc::new(RwLock::new(None)),
             require_origin: false,
+            claim_seal_keys: None,
         }
     }
 
@@ -111,6 +116,21 @@ impl AsyncVerifier {
             }
             VerifierInner::Jwks(verifier) => VerifierInner::Jwks(verifier.with_origin_validation()),
         };
+        self
+    }
+
+    /// Open sealed claims with these keys. Without them, a token that carries
+    /// sealed claims is refused.
+    pub fn with_claim_seal_keys(mut self, keys: ClaimSealKeys) -> Self {
+        self.inner = match self.inner {
+            VerifierInner::Static(verifier) => {
+                VerifierInner::Static(verifier.with_claim_seal_keys(keys.clone()))
+            }
+            VerifierInner::Jwks(verifier) => {
+                VerifierInner::Jwks(verifier.with_claim_seal_keys(keys.clone()))
+            }
+        };
+        self.claim_seal_keys = Some(keys);
         self
     }
 
@@ -173,6 +193,10 @@ impl AsyncVerifier {
                 verifier.with_origin_validation()
             } else {
                 verifier
+            };
+            let verifier = match &self.claim_seal_keys {
+                Some(keys) => verifier.with_claim_seal_keys(keys.clone()),
+                None => verifier,
             };
 
             // Update cache
