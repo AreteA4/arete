@@ -115,7 +115,7 @@ impl BuiltinProgram {
                 "arete:h1:program-spec:sha256:a416fd5d908028d96d4e6445d1da3c7a60147e55711640c281d91f6602c7fb17"
             }
             Self::SplToken => {
-                "arete:h1:program-spec:sha256:69adc15288ea9f6009434e446a3d4aa2a3a171169072568754596cf13d685fa1"
+                "arete:h1:program-spec:sha256:c4660abfd3626b6f8c9161c159ce2ab856905e1455477e526aaceff95c56d544"
             }
             Self::AssociatedToken => {
                 "arete:h1:program-spec:sha256:8a2641d19db953d2945a6eb864c4135e0748f5467a5e298d5969972d44441ea4"
@@ -356,6 +356,98 @@ mod tests {
             "{}",
             error.message
         );
+    }
+
+    /// A template's account metas take their flags from the builtin
+    /// ProgramSpec, and the message merges them with the fee payer's. An
+    /// owner that is not the fee payer signs only if the spec says so.
+    #[test]
+    fn token_transfer_owner_signs_when_it_is_not_the_fee_payer() {
+        const PAYER: &str = "Payer11111111111111111111111111111111111111";
+        const OWNER: &str = "Owner11111111111111111111111111111111111111";
+        let spec = BuiltinProgram::SplToken.program_spec();
+        let transfer = spec
+            .instructions
+            .iter()
+            .find(|ix| ix.name == "Transfer")
+            .unwrap();
+        let supplied = |name: &str| match name {
+            "source" => "Source1111111111111111111111111111111111111",
+            "destination" => "Destination11111111111111111111111111111111",
+            "owner" => OWNER,
+            other => panic!("unexpected account '{other}'"),
+        };
+        let metas: Vec<_> = transfer
+            .accounts
+            .iter()
+            .map(|account| {
+                (
+                    supplied(&account.name),
+                    account.is_signer,
+                    account.is_writable,
+                )
+            })
+            .collect();
+        assert_eq!(
+            metas,
+            [
+                ("Source1111111111111111111111111111111111111", false, true),
+                ("Destination11111111111111111111111111111111", false, true),
+                (OWNER, true, false),
+            ]
+        );
+        let mut signers = vec![PAYER];
+        signers.extend(metas.iter().filter(|meta| meta.1).map(|meta| meta.0));
+        assert_eq!(signers, [PAYER, OWNER]);
+    }
+
+    /// Every single-authority account signs. A multisig authority does not,
+    /// so it cannot be used from a template, whose remaining accounts never
+    /// sign. Multisig members only sign the instructions that use the
+    /// multisig, never the one that creates it.
+    #[test]
+    fn token_authorities_are_signers() {
+        let spec = BuiltinProgram::SplToken.program_spec();
+        let signers: Vec<_> = spec
+            .instructions
+            .iter()
+            .flat_map(|ix| {
+                ix.accounts
+                    .iter()
+                    .filter(|account| account.is_signer)
+                    .map(move |account| (ix.name.as_str(), account.name.as_str()))
+            })
+            .collect();
+        assert_eq!(
+            signers,
+            [
+                ("Transfer", "owner"),
+                ("Approve", "owner"),
+                ("Revoke", "owner"),
+                ("SetAuthority", "authority"),
+                ("MintTo", "authority"),
+                ("Burn", "owner"),
+                ("CloseAccount", "owner"),
+                ("FreezeAccount", "authority"),
+                ("ThawAccount", "authority"),
+                ("TransferChecked", "owner"),
+                ("ApproveChecked", "owner"),
+                ("MintToChecked", "authority"),
+                ("BurnChecked", "owner"),
+                ("UnwrapLamports", "owner"),
+            ]
+        );
+        for ix in &spec.instructions {
+            for account in ix.accounts.iter().filter(|account| account.is_signer) {
+                assert_eq!(
+                    account.resolution,
+                    AccountResolutionV1::Signer,
+                    "{}.{}",
+                    ix.name,
+                    account.name
+                );
+            }
+        }
     }
 
     #[test]

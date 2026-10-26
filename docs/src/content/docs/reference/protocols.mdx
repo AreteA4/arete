@@ -33,6 +33,11 @@ const { associatedToken } = builtins("associatedToken");
 ix(associatedToken, "createIdempotent", { accounts: { fundingAddress: "wallet" /* … */ } });
 ```
 
+SPL Token's `owner` and `authority` accounts are signers, so pass a key the
+step signs with, such as `wallet` or an ephemeral key. Templates cannot use a
+multisig token authority: its members would sign as remaining accounts, and
+remaining accounts never sign.
+
 ```sh
 npx arete-protocol check [protocol.ts]
 npx arete-protocol build [protocol.ts] --out .arete/protocol
