@@ -415,13 +415,16 @@ function programTable(programs: ProtocolDefinition["programs"]): ProgramTable {
     }
     if (shapes === undefined) continue;
     table.shapes.set(alias, shapes);
-    // A builtin declared as `{ builtin }` is called by alias; `builtins(...)`
-    // returns the shared module, which `ix` passes by identity.
-    if (isInstalledProgram(program) || program === shapes) {
-      if (table.aliases.has(shapes)) {
-        definitionError(`/programs/${alias}`, `the same program module is also declared as '${table.aliases.get(shapes)}'`);
+    // `ix` passes the declared object by identity: an installed module, or a
+    // builtin module from `builtins(...)` (detected by its shapes, since the
+    // definition may load another copy of this package). A plain
+    // `{ builtin }` is called by alias.
+    if (isInstalledProgram(program) || "instructionShapes" in program) {
+      const key = program as TemplateProgram;
+      if (table.aliases.has(key)) {
+        definitionError(`/programs/${alias}`, `the same program module is also declared as '${table.aliases.get(key)}'`);
       }
-      table.aliases.set(shapes, alias);
+      table.aliases.set(key, alias);
     }
   }
   return table;

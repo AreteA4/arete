@@ -348,6 +348,39 @@ describe("arete-protocol build with installed programs", () => {
     });
   });
 
+  it("checks and builds a builtin called with ix through the bundled definition", async () => {
+    const project = copyFixture();
+    const entry = join(project, "protocol.ts");
+    const source = readFileSync(entry, "utf8");
+    const withBuiltin = source
+      .replace(
+        'programs: { tipJar, vault, ...builtins("system", "splToken") },',
+        'programs: { tipJar, vault, ...programsBuiltins },',
+      )
+      .replace(
+        "export default defineProtocol({",
+        'const programsBuiltins = builtins("system", "splToken");\n\nexport default defineProtocol({',
+      )
+      .replace(
+        "        ix(vault, \"withdraw\", {",
+        '        ix(programsBuiltins.system, "transfer", {\n          args: { lamports: "1" },\n          accounts: { fundingAccount: "wallet", recipientAccount: "instance.accounts.payout" },\n        }),\n        ix(vault, "withdraw", {',
+      );
+    expect(withBuiltin).toContain('ix(programsBuiltins.system, "transfer"');
+    writeFileSync(entry, withBuiltin);
+    const result = await checkProtocol({ entry });
+    expect(result.lowered.spec.steps.close!.build).toMatchObject({
+      kind: "template",
+      instructions: [{ program: "system", instruction: "transfer" }, { program: "vault", instruction: "withdraw" }],
+    });
+    await expect(buildProtocol({ entry })).resolves.toBeDefined();
+
+    writeFileSync(entry, withBuiltin.replace('fundingAccount: "wallet"', 'funder: "wallet"'));
+    await expect(checkProtocol({ entry })).rejects.toMatchObject({
+      path: "/steps/close/build/0/accounts/funder",
+      message: expect.stringContaining("instruction 'transfer' has no account 'funder'"),
+    });
+  });
+
   it("warns and checks nothing without arete.lock", async () => {
     const project = copyFixture();
     rmSync(join(project, "arete.lock"));
