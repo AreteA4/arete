@@ -10,6 +10,20 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.9.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.8.0...arete-hash-v0.9.0) (2026-10-26)
+
+
+### Features
+
+* **protocol:** allow state-only template steps ([273d0d5](https://github.com/AreteA4/arete/commit/273d0d51b9d4ec783af9dced3401ce40b4dac409))
+* **protocol:** allow state-only template steps ([75ea8aa](https://github.com/AreteA4/arete/commit/75ea8aa773f20493cc58de01e91ad41c0ed5f198))
+
+
+### Bug Fixes
+
+* **protocol:** own only binds that purely derive from an ephemeral key ([7273e02](https://github.com/AreteA4/arete/commit/7273e0299dda1c053f7b838589017e7c88008cc8))
+* **protocol:** own only binds that purely derive from an ephemeral key ([83740d1](https://github.com/AreteA4/arete/commit/83740d131e40bfb0d8dd4a4f8215e712b4961e65))
+
 ## [0.8.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.7.0...arete-hash-v0.8.0) (2026-10-24)
 
 

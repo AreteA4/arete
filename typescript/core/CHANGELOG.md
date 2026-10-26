@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.47.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.46.0...arete-typescript-v0.47.0) (2026-10-26)
+
+
+### Features
+
+* **cli,mcp:** a4 squads reads and attaches account multisigs; dev add-proposer builds locally ([ed3e0d6](https://github.com/AreteA4/arete/commit/ed3e0d6ad7fe1968b9743ae9c864c9815d27ced8))
+* **react:** sessions in React, wallet flows and the Wallet Standard adapter ([ed96fe4](https://github.com/AreteA4/arete/commit/ed96fe4418fc278ab3fa71c864f093591904d66f))
+* **sdk:** a connected client exposes its stack and transport ([da3a1a9](https://github.com/AreteA4/arete/commit/da3a1a9bfd56747926ba8d3b742d13542188b05f))
+* **sdk:** account Squads client for TypeScript, Rust and Python ([ac660d0](https://github.com/AreteA4/arete/commit/ac660d059dc61897cb47947152be21dbbbe83cb1))
+* **sdk:** Arete API credentials, a shared platform client and context.platform for extensions ([5460053](https://github.com/AreteA4/arete/commit/5460053a659ad0af9a10abbdae949e864b7ca956))
+* **sdk:** authenticated Arete API client extensions can be handed ([d12cca3](https://github.com/AreteA4/arete/commit/d12cca3b22858203df5aa6b2cf7bab8621bc3206))
+* **sdk:** extensions reach the Arete API through context.platform ([0dff448](https://github.com/AreteA4/arete/commit/0dff448fff613d3e6eaa54c5639014b042404652))
+* **sdk:** list the instances a wallet relates to across pages ([13fbeeb](https://github.com/AreteA4/arete/commit/13fbeebdd904aa8eae056910db76b1ffe6a954d3))
+* **sdk:** list the instances a wallet relates to across pages ([620af32](https://github.com/AreteA4/arete/commit/620af328edd5e4a6762698e32a69a6ead9b177a0))
+* **sdk:** one auth for the Arete API and hosted transports ([c2f1a99](https://github.com/AreteA4/arete/commit/c2f1a992df898d77ec0353ac59916d4e25e25842))
+* **sdk:** the program entry exports AreteError for extension failures ([ad07cac](https://github.com/AreteA4/arete/commit/ad07cac7d73bf088e385fd8aa2a889c1ff3b14f4))
+
+
+### Bug Fixes
+
+* **sdk:** connect through auth.websocketFactory without a global WebSocket ([1e41d2c](https://github.com/AreteA4/arete/commit/1e41d2cdc82d598f57f709bb3299d8f1a45084b5))
+* **sdk:** createSession with options omitted builds the session platform client ([9ec20be](https://github.com/AreteA4/arete/commit/9ec20be2c6efd82e7c2e51dac29569d7d7ec9910))
+* **sdk:** keep a saved a4 login on the Arete API and refresh a refused credential once ([cdcaa4f](https://github.com/AreteA4/arete/commit/cdcaa4fca034ccefab973efe0c8e8f2f3b5130e0))
+* **sdk:** send account credentials only to trusted Arete API origins ([43a6c02](https://github.com/AreteA4/arete/commit/43a6c02b5da9aa85b13da9fae0f844829d3c9956))
+
 ## [0.46.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.45.0...arete-typescript-v0.46.0) (2026-10-24)
 
 

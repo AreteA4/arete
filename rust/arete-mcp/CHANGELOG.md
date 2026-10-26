@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.47.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.46.0...arete-mcp-v0.47.0) (2026-10-26)
+
+
+### Features
+
+* **cli,mcp:** a4 squads and account Squads MCP tools ([1e01027](https://github.com/AreteA4/arete/commit/1e010272d0612f2fcfe3377e984152c6c8af5226))
+* **cli,mcp:** a4 squads reads and attaches account multisigs; dev add-proposer builds locally ([ed3e0d6](https://github.com/AreteA4/arete/commit/ed3e0d6ad7fe1968b9743ae9c864c9815d27ced8))
+* **protocol:** check a release against the server before deploying ([443c48b](https://github.com/AreteA4/arete/commit/443c48b3161a4b3f32aa70aa711c3d60dce5bce6))
+* **protocol:** check a release against the server before deploying ([7f2d37a](https://github.com/AreteA4/arete/commit/7f2d37a1f612dd8860296ba357ec68f1129e6add))
+
+
+### Bug Fixes
+
+* **dev:** redact a stream token once, and say where dev_status's usable URL is ([a9a584e](https://github.com/AreteA4/arete/commit/a9a584eba238847c7e780c5090f460485ac55f4f))
+* **dev:** stop printing environment and stack tokens ([9388bc3](https://github.com/AreteA4/arete/commit/9388bc3d4448ee55422f47968673ccf2e6142bad))
+* **dev:** stop printing environment and stack tokens ([84e9ac9](https://github.com/AreteA4/arete/commit/84e9ac92f0a6e41659d48d1e356558c5dc834b32))
+* **protocol:** a remote check passes only on a check result and gives up in time ([53617e7](https://github.com/AreteA4/arete/commit/53617e75d4f59105e4a49fed594c39e64c8858ca))
+
 ## [0.46.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.45.0...arete-mcp-v0.46.0) (2026-10-24)
 
 
