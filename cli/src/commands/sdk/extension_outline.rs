@@ -974,23 +974,36 @@ fn split_top_level(code: &str, start: usize, end: usize) -> Vec<(usize, usize)> 
 
 /// The parameters of the list `code[start..end]`: split at the commas
 /// outside brackets and outside type arguments, so `Omit<T, "chain">` is
-/// one parameter. A `>` after `=` closes an arrow, not type arguments.
+/// one parameter. Angle brackets count only in a parameter's name and type:
+/// after its default's `=`, `<` and `>` are comparisons (`on = n < max`).
+/// A `>` after `=` closes an arrow, not type arguments.
 fn split_params(code: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
     let bytes = code.as_bytes();
     let mut parts = Vec::new();
     let mut depth = 0usize;
     let mut angles = 0usize;
+    let mut in_default = false;
     let mut from = start;
     for at in start..end {
+        let previous = (at > start).then(|| bytes[at - 1]);
+        let next = bytes.get(at + 1).copied().filter(|_| at + 1 < end);
         match bytes[at] {
             b'(' | b'[' | b'{' => depth += 1,
             b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-            b'<' => angles += 1,
-            b'>' if at > start && bytes[at - 1] == b'=' => {}
+            b'=' if depth == 0
+                && angles == 0
+                && !matches!(next, Some(b'>' | b'='))
+                && !matches!(previous, Some(b'=' | b'!' | b'<' | b'>')) =>
+            {
+                in_default = true;
+            }
+            b'<' if !in_default => angles += 1,
+            b'>' if in_default || previous == Some(b'=') => {}
             b'>' => angles = angles.saturating_sub(1),
             b',' if depth == 0 && angles == 0 => {
                 parts.push((from, at));
                 from = at + 1;
+                in_default = false;
             }
             _ => {}
         }
@@ -1383,6 +1396,24 @@ export default defineProgramExtensions(PROGRAM)({
         assert_eq!(
             reads[0].signature(),
             "read.propose(input: Omit<Parameters<typeof plan>[0], \"chain\">, map?: (row: Row) => Map<string, Row>)"
+        );
+    }
+
+    #[test]
+    fn a_comparison_in_a_default_does_not_open_type_arguments() {
+        let source = r#"
+export default defineProgramExtensions(PROGRAM)({
+  createRead(context) {
+    return {
+      page: (enabled = count < limit, options?: Options, last = count > 0) => list(enabled, options, last),
+    };
+  },
+});
+"#;
+        let reads = reads(source);
+        assert_eq!(
+            reads[0].signature(),
+            "read.page(enabled?, options?: Options, last?)"
         );
     }
 
