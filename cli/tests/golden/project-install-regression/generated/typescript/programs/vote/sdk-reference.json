@@ -6,8 +6,8 @@
   "package": "vote",
   "version": "0.1.0",
   "import": {
-    "module": "vote-core.ts",
-    "specifier": "./generated/typescript/programs/vote/vote-core.js",
+    "module": "vote.ts",
+    "specifier": "./generated/typescript/programs/vote/vote.js",
     "export": "VOTE_PROGRAM"
   },
   "programs": [

@@ -7,10 +7,10 @@ Look parts up with `a4 sdk describe vote [--view <Entity/view>] [--read <name>] 
 ## Import
 
 ```ts
-import { VOTE_PROGRAM } from './generated/typescript/programs/vote/vote-core.js'; // from the project root
+import { VOTE_PROGRAM } from './generated/typescript/programs/vote/vote.js'; // from the project root
 ```
 
-The path is relative to the importing file: from `src/`, import `'../generated/typescript/programs/vote/vote-core.js'`. TypeScript resolves the `.js` to `vote-core.ts`.
+The path is relative to the importing file: from `src/`, import `'../generated/typescript/programs/vote/vote.js'`. TypeScript resolves the `.js` to `vote.ts`.
 
 Register it as `vote`: `createSession({ programs: { vote: VOTE_PROGRAM } })` gives `session.programs.vote`. Paths below start there.
 
