@@ -500,6 +500,25 @@ mod tests {
     use super::*;
     use std::fs;
 
+    /// Writes an executable script without this process ever holding a write
+    /// handle to it. Tests run in parallel threads, and a thread that forks
+    /// while another still has the script open for writing leaves that handle
+    /// in its child until exec; running the script then fails with "Text file
+    /// busy". `cp` holds the only write handle, in its own process.
+    #[cfg(unix)]
+    fn write_script(path: &std::path::Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let source = path.with_extension("src");
+        fs::write(&source, contents).unwrap();
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        let status = std::process::Command::new("cp")
+            .arg(&source)
+            .arg(path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "cp {source:?} {path:?}: {status}");
+    }
+
     #[test]
     fn agent_names_map_per_spec() {
         let ids: Vec<String> = [
@@ -615,8 +634,6 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn install_runs_cleanup_for_lock_owned_legacy_skills() {
-        use std::os::unix::fs::PermissionsExt;
-
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         let root = dir.path().join("proj");
@@ -628,7 +645,7 @@ mod tests {
         )
         .unwrap();
         let npx = bin.join("npx");
-        fs::write(
+        write_script(
             &npx,
             r#"#!/bin/sh
 if [ "$3" = "remove" ]; then
@@ -638,9 +655,7 @@ else
   printf '%s\n' "$@" > add-args.txt
 fi
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&npx, fs::Permissions::from_mode(0o755)).unwrap();
+        );
 
         let env = Env::new(&root, None, &[("PATH", bin.to_str().unwrap())]);
         let options = SkillsOptions {
@@ -743,19 +758,16 @@ fi
     #[cfg(unix)]
     #[test]
     fn fake_npx_reports_created_then_unchanged_and_timeouts_kill() {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("bin");
         let root = dir.path().join("proj");
         fs::create_dir_all(&bin).unwrap();
         fs::create_dir_all(&root).unwrap();
         let npx = bin.join("npx");
-        fs::write(
+        write_script(
             &npx,
             "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\necho '{\"skills\":{}}' > skills-lock.json\n",
-        )
-        .unwrap();
-        fs::set_permissions(&npx, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let env = Env::new(&root, None, &[("PATH", bin.to_str().unwrap())]);
         let options = SkillsOptions {
             agent_ids: vec!["claude-code".into(), "vscode".into(), "copilot-cli".into()],
@@ -788,7 +800,7 @@ fi
             "dry run: skills dirs missing"
         );
 
-        fs::write(&npx, "#!/bin/sh\nsleep 30\n").unwrap();
+        write_script(&npx, "#!/bin/sh\nsleep 30\n");
         let options = SkillsOptions {
             timeout: Duration::from_millis(300),
             ..options
