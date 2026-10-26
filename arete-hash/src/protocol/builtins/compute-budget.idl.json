@@ -1,0 +1,47 @@
+{
+  "address": "ComputeBudget111111111111111111111111111111",
+  "version": "0.0.0",
+  "name": "compute_budget",
+  "docs": [
+    "The Compute Budget program: transaction-wide compute unit limit, priority fee, heap frame and loaded account data size."
+  ],
+  "ref": "https://github.com/anza-xyz/agave/blob/master/sdk/compute-budget-interface/src/lib.rs",
+  "instructions": [
+    {
+      "name": "requestHeapFrame",
+      "docs": ["Request a specific transaction-wide program heap region size in bytes, a multiple of 1024."],
+      "accounts": [],
+      "args": [{ "name": "bytes", "type": "u32" }],
+      "discriminant": { "type": "u8", "value": 1 }
+    },
+    {
+      "name": "setComputeUnitLimit",
+      "docs": ["Set a specific compute unit limit that the transaction is allowed to consume."],
+      "accounts": [],
+      "args": [{ "name": "units", "type": "u32" }],
+      "discriminant": { "type": "u8", "value": 2 }
+    },
+    {
+      "name": "setComputeUnitPrice",
+      "docs": ["Set a compute unit price in micro-lamports to pay a higher transaction fee for higher transaction prioritization."],
+      "accounts": [],
+      "args": [{ "name": "microLamports", "type": "u64" }],
+      "discriminant": { "type": "u8", "value": 3 }
+    },
+    {
+      "name": "setLoadedAccountsDataSizeLimit",
+      "docs": ["Set a specific transaction-wide account data size limit, in bytes, that is allowed to load."],
+      "accounts": [],
+      "args": [{ "name": "bytes", "type": "u32" }],
+      "discriminant": { "type": "u8", "value": 4 }
+    }
+  ],
+  "accounts": [],
+  "types": [],
+  "events": [],
+  "errors": [],
+  "metadata": {
+    "address": "ComputeBudget111111111111111111111111111111",
+    "instruction_selector_type": "index"
+  }
+}

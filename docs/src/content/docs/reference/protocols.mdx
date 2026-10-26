@@ -21,6 +21,18 @@ Use the package's TypeScript declarations for each nested schema and
 [the package reference](https://github.com/AreteA4/arete/tree/main/typescript/protocol).
 Do not copy identity hashes from a sample instead of importing installed modules.
 
+`builtins(...)` returns typed modules for the builtin programs, and `ix`
+checks their instructions like an installed program's. Each builtin has one
+name: `system`, `splToken`, `associatedToken`, `computeBudget` and `memo`.
+Other names are errors that name the builtin: `spl-ata` and `splAta` are
+`associatedToken`, `spl-token` is `splToken`, `system-program` is `system`,
+`spl-memo` is `memo` and `compute-budget` is `computeBudget`.
+
+```ts
+const { associatedToken } = builtins("associatedToken");
+ix(associatedToken, "createIdempotent", { accounts: { fundingAddress: "wallet" /* … */ } });
+```
+
 ```sh
 npx arete-protocol check [protocol.ts]
 npx arete-protocol build [protocol.ts] --out .arete/protocol

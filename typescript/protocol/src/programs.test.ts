@@ -98,10 +98,19 @@ describe("installed programs", () => {
     expect(hashProgramSpecV1(buildProgramSpecV1FromBytes(bytes))).toBe(tipJar.programSpecHash);
   });
 
-  it("builtins() rejects names that are not builtins", () => {
-    expect(builtins("associatedToken")).toEqual({ associatedToken: { builtin: "associatedToken" } });
+  it("builtins() returns typed modules and rejects names that are not builtins", () => {
+    const { associatedToken } = builtins("associatedToken");
+    expect(associatedToken.builtin).toBe("associatedToken");
+    expect(associatedToken.programId).toBe("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
+    expect(associatedToken.programSpecHash).toMatch(/^arete:h1:program-spec:sha256:/);
+    expect(Object.keys(associatedToken.instructionShapes)).toContain("createIdempotent");
+    expect(isInstalledProgram(associatedToken)).toBe(false);
     // @ts-expect-error not a builtin
     expect(() => builtins("vault")).toThrow(/not a builtin/);
+    // @ts-expect-error the registry name of a builtin
+    expect(() => builtins("spl-ata")).toThrow("'spl-ata' is the builtin 'associatedToken'");
+    // @ts-expect-error the program SDK name of a builtin
+    expect(() => builtins("splAta")).toThrow("'splAta' is the builtin 'associatedToken'");
   });
 
   it("refuses the removed stackSource option", () => {
@@ -161,6 +170,87 @@ describe("ix", () => {
     // Optional and derivable accounts may be given or left out.
     ix(tipJar, "tip", { args: { amount: "1" }, accounts: { ...accounts, referrer: "wallet", jar: "wallet" } });
     expect(true).toBe(true);
+  });
+
+  it("checks builtin instructions like installed ones (builtins-ata)", () => {
+    const { associatedToken, system } = builtins("associatedToken", "system");
+    const accounts = {
+      fundingAddress: "wallet",
+      associatedTokenAccountAddress: 'ata(wallet, "So11111111111111111111111111111111111111112")',
+      walletAddress: "wallet",
+      tokenMintAddress: '"So11111111111111111111111111111111111111112"',
+      systemProgram: '"11111111111111111111111111111111"',
+      tokenProgram: '"TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"',
+    };
+    // @ts-expect-error unknown account (the IDL names it `walletAddress`)
+    ix(associatedToken, "createIdempotent", { accounts: { ...accounts, wallet: "wallet" } });
+    const { walletAddress: _, ...withoutWallet } = accounts;
+    // @ts-expect-error missing required account (walletAddress)
+    ix(associatedToken, "createIdempotent", { accounts: withoutWallet });
+    // @ts-expect-error unknown instruction
+    ix(associatedToken, "createIdempotentt", { accounts });
+    // @ts-expect-error missing argument (lamports)
+    ix(system, "transfer", { accounts: { fundingAccount: "wallet", recipientAccount: "wallet" } });
+
+    const programs = { tipJar, associatedToken, system };
+    const { spec } = lowerProtocol(
+      define(
+        {
+          prepare: {
+            scope: "instance",
+            authority: "keeper",
+            build: [
+              ix(associatedToken, "createIdempotent", { accounts }),
+              ix(system, "transfer", {
+                args: { lamports: "1" },
+                accounts: { fundingAccount: "wallet", recipientAccount: "instance.accounts.owner" },
+              }),
+            ],
+          },
+        },
+        programs,
+      ),
+    );
+    expect(spec.programs.associatedToken).toEqual({ kind: "builtin", builtin: "associatedToken" });
+    expect(spec.steps.prepare!.build).toEqual({
+      kind: "template",
+      instructions: [
+        { program: "associatedToken", instruction: "createIdempotent", args: {}, accounts },
+        {
+          program: "system",
+          instruction: "transfer",
+          args: { lamports: "1" },
+          accounts: { fundingAccount: "wallet", recipientAccount: "instance.accounts.owner" },
+        },
+      ],
+    });
+
+    // Plain JavaScript, or a builtin called by alias: checked when defined.
+    const loose = ix as unknown as (program: unknown, name: string, input: unknown) => ReturnType<typeof ix>;
+    const step = (instruction: unknown) => ({
+      prepare: { scope: "instance" as const, authority: "keeper" as const, build: [instruction as ReturnType<typeof ix>] },
+    });
+    expect(() =>
+      lowerProtocol(define(step(loose(associatedToken, "createIdempotent", { accounts: { ...accounts, wallet: "wallet" } })), programs)),
+    ).toThrow(
+      expect.objectContaining({
+        path: "/steps/prepare/build/0/accounts/wallet",
+        message: expect.stringContaining("instruction 'createIdempotent' has no account 'wallet'"),
+      }),
+    );
+    expect(() =>
+      lowerProtocol(
+        define(
+          step({ program: "ata", instruction: "createIdempotent", accounts: withoutWallet }),
+          { tipJar, ata: { builtin: "associatedToken" } },
+        ),
+      ),
+    ).toThrow(
+      expect.objectContaining({
+        path: "/steps/prepare/build/0/accounts",
+        message: expect.stringContaining("account 'walletAddress' of 'createIdempotent' is neither supplied nor derivable"),
+      }),
+    );
   });
 
   it("checks names against the runtime shapes when the protocol is defined", () => {

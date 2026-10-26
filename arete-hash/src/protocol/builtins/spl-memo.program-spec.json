@@ -1,0 +1,82 @@
+{
+  "idlContentHash": "arete:h1:idl-content:sha256:09ffcf80988482be8e999b00677a9c9c760d8595bb8624462b66c76bf18f79d8",
+  "idlSnapshot": {
+    "accounts": [],
+    "discriminant_size": 8,
+    "errors": [],
+    "events": [],
+    "instructions": [
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "The first account the memo lists, when it lists any."
+            ],
+            "name": "signer",
+            "optional": true,
+            "signer": true,
+            "writable": false
+          }
+        ],
+        "args": [
+          {
+            "name": "memo",
+            "type": "rest_utf8"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [],
+        "docs": [
+          "arete.instruction_untagged=true",
+          "The whole instruction data is the memo text: no discriminator and no length prefix.",
+          "Every account the instruction lists must sign the transaction. The first is named signer; any others are __extra_accounts."
+        ],
+        "name": "memo"
+      }
+    ],
+    "name": "spl_memo",
+    "normalizationVersion": 1,
+    "program_id": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+    "types": [],
+    "version": "2.0.0"
+  },
+  "instructions": [
+    {
+      "accounts": [
+        {
+          "docs": [
+            "The first account the memo lists, when it lists any."
+          ],
+          "is_optional": true,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "signer",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "memo",
+          "type": "rest_utf8"
+        }
+      ],
+      "discriminator": [],
+      "discriminator_size": 8,
+      "docs": [
+        "arete.instruction_untagged=true",
+        "The whole instruction data is the memo text: no discriminator and no length prefix.",
+        "Every account the instruction lists must sign the transaction. The first is named signer; any others are __extra_accounts."
+      ],
+      "name": "memo",
+      "program_id": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
+    }
+  ],
+  "normalizedIdlHash": "arete:h1:idl-normalized:sha256:1a2d6714ee9dd6b9c5fae47d4c42f4dd3ee14ba346b2b3e51005f00c19b912d2",
+  "pdas": {},
+  "portableIdlHash": "arete:h1:idl-portable:sha256:a2297a6005fde0d789727da3db4b2dae24e1e157ce55107353a0198f21048041",
+  "programId": "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr",
+  "schema": "arete.program-spec/v1"
+}

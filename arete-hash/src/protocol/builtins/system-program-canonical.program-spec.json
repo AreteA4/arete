@@ -1,0 +1,1550 @@
+{
+  "idlContentHash": "arete:h1:idl-content:sha256:0dea02e289f01244b668c8b353fe2897f5076ea445b495f3728eca1a53c62382",
+  "idlSnapshot": {
+    "accounts": [
+      {
+        "discriminator": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Durable transaction nonce account (solana_nonce::versions::Versions::Current).",
+          "Wire layout (bincode): u32 version tag (1 = Current) | u32 state tag (0 = Uninitialized,",
+          "1 = Initialized) | authority Pubkey | durable nonce hash | fee calculator. 80 bytes total."
+        ],
+        "fields": [],
+        "name": "nonce",
+        "serialization": null
+      }
+    ],
+    "discriminant_size": 8,
+    "errors": [],
+    "events": [],
+    "instructions": [
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Funding account"
+            ],
+            "name": "fundingAccount",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "New account"
+            ],
+            "name": "newAccount",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          }
+        ],
+        "args": [
+          {
+            "amountHint": {
+              "decimalsSource": {
+                "decimals": 9,
+                "kind": "constant"
+              }
+            },
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "space",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          0,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Create a new account.",
+          "Fails if the new account already holds lamports."
+        ],
+        "name": "createAccount"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Assigned account public key"
+            ],
+            "name": "assignedAccount",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          }
+        ],
+        "args": [
+          {
+            "name": "owner",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          1,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Assign account to a program."
+        ],
+        "name": "assign"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Funding account"
+            ],
+            "name": "fundingAccount",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Recipient account"
+            ],
+            "name": "recipientAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          }
+        ],
+        "args": [
+          {
+            "amountHint": {
+              "decimalsSource": {
+                "decimals": 9,
+                "kind": "constant"
+              }
+            },
+            "name": "lamports",
+            "type": "u64"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          2,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Transfer lamports."
+        ],
+        "name": "transfer"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Funding account"
+            ],
+            "name": "fundingAccount",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Created account"
+            ],
+            "name": "createdAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Optional: base account. The account matching the `base` argument must be a",
+              "signer, but may be the same account as the funding account and then omitted",
+              "here (observed 2-account and 3-account shapes on mainnet)."
+            ],
+            "name": "baseAccount",
+            "optional": true,
+            "signer": true,
+            "writable": false
+          }
+        ],
+        "args": [
+          {
+            "name": "base",
+            "type": "publicKey"
+          },
+          {
+            "name": "seed",
+            "type": "string"
+          },
+          {
+            "amountHint": {
+              "decimalsSource": {
+                "decimals": 9,
+                "kind": "constant"
+              }
+            },
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "space",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          3,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Create a new account at an address derived from a base address and a seed."
+        ],
+        "name": "createAccountWithSeed"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Nonce account"
+            ],
+            "name": "nonceAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "RecentBlockhashes sysvar (SysvarRecentB1ockHashes11111111111111111111)"
+            ],
+            "name": "recentBlockhashesSysvar",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [
+              "Nonce authority"
+            ],
+            "name": "nonceAuthority",
+            "optional": false,
+            "signer": true,
+            "writable": false
+          }
+        ],
+        "args": [],
+        "discriminant": null,
+        "discriminator": [
+          4,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Consume a stored nonce, replacing it with a successor."
+        ],
+        "name": "advanceNonceAccount"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Nonce account"
+            ],
+            "name": "nonceAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Recipient account"
+            ],
+            "name": "recipientAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "RecentBlockhashes sysvar"
+            ],
+            "name": "recentBlockhashesSysvar",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [
+              "Rent sysvar (SysvarRent111111111111111111111111111111111111)"
+            ],
+            "name": "rentSysvar",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [
+              "Nonce authority"
+            ],
+            "name": "nonceAuthority",
+            "optional": false,
+            "signer": true,
+            "writable": false
+          }
+        ],
+        "args": [
+          {
+            "amountHint": {
+              "decimalsSource": {
+                "decimals": 9,
+                "kind": "constant"
+              }
+            },
+            "name": "lamports",
+            "type": "u64"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          5,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Withdraw funds from a nonce account."
+        ],
+        "name": "withdrawNonceAccount"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Nonce account"
+            ],
+            "name": "nonceAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "RecentBlockhashes sysvar"
+            ],
+            "name": "recentBlockhashesSysvar",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [
+              "Rent sysvar"
+            ],
+            "name": "rentSysvar",
+            "optional": false,
+            "signer": false,
+            "writable": false
+          }
+        ],
+        "args": [
+          {
+            "name": "authority",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          6,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Drive state of an Uninitialized nonce account to Initialized, setting the nonce value."
+        ],
+        "name": "initializeNonceAccount"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Nonce account"
+            ],
+            "name": "nonceAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Nonce authority"
+            ],
+            "name": "nonceAuthority",
+            "optional": false,
+            "signer": true,
+            "writable": false
+          }
+        ],
+        "args": [
+          {
+            "name": "authority",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          7,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Change the entity authorized to execute nonce instructions on the account."
+        ],
+        "name": "authorizeNonceAccount"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "New account"
+            ],
+            "name": "newAccount",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          }
+        ],
+        "args": [
+          {
+            "name": "space",
+            "type": "u64"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          8,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Allocate space in a (possibly new) account without funding."
+        ],
+        "name": "allocate"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Allocated account"
+            ],
+            "name": "allocatedAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Base account"
+            ],
+            "name": "baseAccount",
+            "optional": false,
+            "signer": true,
+            "writable": false
+          }
+        ],
+        "args": [
+          {
+            "name": "base",
+            "type": "publicKey"
+          },
+          {
+            "name": "seed",
+            "type": "string"
+          },
+          {
+            "name": "space",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          9,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Allocate space for and assign an account at an address derived from a base address and a seed."
+        ],
+        "name": "allocateWithSeed"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Assigned account"
+            ],
+            "name": "assignedAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Base account"
+            ],
+            "name": "baseAccount",
+            "optional": false,
+            "signer": true,
+            "writable": false
+          }
+        ],
+        "args": [
+          {
+            "name": "base",
+            "type": "publicKey"
+          },
+          {
+            "name": "seed",
+            "type": "string"
+          },
+          {
+            "name": "owner",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          10,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Assign account to a program based on a seed."
+        ],
+        "name": "assignWithSeed"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Funding account"
+            ],
+            "name": "fundingAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Base for funding account"
+            ],
+            "name": "baseAccount",
+            "optional": false,
+            "signer": true,
+            "writable": false
+          },
+          {
+            "address": null,
+            "docs": [
+              "Recipient account"
+            ],
+            "name": "recipientAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          }
+        ],
+        "args": [
+          {
+            "amountHint": {
+              "decimalsSource": {
+                "decimals": 9,
+                "kind": "constant"
+              }
+            },
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "fromSeed",
+            "type": "string"
+          },
+          {
+            "name": "fromOwner",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          11,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Transfer lamports from a derived address."
+        ],
+        "name": "transferWithSeed"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "Nonce account"
+            ],
+            "name": "nonceAccount",
+            "optional": false,
+            "signer": false,
+            "writable": true
+          }
+        ],
+        "args": [],
+        "discriminant": null,
+        "discriminator": [
+          12,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "One-time idempotent upgrade of legacy nonce versions in order to bump them out of the",
+          "chain blockhash domain."
+        ],
+        "name": "upgradeNonceAccount"
+      },
+      {
+        "accounts": [
+          {
+            "address": null,
+            "docs": [
+              "New account"
+            ],
+            "name": "newAccount",
+            "optional": false,
+            "signer": true,
+            "writable": true
+          },
+          {
+            "address": null,
+            "docs": [
+              "Funding account; may be omitted when `lamports` is 0"
+            ],
+            "name": "fundingAccount",
+            "optional": true,
+            "signer": true,
+            "writable": true
+          }
+        ],
+        "args": [
+          {
+            "amountHint": {
+              "decimalsSource": {
+                "decimals": 9,
+                "kind": "constant"
+              }
+            },
+            "name": "lamports",
+            "type": "u64"
+          },
+          {
+            "name": "space",
+            "type": "u64"
+          },
+          {
+            "name": "owner",
+            "type": "publicKey"
+          }
+        ],
+        "discriminant": null,
+        "discriminator": [
+          13,
+          0,
+          0,
+          0
+        ],
+        "docs": [
+          "Create a new account without enforcing that the new account currently holds zero lamports.",
+          "Added upstream in solana-system-interface; may not be activated on all clusters yet."
+        ],
+        "name": "createAccountAllowPrefund"
+      }
+    ],
+    "name": "system_program",
+    "normalizationVersion": 1,
+    "program_id": "11111111111111111111111111111111",
+    "types": [
+      {
+        "docs": [
+          "Fee rate captured alongside a stored durable nonce"
+        ],
+        "name": "FeeCalculator",
+        "type": {
+          "fields": [
+            {
+              "amountHint": {
+                "decimalsSource": {
+                  "decimals": 9,
+                  "kind": "constant"
+                }
+              },
+              "name": "lamportsPerSignature",
+              "type": "u64"
+            }
+          ],
+          "kind": "struct"
+        }
+      }
+    ],
+    "version": "0.0.0"
+  },
+  "instructions": [
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Funding account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "fundingAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "docs": [
+            "New account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "newAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "amount_hint": {
+            "decimalsSource": {
+              "decimals": 9,
+              "kind": "constant"
+            }
+          },
+          "name": "lamports",
+          "type": "u64"
+        },
+        {
+          "name": "space",
+          "type": "u64"
+        },
+        {
+          "name": "owner",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Create a new account.",
+        "Fails if the new account already holds lamports."
+      ],
+      "name": "createAccount",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Assigned account public key"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "assignedAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "owner",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        1,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Assign account to a program."
+      ],
+      "name": "assign",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Funding account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "fundingAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "docs": [
+            "Recipient account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "recipientAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [
+        {
+          "amount_hint": {
+            "decimalsSource": {
+              "decimals": 9,
+              "kind": "constant"
+            }
+          },
+          "name": "lamports",
+          "type": "u64"
+        }
+      ],
+      "discriminator": [
+        2,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Transfer lamports."
+      ],
+      "name": "transfer",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Funding account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "fundingAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "docs": [
+            "Created account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "createdAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Optional: base account. The account matching the `base` argument must be a",
+            "signer, but may be the same account as the funding account and then omitted",
+            "here (observed 2-account and 3-account shapes on mainnet)."
+          ],
+          "is_optional": true,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "baseAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "base",
+          "type": "solana_pubkey::Pubkey"
+        },
+        {
+          "name": "seed",
+          "type": "String"
+        },
+        {
+          "amount_hint": {
+            "decimalsSource": {
+              "decimals": 9,
+              "kind": "constant"
+            }
+          },
+          "name": "lamports",
+          "type": "u64"
+        },
+        {
+          "name": "space",
+          "type": "u64"
+        },
+        {
+          "name": "owner",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        3,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Create a new account at an address derived from a base address and a seed."
+      ],
+      "name": "createAccountWithSeed",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Nonce account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "nonceAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "RecentBlockhashes sysvar (SysvarRecentB1ockHashes11111111111111111111)"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "recentBlockhashesSysvar",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Nonce authority"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "nonceAuthority",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        4,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Consume a stored nonce, replacing it with a successor."
+      ],
+      "name": "advanceNonceAccount",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Nonce account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "nonceAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Recipient account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "recipientAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "RecentBlockhashes sysvar"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "recentBlockhashesSysvar",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Rent sysvar (SysvarRent111111111111111111111111111111111111)"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "rentSysvar",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Nonce authority"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "nonceAuthority",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "amount_hint": {
+            "decimalsSource": {
+              "decimals": 9,
+              "kind": "constant"
+            }
+          },
+          "name": "lamports",
+          "type": "u64"
+        }
+      ],
+      "discriminator": [
+        5,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Withdraw funds from a nonce account."
+      ],
+      "name": "withdrawNonceAccount",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Nonce account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "nonceAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "RecentBlockhashes sysvar"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "recentBlockhashesSysvar",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Rent sysvar"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": false,
+          "name": "rentSysvar",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "authority",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        6,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Drive state of an Uninitialized nonce account to Initialized, setting the nonce value."
+      ],
+      "name": "initializeNonceAccount",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Nonce account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "nonceAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Nonce authority"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "nonceAuthority",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "authority",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        7,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Change the entity authorized to execute nonce instructions on the account."
+      ],
+      "name": "authorizeNonceAccount",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "New account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "newAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "space",
+          "type": "u64"
+        }
+      ],
+      "discriminator": [
+        8,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Allocate space in a (possibly new) account without funding."
+      ],
+      "name": "allocate",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Allocated account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "allocatedAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Base account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "baseAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "base",
+          "type": "solana_pubkey::Pubkey"
+        },
+        {
+          "name": "seed",
+          "type": "String"
+        },
+        {
+          "name": "space",
+          "type": "u64"
+        },
+        {
+          "name": "owner",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        9,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Allocate space for and assign an account at an address derived from a base address and a seed."
+      ],
+      "name": "allocateWithSeed",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Assigned account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "assignedAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Base account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "baseAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "base",
+          "type": "solana_pubkey::Pubkey"
+        },
+        {
+          "name": "seed",
+          "type": "String"
+        },
+        {
+          "name": "owner",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        10,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Assign account to a program based on a seed."
+      ],
+      "name": "assignWithSeed",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Funding account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "fundingAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        },
+        {
+          "docs": [
+            "Base for funding account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": false,
+          "name": "baseAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "docs": [
+            "Recipient account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "recipientAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [
+        {
+          "amount_hint": {
+            "decimalsSource": {
+              "decimals": 9,
+              "kind": "constant"
+            }
+          },
+          "name": "lamports",
+          "type": "u64"
+        },
+        {
+          "name": "fromSeed",
+          "type": "String"
+        },
+        {
+          "name": "fromOwner",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        11,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Transfer lamports from a derived address."
+      ],
+      "name": "transferWithSeed",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "Nonce account"
+          ],
+          "is_optional": false,
+          "is_signer": false,
+          "is_writable": true,
+          "name": "nonceAccount",
+          "resolution": {
+            "category": "userProvided"
+          }
+        }
+      ],
+      "args": [],
+      "discriminator": [
+        12,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "One-time idempotent upgrade of legacy nonce versions in order to bump them out of the",
+        "chain blockhash domain."
+      ],
+      "name": "upgradeNonceAccount",
+      "program_id": "11111111111111111111111111111111"
+    },
+    {
+      "accounts": [
+        {
+          "docs": [
+            "New account"
+          ],
+          "is_optional": false,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "newAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        },
+        {
+          "docs": [
+            "Funding account; may be omitted when `lamports` is 0"
+          ],
+          "is_optional": true,
+          "is_signer": true,
+          "is_writable": true,
+          "name": "fundingAccount",
+          "resolution": {
+            "category": "signer"
+          }
+        }
+      ],
+      "args": [
+        {
+          "amount_hint": {
+            "decimalsSource": {
+              "decimals": 9,
+              "kind": "constant"
+            }
+          },
+          "name": "lamports",
+          "type": "u64"
+        },
+        {
+          "name": "space",
+          "type": "u64"
+        },
+        {
+          "name": "owner",
+          "type": "solana_pubkey::Pubkey"
+        }
+      ],
+      "discriminator": [
+        13,
+        0,
+        0,
+        0
+      ],
+      "discriminator_size": 8,
+      "docs": [
+        "Create a new account without enforcing that the new account currently holds zero lamports.",
+        "Added upstream in solana-system-interface; may not be activated on all clusters yet."
+      ],
+      "name": "createAccountAllowPrefund",
+      "program_id": "11111111111111111111111111111111"
+    }
+  ],
+  "normalizedIdlHash": "arete:h1:idl-normalized:sha256:ab7b099512c67f897354f17d7880c627c90a709f5a6bde5ff0119d33c7b1b264",
+  "pdas": {},
+  "portableIdlHash": "arete:h1:idl-portable:sha256:6eb4a540a9410c0320dba47b12a808f75c0bfa764381e77022d1dfcabc786f8c",
+  "programId": "11111111111111111111111111111111",
+  "schema": "arete.program-spec/v1"
+}

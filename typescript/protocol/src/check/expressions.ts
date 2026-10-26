@@ -461,23 +461,9 @@ function stepScope(
 }
 
 /**
- * Templates that call a builtin program (`system`, `splToken`,
- * `associatedToken`, `computeBudget`, `memo`). Builtins have no program spec
- * yet, so the server cannot check these templates and rejects them
- * (`template_program_spec_missing`). One note per instruction.
+ * @deprecated Templates check builtin programs against their ProgramSpecs
+ * like installed programs, so there is nothing to warn about; always `[]`.
  */
-export function builtinTemplateWarnings(spec: ProtocolSpecV1): string[] {
-  const warnings: string[] = [];
-  for (const name of sortedKeys(spec.steps)) {
-    const build = spec.steps[name]!.build;
-    if (build.kind !== "template") continue;
-    build.instructions.forEach((instruction, i) => {
-      const program = spec.programs[instruction.program];
-      if (program?.kind !== "builtin") return;
-      warnings.push(
-        `/steps/${name}/build/instructions/${i}: '${instruction.program}' is a builtin program, which has no program spec yet, so the server cannot check this template and rejects it (template_program_spec_missing). Use the step's glue for token accounts, or install the program from the registry and call it under that alias`,
-      );
-    });
-  }
-  return warnings;
+export function builtinTemplateWarnings(_spec: ProtocolSpecV1): string[] {
+  return [];
 }

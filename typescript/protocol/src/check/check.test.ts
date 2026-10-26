@@ -202,18 +202,33 @@ describe("expression reference check", () => {
     expect(findingsAt("presale")).toEqual([]);
   });
 
-  it("warns, without failing, when a template calls a builtin program", () => {
+  it("does not warn when a template calls a builtin program", () => {
     const spec = load("escrow-resolution.protocol-spec.json") as ProtocolSpecV1;
-    expect(builtinTemplateWarnings(spec)).toEqual([]);
     spec.programs.associatedToken = { kind: "builtin", builtin: "associatedToken" };
-    const [stepName, step] = Object.entries(spec.steps).find(([, step]) => step.build.kind === "template")!;
+    const step = Object.values(spec.steps).find((step) => step.build.kind === "template")!;
     if (step.build.kind !== "template") throw new Error("unreachable");
     step.build.instructions[0]!.program = "associatedToken";
     expect(checkSpecExpressions(spec)).toEqual([]);
-    const warnings = builtinTemplateWarnings(spec);
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toContain(`/steps/${stepName}/build/instructions/0`);
-    expect(warnings[0]).toContain("template_program_spec_missing");
+    expect(builtinTemplateWarnings(spec)).toEqual([]);
+  });
+
+  it("names the canonical builtin for another name", () => {
+    const withBuiltin = load("escrow-resolution.protocol-spec.json") as ProtocolSpecV1;
+    (withBuiltin.programs as Record<string, unknown>).ata = { kind: "builtin", builtin: "spl-ata" };
+    expect(() => validateProtocolSpec(withBuiltin)).toThrow(
+      expect.objectContaining({
+        code: "invalid-value",
+        path: "/programs/ata/builtin",
+        message: "'spl-ata' is the builtin 'associatedToken'",
+      }),
+    );
+    const withAlias = load("escrow-resolution.protocol-spec.json") as ProtocolSpecV1;
+    const step = withAlias.steps.open!;
+    if (step.build.kind !== "template") throw new Error("unreachable");
+    step.build.instructions[0]!.program = "splAta";
+    expect(() => validateProtocolSpec(withAlias)).toThrow(
+      expect.objectContaining({ code: "unknown-program", message: expect.stringContaining("'splAta' is the builtin 'associatedToken'") }),
+    );
   });
 
   it("tokenizes the documented syntax", () => {

@@ -303,6 +303,14 @@ fn shape_programs(value: &Value, path: &str) -> ProtocolResult<()> {
             }
             (id, program.path_of("programId"))
         } else {
+            let name = program.req("builtin")?.as_str().unwrap_or_default();
+            if let Some(canonical) = BuiltinProgram::from_alias(name) {
+                return Err(err(
+                    "invalid-value",
+                    &program.path_of("builtin"),
+                    format!("'{name}' is the builtin '{}'", canonical.name()),
+                ));
+            }
             let builtin = one_of(
                 program.req("builtin")?,
                 &program.path_of("builtin"),
@@ -1143,10 +1151,20 @@ fn spec_program<'a>(
     path: &str,
 ) -> ProtocolResult<&'a ProtocolProgramV1> {
     spec.programs.get(alias).ok_or_else(|| {
+        let hint = BuiltinProgram::from_alias(alias)
+            .or_else(|| BuiltinProgram::from_name(alias))
+            .map(|builtin| {
+                format!(
+                    "; '{alias}' is the builtin '{}', declared as {{\"kind\": \"builtin\", \"builtin\": \"{}\"}}",
+                    builtin.name(),
+                    builtin.name()
+                )
+            })
+            .unwrap_or_default();
         err(
             "unknown-program",
             path,
-            format!("program '{alias}' is not declared"),
+            format!("program '{alias}' is not declared{hint}"),
         )
     })
 }

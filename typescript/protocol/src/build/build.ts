@@ -17,7 +17,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type * as Esbuild from "esbuild";
 import { canonicalizeJcs, hashJcs } from "@usearete/hash";
 
-import { builtinTemplateWarnings, checkSpecExpressions, type ExpressionFinding } from "../check/expressions.js";
+import { checkSpecExpressions, type ExpressionFinding } from "../check/expressions.js";
 import { checkHandlerSource, isNodeBuiltin, type StaticFinding } from "../check/static.js";
 import { compareUtf8 } from "../contracts/shape.js";
 import { hashHandlerBundle } from "../contracts/index.js";
@@ -243,7 +243,7 @@ export async function checkProtocol(options: ProtocolBuildOptions): Promise<Chec
   const root = resolve(options.root ?? dirname(entry));
   const { definition, inputs } = await loadDefinition(entry, root, options.protocolModule ?? defaultProtocolModule());
   const lowered = lowerProtocol(definition);
-  const warnings: string[] = builtinTemplateWarnings(lowered.spec);
+  const warnings: string[] = [];
   const manifestRoot = findManifestRoot(root);
   if (Object.keys(lowered.installedPrograms).length > 0) {
     const problems = checkProgramLock(lowered.installedPrograms, manifestRoot, warnings);
