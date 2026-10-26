@@ -491,7 +491,7 @@ impl<'a> Outline<'a> {
     fn params(&self, open: usize) -> Option<Vec<String>> {
         let close = matching(&self.code, open)?;
         Some(
-            split_top_level(&self.code, open + 1, close)
+            split_params(&self.code, open + 1, close)
                 .into_iter()
                 .map(|(start, end)| {
                     let param = collapse_whitespace(&self.source[start..end]);
@@ -972,6 +972,36 @@ fn split_top_level(code: &str, start: usize, end: usize) -> Vec<(usize, usize)> 
         .collect()
 }
 
+/// The parameters of the list `code[start..end]`: split at the commas
+/// outside brackets and outside type arguments, so `Omit<T, "chain">` is
+/// one parameter. A `>` after `=` closes an arrow, not type arguments.
+fn split_params(code: &str, start: usize, end: usize) -> Vec<(usize, usize)> {
+    let bytes = code.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0usize;
+    let mut angles = 0usize;
+    let mut from = start;
+    for at in start..end {
+        match bytes[at] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b'<' => angles += 1,
+            b'>' if at > start && bytes[at - 1] == b'=' => {}
+            b'>' => angles = angles.saturating_sub(1),
+            b',' if depth == 0 && angles == 0 => {
+                parts.push((from, at));
+                from = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push((from, end));
+    parts
+        .into_iter()
+        .filter(|(start, end)| !code[*start..*end].trim().is_empty())
+        .collect()
+}
+
 /// The first `:` of `code[start..end]` outside brackets.
 fn top_level_colon(code: &str, start: usize, end: usize) -> Option<usize> {
     let bytes = code.as_bytes();
@@ -1335,6 +1365,25 @@ export default defineStackExtensions<typeof CORE>()({
         assert_eq!(operations[0].returns, None);
         assert_eq!(operations[1].title.as_deref(), Some("Claim all rewards"));
         assert_eq!(operations[1].description, None);
+    }
+
+    #[test]
+    fn a_comma_inside_type_arguments_does_not_split_a_parameter() {
+        let source = r#"
+export default defineProgramExtensions(PROGRAM)({
+  createRead(context) {
+    return {
+      propose: (input: Omit<Parameters<typeof plan>[0], "chain">, map?: (row: Row) => Map<string, Row>) =>
+        plan(input, map),
+    };
+  },
+});
+"#;
+        let reads = reads(source);
+        assert_eq!(
+            reads[0].signature(),
+            "read.propose(input: Omit<Parameters<typeof plan>[0], \"chain\">, map?: (row: Row) => Map<string, Row>)"
+        );
     }
 
     #[test]

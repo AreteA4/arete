@@ -168,11 +168,7 @@ pub(super) fn typescript_stack_reference(
     context: &ReferenceContext,
 ) -> Result<SdkReference> {
     let modules = typescript_modules(output)?;
-    let (entry, export) = modules
-        .iter()
-        .find_map(|(name, source)| {
-            exported_definition(source, "_STACK").map(|export| (name, export))
-        })
+    let (entry, export) = entry_definition(&modules, "_STACK")
         .ok_or_else(|| anyhow::anyhow!("{} exports no stack definition", output.display()))?;
     let core_marker = format!("export const {export}_CORE = {{");
     let (core, core_source) = modules
@@ -249,11 +245,7 @@ pub(super) fn typescript_program_reference(
     context: &ReferenceContext,
 ) -> Result<SdkReference> {
     let modules = typescript_modules(output)?;
-    let (entry, export) = modules
-        .iter()
-        .find_map(|(name, source)| {
-            exported_definition(source, "_PROGRAM").map(|export| (name, export))
-        })
+    let (entry, export) = entry_definition(&modules, "_PROGRAM")
         .ok_or_else(|| anyhow::anyhow!("{} exports no program definition", output.display()))?;
     let payload = &program_spec.payload;
     let program = program_reference(
@@ -337,6 +329,46 @@ fn typescript_modules(output: &Path) -> Result<Vec<(String, String)>> {
     }
     modules.sort();
     Ok(modules)
+}
+
+/// The entry module of `modules` and the `export const X<suffix>` it
+/// defines. With an extension the core module defines one too, under the
+/// package's name, and the entry imports it to extend it; the entry is the
+/// defining module no other defining module imports (an `index.ts` barrel
+/// re-exports the entry but defines nothing).
+fn entry_definition<'a>(
+    modules: &'a [(String, String)],
+    suffix: &str,
+) -> Option<(&'a String, String)> {
+    let defining: Vec<_> = modules
+        .iter()
+        .filter_map(|(name, source)| {
+            exported_definition(source, suffix).map(|export| (name, export))
+        })
+        .collect();
+    let imported = |name: &str| {
+        let stem = name.strip_suffix(".ts").unwrap_or(name);
+        let quoted = [
+            format!("'./{stem}'"),
+            format!("'./{stem}.js'"),
+            format!("\"./{stem}\""),
+            format!("\"./{stem}.js\""),
+        ];
+        defining.iter().any(|(other, _)| {
+            other.as_str() != name
+                && modules
+                    .iter()
+                    .find(|(module, _)| module == *other)
+                    .is_some_and(|(_, source)| {
+                        quoted.iter().any(|q| source.contains(&format!("from {q}")))
+                    })
+        })
+    };
+    defining
+        .iter()
+        .find(|(name, _)| !imported(name))
+        .or_else(|| defining.first())
+        .cloned()
 }
 
 /// The `export const X<suffix>` an entry module defines.
@@ -534,6 +566,31 @@ export const ORE_STREAM_STACK_CORE = {
         assert_eq!(round[2].kind, ViewKind::List);
         assert_eq!(round[2].key, None);
         assert_eq!(views["round-x"][0].access, r#"views["round-x"]["by-id"]"#);
+    }
+
+    #[test]
+    fn the_entry_is_the_definition_no_other_module_imports() {
+        let module = |name: &str, source: &str| (name.to_string(), source.to_string());
+        let modules = vec![
+            module("index.ts", "export * from './squads-v4';\n"),
+            module(
+                "squads-v4-core.ts",
+                "export const SQUADS_MULTISIG_PROGRAM = { name: 'core' };\n",
+            ),
+            module(
+                "squads-v4.ts",
+                "import { SQUADS_MULTISIG_PROGRAM as CORE } from './squads-v4-core';\nexport const SQUADS_V4_PROGRAM: P = extendProgram(CORE, extensions);\n",
+            ),
+        ];
+        let (entry, export) = entry_definition(&modules, "_PROGRAM").expect("an entry");
+        assert_eq!(
+            (entry.as_str(), export.as_str()),
+            ("squads-v4.ts", "SQUADS_V4_PROGRAM")
+        );
+
+        let alone = vec![module("ore.ts", "export const ORE_PROGRAM = {};\n")];
+        let (entry, export) = entry_definition(&alone, "_PROGRAM").expect("an entry");
+        assert_eq!((entry.as_str(), export.as_str()), ("ore.ts", "ORE_PROGRAM"));
     }
 
     #[test]
