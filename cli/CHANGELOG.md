@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+## [0.47.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.46.0...a4-cli-v0.47.0) (2026-10-26)
+
+
+### Features
+
+* **cli,mcp:** a4 squads and account Squads MCP tools ([1e01027](https://github.com/AreteA4/arete/commit/1e010272d0612f2fcfe3377e984152c6c8af5226))
+* **cli,mcp:** a4 squads reads and attaches account multisigs; dev add-proposer builds locally ([ed3e0d6](https://github.com/AreteA4/arete/commit/ed3e0d6ad7fe1968b9743ae9c864c9815d27ced8))
+* **cli:** a4 dev squads add-proposer builds the config proposal locally ([1ed852d](https://github.com/AreteA4/arete/commit/1ed852d3524c9b54a5e6de411b76077f7b70ea92))
+* **cli:** a4 init -y configures the agent it runs in, not every installed one ([c8c2ea1](https://github.com/AreteA4/arete/commit/c8c2ea17ef2da8024bf740428898b587266364ea))
+* **cli:** a4 init -y configures the agent it runs in, not every installed one ([4d00ed1](https://github.com/AreteA4/arete/commit/4d00ed12dc9c384256f38c95c441468f3ac3ce30))
+* **cli:** doctor and whoami show what the account can use ([2bac4fa](https://github.com/AreteA4/arete/commit/2bac4fa5c8a85c1ea20bd194a459dc2f9a7aad78))
+* **cli:** doctor and whoami show what the account can use ([a5df2f9](https://github.com/AreteA4/arete/commit/a5df2f9b1f77119b62e7015a9d2855c54745ec2e))
+* **cli:** doctor shows the plan's active protocol deployment limit ([b1e009b](https://github.com/AreteA4/arete/commit/b1e009bd137b94a882a3724da2f458bb64782868))
+* **cli:** protocol init adds to the arete.toml a4 init wrote ([6d45a4f](https://github.com/AreteA4/arete/commit/6d45a4f693d23eb78fe5c745cecfbc873958b0db))
+* **cli:** protocol init adds to the arete.toml a4 init wrote ([de6e9c6](https://github.com/AreteA4/arete/commit/de6e9c68fc4410e084cd79be76a935d93d683a15))
+* **dev:** a4 dev up --once deploys and exits; pass events; located build errors ([4c192eb](https://github.com/AreteA4/arete/commit/4c192eb16cfc0b82aebafc73450e81d35f8158cb))
+* **dev:** a4 dev up --once deploys and exits; pass events; located build errors ([da539f5](https://github.com/AreteA4/arete/commit/da539f5f577061e83d30ea2f8ebda1acbb6da026))
+* **protocol:** check a release against the server before deploying ([443c48b](https://github.com/AreteA4/arete/commit/443c48b3161a4b3f32aa70aa711c3d60dce5bce6))
+* **protocol:** check a release against the server before deploying ([7f2d37a](https://github.com/AreteA4/arete/commit/7f2d37a1f612dd8860296ba357ec68f1129e6add))
+* **react:** sessions in React, wallet flows and the Wallet Standard adapter ([ed96fe4](https://github.com/AreteA4/arete/commit/ed96fe4418fc278ab3fa71c864f093591904d66f))
+
+
+### Bug Fixes
+
+* **cli:** a4 init lists only agents it left out, and adds --global where MCP needs it ([ebf2c45](https://github.com/AreteA4/arete/commit/ebf2c4570e5bcd5ae4d336ee991ddaa2310341cd))
+* **cli:** a4 install --json keeps the registry problem for a batch refusal ([64736ae](https://github.com/AreteA4/arete/commit/64736aec206727755150d2042456a31d7e77296e))
+* **cli:** doctor probes an account route and reports whoami lookup failures ([10c369b](https://github.com/AreteA4/arete/commit/10c369b7a480333002f947ac5467a57a773f1ba8))
+* **cli:** generated TypeScript imports extensionless in bundler projects ([9a489ca](https://github.com/AreteA4/arete/commit/9a489cacd92a1cb4b96339907fcc5813528810d4))
+* **cli:** keep Detection::ids for tests only ([bfc2c4e](https://github.com/AreteA4/arete/commit/bfc2c4e1c3d17d5f4d1d96a377298f9645742b4c))
+* **cli:** keep rate-limit errors, blame only a unique alias, pass --verbose to admission ([c94378a](https://github.com/AreteA4/arete/commit/c94378ab15a3b0a3ae68da50b268065834a0dc40))
+* **cli:** only registry programs make doctor warn about Program Read ([c8a176e](https://github.com/AreteA4/arete/commit/c8a176e74a0e77f0218a0695bc963e5362ab74e1))
+* **cli:** print each entry of an API error's errors list ([64011a9](https://github.com/AreteA4/arete/commit/64011a98a29e0b077a688b7f5183eeee52df7038))
+* **cli:** print each entry of an API error's errors list ([548f886](https://github.com/AreteA4/arete/commit/548f8860bd6573c34e40a34436022159bf9cc5d7))
+* **cli:** protocol init refuses an arete.toml whose project fields don't validate ([f3fea37](https://github.com/AreteA4/arete/commit/f3fea373635b644cd0adcd955482ab1091a7a03a))
+* **cli:** show template check errors, blame the right dependency, wire --verbose ([ae84605](https://github.com/AreteA4/arete/commit/ae84605ca409789c1e70d2879f0219e050f5f1fd))
+* **cli:** show template check errors, blame the right dependency, wire --verbose ([df76b7a](https://github.com/AreteA4/arete/commit/df76b7adb329eadd5e05a3a4733e54e6e4a51431))
+* **cli:** suggest project-only agents without --global after a global init ([9bd9433](https://github.com/AreteA4/arete/commit/9bd943348f90f86dac9cfe29401bb89500f7f2a5))
+* **dev:** an interrupted a4 dev up --once fails instead of exiting 0 ([1dfe53d](https://github.com/AreteA4/arete/commit/1dfe53d0ccbee06843d0476f0045b362128da93c))
+* **dev:** each pass reports only its own work; diagnostics keep paths with spaces or drive prefixes ([c76f636](https://github.com/AreteA4/arete/commit/c76f636b835713387acf8b3367ee64514a2b4c16))
+* **dev:** stop printing environment and stack tokens ([9388bc3](https://github.com/AreteA4/arete/commit/9388bc3d4448ee55422f47968673ccf2e6142bad))
+* **dev:** stop printing environment and stack tokens ([84e9ac9](https://github.com/AreteA4/arete/commit/84e9ac92f0a6e41659d48d1e356558c5dc834b32))
+* **install:** check SDK targets before resolving, and resolve each dependency for its own targets ([e862994](https://github.com/AreteA4/arete/commit/e8629945693cff842a62e5c9df3ca179215d6805))
+* **install:** check SDK targets before resolving; resolve each dependency for its own targets ([bb5cfa2](https://github.com/AreteA4/arete/commit/bb5cfa2c6dc83814a1316c08088b989ff4a4b477))
+* **install:** check SDK targets only against the release the install would get ([0ad8903](https://github.com/AreteA4/arete/commit/0ad8903b00ab3ba3f250afee501667908bd21176))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.46.0 to 0.47.0
+    * arete-artifacts bumped from 0.5.4 to 0.5.5
+    * arete-hash bumped from 0.8.0 to 0.9.0
+    * arete-mcp bumped from 0.46.0 to 0.47.0
+  * build-dependencies
+    * arete-hash bumped from 0.8.0 to 0.9.0
+
 ## [0.46.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.45.0...a4-cli-v0.46.0) (2026-10-24)
 
 

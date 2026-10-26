@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.5.0](https://github.com/AreteA4/arete/compare/arete-protocol-npm-v0.4.0...arete-protocol-npm-v0.5.0) (2026-10-26)
+
+
+### Features
+
+* **protocol:** accept list indexing and in in the local expression check ([19d3a66](https://github.com/AreteA4/arete/commit/19d3a6677fa21c363f662fea2ffc364336004f48))
+* **protocol:** accept list indexing and in in the local expression check ([60a9889](https://github.com/AreteA4/arete/commit/60a988905b91fd78345675a78d984436ac7f8408))
+* **protocol:** allow state-only template steps ([273d0d5](https://github.com/AreteA4/arete/commit/273d0d51b9d4ec783af9dced3401ce40b4dac409))
+* **protocol:** allow state-only template steps ([75ea8aa](https://github.com/AreteA4/arete/commit/75ea8aa773f20493cc58de01e91ad41c0ed5f198))
+* **protocol:** check a release against the server before deploying ([443c48b](https://github.com/AreteA4/arete/commit/443c48b3161a4b3f32aa70aa711c3d60dce5bce6))
+* **protocol:** check a release against the server before deploying ([7f2d37a](https://github.com/AreteA4/arete/commit/7f2d37a1f612dd8860296ba357ec68f1129e6add))
+
+
+### Bug Fixes
+
+* **protocol:** a remote check passes only on a check result and gives up in time ([53617e7](https://github.com/AreteA4/arete/commit/53617e75d4f59105e4a49fed594c39e64c8858ca))
+* **protocol:** own only binds that purely derive from an ephemeral key ([7273e02](https://github.com/AreteA4/arete/commit/7273e0299dda1c053f7b838589017e7c88008cc8))
+* **protocol:** own only binds that purely derive from an ephemeral key ([83740d1](https://github.com/AreteA4/arete/commit/83740d131e40bfb0d8dd4a4f8215e712b4961e65))
+* **protocol:** the local checker stops rejecting what the server accepts ([0577c53](https://github.com/AreteA4/arete/commit/0577c53b2a125834ae669ae22c5715974ee89788))
+* **protocol:** the local checker stops rejecting what the server accepts ([7c19655](https://github.com/AreteA4/arete/commit/7c19655d1c58d84c20347809179a5527abeefb48))
+
 ## [0.4.0](https://github.com/AreteA4/arete/compare/arete-protocol-npm-v0.3.0...arete-protocol-npm-v0.4.0) (2026-10-24)
 
 

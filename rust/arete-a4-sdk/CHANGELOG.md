@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.47.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.46.0...arete-sdk-v0.47.0) (2026-10-26)
+
+
+### Features
+
+* **cli,mcp:** a4 squads reads and attaches account multisigs; dev add-proposer builds locally ([ed3e0d6](https://github.com/AreteA4/arete/commit/ed3e0d6ad7fe1968b9743ae9c864c9815d27ced8))
+* **sdk:** account Squads client for TypeScript, Rust and Python ([ac660d0](https://github.com/AreteA4/arete/commit/ac660d059dc61897cb47947152be21dbbbe83cb1))
+* **sdk:** Arete API credentials, a shared platform client and context.platform for extensions ([5460053](https://github.com/AreteA4/arete/commit/5460053a659ad0af9a10abbdae949e864b7ca956))
+* **sdk:** list the instances a wallet relates to across pages ([13fbeeb](https://github.com/AreteA4/arete/commit/13fbeebdd904aa8eae056910db76b1ffe6a954d3))
+* **sdk:** list the instances a wallet relates to across pages ([620af32](https://github.com/AreteA4/arete/commit/620af328edd5e4a6762698e32a69a6ead9b177a0))
+
+
+### Bug Fixes
+
+* **rust-sdk:** send account credentials only to trusted Arete API origins ([a3a23c1](https://github.com/AreteA4/arete/commit/a3a23c1c4e80b1bfc1f157abf5d0165e81a5a957))
+
 ## [0.46.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.45.0...arete-sdk-v0.46.0) (2026-10-24)
 
 

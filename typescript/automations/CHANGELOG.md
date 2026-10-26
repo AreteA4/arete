@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.47.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.46.0...arete-automations-v0.47.0) (2026-10-26)
+
+
+### Features
+
+* **automations:** carry the step's prepared args on outcomes ([0fcf858](https://github.com/AreteA4/arete/commit/0fcf858283627957e9145b60f9a1c2362783c53a))
+* **automations:** carry the step's prepared args on outcomes ([afad562](https://github.com/AreteA4/arete/commit/afad562b9eee3215a51d9851560a43f85d241d9f))
+
+
+### Bug Fixes
+
+* **automations:** check the store's deployment and filter by wallet in the store for outcome reads ([94eb7f0](https://github.com/AreteA4/arete/commit/94eb7f046eda275e3b26e8442c095c00f818e7a4))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.46.0 to ^0.47.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.46.0 to ^0.47.0
+
 ## [0.46.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.45.0...arete-automations-v0.46.0) (2026-10-24)
 
 

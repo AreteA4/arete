@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.47.0](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.46.0...arete-adapter-kit-v0.47.0) (2026-10-26)
+
+
+### Features
+
+* **adapter-kit:** a send's own onActivity listener ([0554fc7](https://github.com/AreteA4/arete/commit/0554fc7e0b9a11ebdf8d12601f71c6cb24129fa2))
+* **adapter-kit:** typed Wallet Standard refusals for the chain and a declined prompt ([4439be9](https://github.com/AreteA4/arete/commit/4439be93861d40cc398d4cd8ea86fbb400535715))
+* **adapter-kit:** Wallet Standard wallet adapter with prompt and send stages ([ae70b85](https://github.com/AreteA4/arete/commit/ae70b85f45d0ab62734b35c624a06018c36ec6e9))
+* **react:** sessions in React, wallet flows and the Wallet Standard adapter ([ed96fe4](https://github.com/AreteA4/arete/commit/ed96fe4418fc278ab3fa71c864f093591904d66f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.46.0 to ^0.47.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.46.0 to ^0.47.0
+
 ## [0.46.0](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.45.0...arete-adapter-kit-v0.46.0) (2026-10-24)
 
 

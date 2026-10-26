@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.5](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.5.4...arete-artifacts-v0.5.5) (2026-10-26)
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-hash bumped from 0.8.0 to 0.9.0
+
 ## [0.5.4](https://github.com/AreteA4/arete/compare/arete-artifacts-v0.5.3...arete-artifacts-v0.5.4) (2026-10-24)
 
 

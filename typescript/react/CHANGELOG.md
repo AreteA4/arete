@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.47.0](https://github.com/AreteA4/arete/compare/arete-react-v0.46.0...arete-react-v0.47.0) (2026-10-26)
+
+
+### Features
+
+* **react:** AreteSessionProvider and useAreteSession for createSession sessions ([38596a9](https://github.com/AreteA4/arete/commit/38596a953fc219d7f417d9f99736a2c06d983b6c))
+* **react:** operation runs, Wallet Standard wallets and API-credential auth ([6079c1a](https://github.com/AreteA4/arete/commit/6079c1a0fc8494d8026a5047503c61812503f7f3))
+* **react:** sessions in React, wallet flows and the Wallet Standard adapter ([ed96fe4](https://github.com/AreteA4/arete/commit/ed96fe4418fc278ab3fa71c864f093591904d66f))
+* **react:** useArete(member) for a stack client a session already connected ([cc3b00a](https://github.com/AreteA4/arete/commit/cc3b00a9da96b1ab73456fe178ebd0657f89570e))
+* **react:** useArete(member) takes the stack and transport from the member ([85a775e](https://github.com/AreteA4/arete/commit/85a775e1127def34407359ec3eaa27032cb0a041))
+
+
+### Bug Fixes
+
+* **react:** a late prompt close from the previous account keeps the current prompt open ([e2bc2c7](https://github.com/AreteA4/arete/commit/e2bc2c71bc59dd540ab373a552e75fb8b3fb1143))
+* **react:** a run without a wallet is not-ready, and wallet failures have typed kinds ([556a6f3](https://github.com/AreteA4/arete/commit/556a6f378243099085decf23c1ac8714485add15))
+* **react:** ready() rejects when the session provider unmounts first ([9b84914](https://github.com/AreteA4/arete/commit/9b84914fe998c0ffa3ffb2fb0d93eb7585268c5e))
+* **react:** useArete(member) placeholders include programs attached to the member ([68405c0](https://github.com/AreteA4/arete/commit/68405c06e1f29ca95cc1cd4f9e69c46d655a87cf))
+* **react:** useOperationMutation follows only its own sends ([607d403](https://github.com/AreteA4/arete/commit/607d403076dbc530c46ee60feb91cf2735ef1717))
+* **react:** useOperationMutation takes a new run exactly when isBusy is false ([c13bf8d](https://github.com/AreteA4/arete/commit/c13bf8d6f32a337498199d3c8fe19f1d74175cf3))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/adapter-kit bumped from ^0.46.0 to ^0.47.0
+    * @usearete/sdk bumped from ^0.46.0 to ^0.47.0
+  * peerDependencies
+    * @usearete/adapter-kit bumped from ^0.46.0 to ^0.47.0
+    * @usearete/sdk bumped from ^0.46.0 to ^0.47.0
+
 ## [0.46.0](https://github.com/AreteA4/arete/compare/arete-react-v0.45.0...arete-react-v0.46.0) (2026-10-24)
 
 
