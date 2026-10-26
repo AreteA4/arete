@@ -416,7 +416,9 @@ These tools act on an Arete cloud dev environment (a persistent mainnet fork
 Arete hosts for the account): the project's (`.arete/dev/environment.json`
 at or above the working directory, or `project`), `ARETE_DEV_ENV`, or the
 one `environment` names. They never start or stop processes; `a4 dev up`
-creates or wakes the project's environment and serves it locally.
+creates or wakes the project's environment and serves it locally. The account key goes only to `https://api.arete.run`, the `ARETE_API_URL`
+origin, or the API your a4 login is stored for: a project file naming any
+other API gets no key, and the tool fails before sending anything.
 
 - `dev_status({ environment?, project? })` — the environment, whether `a4 dev
   up` serves it, the session's URLs and deployment, the chain's slot and

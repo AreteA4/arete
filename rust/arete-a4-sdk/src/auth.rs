@@ -398,7 +398,7 @@ impl AuthConfig {
 /// An account credential: it acts as the account, so it only goes to a
 /// trusted Arete API origin.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum AccountCredential {
+pub enum AccountCredential {
     /// A secret or agent key passed in code.
     SecretKey,
     /// [`ARETE_API_KEY_ENV`].
@@ -461,7 +461,11 @@ fn trusted_origin(url: &str) -> Option<String> {
 /// host, a URL with userinfo, one that does not parse) is refused with
 /// [`AreteError::UntrustedCredentialDestination`]; the message never holds
 /// key material.
-pub(crate) fn check_credential_destination(
+///
+/// [`AuthConfig`] makes this check itself. It is public for tools that send
+/// an account key with their own HTTP client (the `a4` CLI and the MCP
+/// server), so they apply the same rule.
+pub fn check_credential_destination(
     credential: AccountCredential,
     destination: &str,
     explicit_api_url: Option<&str>,

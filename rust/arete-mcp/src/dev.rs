@@ -255,6 +255,15 @@ impl DevSession {
                 bail!("{field} `{url}` is not an Arete API");
             }
         }
+        // The account key goes to the session endpoint; it was checked for
+        // apiUrl's origin only.
+        if url_origin(&self.session_endpoint) != url_origin(&self.api_url) {
+            bail!(
+                "sessionEndpoint `{}` is not on apiUrl `{}`",
+                self.session_endpoint,
+                self.api_url
+            );
+        }
         if !crate::dev_env::is_env_id(&self.environment.id) {
             bail!("`{}` is not an environment id", self.environment.id);
         }
@@ -365,8 +374,12 @@ impl DevProject {
     /// environment, else an offline session with the deployment `a4 dev up`
     /// last recorded.
     pub fn session_for(&self, selection: &EnvSelection) -> DevSession {
+        // The session's API gets the key checked for the selection's API,
+        // so it must be the same origin.
         if let Ok(session) = self.load_session() {
-            if session.environment.id == selection.id {
+            if session.environment.id == selection.id
+                && url_origin(&session.api_url) == url_origin(&selection.api_url)
+            {
                 return session;
             }
         }
@@ -385,6 +398,15 @@ impl DevProject {
         }
         session
     }
+}
+
+/// `scheme://host[:port]` of `url` (default port omitted), `None` when it
+/// does not parse.
+fn url_origin(url: &str) -> Option<String> {
+    reqwest::Url::parse(url.trim())
+        .ok()
+        .map(|url| url.origin().ascii_serialization())
+        .filter(|origin| origin != "null")
 }
 
 /// Whether `url` is an HTTP or WebSocket URL on a loopback host
@@ -2257,6 +2279,13 @@ mod tests {
         assert_eq!(found.load_session().unwrap(), session);
         assert_eq!(project.session_for(&selection), session);
 
+        // A session on another API than the selection's is not used: it
+        // would get the key checked for the selection's API.
+        let elsewhere = EnvSelection::new(TEST_ENV, "app", "http://127.0.0.1:2");
+        let offline = project.session_for(&elsewhere);
+        assert_eq!(offline.api_url, "http://127.0.0.1:2");
+        assert_eq!(offline.session_endpoint, "http://127.0.0.1:2/ws/sessions");
+
         // A session file naming another host is refused.
         for (field, bad, expected) in [
             ("apiUrl", "https://evil.example", "not an Arete API"),
@@ -2267,6 +2296,12 @@ mod tests {
             ),
             ("rpcUrl", "https://rpc.example", "not a loopback URL"),
             ("uiUrl", "http://ui.example/", "not a loopback URL"),
+            // Both are Arete origins, but the key was checked for apiUrl's.
+            (
+                "sessionEndpoint",
+                "https://api.arete.run/ws/sessions",
+                "is not on apiUrl",
+            ),
         ] {
             let mut forged = serde_json::to_value(&session).unwrap();
             forged[field] = json!(bad);

@@ -175,6 +175,10 @@ pub struct CredentialLookup {
     pub key: Option<String>,
     /// The named profile used. `None` means a legacy `[keys]`/`api_key` entry.
     pub profile: Option<String>,
+    /// Whether `key` is stored for the looked-up API URL (a profile or
+    /// `[keys]` entry). False for the legacy top-level `api_key`, which is
+    /// stored for no URL, and when there is no key.
+    pub url_bound: bool,
 }
 
 /// Validate a profile name accepted on the CLI and in credentials files.
@@ -243,10 +247,11 @@ pub fn lookup_credentials(
             return Ok(CredentialLookup {
                 key: Some(key),
                 profile: Some(profile.to_string()),
+                url_bound: true,
             });
         }
 
-        if let Some(key) = legacy_url_key(&parsed, api_url) {
+        if let Some((key, url_bound)) = legacy_url_key(&parsed, api_url) {
             let compatible = match profile {
                 AGENT_PROFILE => key.starts_with("a4_ak_"),
                 HUMAN_PROFILE => !key.starts_with("a4_ak_"),
@@ -256,6 +261,7 @@ pub fn lookup_credentials(
                 return Ok(CredentialLookup {
                     key: Some(key),
                     profile: None,
+                    url_bound,
                 });
             }
         }
@@ -263,6 +269,7 @@ pub fn lookup_credentials(
         return Ok(CredentialLookup {
             key: None,
             profile: Some(profile.to_string()),
+            url_bound: false,
         });
     }
 
@@ -283,6 +290,7 @@ pub fn lookup_credentials(
             return Ok(CredentialLookup {
                 key: Some(key.clone()),
                 profile: Some(profile.clone()),
+                url_bound: true,
             });
         }
         _ => {
@@ -297,8 +305,10 @@ pub fn lookup_credentials(
         }
     }
 
+    let legacy = legacy_url_key(&parsed, api_url);
     Ok(CredentialLookup {
-        key: legacy_url_key(&parsed, api_url),
+        url_bound: legacy.as_ref().is_some_and(|(_, url_bound)| *url_bound),
+        key: legacy.map(|(key, _)| key),
         profile: None,
     })
 }
@@ -372,20 +382,22 @@ fn find_url_key(keys: &HashMap<String, String>, api_url: &str) -> Option<String>
     })
 }
 
-fn legacy_url_key(parsed: &CredentialsFile, api_url: &str) -> Option<String> {
+/// The legacy key for `api_url`: a `[keys]` entry (stored for that URL,
+/// so `true`), else the top-level `api_key` (stored for no URL, `false`).
+fn legacy_url_key(parsed: &CredentialsFile, api_url: &str) -> Option<(String, bool)> {
     if let Some(key) = parsed
         .keys
         .as_ref()
         .and_then(|keys| find_url_key(keys, api_url))
     {
-        return Some(key);
+        return Some((key, true));
     }
     parsed
         .api_key
         .as_deref()
         .map(str::trim)
         .filter(|key| !key.is_empty())
-        .map(str::to_string)
+        .map(|key| (key.to_string(), false))
 }
 
 #[derive(Default, Deserialize)]

@@ -3317,7 +3317,9 @@ impl ApiClient {
     }
 
     /// Mint a session token for one target (`POST <session endpoint>`) with
-    /// the stored key, as the SDKs do before a program or chain read.
+    /// the stored key, as the SDKs do before a program or chain read. The
+    /// endpoint comes from a registry response, so it must be on this
+    /// client's API: the key goes nowhere else.
     pub fn mint_target_session(
         &self,
         session_endpoint: &str,
@@ -3328,6 +3330,19 @@ impl ApiClient {
             token: String,
         }
         let api_key = self.require_api_key()?;
+        let origin = |url: &str| {
+            url::Url::parse(url.trim())
+                .ok()
+                .map(|url| url.origin().ascii_serialization())
+                .filter(|origin| origin != "null")
+        };
+        if origin(session_endpoint).is_none() || origin(session_endpoint) != origin(&self.base_url)
+        {
+            anyhow::bail!(
+                "Refusing to send the API key to the session endpoint {session_endpoint}: it is not on {}. Nothing was sent.",
+                self.base_url
+            );
+        }
         let response = self
             .client
             .post(session_endpoint)
@@ -3928,6 +3943,23 @@ mod agent_tests {
         assert_eq!(req.header("authorization"), Some("Bearer a4_sk_me"));
         let body: serde_json::Value = serde_json::from_str(&req.body).unwrap();
         assert_eq!(body["targetId"], "sgb_x");
+    }
+
+    #[test]
+    fn mint_target_session_sends_the_key_only_to_its_own_api() {
+        let client = ApiClient::with_base_url("http://127.0.0.1:9").with_api_key("a4_sk_me".into());
+        for endpoint in [
+            "https://evil.example/ws/sessions",
+            "http://127.0.0.1:10/ws/sessions",
+            "not a url",
+        ] {
+            let error = client
+                .mint_target_session(endpoint, &serde_json::json!({}))
+                .expect_err("refused")
+                .to_string();
+            assert!(error.contains("Nothing was sent"), "{endpoint}: {error}");
+            assert!(!error.contains("a4_sk_me"), "{error}");
+        }
     }
 
     #[test]

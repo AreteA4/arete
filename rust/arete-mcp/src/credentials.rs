@@ -196,22 +196,56 @@ pub fn resolve_with<E: Env>(env: &E, explicit: Option<String>, url: &str) -> Res
     }
 }
 
+/// An account key for an Arete API, with what decides where it may go.
+#[derive(Clone)]
+pub struct ApiKey {
+    pub key: String,
+    pub source: KeySource,
+    /// The API URL the a4 login stores this key for. `None` for
+    /// `ARETE_API_KEY` and the legacy top-level `api_key`, which are stored
+    /// for no URL.
+    stored_for: Option<String>,
+}
+
+impl std::fmt::Debug for ApiKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ApiKey")
+            .field("source", &self.source)
+            .field("stored_for", &self.stored_for)
+            .finish_non_exhaustive()
+    }
+}
+
 /// The API key for `api_url` (an API origin): the selected profile's login
 /// for that URL, else `ARETE_API_KEY` (only without a selected profile),
 /// else the login for that URL. `None` when there is none.
-pub fn resolve_key_for_api(api_url: &str) -> Result<Option<String>> {
+///
+/// The key is not checked against `api_url`: `api_url` can come from a
+/// project file. Check it with [`check_key_destination`] before sending.
+pub fn resolve_key_for_api(api_url: &str) -> Result<Option<ApiKey>> {
     resolve_key_for_api_with(&SystemEnv, api_url)
 }
 
-pub fn resolve_key_for_api_with<E: Env>(env: &E, api_url: &str) -> Result<Option<String>> {
+pub fn resolve_key_for_api_with<E: Env>(env: &E, api_url: &str) -> Result<Option<ApiKey>> {
     let selected_profile = env
         .var(ENV_VAR_PROFILE)
         .map(|profile| validate_profile_name(&profile).map(str::to_string))
         .transpose()?;
     let api_url = normalize_api_url(api_url);
+    let from_login = |lookup: CredentialLookup| {
+        lookup.key.map(|key| ApiKey {
+            key,
+            source: KeySource::CredentialsFile,
+            stored_for: lookup.url_bound.then(|| api_url.clone()),
+        })
+    };
     if let Some(profile) = selected_profile.as_deref() {
         return match env.credentials_file() {
-            Some(content) => Ok(lookup_credentials(&content, &api_url, Some(profile))?.key),
+            Some(content) => Ok(from_login(lookup_credentials(
+                &content,
+                &api_url,
+                Some(profile),
+            )?)),
             None => Ok(None),
         };
     }
@@ -220,12 +254,65 @@ pub fn resolve_key_for_api_with<E: Env>(env: &E, api_url: &str) -> Result<Option
         .map(|key| key.trim().to_string())
         .filter(|key| !key.is_empty())
     {
-        return Ok(Some(key));
+        return Ok(Some(ApiKey {
+            key,
+            source: KeySource::EnvVar,
+            stored_for: None,
+        }));
     }
     match env.credentials_file() {
-        Some(content) => Ok(lookup_credentials(&content, &api_url, None)?.key),
+        Some(content) => Ok(from_login(lookup_credentials(&content, &api_url, None)?)),
         None => Ok(None),
     }
+}
+
+/// Refuse to send `key` to `destination` unless it is a trusted Arete API
+/// origin for that key: `https://api.arete.run`, the origin of
+/// `ARETE_API_URL`, or the API the a4 login stores the key for. This is the
+/// SDK's rule ([`arete_sdk::check_credential_destination`]). A URL read
+/// from a project file (`.arete/dev/*.json`) is trusted only when one of
+/// these names it, so a cloned project cannot redirect the key.
+pub fn check_key_destination(key: &ApiKey, destination: &str) -> Result<()> {
+    check_key_destination_with(&SystemEnv, key, destination)
+}
+
+pub fn check_key_destination_with<E: Env>(env: &E, key: &ApiKey, destination: &str) -> Result<()> {
+    use arete_sdk::{check_credential_destination, AccountCredential};
+
+    let ambient = check_credential_destination(
+        AccountCredential::EnvKey,
+        destination,
+        None,
+        &|name: &str| env.var(name),
+    );
+    let refusal = match ambient {
+        Ok(()) => return Ok(()),
+        Err(refusal) => refusal,
+    };
+    if let Some(stored_for) = key.stored_for.as_deref() {
+        // `SecretKey` trusts exactly the default API and `explicit_api_url`.
+        if check_credential_destination(
+            AccountCredential::SecretKey,
+            destination,
+            Some(stored_for),
+            &|_: &str| None,
+        )
+        .is_ok()
+        {
+            return Ok(());
+        }
+    }
+    let origin = match refusal {
+        arete_sdk::AreteError::UntrustedCredentialDestination { origin, .. } => origin,
+        _ => "that URL".to_string(),
+    };
+    let what = match key.source {
+        KeySource::EnvVar => ENV_VAR_API_KEY,
+        _ => "a4 login key",
+    };
+    Err(anyhow!(
+        "Refusing to send the {what} to {origin}, which is not a trusted Arete API for it. Nothing was sent. The key goes only to {DEFAULT_API_URL}, the {ENV_VAR_API_URL} origin, or the API its a4 login is stored for: set {ENV_VAR_API_URL} to {origin} if you trust it, or log in to it with `a4 auth login`."
+    ))
 }
 
 fn selected_api_url<E: Env>(env: &E) -> String {
@@ -687,5 +774,64 @@ mod tests {
         assert!(!is_hosted_websocket_url("wss://example.com"));
         assert!(!is_hosted_websocket_url("ws://localhost:8878"));
         assert!(!is_hosted_websocket_url("not a url"));
+    }
+
+    // ── Where an ambient key may go ─────────────────────────────────────────
+
+    fn sendable(env: &TestEnv, lookup: &str, destination: &str) -> Result<()> {
+        let key = resolve_key_for_api_with(env, lookup)?.expect("a key");
+        check_key_destination_with(env, &key, destination)
+    }
+
+    #[test]
+    fn env_key_goes_only_to_the_default_or_configured_api() {
+        let env = TestEnv::default().with_var(ENV_VAR_API_KEY, "a4_sk_env");
+        sendable(&env, DEFAULT_API_URL, DEFAULT_API_URL).unwrap();
+        // A project file naming another API, even a loopback or Arete one,
+        // does not get the key.
+        for elsewhere in [
+            "http://127.0.0.1:3000",
+            "https://evil.example",
+            "https://stack.arete.run",
+        ] {
+            let error = sendable(&env, elsewhere, elsewhere)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("Nothing was sent"), "{error}");
+            assert!(!error.contains("a4_sk_env"), "{error}");
+        }
+        let configured = TestEnv::default()
+            .with_var(ENV_VAR_API_KEY, "a4_sk_env")
+            .with_var(ENV_VAR_API_URL, "http://127.0.0.1:3000/");
+        sendable(
+            &configured,
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:3000",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn login_key_goes_to_the_api_it_is_stored_for() {
+        let env = TestEnv::default().with_credentials(
+            "[profiles.human.keys]\n\
+             \"https://staging.example\" = \"a4_sk_staging\"",
+        );
+        sendable(&env, "https://staging.example", "https://staging.example").unwrap();
+        let error = sendable(&env, "https://staging.example", "https://evil.example")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("https://evil.example"), "{error}");
+
+        let keys = TestEnv::default()
+            .with_credentials("[keys]\n\"http://localhost:3000\" = \"a4_sk_local\"");
+        sendable(&keys, "http://localhost:3000", "http://localhost:3000").unwrap();
+    }
+
+    #[test]
+    fn unscoped_login_key_goes_only_to_the_default_or_configured_api() {
+        let env = TestEnv::default().with_credentials("api_key = \"a4_sk_legacy\"");
+        sendable(&env, DEFAULT_API_URL, DEFAULT_API_URL).unwrap();
+        assert!(sendable(&env, "https://evil.example", "https://evil.example").is_err());
     }
 }
