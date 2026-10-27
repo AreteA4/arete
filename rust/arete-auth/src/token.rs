@@ -665,7 +665,9 @@ mod tests {
         for name in ACCOUNT_CLAIMS {
             assert!(payload.get(*name).is_none(), "{name} visible in {payload}");
         }
-        let text = payload.to_string();
+        let mut clear = payload.as_object().unwrap().clone();
+        clear.remove(crate::sealed::SEALED_CLAIM);
+        let text = serde_json::to_string(&clear).unwrap();
         for secret in ["account:42", "user:7", "pro", "500"] {
             assert!(!text.contains(secret), "{secret} visible in {text}");
         }

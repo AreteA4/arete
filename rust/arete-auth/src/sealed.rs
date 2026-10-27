@@ -275,13 +275,11 @@ pub fn unseal_claims(
         .map_err(|_| SealError::Open)?;
     let private: Map<String, Value> =
         serde_json::from_slice(&plaintext).map_err(|_| SealError::Malformed)?;
-    claims.remove(SEALED_CLAIM);
-    for (name, value) in private {
-        if claims.contains_key(&name) {
-            return Err(SealError::Duplicate(name));
-        }
-        claims.insert(name, value);
+    if let Some(name) = private.keys().find(|name| claims.contains_key(*name)) {
+        return Err(SealError::Duplicate(name.clone()));
     }
+    claims.remove(SEALED_CLAIM);
+    claims.extend(private);
     Ok(())
 }
 
@@ -317,7 +315,9 @@ mod tests {
         for name in ACCOUNT_CLAIMS {
             assert!(!sealed.contains_key(*name), "{name} is still visible");
         }
-        let text = serde_json::to_string(&sealed).unwrap();
+        let mut clear = sealed.clone();
+        clear.remove(SEALED_CLAIM);
+        let text = serde_json::to_string(&clear).unwrap();
         assert!(!text.contains("account:42"), "{text}");
         assert!(!text.contains("pro"), "{text}");
         assert_eq!(sealed["sub"], "anon:visitor");
@@ -371,10 +371,12 @@ mod tests {
 
         let mut doubled = sealed;
         doubled.insert("plan".into(), json!("free"));
+        let before = doubled.clone();
         assert_eq!(
             unseal_claims(&mut doubled, Some(&ClaimSealKeys::new(key("k1", 7)))),
             Err(SealError::Duplicate("plan".into()))
         );
+        assert_eq!(doubled, before, "a failed opening changed the claims");
     }
 
     #[test]

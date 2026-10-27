@@ -116,6 +116,7 @@ impl AsyncVerifier {
             }
             VerifierInner::Jwks(verifier) => VerifierInner::Jwks(verifier.with_origin_validation()),
         };
+        self.cached_jwks = Arc::new(RwLock::new(None));
         self
     }
 
@@ -131,6 +132,8 @@ impl AsyncVerifier {
             }
         };
         self.claim_seal_keys = Some(keys);
+        // A verifier cached before this call would still open with the old keys.
+        self.cached_jwks = Arc::new(RwLock::new(None));
         self
     }
 
