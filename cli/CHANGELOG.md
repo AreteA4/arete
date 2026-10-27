@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+## [0.48.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.47.0...a4-cli-v0.48.0) (2026-10-27)
+
+
+### Bug Fixes
+
+* **cli:** a comparison in a parameter default does not open type arguments ([3645db2](https://github.com/AreteA4/arete/commit/3645db283fcecba3cf4d2d945a783cc30f55db5b))
+* **cli:** mint doctor's probe sessions only on the client's own API ([1281c38](https://github.com/AreteA4/arete/commit/1281c38be01efaf64742dc52bb355eaf10120b15))
+* **cli:** SDK references import the extended program and keep generic parameters whole ([ddd098a](https://github.com/AreteA4/arete/commit/ddd098ad052592bc8deb60e927f40affd1951af3))
+* **cli:** SDK references import the extended program and keep generic parameters whole ([1917f4b](https://github.com/AreteA4/arete/commit/1917f4be5acd609d44260cf24526e2492c3cb25a))
+* **mcp:** send an ambient API key only to a trusted Arete API ([46c39cf](https://github.com/AreteA4/arete/commit/46c39cf418fd53accc981346060446696cbbf726))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.47.0 to 0.48.0
+    * arete-artifacts bumped from 0.5.5 to 0.5.6
+    * arete-hash bumped from 0.9.0 to 0.10.0
+    * arete-mcp bumped from 0.47.0 to 0.48.0
+  * build-dependencies
+    * arete-hash bumped from 0.9.0 to 0.10.0
+
 ## [0.47.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.46.0...a4-cli-v0.47.0) (2026-10-26)
 
 

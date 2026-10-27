@@ -10,6 +10,20 @@
   `catalog-bundle`, `catalog-publication-set`) with shared Rust/TypeScript
   vectors; no existing identity changes
 
+## [0.10.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.9.0...arete-hash-v0.10.0) (2026-10-27)
+
+
+### Features
+
+* **protocol:** builtin programs are typed modules templates can call ([cefdc1c](https://github.com/AreteA4/arete/commit/cefdc1c7df5a6dc4d46c2d4f8d6a50c76be28de9))
+* **protocol:** builtin programs are typed modules templates can call ([8e83ad6](https://github.com/AreteA4/arete/commit/8e83ad61f18d5e674487b7065ae5f7ff911c6ec7))
+
+
+### Bug Fixes
+
+* **protocol:** sign with SPL Token builtin authorities ([aba73ff](https://github.com/AreteA4/arete/commit/aba73fff56fcdd754b8a4cea1b60df5ef9b1d335))
+* **protocol:** sign with SPL Token builtin authorities ([36495f5](https://github.com/AreteA4/arete/commit/36495f59b039b5e0c84378444f7665c89eb68f2c))
+
 ## [0.9.0](https://github.com/AreteA4/arete/compare/arete-hash-v0.8.0...arete-hash-v0.9.0) (2026-10-26)
 
 

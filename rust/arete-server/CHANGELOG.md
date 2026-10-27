@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.48.0](https://github.com/AreteA4/arete/compare/arete-server-v0.47.0...arete-server-v0.48.0) (2026-10-27)
+
+
+### Features
+
+* **auth:** seal account claims in browser session tokens ([8d29fbc](https://github.com/AreteA4/arete/commit/8d29fbc41df0561f63a7c5b6b4b5ccac9f953002))
+* **auth:** seal account claims in browser session tokens ([f1ef6a4](https://github.com/AreteA4/arete/commit/f1ef6a4685a283ccdb3c82eae614bcf7d926e40b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.47.0 to 0.48.0
+    * arete-hash bumped from 0.9.0 to 0.10.0
+    * arete-auth bumped from 0.6.0 to 0.7.0
+
 ## [0.47.0](https://github.com/AreteA4/arete/compare/arete-server-v0.46.0...arete-server-v0.47.0) (2026-10-26)
 
 
