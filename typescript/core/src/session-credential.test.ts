@@ -139,6 +139,17 @@ describe('session API credential', () => {
     session.close();
   });
 
+  it('gives extensions no platform client on a publishable key', async () => {
+    const { fetch } = fakeNetwork();
+    const session = await createSession(
+      { programs: { squads: program } },
+      { fetch, apiUrl: 'https://api.example.test', auth: { publishableKey: 'a4_pk_visitor' } }
+    );
+    expect(session.platform).toBeUndefined();
+    expect(() => session.programs.squads.read.overview()).toThrow('no platform client');
+    session.close();
+  });
+
   it('gives extensions no platform client without an API credential', async () => {
     const { fetch } = fakeNetwork();
     const session = await createSession({ programs: { squads: program } }, { fetch });
