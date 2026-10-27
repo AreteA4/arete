@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "a4-cli"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -170,7 +170,7 @@ dependencies = [
 
 [[package]]
 name = "arete"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -200,7 +200,7 @@ dependencies = [
 
 [[package]]
 name = "arete-a4-sdk"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "arete-solana-contracts",
@@ -245,7 +245,7 @@ dependencies = [
 
 [[package]]
 name = "arete-artifacts"
-version = "0.5.5"
+version = "0.5.6"
 dependencies = [
  "arete-hash",
  "arete-idl",
@@ -257,7 +257,7 @@ dependencies = [
 
 [[package]]
 name = "arete-auth"
-version = "0.6.0"
+version = "0.7.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "arete-auth-server"
-version = "0.0.7"
+version = "0.0.8"
 dependencies = [
  "anyhow",
  "arete-auth",
@@ -303,7 +303,7 @@ dependencies = [
 
 [[package]]
 name = "arete-hash"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "arete-idl",
  "bs58",
@@ -331,7 +331,7 @@ dependencies = [
 
 [[package]]
 name = "arete-interpreter"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -364,7 +364,7 @@ dependencies = [
 
 [[package]]
 name = "arete-macros"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -383,7 +383,7 @@ dependencies = [
 
 [[package]]
 name = "arete-mcp"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -411,7 +411,7 @@ dependencies = [
 
 [[package]]
 name = "arete-server"
-version = "0.47.0"
+version = "0.48.0"
 dependencies = [
  "anyhow",
  "arete-auth",

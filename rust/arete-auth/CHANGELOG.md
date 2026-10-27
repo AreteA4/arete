@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.6.0...arete-auth-v0.7.0) (2026-10-27)
+
+
+### Features
+
+* **auth:** seal account claims in browser session tokens ([8d29fbc](https://github.com/AreteA4/arete/commit/8d29fbc41df0561f63a7c5b6b4b5ccac9f953002))
+* **auth:** seal account claims in browser session tokens ([f1ef6a4](https://github.com/AreteA4/arete/commit/f1ef6a4685a283ccdb3c82eae614bcf7d926e40b))
+
+
+### Bug Fixes
+
+* **auth:** refresh cached verifiers when keys change and leave claims untouched on a failed opening ([6cd9fac](https://github.com/AreteA4/arete/commit/6cd9fac0c3c8ef07694fb02669a19d3e7d25a33e))
+
 ## [0.6.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.5.0...arete-auth-v0.6.0) (2026-10-18)
 
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.48.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.47.0...arete-mcp-v0.48.0) (2026-10-27)
+
+
+### Bug Fixes
+
+* **mcp:** send an ambient API key only to a trusted Arete API ([46c39cf](https://github.com/AreteA4/arete/commit/46c39cf418fd53accc981346060446696cbbf726))
+* **mcp:** send an ambient API key only to a trusted Arete API ([e71cb1c](https://github.com/AreteA4/arete/commit/e71cb1c6c67026a24283ab4bfc6ce840d557de29))
+
 ## [0.47.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.46.0...arete-mcp-v0.47.0) (2026-10-26)
 
 
