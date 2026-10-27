@@ -1406,8 +1406,31 @@ impl ClientManager {
     /// Check if a connection is allowed for the given auth context.
     ///
     /// Returns Ok(()) if the connection is allowed, or an error with a reason if not.
+    ///
+    /// Publishable-key sessions get one fixed reason per refusal: the detailed
+    /// reasons name accounts, consumers and connection counts.
     #[allow(clippy::result_large_err)]
     pub async fn check_connection_allowed(
+        &self,
+        remote_addr: SocketAddr,
+        auth_context: &Option<AuthContext>,
+    ) -> Result<(), AuthDeny> {
+        let publishable = auth_context
+            .as_ref()
+            .is_some_and(|ctx| ctx.key_class == arete_auth::KeyClass::Publishable);
+        self.check_connection_limits(remote_addr, auth_context)
+            .await
+            .map_err(|deny| {
+                if publishable {
+                    deny.for_publishable_session()
+                } else {
+                    deny
+                }
+            })
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn check_connection_limits(
         &self,
         remote_addr: SocketAddr,
         auth_context: &Option<AuthContext>,
@@ -2246,6 +2269,63 @@ mod tests {
             .check_connection_allowed(addr, &Some(other_account))
             .await
             .is_ok());
+    }
+
+    #[tokio::test]
+    async fn publishable_sessions_see_a_fixed_connection_limit_reason() {
+        let manager = ClientManager::new();
+        let account_limits = Limits {
+            max_connections: Some(1),
+            ..Limits::default()
+        };
+        insert_client(
+            &manager,
+            create_v2_auth_context(
+                "consumer:a",
+                "account:42",
+                1,
+                Limits::default(),
+                account_limits.clone(),
+            ),
+        );
+        let addr = create_test_socket_addr("127.0.0.1");
+
+        let visitor = create_v2_auth_context(
+            "consumer:b",
+            "account:42",
+            1,
+            Limits::default(),
+            account_limits.clone(),
+        );
+        let deny = manager
+            .check_connection_allowed(addr, &Some(visitor))
+            .await
+            .unwrap_err();
+        assert_eq!(deny.code, AuthErrorCode::ConnectionLimitExceeded);
+        let response = serde_json::to_string(&deny.to_error_response()).unwrap();
+        assert_eq!(deny.reason, "Connection limit reached");
+        for leaked in ["account:42", "consumer:b", "1 of 1"] {
+            assert!(!response.contains(leaked), "{leaked} in {response}");
+        }
+
+        // A secret-key session keeps the detailed reason.
+        let mut server = create_v2_auth_context(
+            "consumer:c",
+            "account:42",
+            1,
+            Limits::default(),
+            account_limits,
+        );
+        server.key_class = KeyClass::Secret;
+        let deny = manager
+            .check_connection_allowed(addr, &Some(server))
+            .await
+            .unwrap_err();
+        assert!(
+            deny.reason.contains("account account:42"),
+            "{}",
+            deny.reason
+        );
     }
 
     #[tokio::test]

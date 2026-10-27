@@ -12,6 +12,7 @@ pub mod metrics;
 pub mod multi_key;
 pub mod program_read;
 pub mod revocation;
+pub mod sealed;
 pub mod solana_gateway;
 pub mod token;
 pub mod verifier;
@@ -31,6 +32,10 @@ pub use metrics::{AuthMetrics, AuthMetricsCollector, AuthMetricsSnapshot};
 pub use multi_key::{MultiKeyVerifier, MultiKeyVerifierBuilder, RotationKey};
 pub use program_read::{ProgramReadAuthorization, ProgramReadAuthorizationError};
 pub use revocation::{RevocationChecker, TokenRevocationList};
+pub use sealed::{
+    seal_claims, unseal_claims, ClaimSealKey, ClaimSealKeys, SealError, ACCOUNT_CLAIMS,
+    SEALED_CLAIM,
+};
 pub use solana_gateway::{
     SolanaGatewayAuthorization, SolanaGatewayAuthorizationError, SolanaGatewayScope,
 };

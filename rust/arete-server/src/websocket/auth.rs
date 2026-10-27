@@ -210,6 +210,24 @@ impl AuthDeny {
         )
     }
 
+    /// The refusal a publishable-key session sees for a connection limit.
+    ///
+    /// Publishable keys ship to browsers, so the reason a visitor reads names
+    /// no identity and no counts. The detailed reason stays in
+    /// `details.context`, which is never sent to the client.
+    pub fn for_publishable_session(self) -> Self {
+        if self.code != AuthErrorCode::ConnectionLimitExceeded {
+            return self;
+        }
+        let detail = self.reason;
+        Self::new(
+            AuthErrorCode::ConnectionLimitExceeded,
+            "Connection limit reached",
+        )
+        .with_context(detail)
+        .with_suggested_action("Close other connections or retry later")
+    }
+
     /// Convert to a JSON-serializable error response
     pub fn to_error_response(&self) -> ErrorResponse {
         ErrorResponse {
