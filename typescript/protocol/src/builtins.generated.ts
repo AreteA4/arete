@@ -115,7 +115,7 @@ export const BUILTIN_PROGRAM_MODULES = {
   splToken: {
     builtin: "splToken",
     programId: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
-    programSpecHash: "arete:h1:program-spec:sha256:69adc15288ea9f6009434e446a3d4aa2a3a171169072568754596cf13d685fa1",
+    programSpecHash: "arete:h1:program-spec:sha256:c4660abfd3626b6f8c9161c159ce2ab856905e1455477e526aaceff95c56d544",
     instructionShapes: {
       "InitializeMint": {
         args: ["decimals", "mint_authority", "freeze_authority"],

@@ -1,5 +1,5 @@
 {
-  "idlContentHash": "arete:h1:idl-content:sha256:d28d9ee51f43a3c143bdb58e550cbe9148289aca6b78b824ff6b1d31719c2ac7",
+  "idlContentHash": "arete:h1:idl-content:sha256:011636097994eff2f0109f04ed205cde03ab1008654a1398786073bc0b6391dc",
   "idlSnapshot": {
     "accounts": [
       {
@@ -374,7 +374,7 @@
             ],
             "name": "signers",
             "optional": false,
-            "signer": true,
+            "signer": false,
             "writable": false
           }
         ],
@@ -432,11 +432,12 @@
           {
             "address": null,
             "docs": [
-              "The source account owner/delegate."
+              "The source account owner/delegate.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -486,11 +487,12 @@
           {
             "address": null,
             "docs": [
-              "The source account owner."
+              "The source account owner.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -528,11 +530,12 @@
           {
             "address": null,
             "docs": [
-              "The source account's owner."
+              "The source account's owner.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -564,11 +567,12 @@
           {
             "address": null,
             "docs": [
-              "The current authority of the mint or account."
+              "The current authority of the mint or account.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "authority",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -623,11 +627,12 @@
           {
             "address": null,
             "docs": [
-              "The mint's minting authority."
+              "The mint's minting authority.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "authority",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -681,11 +686,12 @@
           {
             "address": null,
             "docs": [
-              "The account's owner/delegate."
+              "The account's owner/delegate.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -739,11 +745,12 @@
           {
             "address": null,
             "docs": [
-              "The account's owner."
+              "The account's owner.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -786,11 +793,12 @@
           {
             "address": null,
             "docs": [
-              "The mint freeze authority."
+              "The mint freeze authority.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "authority",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -832,11 +840,12 @@
           {
             "address": null,
             "docs": [
-              "The mint freeze authority."
+              "The mint freeze authority.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "authority",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -888,11 +897,12 @@
           {
             "address": null,
             "docs": [
-              "The source account's owner/delegate."
+              "The source account's owner/delegate.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -966,11 +976,12 @@
           {
             "address": null,
             "docs": [
-              "The source account owner."
+              "The source account owner.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -1032,11 +1043,12 @@
           {
             "address": null,
             "docs": [
-              "The mint's minting authority."
+              "The mint's minting authority.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "authority",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -1097,11 +1109,12 @@
           {
             "address": null,
             "docs": [
-              "The account's owner/delegate."
+              "The account's owner/delegate.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -1283,7 +1296,7 @@
             ],
             "name": "signers",
             "optional": false,
-            "signer": true,
+            "signer": false,
             "writable": false
           }
         ],
@@ -1488,11 +1501,12 @@
           {
             "address": null,
             "docs": [
-              "The source account's owner/delegate or its multisignature account."
+              "The source account's owner/delegate or its multisignature account.",
+              "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
             ],
             "name": "owner",
             "optional": false,
-            "signer": false,
+            "signer": true,
             "writable": false
           }
         ],
@@ -1889,11 +1903,11 @@
             "..2+N The signer accounts, must equal to N where 1 <= N <=11"
           ],
           "is_optional": false,
-          "is_signer": true,
+          "is_signer": false,
           "is_writable": false,
           "name": "signers",
           "resolution": {
-            "category": "signer"
+            "category": "userProvided"
           }
         }
       ],
@@ -1952,14 +1966,15 @@
         },
         {
           "docs": [
-            "The source account owner/delegate."
+            "The source account owner/delegate.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2010,14 +2025,15 @@
         },
         {
           "docs": [
-            "The source account owner."
+            "The source account owner.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2054,14 +2070,15 @@
         },
         {
           "docs": [
-            "The source account's owner."
+            "The source account's owner.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2092,14 +2109,15 @@
         },
         {
           "docs": [
-            "The current authority of the mint or account."
+            "The current authority of the mint or account.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "authority",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2151,14 +2169,15 @@
         },
         {
           "docs": [
-            "The mint's minting authority."
+            "The mint's minting authority.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "authority",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2213,14 +2232,15 @@
         },
         {
           "docs": [
-            "The account's owner/delegate."
+            "The account's owner/delegate.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2275,14 +2295,15 @@
         },
         {
           "docs": [
-            "The account's owner."
+            "The account's owner.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2326,14 +2347,15 @@
         },
         {
           "docs": [
-            "The mint freeze authority."
+            "The mint freeze authority.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "authority",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2376,14 +2398,15 @@
         },
         {
           "docs": [
-            "The mint freeze authority."
+            "The mint freeze authority.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "authority",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2438,14 +2461,15 @@
         },
         {
           "docs": [
-            "The source account's owner/delegate."
+            "The source account's owner/delegate.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2522,14 +2546,15 @@
         },
         {
           "docs": [
-            "The source account owner."
+            "The source account owner.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2592,14 +2617,15 @@
         },
         {
           "docs": [
-            "The mint's minting authority."
+            "The mint's minting authority.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "authority",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2661,14 +2687,15 @@
         },
         {
           "docs": [
-            "The account's owner/delegate."
+            "The account's owner/delegate.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -2854,11 +2881,11 @@
             "The signer accounts, must equal to N where 1 <= N <= 11."
           ],
           "is_optional": false,
-          "is_signer": true,
+          "is_signer": false,
           "is_writable": false,
           "name": "signers",
           "resolution": {
-            "category": "signer"
+            "category": "userProvided"
           }
         }
       ],
@@ -3062,14 +3089,15 @@
         },
         {
           "docs": [
-            "The source account's owner/delegate or its multisignature account."
+            "The source account's owner/delegate or its multisignature account.",
+            "Signs when it is a single authority. A multisig authority does not sign: its M signers follow as signer accounts."
           ],
           "is_optional": false,
-          "is_signer": false,
+          "is_signer": true,
           "is_writable": false,
           "name": "owner",
           "resolution": {
-            "category": "userProvided"
+            "category": "signer"
           }
         }
       ],
@@ -3104,9 +3132,9 @@
       "program_id": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
     }
   ],
-  "normalizedIdlHash": "arete:h1:idl-normalized:sha256:ef37f469e94bfa4ed90cbd8022450460c9d5a4ea25899eb6239c9199e99443a6",
+  "normalizedIdlHash": "arete:h1:idl-normalized:sha256:bce4f498cfab2c291d4f871890df3954695f96b8c74a46e98a0f06920e6d23b6",
   "pdas": {},
-  "portableIdlHash": "arete:h1:idl-portable:sha256:3112a253e5c32116e29b3b91c429f632a2d4fa9494687d35edbe02338c6439da",
+  "portableIdlHash": "arete:h1:idl-portable:sha256:a677354e5bfe15d97967fca89f0eecd6ea32e9db9075b09bacb984622c27f685",
   "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
   "schema": "arete.program-spec/v1"
 }

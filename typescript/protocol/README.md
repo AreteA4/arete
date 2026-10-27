@@ -201,6 +201,13 @@ Instruction, argument and account names are the IDL's (SPL Token's are
 `Transfer`, `TransferChecked`, ...). The step's `glue` still creates
 associated token accounts and wraps SOL without a template instruction.
 
+SPL Token's authority accounts sign: `owner` on `Transfer`, `Approve`,
+`Burn`, `CloseAccount` and their variants, and `authority` on `MintTo`,
+`SetAuthority`, `FreezeAccount` and `ThawAccount`. Pass a key the step
+signs with, such as `wallet` or an ephemeral key. A multisig token
+authority does not sign; its members would, as remaining accounts, and
+remaining accounts never sign, so templates cannot use one.
+
 `a4 install program --ts` generates the module. Besides its `programId`
 and `programSpecHash`, its default export carries two plain properties, the
 only ones this package reads (it never imports the SDK runtime). The module
