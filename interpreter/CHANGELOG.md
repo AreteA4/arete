@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.48.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.48.0...arete-interpreter-v0.48.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* **rust-sdk:** allow large_enum_variant on generated data enums ([fb75cff](https://github.com/AreteA4/arete/commit/fb75cffb0dbfe88b0b6ee7553001d15d899a7441))
+* **rust-sdk:** allow large_enum_variant on generated data enums ([6980a0f](https://github.com/AreteA4/arete/commit/6980a0f2f053c17a088f7fa9244065014ab70615))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.48.0 to 0.48.1
+
 ## [0.48.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.47.0...arete-interpreter-v0.48.0) (2026-10-27)
 
 
