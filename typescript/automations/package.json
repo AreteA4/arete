@@ -1,6 +1,6 @@
 {
   "name": "@usearete/automations",
-  "version": "0.48.0",
+  "version": "0.48.1",
   "type": "module",
   "description": "Server-side automation of Arete Protocol steps on a user's behalf, with pluggable signers and a signing policy",
   "main": "./dist/index.cjs",
@@ -108,7 +108,7 @@
     "@scure/base": "1.2.6"
   },
   "peerDependencies": {
-    "@usearete/sdk": "^0.48.0"
+    "@usearete/sdk": "^0.48.1"
   },
   "devDependencies": {
     "@rollup/plugin-node-resolve": "16.0.3",
@@ -117,7 +117,7 @@
     "@types/pg": "8.15.5",
     "@typescript-eslint/eslint-plugin": "8.71.2",
     "@typescript-eslint/parser": "8.71.2",
-    "@usearete/sdk": "^0.48.0",
+    "@usearete/sdk": "^0.48.1",
     "eslint": "8.57.1",
     "pg": "8.16.3",
     "rollup": "3.29.5",
