@@ -639,22 +639,32 @@ fn a_concurrent_protocol_create_is_found_by_listing_again() {
 
 #[test]
 fn a_creator_fee_wallet_must_be_a_pubkey() {
-    let config = parse_protocol_config(
-        "[protocol]
-creator_fee_wallet = \"not-a-key\"
-",
+    // In arete.toml: refused when the config is read, before any remote work
+    // (`a4 dev up` reads the same config).
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(
+        dir.path().join("arete.toml"),
+        "[protocol]\ncreator_fee_wallet = \"not-a-key\"\n",
     )
     .unwrap();
+    let error = format!("{:#}", load_protocol_config(dir.path()).unwrap_err());
+    assert!(error.contains("creator fee wallet 'not-a-key'"), "{error}");
+
+    // As a flag.
     let spec = validate_protocol_spec_value(
         &serde_json::from_slice(&fs::read(fixture("token-raise.protocol-spec.json")).unwrap())
             .unwrap(),
     )
     .unwrap();
+    let args = DeployArgs {
+        creator_fee_wallet: Some("1111".into()),
+        ..DeployArgs::default()
+    };
     let error = format!(
         "{:#}",
-        resolve_settings(&DeployArgs::default(), &config, &spec).unwrap_err()
+        resolve_settings(&args, &ProtocolConfig::default(), &spec).unwrap_err()
     );
-    assert!(error.contains("creator fee wallet 'not-a-key'"), "{error}");
+    assert!(error.contains("creator fee wallet '1111'"), "{error}");
 }
 
 fn check_json(release_hash: &str, template_check: &str) -> Value {

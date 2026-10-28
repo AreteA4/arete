@@ -516,6 +516,9 @@ fn parse_protocol_config(source: &str) -> Result<ProtocolConfig> {
             );
         }
     }
+    if let Some(wallet) = &raw.creator_fee_wallet {
+        validate_creator_fee_wallet(wallet)?;
+    }
     Ok(ProtocolConfig {
         slug: raw.slug,
         name: raw.name,
@@ -601,9 +604,8 @@ fn resolve_settings(
         .creator_fee_wallet
         .clone()
         .or_else(|| config.creator_fee_wallet.clone());
-    if let Some(wallet) = &creator_fee_wallet {
-        validate_wallet(wallet)
-            .with_context(|| format!("The creator fee wallet '{wallet}' is not a Solana pubkey"))?;
+    if let Some(wallet) = &args.creator_fee_wallet {
+        validate_creator_fee_wallet(wallet)?;
     }
     let mut resources: BTreeMap<String, ResourceSource> = config
         .resources
@@ -632,11 +634,13 @@ fn resolve_settings(
     })
 }
 
-/// A base58 32-byte public key.
-fn validate_wallet(wallet: &str) -> Result<()> {
-    let bytes = bs58::decode(wallet).into_vec()?;
-    if bytes.len() != 32 {
-        bail!("{} bytes, not 32", bytes.len());
+/// The creator fee wallet: a base58 32-byte public key.
+fn validate_creator_fee_wallet(wallet: &str) -> Result<()> {
+    let valid = bs58::decode(wallet)
+        .into_vec()
+        .is_ok_and(|bytes| bytes.len() == 32);
+    if !valid {
+        bail!("The creator fee wallet '{wallet}' is not a Solana pubkey");
     }
     Ok(())
 }
