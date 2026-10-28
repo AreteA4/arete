@@ -1174,10 +1174,15 @@ pub(crate) fn render_idl_model(model: &IdlModel, name: &str) -> String {
             render_idl_model_fields(fields, "    ", "pub ").join("\n")
         ),
         IdlModelKind::Enum(variants) => {
+            // A data enum mirrors the program's own layout, so its variants
+            // can differ widely in size (MetaDAO futarchy's `PoolState`
+            // holds one pool or three). Boxing a variant would change the
+            // generated API, so the size lint is allowed instead: generated
+            // code must not fail a consumer's `clippy -D warnings`.
             let derive = if variants.iter().all(|variant| variant.fields.is_empty()) {
                 "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]"
             } else {
-                "#[derive(Debug, Clone, Serialize, Deserialize)]"
+                "#[derive(Debug, Clone, Serialize, Deserialize)]\n#[allow(clippy::large_enum_variant)]"
             };
             let mut used = HashSet::new();
             let variants = variants
@@ -3624,13 +3629,28 @@ mod tests {
     }
 
     #[test]
+    fn rust_program_sdk_allows_large_variants_only_on_data_enums() {
+        use crate::idl_models::tests::mpl_core_stack;
+        let core = compile_program_modules(mpl_core_stack(), None).unwrap();
+        // A data enum may hold variants of very different sizes; the generated
+        // crate must still pass a consumer's `clippy -D warnings`.
+        assert!(core.types_rs.contains(
+            "#[derive(Debug, Clone, Serialize, Deserialize)]\n#[allow(clippy::large_enum_variant)]\npub enum UpdateAuthority {"
+        ), "{}", core.types_rs);
+        // A fieldless enum is one tag; it never needs the allowance.
+        assert!(core.types_rs.contains(
+            "#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]\npub enum HookableLifecycleEvent {"
+        ));
+    }
+
+    #[test]
     fn rust_program_sdk_decodes_enums_as_the_wire_tags_them() {
         use crate::idl_models::tests::{mpl_core_stack, pyth_rec_stack};
         let pyth = compile_program_modules(pyth_rec_stack(), None).unwrap();
         // A named data variant is a one-key object; its required fields
         // accept the IDL's own (camelCase) keys.
         assert!(pyth.types_rs.contains(
-            "#[derive(Debug, Clone, Serialize, Deserialize)]\npub enum VerificationLevel {\n    Partial {\n        #[serde(deserialize_with = \"serde_utils::deserialize_wire::<_, _, serde_utils::wire::Int>\")]\n        #[serde(alias = \"numSignatures\")]\n        num_signatures: u64,\n    },\n    Full,\n}"
+            "#[derive(Debug, Clone, Serialize, Deserialize)]\n#[allow(clippy::large_enum_variant)]\npub enum VerificationLevel {\n    Partial {\n        #[serde(deserialize_with = \"serde_utils::deserialize_wire::<_, _, serde_utils::wire::Int>\")]\n        #[serde(alias = \"numSignatures\")]\n        num_signatures: u64,\n    },\n    Full,\n}"
         ), "{}", pyth.types_rs);
         assert!(pyth.types_rs.contains(
             "    #[serde(default)]\n    #[serde(alias = \"verificationLevel\")]\n    pub verification_level: Option<VerificationLevel>,"
