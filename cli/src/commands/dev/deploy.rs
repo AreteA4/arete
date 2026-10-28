@@ -8,12 +8,9 @@
 //! account can use it. Going to mainnet is `a4 protocol deploy`, a separate
 //! deployment of the same release.
 //!
-//! Every new deployment gets a fee policy: the `--fee-policy` file (or
-//! `[protocol].fee_policy` in `arete.toml`), else a policy that charges
-//! nothing. Arete fills in the platform fee destination; an API that has
-//! none to fill in gets a key generated for this project under
-//! `.arete/dev/fee/` (never a wallet that signs steps). Resources the spec
-//! declares come from `--resource` / `[protocol.resources]`, as for
+//! Arete sets each deployment's fees itself; `[protocol].creator_fee_wallet`
+//! in `arete.toml` is passed on as for `a4 protocol deploy`. Resources the
+//! spec declares come from `--resource` / `[protocol.resources]`, as for
 //! `a4 protocol deploy`.
 //!
 //! A release is content-addressed, so an unchanged build is a no-op. A new
@@ -26,9 +23,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
-use arete_hash::protocol::{parse_contract_json, validate_protocol_spec_value, ProtocolSpecV1};
+use arete_hash::protocol::{validate_protocol_spec_value, ProtocolSpecV1};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use tokio::process::Command;
 
 use super::api::DevApi;
@@ -38,12 +35,6 @@ use super::runtime::LogSink;
 pub const BUILD_DIR: &str = ".arete/protocol";
 /// The protocol entry module.
 pub const ENTRY: &str = "protocol.ts";
-/// The fee policy schema.
-pub const FEE_POLICY_SCHEMA: &str = "arete.protocol-fee-policy/v1";
-/// The dev platform fee destination, under `.arete/dev/fee/`.
-const FEE_DESTINATION_WALLET: &str = "platform-destination";
-/// What an API without a platform fee wallet answers a policy without one.
-const DESTINATION_REQUIRED: &str = "protocol-fee-policy-platform-destination-required";
 
 /// What the deploy loop remembers between runs (`.arete/dev/deploy.json`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -65,11 +56,6 @@ pub struct DeployState {
     pub short_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attestation_pubkey: Option<String>,
-    /// The stored fee policy and the document it was stored from.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fee_policy_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fee_policy: Option<Value>,
     /// A deployment created for a release that did not activate yet (a
     /// release with handlers waits for a review): the next deploy of the
     /// same release activates it instead of creating another.
@@ -112,8 +98,8 @@ impl DeployState {
     }
 
     /// The state for `environment`: the saved one when it is for that
-    /// environment (the protocol id and fee policy carry over to another
-    /// one; its deployments don't).
+    /// environment (the protocol id carries over to another one; its
+    /// deployments don't).
     pub fn load_for(path: &Path, environment: &str) -> Self {
         let state = Self::load(path);
         if state.environment.as_deref() == Some(environment) {
@@ -123,8 +109,6 @@ impl DeployState {
             environment: Some(environment.to_string()),
             protocol_id: state.protocol_id,
             slug: state.slug,
-            fee_policy_id: state.fee_policy_id,
-            fee_policy: state.fee_policy,
             ..Self::default()
         }
     }
@@ -179,26 +163,10 @@ pub fn slug_from_name(name: &str) -> String {
 pub struct DeploySettings {
     pub slug: Option<String>,
     pub name: Option<String>,
-    /// Fee policy document; `None` means a zero-fee policy.
-    pub fee_policy: Option<PathBuf>,
+    /// Wallet for the creator's share of Arete's fee; `None`: Arete keeps it.
+    pub creator_fee_wallet: Option<String>,
     /// Resource name -> JSON file or inline value.
     pub resources: BTreeMap<String, crate::commands::protocol::ResourceSource>,
-}
-
-/// The fee policy a dev deployment uses when none is configured: no fees.
-/// Arete fills in the platform fee destination.
-pub fn default_fee_policy() -> Value {
-    json!({
-        "schema": FEE_POLICY_SCHEMA,
-        "steps": {},
-    })
-}
-
-fn read_json_document(path: &Path, what: &str) -> Result<Value> {
-    let bytes =
-        std::fs::read(path).with_context(|| format!("Failed to read {what} {}", path.display()))?;
-    parse_contract_json(&bytes)
-        .map_err(|error| anyhow::anyhow!("{what} {} is not valid JSON: {error}", path.display()))
 }
 
 /// One `arete-protocol build` output.
@@ -346,8 +314,6 @@ pub struct Deployer {
     pub environment: String,
     pub settings: DeploySettings,
     pub state_path: PathBuf,
-    /// Where a generated platform fee destination key lives.
-    pub fee_dir: PathBuf,
     pub log: LogSink,
 }
 
@@ -450,14 +416,13 @@ impl Deployer {
             }
             None => {
                 let resources = self.resources(&build, &protocol_id, &release_hash).await?;
-                let fee_policy_id = self.fee_policy(state, &protocol_id).await?;
                 let created = self
                     .api
                     .create_deployment(
                         &protocol_id,
                         &release_hash,
                         &resources,
-                        &fee_policy_id,
+                        self.settings.creator_fee_wallet.as_deref(),
                         &self.environment,
                     )
                     .await?;
@@ -542,48 +507,6 @@ impl Deployer {
             state.save(&self.state_path)?;
         }
         Ok((disabled, errors))
-    }
-
-    /// The fee policy for a new deployment: stored once per document and
-    /// reused while the document is unchanged.
-    async fn fee_policy(&self, state: &mut DeployState, protocol_id: &str) -> Result<String> {
-        let document = match &self.settings.fee_policy {
-            Some(path) => read_json_document(path, "Fee policy")?,
-            None => default_fee_policy(),
-        };
-        if let (Some(id), Some(stored)) = (&state.fee_policy_id, &state.fee_policy) {
-            if *stored == document {
-                return Ok(id.clone());
-            }
-        }
-        let (id, stored) = match self.api.create_fee_policy(protocol_id, &document).await {
-            Ok(id) => (id, document),
-            // No platform fee wallet on this API: name the project's own
-            // dev destination, as a policy may.
-            Err(error)
-                if error.to_string().contains(DESTINATION_REQUIRED)
-                    && document.get("platformDestination").is_none() =>
-            {
-                let (wallet, _) = arete_mcp::dev::DevWallet::load_or_create(
-                    &self.fee_dir,
-                    FEE_DESTINATION_WALLET,
-                )?;
-                let mut with_destination = document.clone();
-                with_destination["platformDestination"] = json!(wallet.pubkey());
-                let id = self
-                    .api
-                    .create_fee_policy(protocol_id, &with_destination)
-                    .await?;
-                (id, document)
-            }
-            Err(error) => return Err(error),
-        };
-        self.log.line(&format!("fee policy {id}"));
-        let document = stored;
-        state.fee_policy_id = Some(id.clone());
-        state.fee_policy = Some(document);
-        state.save(&self.state_path)?;
-        Ok(id)
     }
 
     /// Publish a version of every resource the spec declares, for this
@@ -706,9 +629,6 @@ mod tests {
     struct Api {
         log: Mutex<Vec<(String, Value)>>,
         activations: Mutex<u32>,
-        /// Refuse a fee policy without a platform destination, as an API
-        /// without a platform fee wallet does.
-        no_platform_wallet: Mutex<bool>,
         /// Refuse activations with `protocol-review-required` while set.
         unreviewed: Mutex<bool>,
     }
@@ -790,29 +710,6 @@ mod tests {
         )
     }
 
-    async fn fee_policy(
-        State(api): Shared,
-        AxumPath(id): AxumPath<String>,
-        Json(body): Json<Value>,
-    ) -> impl IntoResponse {
-        assert_eq!(id, "p-1");
-        let refused = *api.no_platform_wallet.lock().unwrap()
-            && body["document"].get("platformDestination").is_none();
-        note(&api, "fee-policy", body);
-        if refused {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(
-                    json!({ "error": "The fee policy must name a platformDestination", "code": "protocol-fee-policy-platform-destination-required" }),
-                ),
-            );
-        }
-        (
-            StatusCode::CREATED,
-            Json(json!({ "id": "f-1", "version": 1, "documentSha256": "00" })),
-        )
-    }
-
     async fn activate(State(api): Shared, AxumPath(id): AxumPath<String>) -> impl IntoResponse {
         if *api.unreviewed.lock().unwrap() {
             note(&api, "activate-refused", json!(id));
@@ -870,7 +767,6 @@ mod tests {
             )
             .route("/api/protocols", post(create_protocol))
             .route("/api/protocols/:id/releases", post(release))
-            .route("/api/protocols/:id/fee-policies", post(fee_policy))
             .route("/api/protocols/:id/deployments", post(deployment))
             .route("/api/protocol-deployments/:id/activate", post(activate))
             .route("/api/protocol-deployments/:id/disable", post(disable))
@@ -924,7 +820,6 @@ mod tests {
             environment: ENV.into(),
             settings,
             state_path: project.join("deploy.json"),
-            fee_dir: project.join("fee"),
             log: LogSink::open(&project.join("a4.log"), "a4", false).unwrap(),
         }
     }
@@ -951,7 +846,7 @@ mod tests {
         assert!(!again.changed);
         assert_eq!(again.deployment_id, "d-1");
 
-        // A new release: a new deployment, the same fee policy.
+        // A new release: a new deployment.
         write_build(project.path(), "1.0.1");
         let second = deployer.deploy(&mut state).await.unwrap();
         assert!(second.changed);
@@ -969,7 +864,6 @@ mod tests {
         );
         let third = deployer.deploy(&mut state).await.unwrap();
         assert!(!third.changed && third.disabled.is_empty());
-        assert_eq!(state.fee_policy_id.as_deref(), Some("f-1"));
         assert_eq!(
             DeployState::load(&project.path().join("deploy.json")),
             state
@@ -982,7 +876,6 @@ mod tests {
             vec![
                 "protocols",
                 "release",
-                "fee-policy",
                 "deployment",
                 "activate",
                 "activate",
@@ -999,19 +892,17 @@ mod tests {
             json!({ "slug": "escrow-resolution", "name": "escrowResolution" })
         );
         assert!(log[1].1["bundleBase64"].is_string());
-        // A zero-fee policy; Arete fills in the platform destination.
-        assert_eq!(log[2].1["document"], default_fee_policy());
+        // No creator fee wallet: Arete sets the fees.
         assert_eq!(
-            log[3].1,
+            log[2].1,
             json!({
                 "releaseHash": "arete:h1:protocol-release:sha256:1.0.0",
                 "resources": {},
-                "feePolicyId": "f-1",
                 "accessMode": "private",
                 "environment": ENV,
             })
         );
-        assert_eq!(log[10].1, json!("d-1"));
+        assert_eq!(log[9].1, json!("d-1"));
     }
 
     #[tokio::test]
@@ -1050,37 +941,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_configured_fee_policy_and_missing_resources() {
+    async fn a_creator_fee_wallet_and_missing_resources() {
         let api = Arc::new(Api::default());
         let origin = serve(api.clone()).await;
         let project = tempfile::tempdir().unwrap();
         write_build(project.path(), "1.0.0");
-        let policy = project.path().join("fee-policy.json");
-        let document = json!({
-            "schema": FEE_POLICY_SCHEMA,
-            "platformDestination": "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf",
-            "steps": {}
-        });
-        std::fs::write(&policy, serde_json::to_vec(&document).unwrap()).unwrap();
+        let wallet = "SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf";
         let deployer = deployer(
             &origin,
             project.path(),
             DeploySettings {
-                fee_policy: Some(policy.clone()),
+                creator_fee_wallet: Some(wallet.into()),
                 ..DeploySettings::default()
             },
         );
         let mut state = DeployState::default();
         deployer.deploy(&mut state).await.unwrap();
-        let fee = api
+        let created = api
             .log
             .lock()
             .unwrap()
             .iter()
-            .find(|(route, _)| route == "fee-policy")
+            .find(|(route, _)| route == "deployment")
             .cloned()
             .unwrap();
-        assert_eq!(fee.1["document"], document);
+        assert_eq!(created.1["creatorFeeWallet"], wallet);
 
         // A declared resource without a value is an error naming the flag.
         let mut build: BuildOutput = read_build(&project.path().join(BUILD_DIR)).unwrap();
@@ -1119,37 +1004,6 @@ mod tests {
             .cloned()
             .unwrap();
         assert_eq!(draft.1["value"], json!("tight"), "{draft:?}");
-    }
-
-    #[tokio::test]
-    async fn an_api_without_a_platform_fee_wallet_gets_the_projects_destination() {
-        let api = Arc::new(Api::default());
-        *api.no_platform_wallet.lock().unwrap() = true;
-        let origin = serve(api.clone()).await;
-        let project = tempfile::tempdir().unwrap();
-        write_build(project.path(), "1.0.0");
-        let deployer = deployer(&origin, project.path(), DeploySettings::default());
-        let mut state = DeployState::default();
-        deployer.deploy(&mut state).await.unwrap();
-        let policies: Vec<Value> = api
-            .log
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|(route, _)| route == "fee-policy")
-            .map(|(_, body)| body["document"].clone())
-            .collect();
-        assert_eq!(policies.len(), 2);
-        assert!(policies[0].get("platformDestination").is_none());
-        let (wallet, created) = arete_mcp::dev::DevWallet::load_or_create(
-            &project.path().join("fee"),
-            FEE_DESTINATION_WALLET,
-        )
-        .unwrap();
-        assert!(!created);
-        assert_eq!(policies[1]["platformDestination"], wallet.pubkey());
-        // The document as configured is what is remembered.
-        assert_eq!(state.fee_policy, Some(default_fee_policy()));
     }
 
     #[tokio::test]

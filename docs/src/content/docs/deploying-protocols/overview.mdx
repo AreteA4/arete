@@ -25,14 +25,14 @@ a4 protocol deploy --dry-run
 uploading it. It fails with each error's spec path if Arete would reject the
 release.
 
-Choose resource values and a fee policy. Configure them with flags or the
-project's `arete.toml`:
+Choose resource values. Configure them with flags or the project's
+`arete.toml`:
 
 ```toml
 [protocol]
 slug = "my-protocol"
 name = "My Protocol"
-fee_policy = "fee-policy.json"
+creator_fee_wallet = "<pubkey>" # optional: your share of Arete's fee
 
 [protocol.resources]
 launchDefaults = "launch-defaults.json"
@@ -43,10 +43,13 @@ A resource entry is either a path to a JSON file or the value itself as an
 inline TOML value. See
 [`a4 protocol deploy`](/cli/commands/#a4-protocol-deploy-dir) for the details.
 
-Only declare resources your spec actually uses. Fee policy and resource
-schemas are checked at deployment. Hosted platform fees apply alongside the
-protocol's declared fee policy; do not assume the zero-fee dev default is a
-production fee exemption.
+Only declare resources your spec actually uses. Resource schemas are checked
+at deployment.
+
+Arete sets each deployment's fees; there is no fee configuration. Arete
+includes its fee in the prepared transaction. With `creator_fee_wallet` (or
+`--creator-fee-wallet`), that wallet receives the creator's share of the fee;
+without one, Arete keeps the whole fee. The wallet is fixed per deployment.
 
 ## Deploy privately
 
@@ -110,7 +113,7 @@ a4 protocol listing-status
 ```
 
 Listing eligibility checks include deployment access, public dependencies,
-fee policy, and account standing. A self-serve private deployment will first
+current fee rules, and account standing. A self-serve private deployment will first
 need Arete to make it public. Read the listing result and resolve the named
 requirement instead of assuming deployment automatically lists the protocol.
 

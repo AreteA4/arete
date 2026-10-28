@@ -82,17 +82,6 @@ pub struct ProtocolResourceVersion {
     pub resource_hash: Option<String>,
 }
 
-/// A stored fee policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ProtocolFeePolicy {
-    pub id: String,
-    #[serde(default)]
-    pub version: Option<i64>,
-    #[serde(default)]
-    pub document_sha256: Option<String>,
-}
-
 /// A protocol deployment.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -213,7 +202,7 @@ pub fn protocol_listing_message(code: &str, details: Option<&Value>) -> Option<S
                 }
             )
         }
-        "protocol-listing-fee-policy" => "The deployment's fee policy does not meet the listing rules (the minimum platform fee or the fee destination). Deploy with a fee policy that meets them, then request the listing for the new deployment".to_string(),
+        "protocol-listing-fee-policy" => "The deployment's fees predate Arete's current fee rules. Deploy again (a new deployment gets the current rules), then request the listing for the new deployment".to_string(),
         "protocol-listing-not-owner" => "This deployment belongs to another account. Use a secret key of the account that deployed it".to_string(),
         "protocol-listing-account-standing" => "This account cannot list protocols right now because of its standing. Contact Arete support".to_string(),
         "protocol-listing-not-found" => "No listed protocol has that slug. Search the listings with `a4 protocol search`".to_string(),
@@ -430,18 +419,6 @@ impl ApiClient {
         )
     }
 
-    pub fn create_protocol_fee_policy(
-        &self,
-        protocol_id: &str,
-        document: &Value,
-    ) -> Result<ProtocolFeePolicy> {
-        self.protocol_post(
-            &format!("/api/protocols/{protocol_id}/fee-policies"),
-            &json!({ "document": document }),
-            "create protocol fee policy",
-        )
-    }
-
     pub fn list_protocol_deployments(&self, protocol_id: &str) -> Result<Vec<ProtocolDeployment>> {
         self.protocol_get(
             &format!("/api/protocols/{protocol_id}/deployments"),
@@ -455,16 +432,19 @@ impl ApiClient {
         protocol_id: &str,
         release_hash: &str,
         resources: &std::collections::BTreeMap<String, i64>,
-        fee_policy_id: &str,
+        creator_fee_wallet: Option<&str>,
     ) -> Result<ProtocolDeployment> {
+        let mut body = json!({
+            "releaseHash": release_hash,
+            "resources": resources,
+            "accessMode": "private",
+        });
+        if let Some(wallet) = creator_fee_wallet {
+            body["creatorFeeWallet"] = json!(wallet);
+        }
         self.protocol_post(
             &format!("/api/protocols/{protocol_id}/deployments"),
-            &json!({
-                "releaseHash": release_hash,
-                "resources": resources,
-                "feePolicyId": fee_policy_id,
-                "accessMode": "private",
-            }),
+            &body,
             "create protocol deployment",
         )
     }

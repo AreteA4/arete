@@ -37,7 +37,7 @@ source = { workspace = "local" }
 [protocol]
 slug = "token-raise"
 name = "Token Raise"
-fee_policy = "./fee-policy.json"
+# creator_fee_wallet = "<pubkey>" # receives the creator's share of Arete's fee
 access = "private" # self-serve deployments are private
 
 # A string is a path to a JSON file; any other TOML value is the value itself.

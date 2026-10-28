@@ -185,19 +185,6 @@ impl DevApi {
         Ok(response)
     }
 
-    /// Store a fee policy document; its id.
-    pub async fn create_fee_policy(&self, protocol_id: &str, document: &Value) -> Result<String> {
-        let response = self
-            .expect(
-                reqwest::Method::POST,
-                &format!("/api/protocols/{protocol_id}/fee-policies"),
-                Some(&json!({ "document": document })),
-                "Storing the fee policy",
-            )
-            .await?;
-        string_field(&response, "id", "Storing the fee policy")
-    }
-
     /// Create and publish a version of the resource `name` for
     /// `release_hash`; the published version number.
     pub async fn publish_resource(
@@ -244,20 +231,23 @@ impl DevApi {
         protocol_id: &str,
         release_hash: &str,
         resources: &BTreeMap<String, i64>,
-        fee_policy_id: &str,
+        creator_fee_wallet: Option<&str>,
         environment: &str,
     ) -> Result<CreatedDeployment> {
+        let mut body = json!({
+            "releaseHash": release_hash,
+            "resources": resources,
+            "accessMode": "private",
+            "environment": environment,
+        });
+        if let Some(wallet) = creator_fee_wallet {
+            body["creatorFeeWallet"] = json!(wallet);
+        }
         let response = self
             .expect(
                 reqwest::Method::POST,
                 &format!("/api/protocols/{protocol_id}/deployments"),
-                Some(&json!({
-                    "releaseHash": release_hash,
-                    "resources": resources,
-                    "feePolicyId": fee_policy_id,
-                    "accessMode": "private",
-                    "environment": environment,
-                })),
+                Some(&body),
                 "Creating the deployment",
             )
             .await?;

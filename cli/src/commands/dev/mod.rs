@@ -190,12 +190,6 @@ pub struct UpArgs {
     #[arg(long, value_name = "NAME")]
     pub template: Option<String>,
 
-    /// Fee policy document (JSON, `arete.protocol-fee-policy/v1`) for new
-    /// deployments (default: [protocol].fee_policy in arete.toml, else no
-    /// fees)
-    #[arg(long, value_name = "FILE")]
-    pub fee_policy: Option<PathBuf>,
-
     /// Value of a resource the spec declares, as NAME=FILE (JSON); repeatable
     /// (default: [protocol.resources] in arete.toml)
     #[arg(long = "resource", value_name = "NAME=FILE")]
@@ -1273,10 +1267,7 @@ fn deploy_settings(
     Ok(deploy::DeploySettings {
         slug: config.slug,
         name: config.name,
-        fee_policy: args
-            .fee_policy
-            .clone()
-            .or_else(|| config.fee_policy.map(|path| project_root.join(path))),
+        creator_fee_wallet: config.creator_fee_wallet,
         resources,
     })
 }

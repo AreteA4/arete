@@ -376,7 +376,7 @@ a4 protocol deploy ./my-protocol         # builds first, then deploys
 a4 protocol deploy --no-build            # upload the existing build, if it is current
 a4 protocol deploy --dry-run             # print the plan; changes nothing
 a4 protocol deploy \
-  --fee-policy fee-policy.json \
+  --creator-fee-wallet <pubkey> \
   --resource launchDefaults=launch-defaults.json
 a4 protocol deploy --no-activate --json
 ```
@@ -395,8 +395,8 @@ The command:
    name in kebab case (`tokenRaise` becomes `token-raise`).
 4. Uploads the release. Re-uploading an identical release is a no-op.
 5. Reuses a private deployment of the same release if one exists. Otherwise
-   it stores the fee policy, publishes a version of every resource the spec
-   declares, and creates the deployment.
+   it publishes a version of every resource the spec declares and creates
+   the deployment.
 6. Activates the deployment, unless it is already active or you passed
    `--no-activate`.
 7. When the deployment is active and the project installs its own protocol
@@ -426,24 +426,19 @@ What happens at activation depends on the protocol:
 | `--no-build` | Upload the existing `.arete/protocol/` output instead of building; refused when the sources changed since that build |
 | `--dry-run` | Print the files, expected release hash, slug, and whether a deployment would be created or reused. Reads the server only when a secret key is configured |
 | `--slug <slug>`, `--name <name>` | Override the protocol slug (`^[a-z0-9][a-z0-9-]{0,62}$`) and display name |
-| `--fee-policy <file>` | Fee policy document for a new deployment |
+| `--creator-fee-wallet <pubkey>` | Wallet that receives the creator's share of Arete's fee on a new deployment |
 | `--resource <name>=<file>` | JSON value for a declared resource (repeatable) |
 | `--no-activate` | Create or reuse the deployment without activating it |
 | `--wait-secs <n>` | Keep re-trying activation while the server is still preparing the deployment, for example deploying its stack (default 300; 0 activates once) |
 | `--json` | Print the result as JSON: `status`, `protocol`, `release`, `deployment`, `client` (the installed client update, when there is one), `warnings` |
 
-The command needs a secret API key; publishable keys are refused. A new
-deployment needs a fee policy, which is a JSON document like this:
+The command needs a secret API key; publishable keys are refused.
 
-```json
-{
-  "schema": "arete.protocol-fee-policy/v1",
-  "steps": {}
-}
-```
-
-Arete fills in the platform fee destination, so `platformDestination` is
-optional. A policy that names one is still accepted.
+Arete sets each deployment's fees; there is nothing to configure. To receive
+the creator's share of Arete's fee on your protocol's transactions, name a
+wallet with `--creator-fee-wallet` or `[protocol].creator_fee_wallet`. Without
+one, Arete keeps the whole fee. The wallet is fixed when the deployment is
+created: a new wallet applies to the next new deployment.
 
 Flags override the optional `[protocol]` section of the project's
 `arete.toml`. Paths in that section are relative to the project directory, and
@@ -453,7 +448,7 @@ paths passed as flags are relative to the current directory.
 [protocol]
 slug = "token-raise"
 name = "Token Raise"
-fee_policy = "fee-policy.json"
+creator_fee_wallet = "<pubkey>"  # optional
 access = "private"            # the only accepted value
 
 [protocol.resources]
@@ -480,7 +475,7 @@ environment keeps its state and sleeps when idle.
 ```bash
 a4 dev up                                             # create or wake, serve on 127.0.0.1, deploy and watch
 a4 dev up --env staging --no-deploy                   # another environment, no protocol deploy
-a4 dev up --fee-policy fee-policy.json --resource limits=limits.json  # as for `a4 protocol deploy`
+a4 dev up --resource limits=limits.json              # as for `a4 protocol deploy`
 a4 dev status --json                                  # the environment, the session, the chain, a stack stream URL
 a4 dev list                                           # your environments and quotas
 a4 dev fund default 50                                # SOL for a dev wallet (or any address)

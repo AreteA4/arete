@@ -844,7 +844,6 @@ impl Session<'_> {
                 environment: self.env.id.clone(),
                 settings: config.settings.clone(),
                 state_path: self.project.deploy_state_path(),
-                fee_dir: self.project.dev_dir().join("fee"),
                 log: self.events.log.clone(),
             });
             let outcome = self.deploy().await;

@@ -5,7 +5,7 @@
 //! that the sources have not changed since it was built), uploads the spec,
 //! plus the handler bundle when a step has a handler, and takes it to a
 //! private deployment: it ensures the protocol exists, uploads the release,
-//! reuses or creates a deployment (fee policy and resources included) and
+//! reuses or creates a deployment (resources included) and
 //! activates it. The server derives everything else from the spec, so the
 //! release hash is predicted locally with `arete-hash` and checked against
 //! the server's answer.
@@ -51,7 +51,6 @@ const SOURCES_FILE: &str = "build-sources.json";
 const SOURCES_SCHEMA: &str = "arete.protocol-build-sources/v1";
 /// Changed files named in a stale-build error before the rest are counted.
 const MAX_NAMED_CHANGES: usize = 10;
-const FEE_POLICY_SCHEMA: &str = "arete.protocol-fee-policy/v1";
 const MAX_SLUG_LEN: usize = 63;
 
 pub mod init;
@@ -142,9 +141,11 @@ pub struct DeployArgs {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// Fee policy document (JSON, `arete.protocol-fee-policy/v1`) for a new deployment
-    #[arg(long, value_name = "FILE")]
-    pub fee_policy: Option<PathBuf>,
+    /// Wallet that receives the creator's share of Arete's fee on a new
+    /// deployment (default: [protocol].creator_fee_wallet; none: Arete keeps
+    /// the whole fee)
+    #[arg(long, value_name = "PUBKEY")]
+    pub creator_fee_wallet: Option<String>,
 
     /// Value of a resource the spec declares, as NAME=FILE (JSON); repeatable
     #[arg(long = "resource", value_name = "NAME=FILE")]
@@ -395,7 +396,7 @@ pub fn deploy(args: &DeployArgs, json: bool) -> Result<()> {
 pub struct ProtocolConfig {
     pub slug: Option<String>,
     pub name: Option<String>,
-    pub fee_policy: Option<PathBuf>,
+    pub creator_fee_wallet: Option<String>,
     pub resources: BTreeMap<String, ResourceSource>,
     pub access: Option<String>,
 }
@@ -483,7 +484,7 @@ struct RawProtocolConfig {
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
-    fee_policy: Option<PathBuf>,
+    creator_fee_wallet: Option<String>,
     #[serde(default)]
     resources: BTreeMap<String, toml::Value>,
     #[serde(default)]
@@ -493,7 +494,7 @@ struct RawProtocolConfig {
 fn parse_protocol_config(source: &str) -> Result<ProtocolConfig> {
     let manifest: ProtocolManifest = toml::from_str(source).map_err(|error| {
         anyhow::anyhow!(
-            "{}\n[protocol] accepts the keys slug, name, fee_policy, resources and access",
+            "{}\n[protocol] accepts the keys slug, name, creator_fee_wallet, resources and access",
             error.to_string().trim_end()
         )
     })?;
@@ -518,7 +519,7 @@ fn parse_protocol_config(source: &str) -> Result<ProtocolConfig> {
     Ok(ProtocolConfig {
         slug: raw.slug,
         name: raw.name,
-        fee_policy: raw.fee_policy,
+        creator_fee_wallet: raw.creator_fee_wallet,
         resources,
         access: raw.access,
     })
@@ -567,7 +568,7 @@ fn toml_to_json(value: &toml::Value) -> Result<Value> {
 struct Settings {
     slug: String,
     name: String,
-    fee_policy: Option<PathBuf>,
+    creator_fee_wallet: Option<String>,
     resources: BTreeMap<String, ResourceSource>,
 }
 
@@ -596,10 +597,14 @@ fn resolve_settings(
     if name.trim().is_empty() {
         bail!("The protocol name must not be empty");
     }
-    let fee_policy = args
-        .fee_policy
+    let creator_fee_wallet = args
+        .creator_fee_wallet
         .clone()
-        .or_else(|| config.fee_policy.as_ref().map(|path| args.dir.join(path)));
+        .or_else(|| config.creator_fee_wallet.clone());
+    if let Some(wallet) = &creator_fee_wallet {
+        validate_wallet(wallet)
+            .with_context(|| format!("The creator fee wallet '{wallet}' is not a Solana pubkey"))?;
+    }
     let mut resources: BTreeMap<String, ResourceSource> = config
         .resources
         .iter()
@@ -622,9 +627,18 @@ fn resolve_settings(
     Ok(Settings {
         slug,
         name,
-        fee_policy,
+        creator_fee_wallet,
         resources,
     })
+}
+
+/// A base58 32-byte public key.
+fn validate_wallet(wallet: &str) -> Result<()> {
+    let bytes = bs58::decode(wallet).into_vec()?;
+    if bytes.len() != 32 {
+        bail!("{} bytes, not 32", bytes.len());
+    }
+    Ok(())
 }
 
 /// A protocol slug: `^[a-z0-9][a-z0-9-]{0,62}$`.
@@ -1202,27 +1216,29 @@ pub fn execute(client: &ApiClient, args: &DeployArgs, json: bool) -> Result<Depl
 
     // 3. Deployment.
     let existing = client.list_protocol_deployments(&protocol.id)?;
-    let (deployment, deployment_created) =
-        match select_reusable_deployment(&existing, &upload.release_hash) {
-            Some(deployment) => {
-                reporter.success(&format!(
-                    "Reusing deployment {} ({})",
-                    deployment.short_id, deployment.status
-                ));
-                if settings.fee_policy.is_some() || !settings.resources.is_empty() {
-                    reporter.info(
-                        "fee policy and resource inputs apply only when a deployment is created",
+    let (deployment, deployment_created) = match select_reusable_deployment(
+        &existing,
+        &upload.release_hash,
+    ) {
+        Some(deployment) => {
+            reporter.success(&format!(
+                "Reusing deployment {} ({})",
+                deployment.short_id, deployment.status
+            ));
+            if settings.creator_fee_wallet.is_some() || !settings.resources.is_empty() {
+                reporter.info(
+                        "creator fee wallet and resource inputs apply only when a deployment is created",
                     );
-                }
-                (deployment.clone(), false)
             }
-            None => {
-                let deployment =
-                    create_deployment(client, &protocol.id, &upload, &local, &settings, &reporter)?;
-                reporter.success(&format!("Created deployment {}", deployment.short_id));
-                (deployment, true)
-            }
-        };
+            (deployment.clone(), false)
+        }
+        None => {
+            let deployment =
+                create_deployment(client, &protocol.id, &upload, &local, &settings, &reporter)?;
+            reporter.success(&format!("Created deployment {}", deployment.short_id));
+            (deployment, true)
+        }
+    };
 
     // 4. Activation.
     let mut deployment = deployment;
@@ -1571,19 +1587,8 @@ fn select_reusable_deployment<'a>(
         .min_by_key(|deployment| rank(&deployment.status))
 }
 
-fn fee_policy_help() -> String {
-    format!(
-        "A new deployment needs a fee policy: pass --fee-policy <file> or set [protocol].fee_policy in arete.toml. \
-         The file is a JSON document like {{\"schema\":\"{FEE_POLICY_SCHEMA}\",\"steps\":{{}}}}. \
-         Arete fills in the platform fee destination, so platformDestination is optional"
-    )
-}
-
 fn missing_inputs(local: &LocalRelease, settings: &Settings) -> Vec<String> {
     let mut missing = Vec::new();
-    if settings.fee_policy.is_none() {
-        missing.push("fee policy".to_string());
-    }
     for name in local.spec.resources.keys() {
         if !settings.resources.contains_key(name) {
             missing.push(format!("resource {name}"));
@@ -1601,11 +1606,6 @@ fn create_deployment(
     reporter: &Reporter,
 ) -> Result<ProtocolDeployment> {
     // Read every input before changing anything on the server.
-    let fee_policy_path = settings
-        .fee_policy
-        .as_ref()
-        .ok_or_else(|| anyhow::anyhow!(fee_policy_help()))?;
-    let fee_policy = read_contract_document(fee_policy_path, "Fee policy")?;
     let mut values = BTreeMap::new();
     for name in local.spec.resources.keys() {
         let source = settings
@@ -1615,8 +1615,6 @@ fn create_deployment(
         values.insert(name.clone(), source.read(name)?);
     }
 
-    let policy = client.create_protocol_fee_policy(protocol_id, &fee_policy)?;
-    reporter.success(&format!("Stored fee policy {}", policy.id));
     let mut versions = BTreeMap::new();
     for (name, value) in &values {
         let draft = client.create_protocol_resource_version(
@@ -1634,7 +1632,12 @@ fn create_deployment(
         reporter.success(&format!("Published resource {name} v{}", published.version));
         versions.insert(name.clone(), published.version);
     }
-    client.create_protocol_deployment(protocol_id, &upload.release_hash, &versions, &policy.id)
+    client.create_protocol_deployment(
+        protocol_id,
+        &upload.release_hash,
+        &versions,
+        settings.creator_fee_wallet.as_deref(),
+    )
 }
 
 fn dry_run_plan(

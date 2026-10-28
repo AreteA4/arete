@@ -67,7 +67,6 @@ a4 dev up
 | `--project <dir>`          | current directory                               | the project                                                                                                                                          |
 | `--env <name\|id>`         | `ARETE_DEV_ENV`, else the project's environment | the environment to use; one with that name is created when you have none                                                                             |
 | `--template <name>`        |                                                 | what a new environment starts from                                                                                                                   |
-| `--fee-policy <file>`      | `[protocol].fee_policy`, else a zero-fee policy | the fee policy for new deployments (see [Fee policy and resources](#fee-policy-and-resources))                                                       |
 | `--resource <name>=<file>` | `[protocol.resources]`                          | a value for a resource the spec declares; repeatable                                                                                                 |
 | `--port-base <n>`          | `48700`                                         | the first of three local ports: the RPC endpoint, its WebSocket (+1) and the dev UI (+2, which moves to a free port when busy). `0` picks free ports |
 | `--show-token`             |                                                 | print the environment token in the ready summary; only when stdout is a terminal (`a4 dev token` prints one anywhere)                                |
@@ -91,7 +90,7 @@ a4 dev up
 3. in a protocol project, runs `npx arete-protocol build` (output in
    `.arete/protocol/`) and deploys: creates the protocol (slug from
    `[protocol].slug`, else the spec's name) on the first run, uploads the
-   release, stores the fee policy and publishes the declared resources,
+   release, publishes the declared resources,
    creates a **private deployment bound to the environment**, and activates
    it. Its chain reads, simulations and sends go to the environment, Arete
    runs its protocol stack against the environment, and only your account
@@ -146,24 +145,13 @@ when idle; `a4 dev down --sleep` puts it to sleep at once, and
 `a4 dev delete` deletes it. Running `a4 dev up` again uses the same
 environment, with everything you left in it.
 
-### Fee policy and resources
-
-Every deployment names a fee policy. `a4 dev` uses, in order:
-`--fee-policy <file>`, `[protocol].fee_policy` in `arete.toml`, or an empty author policy:
-
-```json
-{ "schema": "arete.protocol-fee-policy/v1", "steps": {} }
-```
-
-Arete fills in the platform fee destination. Against an API that has none
-to fill in, `a4 dev` names a key generated once per project in
-`.arete/dev/fee/` (never one of the step wallets). The policy is stored
-again only when the document changes.
+### Resources and fees
 
 Resources the spec declares need a value, as for `a4 protocol deploy`:
 `--resource <name>=<file>` or `[protocol.resources]` (a JSON file path or an inline TOML value). Each new deployment
 publishes a version of each. These are the same `[protocol]` settings
-`a4 protocol deploy` reads (`slug`, `name`, `fee_policy`, `resources`).
+`a4 protocol deploy` reads (`slug`, `name`, `creator_fee_wallet`, `resources`).
+Arete sets each deployment's fees; there is nothing to configure.
 
 Arete includes any applicable platform fee in the prepared transaction, also
 on a cloud dev environment. Applications display the actual prepared fee before
@@ -764,18 +752,18 @@ order. The Rust types, writer and reader are
 
 ## Files
 
-| Path                          | Contents                                                                 |
-| ----------------------------- | ------------------------------------------------------------------------ |
-| `.arete/protocol/`            | the latest `arete-protocol build` output                                 |
-| `.arete/dev/environment.json` | the project's environment (`{id, name, apiUrl}`); no key                 |
-| `.arete/dev/session.json`     | the running `a4 dev up` (removed on shutdown)                            |
-| `.arete/dev/state.json`       | the running `a4 dev up`'s pid and ports                                  |
-| `.arete/dev/deploy.json`      | the protocol id, slug, fee policy and the deployments in the environment |
-| `.arete/dev/a4.log`           | what `a4 dev up` did                                                     |
-| `.arete/dev/wallets/`         | dev keypairs (Solana CLI format)                                         |
-| `.arete/dev/fee/`             | the dev platform fee destination keypair, when an API needs one          |
-| `.arete/dev/history.jsonl`    | every step run with `a4 dev step`, `dev_step` or the dev UI              |
-| `.arete/dev/replays.jsonl`    | every step run by `a4 dev replay`                                        |
+| Path                          | Contents                                                        |
+| ----------------------------- | --------------------------------------------------------------- |
+| `.arete/protocol/`            | the latest `arete-protocol build` output                        |
+| `.arete/dev/environment.json` | the project's environment (`{id, name, apiUrl}`); no key        |
+| `.arete/dev/session.json`     | the running `a4 dev up` (removed on shutdown)                   |
+| `.arete/dev/state.json`       | the running `a4 dev up`'s pid and ports                         |
+| `.arete/dev/deploy.json`      | the protocol id, slug and the deployments in the environment    |
+| `.arete/dev/a4.log`           | what `a4 dev up` did                                            |
+| `.arete/dev/wallets/`         | dev keypairs (Solana CLI format)                                |
+| `.arete/dev/fee/`             | the dev platform fee destination keypair, when an API needs one |
+| `.arete/dev/history.jsonl`    | every step run with `a4 dev step`, `dev_step` or the dev UI     |
+| `.arete/dev/replays.jsonl`    | every step run by `a4 dev replay`                               |
 
 Add `.arete/dev/` to `.gitignore`. `a4 dev down --purge` deletes it (the
 environment itself stays: `a4 dev delete` deletes it).

@@ -121,24 +121,8 @@ fn write_json(dir: &Path, name: &str, value: &Value) -> PathBuf {
     path
 }
 
-fn fee_policy() -> Value {
-    json!({
-        "schema": "arete.protocol-fee-policy/v1",
-        "platformDestination": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
-        "steps": {}
-    })
-}
-
-/// A hosted fee policy without `platformDestination`: Arete fills in its
-/// own destination, so the CLI sends the document as written.
-fn hosted_fee_policy() -> Value {
-    let mut policy = fee_policy();
-    policy
-        .as_object_mut()
-        .unwrap()
-        .remove("platformDestination");
-    policy
-}
+/// A wallet for the creator's share of the fee.
+const CREATOR_WALLET: &str = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 
 fn protocol_json(slug: &str) -> Value {
     json!({ "id": PROTOCOL_ID, "slug": slug, "name": "escrowResolution", "createdAt": "2026-10-13T00:00:00Z" })
@@ -235,17 +219,12 @@ fn template_only_deploy_creates_protocol_release_inputs_and_deployment_then_acti
     let expected = load_local_release(dir.path())
         .unwrap()
         .expected_release_hash;
-    let fee = write_json(dir.path(), "fee.json", &hosted_fee_policy());
     let limits = write_json(dir.path(), "limits.json", &json!({ "maxDeposits": 5 }));
     let server = responses(vec![
         (200, json!([])),
         (201, protocol_json("escrow-resolution")),
         (201, upload_json(&expected, false, "passed", true)),
         (200, json!([])),
-        (
-            201,
-            json!({ "id": "fee-1", "version": 1, "documentSha256": "00" }),
-        ),
         (201, resource_json(1, "draft")),
         (201, resource_json(1, "published")),
         (
@@ -258,12 +237,12 @@ fn template_only_deploy_creates_protocol_release_inputs_and_deployment_then_acti
         ),
     ]);
     let mut args = args(dir.path());
-    args.fee_policy = Some(fee);
+    args.creator_fee_wallet = Some(CREATOR_WALLET.into());
     args.resources = vec![format!("limits={}", limits.display())];
 
     let outcome = execute(&client(&server), &args, true).unwrap();
 
-    let requests = take(&server, 9);
+    let requests = take(&server, 8);
     let lines: Vec<&str> = requests.iter().map(line).collect();
     let base = format!("/api/protocols/{PROTOCOL_ID}");
     assert_eq!(
@@ -273,7 +252,6 @@ fn template_only_deploy_creates_protocol_release_inputs_and_deployment_then_acti
             "POST /api/protocols".to_string(),
             format!("POST {base}/releases"),
             format!("GET {base}/deployments"),
-            format!("POST {base}/fee-policies"),
             format!("POST {base}/resources/limits/versions"),
             format!("POST {base}/resources/limits/versions/1/publish"),
             format!("POST {base}/deployments"),
@@ -294,19 +272,15 @@ fn template_only_deploy_creates_protocol_release_inputs_and_deployment_then_acti
     assert!(upload.get("bundleBase64").is_none());
     assert_eq!(
         body(&requests[4]),
-        json!({ "document": hosted_fee_policy() })
-    );
-    assert_eq!(
-        body(&requests[5]),
         json!({ "value": { "maxDeposits": 5 }, "releaseHash": expected })
     );
-    assert_eq!(body(&requests[6]), json!({ "releaseHash": expected }));
+    assert_eq!(body(&requests[5]), json!({ "releaseHash": expected }));
     assert_eq!(
-        body(&requests[7]),
+        body(&requests[6]),
         json!({
             "releaseHash": expected,
             "resources": { "limits": 1 },
-            "feePolicyId": "fee-1",
+            "creatorFeeWallet": CREATOR_WALLET,
             "accessMode": "private"
         })
     );
@@ -474,11 +448,10 @@ fn activation_is_retried_while_the_server_prepares_the_deployment() {
 #[test]
 fn a_handler_release_reports_review_required_and_succeeds() {
     let dir = token_raise();
-    fs::write(dir.path().join("fee.json"), fee_policy().to_string()).unwrap();
     // An inline resource value in arete.toml is sent as JSON.
     fs::write(
         dir.path().join("arete.toml"),
-        "[protocol]\nslug = \"my-raise\"\nfee_policy = \"fee.json\"\naccess = \"private\"\n\n[protocol.resources]\nlaunchDefaults = { tokenDecimals = 6 }\n",
+        "[protocol]\nslug = \"my-raise\"\naccess = \"private\"\n\n[protocol.resources]\nlaunchDefaults = { tokenDecimals = 6 }\n",
     )
     .unwrap();
     let server = responses(vec![
@@ -486,10 +459,6 @@ fn a_handler_release_reports_review_required_and_succeeds() {
         (201, protocol_json("my-raise")),
         (201, upload_json(TOKEN_RAISE_RELEASE, true, "passed", true)),
         (200, json!([])),
-        (
-            201,
-            json!({ "id": "fee-1", "version": 1, "documentSha256": "00" }),
-        ),
         (201, resource_json(3, "draft")),
         (201, resource_json(3, "published")),
         (
@@ -508,7 +477,7 @@ fn a_handler_release_reports_review_required_and_succeeds() {
 
     let outcome = execute(&client(&server), &args(dir.path()), true).unwrap();
 
-    let requests = take(&server, 9);
+    let requests = take(&server, 8);
     assert_eq!(body(&requests[1])["slug"], "my-raise");
     let bundle = fs::read(fixture("token-raise.handlers.mjs")).unwrap();
     assert_eq!(
@@ -516,18 +485,20 @@ fn a_handler_release_reports_review_required_and_succeeds() {
         Value::String(encode_base64(&bundle))
     );
     assert_eq!(
-        line(&requests[5]),
+        line(&requests[4]),
         format!("POST /api/protocols/{PROTOCOL_ID}/resources/launchDefaults/versions")
     );
-    assert_eq!(body(&requests[5])["value"], json!({ "tokenDecimals": 6 }));
+    assert_eq!(body(&requests[4])["value"], json!({ "tokenDecimals": 6 }));
     assert_eq!(
-        line(&requests[6]),
+        line(&requests[5]),
         format!("POST /api/protocols/{PROTOCOL_ID}/resources/launchDefaults/versions/3/publish")
     );
     assert_eq!(
-        body(&requests[7])["resources"],
+        body(&requests[6])["resources"],
         json!({ "launchDefaults": 3 })
     );
+    // No creator fee wallet: the request leaves it out.
+    assert!(body(&requests[6]).get("creatorFeeWallet").is_none());
     assert_eq!(outcome.status, "review-required");
     assert!(outcome
         .warnings
@@ -667,23 +638,23 @@ fn a_concurrent_protocol_create_is_found_by_listing_again() {
 }
 
 #[test]
-fn a_new_deployment_without_a_fee_policy_explains_the_document() {
-    let dir = project(&escrow_spec(), None);
-    let server = responses(vec![
-        (200, json!([protocol_json("escrow-resolution")])),
-        (200, upload_json(ESCROW_RELEASE, false, "passed", false)),
-        (200, json!([])),
-    ]);
-
-    let error = execute(&client(&server), &args(dir.path()), true).unwrap_err();
-    let message = error.to_string();
-    assert!(message.contains("--fee-policy"), "{message}");
-    assert!(
-        message.contains("arete.protocol-fee-policy/v1"),
-        "{message}"
+fn a_creator_fee_wallet_must_be_a_pubkey() {
+    let config = parse_protocol_config(
+        "[protocol]
+creator_fee_wallet = \"not-a-key\"
+",
+    )
+    .unwrap();
+    let spec = validate_protocol_spec_value(
+        &serde_json::from_slice(&fs::read(fixture("token-raise.protocol-spec.json")).unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let error = format!(
+        "{:#}",
+        resolve_settings(&DeployArgs::default(), &config, &spec).unwrap_err()
     );
-    // Arete fills in the platform destination; the CLI never asks for it.
-    assert!(!message.contains("<wallet address>"), "{message}");
+    assert!(error.contains("creator fee wallet 'not-a-key'"), "{error}");
 }
 
 fn check_json(release_hash: &str, template_check: &str) -> Value {
@@ -831,10 +802,7 @@ fn dry_run_without_a_key_works_offline() {
     assert!(plan.activation.contains("operator review"));
     assert_eq!(
         plan.missing_inputs,
-        vec![
-            "fee policy".to_string(),
-            "resource launchDefaults".to_string()
-        ]
+        vec!["resource launchDefaults".to_string()]
     );
     assert_eq!(outcome.protocol.slug, "token-raise");
     assert_eq!(outcome.files.len(), 2);
@@ -1016,7 +984,7 @@ fn slugs_derive_from_spec_names() {
 #[test]
 fn flags_override_the_protocol_config() {
     let config = parse_protocol_config(
-        "manifest_version = 1\n[project]\nname = \"p\"\n\n[protocol]\nslug = \"from-config\"\nname = \"Config Name\"\nfee_policy = \"fees/policy.json\"\n\n[protocol.resources]\nlaunchDefaults = \"res/defaults.json\"\n",
+        "manifest_version = 1\n[project]\nname = \"p\"\n\n[protocol]\nslug = \"from-config\"\nname = \"Config Name\"\ncreator_fee_wallet = \"9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM\"\n\n[protocol.resources]\nlaunchDefaults = \"res/defaults.json\"\n",
     )
     .unwrap();
     assert_eq!(config.slug.as_deref(), Some("from-config"));
@@ -1033,10 +1001,7 @@ fn flags_override_the_protocol_config() {
     let settings = resolve_settings(&base, &config, &spec).unwrap();
     assert_eq!(settings.slug, "from-config");
     assert_eq!(settings.name, "Config Name");
-    assert_eq!(
-        settings.fee_policy,
-        Some(PathBuf::from("proj/fees/policy.json"))
-    );
+    assert_eq!(settings.creator_fee_wallet.as_deref(), Some(CREATOR_WALLET));
     assert_eq!(
         settings.resources.get("launchDefaults"),
         Some(&ResourceSource::File(PathBuf::from(
@@ -1046,13 +1011,16 @@ fn flags_override_the_protocol_config() {
 
     let flags = DeployArgs {
         slug: Some("from-flag".into()),
-        fee_policy: Some(PathBuf::from("other.json")),
+        creator_fee_wallet: Some("11111111111111111111111111111111".into()),
         resources: vec!["launchDefaults=cli.json".into()],
         ..base.clone()
     };
     let settings = resolve_settings(&flags, &config, &spec).unwrap();
     assert_eq!(settings.slug, "from-flag");
-    assert_eq!(settings.fee_policy, Some(PathBuf::from("other.json")));
+    assert_eq!(
+        settings.creator_fee_wallet.as_deref(),
+        Some("11111111111111111111111111111111")
+    );
     assert_eq!(
         settings.resources.get("launchDefaults"),
         Some(&ResourceSource::File(PathBuf::from("cli.json")))
@@ -1139,12 +1107,12 @@ fn invalid_protocol_config_reports_the_field_and_reason() {
     let dir = tempfile::tempdir().unwrap();
     fs::write(
         dir.path().join("arete.toml"),
-        "[protocol]\nfee_policy = 5\n",
+        "[protocol]\ncreator_fee_wallet = 5\n",
     )
     .unwrap();
     let error = load_protocol_config(dir.path()).unwrap_err().to_string();
     assert!(error.contains("arete.toml"), "{error}");
-    assert!(error.contains("fee_policy"), "{error}");
+    assert!(error.contains("creator_fee_wallet"), "{error}");
     assert!(error.contains("invalid type"), "{error}");
     fs::write(
         dir.path().join("arete.toml"),
@@ -1176,7 +1144,7 @@ fn a_missing_resource_names_both_config_forms() {
     let settings = Settings {
         slug: "token-raise".into(),
         name: "Token Raise".into(),
-        fee_policy: Some(write_json(dir.path(), "fee.json", &fee_policy())),
+        creator_fee_wallet: None,
         resources: BTreeMap::new(),
     };
     let client = ApiClient::with_base_url("http://127.0.0.1:9");
