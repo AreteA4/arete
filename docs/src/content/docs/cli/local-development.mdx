@@ -752,17 +752,17 @@ order. The Rust types, writer and reader are
 
 ## Files
 
-| Path                          | Contents                                                        |
-| ----------------------------- | --------------------------------------------------------------- |
-| `.arete/protocol/`            | the latest `arete-protocol build` output                        |
-| `.arete/dev/environment.json` | the project's environment (`{id, name, apiUrl}`); no key        |
-| `.arete/dev/session.json`     | the running `a4 dev up` (removed on shutdown)                   |
-| `.arete/dev/state.json`       | the running `a4 dev up`'s pid and ports                         |
-| `.arete/dev/deploy.json`      | the protocol id, slug and the deployments in the environment    |
-| `.arete/dev/a4.log`           | what `a4 dev up` did                                            |
-| `.arete/dev/wallets/`         | dev keypairs (Solana CLI format)                                |
-| `.arete/dev/history.jsonl`    | every step run with `a4 dev step`, `dev_step` or the dev UI     |
-| `.arete/dev/replays.jsonl`    | every step run by `a4 dev replay`                               |
+| Path                          | Contents                                                     |
+| ----------------------------- | ------------------------------------------------------------ |
+| `.arete/protocol/`            | the latest `arete-protocol build` output                     |
+| `.arete/dev/environment.json` | the project's environment (`{id, name, apiUrl}`); no key     |
+| `.arete/dev/session.json`     | the running `a4 dev up` (removed on shutdown)                |
+| `.arete/dev/state.json`       | the running `a4 dev up`'s pid and ports                      |
+| `.arete/dev/deploy.json`      | the protocol id, slug and the deployments in the environment |
+| `.arete/dev/a4.log`           | what `a4 dev up` did                                         |
+| `.arete/dev/wallets/`         | dev keypairs (Solana CLI format)                             |
+| `.arete/dev/history.jsonl`    | every step run with `a4 dev step`, `dev_step` or the dev UI  |
+| `.arete/dev/replays.jsonl`    | every step run by `a4 dev replay`                            |
 
 Add `.arete/dev/` to `.gitignore`. `a4 dev down --purge` deletes it (the
 environment itself stays: `a4 dev delete` deletes it).
