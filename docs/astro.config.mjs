@@ -86,6 +86,7 @@ export default defineConfig({
             { slug: "building-protocols/handlers" },
             { slug: "building-protocols/automation" },
             { slug: "building-protocols/squads" },
+            { slug: "building-protocols/patterns" },
             { slug: "building-protocols/tutorial-lifecycle" },
           ],
         },
