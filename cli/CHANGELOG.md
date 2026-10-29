@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## [0.49.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.48.1...a4-cli-v0.49.0) (2026-10-29)
+
+
+### ⚠ BREAKING CHANGES
+
+* **cli:** Arete sets deployment fees; an optional creator fee wallet replaces the fee policy
+
+### Features
+
+* **cli:** Arete sets deployment fees; an optional creator fee wallet replaces the fee policy ([26bc0a1](https://github.com/AreteA4/arete/commit/26bc0a1710be5df7acb931f4ba8c934658ec765e))
+
+
+### Bug Fixes
+
+* **cli:** check the creator fee wallet when arete.toml is read ([26bc0a1](https://github.com/AreteA4/arete/commit/26bc0a1710be5df7acb931f4ba8c934658ec765e))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.48.1 to 0.49.0
+    * arete-mcp bumped from 0.48.1 to 0.49.0
+
 ## [0.48.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.48.0...a4-cli-v0.48.1) (2026-10-28)
 
 
