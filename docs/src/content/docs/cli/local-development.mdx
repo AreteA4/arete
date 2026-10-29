@@ -730,11 +730,11 @@ have yet. `a4 dev promote --check` lists each, with the command that
 publishes it, and exits non-zero while any remain, so CI can gate a
 production deploy on it:
 
-| Listed | Publish it with |
-| --- | --- |
-| a protocol client generated from a local build | `a4 protocol deploy` in the protocol's project, then `a4 install --locked` |
-| a program the environment runs at another release than `arete.lock` pins | deploy it to mainnet, `a4 program push <idl>`, then `a4 install` |
-| a project stack the environment serves under a dependency's live alias | `a4 up`, point the dependency at it, then `a4 install` |
+| Listed                                                                   | Publish it with                                                            |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| a protocol client generated from a local build                           | `a4 protocol deploy` in the protocol's project, then `a4 install --locked` |
+| a program the environment runs at another release than `arete.lock` pins | deploy it to mainnet, `a4 program push <idl>`, then `a4 install`           |
+| a project stack the environment serves under a dependency's live alias   | `a4 up`, point the dependency at it, then `a4 install`                     |
 
 ```sh
 a4 dev promote --check          # --json for CI
