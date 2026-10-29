@@ -207,6 +207,8 @@ fn locked_deployment(dir: &Path, slug: &str) -> Option<String> {
         .find(|entry| entry.kind == DependencyKind::Protocol && entry.alias == alias)?
         .protocol
         .map(|protocol| protocol.deployment_id)
+        // A protocol `a4 dev` generated before its first deploy names none.
+        .filter(|deployment| !deployment.is_empty())
 }
 
 /// The active deployment the lock records, else the active one of the

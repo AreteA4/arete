@@ -16,6 +16,7 @@
 //!   minted for the environment.
 //! - `/api/protocol-deployments/<id | package:<package>>/*`: the Arete API,
 //!   at the environment's deployment of the protocol, with the account's key.
+//!   The answer names that deployment in `X-Arete-Dev-Deployment`.
 //! - `POST /ws/sessions`: a token only the edge accepts, for code that always
 //!   mints. The edge ignores every `Authorization` it receives.
 //! - `GET /.well-known/arete-dev-edge`: `{"edge": 1}`, so an SDK can check
@@ -51,6 +52,10 @@ pub const EDGE_HEADER: &str = "x-arete-dev-edge";
 pub const IDENTITY_HEADER: &str = "x-arete-dev-identity";
 /// The check an SDK makes before it opens a socket.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/arete-dev-edge";
+/// The environment's deployment a protocol route was forwarded to. The
+/// protocol client names it in metadata proofs, and automations run on it,
+/// since the installed client carries production's deployment.
+pub const DEPLOYMENT_HEADER: &str = "x-arete-dev-deployment";
 
 /// How long a resolve answer is reused. Short, so a deploy `a4 dev up` makes
 /// is picked up by the next request.
@@ -591,7 +596,7 @@ impl Edge {
             format!("/api/protocol-deployments/{deployment}/{rest}")
         };
         let api = self.rpc.api();
-        forward(
+        let mut response = forward(
             &self.http,
             Outgoing {
                 method: method.clone(),
@@ -601,7 +606,13 @@ impl Edge {
                 body,
             },
         )
-        .await
+        .await;
+        if let Ok(value) = HeaderValue::from_str(deployment) {
+            response
+                .headers_mut()
+                .insert(header::HeaderName::from_static(DEPLOYMENT_HEADER), value);
+        }
+        response
     }
 
     /// The one answer of `surface` in the resolve answer for `identity`, if

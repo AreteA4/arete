@@ -209,6 +209,8 @@ pub struct Runner {
     config: AutomationsConfig,
     root: PathBuf,
     api_key: String,
+    /// The edge the runner's SDKs call in dev mode.
+    edge_url: String,
     emit: Emit,
     watched: Vec<PathBuf>,
     snapshot: Snapshot,
@@ -220,13 +222,20 @@ pub struct Runner {
 }
 
 impl Runner {
-    pub fn new(config: AutomationsConfig, root: &Path, api_key: &str, emit: Emit) -> Self {
+    pub fn new(
+        config: AutomationsConfig,
+        root: &Path,
+        api_key: &str,
+        edge_url: &str,
+        emit: Emit,
+    ) -> Self {
         let watched = config.watched(root);
         Self {
             snapshot: snapshot(&watched),
             config,
             root: root.to_path_buf(),
             api_key: api_key.to_string(),
+            edge_url: edge_url.to_string(),
             emit,
             watched,
             child: None,
@@ -281,6 +290,10 @@ impl Runner {
             .env("ARETE_API_KEY", &self.api_key)
             .env("ARETE_WEBHOOK_SECRET", webhook_secret(&self.root)?)
             .env("ARETE_AUTOMATIONS_PORT", "0")
+            // The installed SDKs in the runner call the environment through
+            // the edge, as `a4 dev run` does.
+            .envs(super::run::variables(&self.edge_url, &[]))
+            .env_remove("ARETE_DEV_ENV")
             .env_remove("ARETE_AUTOMATIONS_ENTRY")
             .env_remove("ARETE_AUTOMATIONS_FORWARD")
             .stdin(Stdio::null())
@@ -578,7 +591,13 @@ mod tests {
         let emit: Emit = std::sync::Arc::new(move |event: &str, _: &str, _: Value| {
             sink.lock().unwrap().push(event.to_string());
         });
-        let mut runner = Runner::new(config, dir.path(), "a4_sk_test", emit);
+        let mut runner = Runner::new(
+            config,
+            dir.path(),
+            "a4_sk_test",
+            "http://127.0.0.1:8899",
+            emit,
+        );
         runner.start().unwrap();
         let reloads = || {
             events
@@ -600,6 +619,52 @@ mod tests {
         runner.stop().await;
     }
 
+    /// The runner's SDKs are in dev mode, through the edge; a direct-mode
+    /// environment from the user's shell does not leak in.
+    #[tokio::test]
+    async fn runs_the_runner_in_dev_mode_through_the_edge() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("automations.ts"), "1").unwrap();
+        let config = AutomationsConfig {
+            entry: Some("automations.ts".into()),
+            command: Some(vec![
+                "sh".into(),
+                "-c".into(),
+                "echo \"env=$ARETE_ENVIRONMENT url=$ARETE_DEV_URL direct=${ARETE_DEV_ENV:-none}\""
+                    .into(),
+            ]),
+            ..Default::default()
+        };
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let sink = lines.clone();
+        let emit: Emit = std::sync::Arc::new(move |event: &str, _: &str, fields: Value| {
+            if event == "automations" {
+                sink.lock()
+                    .unwrap()
+                    .push(fields["line"].as_str().unwrap_or_default().to_string());
+            }
+        });
+        let mut runner = Runner::new(
+            config,
+            dir.path(),
+            "a4_sk_test",
+            "http://127.0.0.1:8899",
+            emit,
+        );
+        runner.start().unwrap();
+        for _ in 0..100 {
+            if !lines.lock().unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(
+            lines.lock().unwrap().clone(),
+            vec!["env=dev url=http://127.0.0.1:8899 direct=none".to_string()]
+        );
+        runner.stop().await;
+    }
+
     #[tokio::test]
     async fn restarts_on_a_change_and_reports_an_exit_once() {
         let dir = tempfile::tempdir().unwrap();
@@ -618,7 +683,13 @@ mod tests {
         let emit: Emit = std::sync::Arc::new(move |event: &str, _: &str, _: Value| {
             sink.lock().unwrap().push(event.to_string());
         });
-        let mut runner = Runner::new(config, dir.path(), "a4_sk_test", emit);
+        let mut runner = Runner::new(
+            config,
+            dir.path(),
+            "a4_sk_test",
+            "http://127.0.0.1:8899",
+            emit,
+        );
         runner.start().unwrap();
         for _ in 0..50 {
             runner.poll(true).await;

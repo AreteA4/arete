@@ -272,12 +272,18 @@ describe('the step pipeline', () => {
     expect(published.refused[0]!.reason).toContain('the target cluster is mainnet');
 
     const fake = fakeProtocol();
-    const devClient = {
+    // The switch decides; the generated descriptor is production's.
+    const devClient = { ...fake.client, environment: 'dev' as const };
+    expect(clientCluster(devClient)).toBe('dev');
+    expect(clientCluster({ ...fake.client, environment: 'production' })).toBe('mainnet');
+    expect(clientCluster(fake.client)).toBe('mainnet');
+    // A client an older a4 generated for the dev environment's deployment.
+    const legacy = {
       ...fake.client,
+      environment: 'production' as const,
       definition: { deployment: { deploymentId: fake.client.deploymentId, environment: 'dev' } } as never,
     };
-    expect(clientCluster(devClient)).toBe('dev');
-    expect(clientCluster(fake.client)).toBe('mainnet');
+    expect(clientCluster(legacy)).toBe('dev');
     const dev = harness({}, { cluster: undefined, client: devClient });
     await dev.grant(ALICE);
     onDeposits(dev.automations);
@@ -702,6 +708,41 @@ describe('webhooks and streams', () => {
     expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'rebalance' });
   });
 
+  it('in dev mode, accepts and runs on the environment\'s deployment the client resolves', async () => {
+    const fake = fakeProtocol();
+    // The generated client names production's deployment (or none before
+    // the first publish); the environment's is DEPLOYMENT.
+    let current = '';
+    let asked = 0;
+    const devClient = {
+      ...fake.client,
+      environment: 'dev' as const,
+      get deploymentId() {
+        return current;
+      },
+      async resolveDeployment() {
+        asked += 1;
+        current = DEPLOYMENT;
+        return current;
+      },
+    };
+    const store = memoryStore();
+    const h = harness({}, { cluster: undefined, client: devClient, store });
+    await h.grant(ALICE);
+    h.automations.on('vault.rebalanceDue', (event, ctx) => [ctx.step('rebalance', { wallet: ALICE, instance: event.instanceId })]);
+    const body = payload();
+    const now = Math.floor(h.clock.now() / 1000);
+    expect((await h.automations.acceptWebhook(body, signed(body, now), { secret: SECRET })).body).toEqual({
+      accepted: true,
+      duplicate: false,
+    });
+    expect(memoryStoreState(store).deployment).toBe(DEPLOYMENT);
+    await h.automations.drain();
+    expect(h.refused).toHaveLength(0);
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'rebalance', deploymentId: DEPLOYMENT });
+    expect(asked).toBe(1);
+  });
+
   it('dedupes on the signed emission id, not the unsigned delivery header', async () => {
     const h = harness();
     await h.grant(ALICE);
@@ -937,5 +978,48 @@ describe('outcome args', () => {
       }
     };
     expect(render).toBeTypeOf('function');
+  });
+});
+
+describe('the default simulator', () => {
+  it('is required in production', () => {
+    const fake = fakeProtocol();
+    const options = { client: fake.client, signer: walletsSigner(), policy, store: memoryStore() };
+    expect(() => createAutomations(options)).toThrow(/pass a `simulator`/);
+    expect(() => createAutomations({ ...options, client: { ...fake.client, environment: 'production' } })).toThrow(
+      /pass a `simulator`/,
+    );
+  });
+
+  it('simulates on the dev environment through the edge in dev mode', async () => {
+    const seen: string[] = [];
+    const original = globalThis.fetch;
+    const previous = { environment: process.env.ARETE_ENVIRONMENT, url: process.env.ARETE_DEV_URL };
+    process.env.ARETE_ENVIRONMENT = 'dev';
+    process.env.ARETE_DEV_URL = 'http://127.0.0.1:8911';
+    globalThis.fetch = (async (url: string, init: RequestInit) => {
+      seen.push(`${url} ${(JSON.parse(String(init.body)) as { method: string }).method}`);
+      return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { value: [] } }));
+    }) as typeof fetch;
+    try {
+      const fake = fakeProtocol();
+      const h = harness({}, { cluster: undefined, client: { ...fake.client, environment: 'dev' }, simulator: undefined });
+      await h.grant(ALICE);
+      onDeposits(h.automations);
+      await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+      await h.automations.drain();
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((line) => line.startsWith('http://127.0.0.1:8911 '))).toBe(true);
+      expect(seen).toContain('http://127.0.0.1:8911 simulateTransaction');
+    } finally {
+      globalThis.fetch = original;
+      for (const [name, value] of [
+        ['ARETE_ENVIRONMENT', previous.environment],
+        ['ARETE_DEV_URL', previous.url],
+      ] as const) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 });

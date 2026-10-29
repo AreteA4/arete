@@ -146,10 +146,56 @@ describe('dev mode', () => {
   it('a protocol before its first publish needs dev mode', () => {
     const unpublished = { ...protocol(), deployment: null } as unknown as AnyProtocolDefinition;
     expect(() => createProtocolClient(unpublished, { environment: 'production' }))
-      .toThrow(expect.objectContaining({ code: 'INVALID_CONFIG' }));
+      .toThrow(expect.objectContaining({
+        code: 'PROTOCOL_NOT_DEPLOYED',
+        message: expect.stringContaining('not deployed to production yet'),
+      }));
     const client = createProtocolClient(unpublished, { environment: { kind: 'dev', url: EDGE } });
     expect(client.environment).toBe('dev');
     expect(client.deploymentId).toBe('');
+  });
+
+  it('the same definition calls production with the switch unset and the environment in dev mode', async () => {
+    const { urls, fetchImpl } = recordingFetch();
+    const production = createProtocolClient(protocol(), { auth: { secretKey: SECRET_KEY }, fetch: fetchImpl });
+    await production.instances.list().catch(() => undefined);
+    const dev = createProtocolClient(protocol(), { environment: { kind: 'dev', url: EDGE }, fetch: fetchImpl });
+    await dev.instances.list().catch(() => undefined);
+    const deployment = installed.protocol.deployment.deploymentId;
+    expect(urls.filter((url) => url.includes('/instances'))).toEqual([
+      `${installed.protocol.deployment.apiUrl}/protocol-deployments/${deployment}/instances`,
+      `${EDGE}/api/protocol-deployments/${deployment}/instances`,
+    ]);
+  });
+
+  it('learns the environment\'s deployment from the edge, and signs metadata proofs with it', async () => {
+    const asked: string[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      asked.push(`${init?.method ?? 'GET'} ${new URL(url).pathname}`);
+      return new Response('{}', {
+        headers: { 'X-Arete-Dev-Edge': '1', 'X-Arete-Dev-Deployment': 'dep-env-7' },
+      });
+    }) as typeof fetch;
+    const unpublished = { ...protocol(), deployment: null } as unknown as AnyProtocolDefinition;
+    const client = createProtocolClient(unpublished, { environment: { kind: 'dev', url: EDGE }, fetch: fetchImpl });
+    const handle = client.metadata.instance('11111111-1111-4111-8111-111111111111');
+    expect(() => handle.proofMessage({}, { wallet: 'W' }))
+      .toThrow(expect.objectContaining({ message: expect.stringContaining('resolveDeployment') }));
+    await expect(client.resolveDeployment()).resolves.toBe('dep-env-7');
+    expect(asked).toEqual([`GET /api/protocol-deployments/package:${installed.protocol.package}`]);
+    expect(client.deploymentId).toBe('dep-env-7');
+    expect(handle.proofMessage({}, { wallet: 'W' }).message.split('\n')[1]).toBe('dep-env-7');
+    // Known once: no second request.
+    await client.resolveDeployment();
+    expect(asked).toHaveLength(1);
+  });
+
+  it('production resolves to the generated deployment without a request', async () => {
+    const { urls, fetchImpl } = recordingFetch();
+    const client = createProtocolClient(protocol(), { auth: { secretKey: SECRET_KEY }, fetch: fetchImpl });
+    await expect(client.resolveDeployment()).resolves.toBe(installed.protocol.deployment.deploymentId);
+    expect(urls).toEqual([]);
   });
 
   it('a stack without a release is not loaded in an environment', async () => {

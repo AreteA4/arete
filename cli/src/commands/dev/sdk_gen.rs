@@ -8,10 +8,14 @@
 //! restores the published client and `a4 install --check` fails while a
 //! local build is installed.
 //!
-//! The descriptor names the deployment `a4 dev up` keeps in the project's
-//! cloud dev environment, so the app's calls (with the account's key) go to
-//! the environment. `a4 install --locked` puts the published client, and
-//! with it the production deployment, back.
+//! Types follow the build; targets follow the switch. The descriptor keeps
+//! the production deployment arete.lock pins (none before the first
+//! deploy), never the deployment `a4 dev up` keeps in the project's cloud
+//! dev environment: the SDKs in dev mode (`ARETE_ENVIRONMENT=dev`, as
+//! `a4 dev run` sets) find that one by resolving the installed protocol.
+//! For the published release's own spec nothing is generated, so the client
+//! stays byte for byte the published one. `a4 install --locked` restores
+//! the published client after a local spec change.
 //!
 //! Before the first publish arete.toml does not install the protocol, so
 //! `[dependencies.protocols.<slug>]` (`source = { registry = "<slug>" }`) is
@@ -42,7 +46,8 @@ pub struct LocalProtocol {
     /// The protocol slug: the registry package the client installs as.
     pub slug: String,
     pub release_hash: String,
-    /// The deployment in the dev environment.
+    /// The deployment in the dev environment. Never written into the
+    /// client; an older `a4` wrote it into arete.lock, where it is dropped.
     pub deployment_id: String,
 }
 
@@ -139,8 +144,15 @@ impl SyncReport {
             .iter()
             .map(|path| path.display().to_string())
             .collect();
+        let target = match &self.install.deployment_id {
+            Some(deployment) => format!(
+                "production deployment {deployment}; in dev mode it calls the dev environment's"
+            ),
+            None => "no production deployment yet; in dev mode it calls the dev environment's"
+                .to_string(),
+        };
         format!(
-            "{} the {} client from the local build in {}; it calls deployment {} in the dev environment",
+            "{} the {} client from the local build in {}: {target}",
             if self.install.changed {
                 "Generated"
             } else {
@@ -148,14 +160,14 @@ impl SyncReport {
             },
             self.install.alias,
             outputs.join(", "),
-            self.install.deployment_id
         )
     }
 }
 
 /// Generate this protocol's installed client from the local build (adding
-/// the dependency to arete.toml when the project does not install it yet),
-/// calling the deployment in the dev environment.
+/// the dependency to arete.toml when the project does not install it yet).
+/// The client names the production deployment, or none; the dev
+/// environment's comes from resolving it in dev mode.
 pub fn sync_installed_client(
     root: &Path,
     protocol: &LocalProtocol,
@@ -167,9 +179,8 @@ pub fn sync_installed_client(
     let build = LocalProtocolBuild {
         spec_json: protocol.spec_json.clone(),
         release_hash: protocol.release_hash.clone(),
-        deployment: LocalBuildDeployment::Deployed {
-            id: protocol.deployment_id.clone(),
-            access: "private".into(),
+        deployment: LocalBuildDeployment::Locked {
+            dev_deployment: Some(protocol.deployment_id.clone()),
         },
         api_base: api_base.to_string(),
     };
@@ -207,13 +218,14 @@ mod tests {
         serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
     }
 
+    /// What `a4 dev` generates after a deploy into the environment as
+    /// `local_id`.
     fn build(release_hash: &str, local_id: &str) -> LocalProtocolBuild {
         LocalProtocolBuild {
             spec_json: spec(),
             release_hash: release_hash.into(),
-            deployment: LocalBuildDeployment::Deployed {
-                id: local_id.into(),
-                access: "private".into(),
+            deployment: LocalBuildDeployment::Locked {
+                dev_deployment: Some(local_id.into()),
             },
             api_base: "https://api.example.test".into(),
         }
@@ -259,8 +271,8 @@ mod tests {
 
     /// Before the first deploy: the dependency is added as `a4 install
     /// protocol` would write it, the client lands in the installed location
-    /// with the local deployment, the lock records the local build, and the
-    /// check refuses it.
+    /// with no deployment (the dev environment's is resolved in dev mode),
+    /// the lock records the local build, and the check refuses it.
     #[test]
     fn a_never_published_protocol_gets_a_dependency_and_a_local_client() {
         let dir = project(&[]);
@@ -286,7 +298,7 @@ mod tests {
         )
         .unwrap();
         assert!(install.changed && !install.published);
-        assert_eq!(install.deployment_id, "dep-local-1");
+        assert_eq!(install.deployment_id, None);
         let manifest = ProjectManifest::load(root.join("arete.toml")).unwrap();
         let plan = InstallPlan::build(&manifest, false).unwrap();
         let output = plan
@@ -303,51 +315,37 @@ mod tests {
         let entry = &lock.dependencies[0];
         assert_eq!(entry.local_build.as_deref(), Some(LOCAL_RELEASE));
         assert!(!entry.is_published());
-        assert_eq!(
-            entry.protocol.as_ref().unwrap().deployment_id,
-            "dep-local-1"
-        );
+        assert_eq!(entry.protocol.as_ref().unwrap().deployment_id, "");
         let provenance: Value = serde_json::from_slice(
             &std::fs::read(output.path.join("sdk-provenance.json")).unwrap(),
         )
         .unwrap();
         assert_eq!(provenance["project"]["localBuild"], LOCAL_RELEASE);
         assert_eq!(provenance["project"]["packageReleaseHash"], Value::Null);
-        assert_eq!(
-            provenance["project"]["localBuildDeploymentId"],
-            "dep-local-1"
-        );
-        // The descriptor marks the dev environment's deployment, which
-        // automations use as their target.
+        // The descriptor names no deployment, and never the dev one.
         let module = std::fs::read_to_string(output.path.join("local-tip-jar.ts")).unwrap();
+        assert!(module.contains("  deployment: null,\n"), "{module}");
         assert!(
-            module.contains("deploymentId: 'dep-local-1', access: 'private', apiUrl:")
-                && module.contains(", environment: 'dev' } as ProtocolDefinition['deployment'],"),
+            !module.contains("dep-local-1") && !module.contains("environment: 'dev'"),
             "{module}"
         );
 
-        // The same build again changes nothing; a redeploy (a new local
-        // deployment of a never-published protocol) regenerates.
-        let same = install_local_protocol_build(
-            &root.join("arete.toml"),
-            "local-tip-jar",
-            &build(LOCAL_RELEASE, "dep-local-1"),
-            true,
-        )
-        .unwrap();
-        assert!(!same.changed);
-        let redeployed = install_local_protocol_build(
-            &root.join("arete.toml"),
-            "local-tip-jar",
-            &build(LOCAL_RELEASE, "dep-local-2"),
-            true,
-        )
-        .unwrap();
-        assert!(redeployed.changed);
-        assert_eq!(redeployed.deployment_id, "dep-local-2");
+        // The same build again changes nothing, and neither does a redeploy
+        // (a new deployment in the environment): the client does not name it.
+        for deployment in ["dep-local-1", "dep-local-2"] {
+            let same = install_local_protocol_build(
+                &root.join("arete.toml"),
+                "local-tip-jar",
+                &build(LOCAL_RELEASE, deployment),
+                true,
+            )
+            .unwrap();
+            assert!(!same.changed, "{deployment}");
+        }
 
-        // arete.lock names another deployment than the generated files (the
-        // lock was written elsewhere): the same build is generated again.
+        // arete.lock names a production deployment the generated files do
+        // not (an `a4 protocol deploy` recorded elsewhere): the client is
+        // generated again and keeps it.
         let mut edited = ProjectLock::load(root.join("arete.lock")).unwrap();
         edited.dependencies[0]
             .protocol
@@ -365,29 +363,57 @@ mod tests {
         assert!(regenerated.changed);
         let module =
             std::fs::read_to_string(regenerated.outputs[0].join("local-tip-jar.ts")).unwrap();
-        assert!(module.contains("dep-local-3"));
+        assert!(
+            module.contains("33333333-3333-4333-8333-333333333333")
+                && !module.contains("dep-local-3"),
+            "{module}"
+        );
 
         let problems = check_project(root.join("arete.toml")).unwrap();
         assert_eq!(problems.len(), 1, "{problems:?}");
         assert!(problems[0].problem.contains("never published"));
     }
 
-    /// After a publish the lock names a production deployment: a local build
-    /// keeps the published pins for `a4 install --locked`, and its client
-    /// calls the deployment in the dev environment.
+    /// A lock an older `a4` wrote names the dev environment's deployment:
+    /// it is not kept as if it were production's.
     #[test]
-    fn a_published_protocol_keeps_its_pins_and_calls_the_dev_deployment() {
+    fn a_dev_deployment_an_older_a4_locked_is_dropped() {
         let dir = project(&[]);
         let root = dir.path();
         let ensured = ensure_own_protocol_dependency(root, "local-tip-jar", "0.1.0", &[]).unwrap();
+        let older = LocalProtocolBuild {
+            deployment: LocalBuildDeployment::Deployed {
+                id: "dep-env-old".into(),
+                access: "private".into(),
+            },
+            ..build(LOCAL_RELEASE, "unused")
+        };
         install_local_protocol_build(
             &root.join("arete.toml"),
             "local-tip-jar",
-            &build(LOCAL_RELEASE, "dep-local-1"),
+            &older,
             ensured.lock_was_fresh,
         )
         .unwrap();
-        // What a registry install would have locked.
+        let next = format!("arete:h1:protocol-release:sha256:{}", "f".repeat(64));
+        let install = install_local_protocol_build(
+            &root.join("arete.toml"),
+            "local-tip-jar",
+            &build(&next, "dep-env-old"),
+            true,
+        )
+        .unwrap();
+        assert!(install.changed && install.deployment_id.is_none());
+        let module = std::fs::read_to_string(install.outputs[0].join("local-tip-jar.ts")).unwrap();
+        assert!(
+            module.contains("  deployment: null,\n") && !module.contains("dep-env-old"),
+            "{module}"
+        );
+    }
+
+    /// What a registry install of `release` would have locked over the
+    /// local entry `install_local_protocol_build` wrote.
+    fn publish(root: &Path, release: &str) {
         let mut published = lock(root);
         let entry = &mut published.dependencies[0];
         entry.local_build = None;
@@ -398,7 +424,26 @@ mod tests {
         ));
         let protocol = entry.protocol.as_mut().unwrap();
         protocol.deployment_id = "11111111-1111-4111-8111-111111111111".into();
+        protocol.protocol_release_hash = release.into();
         published.write_atomic(root.join("arete.lock")).unwrap();
+    }
+
+    /// After a publish the lock names a production deployment: a local
+    /// build keeps the published pins for `a4 install --locked`, and its
+    /// client names the production deployment, not the dev one.
+    #[test]
+    fn a_published_protocol_keeps_its_pins_and_its_production_deployment() {
+        let dir = project(&[]);
+        let root = dir.path();
+        let ensured = ensure_own_protocol_dependency(root, "local-tip-jar", "0.1.0", &[]).unwrap();
+        install_local_protocol_build(
+            &root.join("arete.toml"),
+            "local-tip-jar",
+            &build(LOCAL_RELEASE, "dep-local-1"),
+            ensured.lock_was_fresh,
+        )
+        .unwrap();
+        publish(root, LOCAL_RELEASE);
 
         let next = format!("arete:h1:protocol-release:sha256:{}", "c".repeat(64));
         let install = install_local_protocol_build(
@@ -409,7 +454,10 @@ mod tests {
         )
         .unwrap();
         assert!(install.changed && install.published);
-        assert_eq!(install.deployment_id, "dep-local-3");
+        assert_eq!(
+            install.deployment_id.as_deref(),
+            Some("11111111-1111-4111-8111-111111111111")
+        );
         let entry = lock(root).dependencies[0].clone();
         assert_eq!(entry.local_build.as_deref(), Some(next.as_str()));
         assert_eq!(entry.version.as_deref(), Some("0.1.0"));
@@ -422,7 +470,9 @@ mod tests {
             .filter_map(|entry| std::fs::read_to_string(entry.unwrap().path()).ok())
             .collect::<String>();
         assert!(
-            module.contains("dep-local-3") && module.contains("https://api.example.test/api"),
+            module.contains("11111111-1111-4111-8111-111111111111")
+                && module.contains("https://api.example.test/api")
+                && !module.contains("dep-local-3"),
             "{module}"
         );
         let problems = check_project(root.join("arete.toml")).unwrap();
@@ -432,9 +482,50 @@ mod tests {
         );
     }
 
-    /// Each new deployment in the environment regenerates the client for it.
+    /// The published release's own spec: the installed client is the
+    /// published one and stays byte for byte as it is; nothing is marked.
     #[test]
-    fn a_redeploy_in_the_environment_regenerates_the_client_for_it() {
+    fn an_unchanged_spec_leaves_the_published_client_as_it_is() {
+        let dir = project(&[]);
+        let root = dir.path();
+        let ensured = ensure_own_protocol_dependency(root, "local-tip-jar", "0.1.0", &[]).unwrap();
+        let first = install_local_protocol_build(
+            &root.join("arete.toml"),
+            "local-tip-jar",
+            &build(LOCAL_RELEASE, "dep-local-1"),
+            ensured.lock_was_fresh,
+        )
+        .unwrap();
+        publish(root, LOCAL_RELEASE);
+        // Stand-in for the client the registry install generated.
+        let file = first.outputs[0].join("local-tip-jar.ts");
+        std::fs::write(&file, "// published client\n").unwrap();
+        let before = std::fs::read(root.join("arete.lock")).unwrap();
+
+        let report = sync_installed_client(
+            root,
+            &LocalProtocol {
+                spec_json: spec(),
+                slug: "local-tip-jar".into(),
+                release_hash: LOCAL_RELEASE.into(),
+                deployment_id: "dep-env-9".into(),
+            },
+            &[],
+            "https://api.example.test",
+        )
+        .unwrap();
+        assert!(!report.install.changed && report.install.published);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "// published client\n"
+        );
+        assert_eq!(std::fs::read(root.join("arete.lock")).unwrap(), before);
+        assert!(lock(root).dependencies[0].local_build.is_none());
+    }
+
+    /// A redeploy into the environment changes nothing in the client.
+    #[test]
+    fn a_redeploy_in_the_environment_leaves_the_client_alone() {
         let dir = project(&[]);
         let root = dir.path();
         let protocol = |deployment: &str| LocalProtocol {
@@ -451,9 +542,13 @@ mod tests {
         )
         .unwrap();
         assert!(first.added_dependency && first.install.changed);
-        assert!(first
-            .summary()
-            .contains("deployment dep-env-1 in the dev environment"));
+        assert!(
+            first.summary().contains(
+                "no production deployment yet; in dev mode it calls the dev environment's"
+            ),
+            "{}",
+            first.summary()
+        );
         let second = sync_installed_client(
             root,
             &protocol("dep-env-2"),
@@ -461,14 +556,14 @@ mod tests {
             "https://api.example.test",
         )
         .unwrap();
-        assert!(second.install.changed);
+        assert!(!second.install.changed);
         assert_eq!(
             lock(root).dependencies[0]
                 .protocol
                 .as_ref()
                 .unwrap()
                 .deployment_id,
-            "dep-env-2"
+            ""
         );
     }
 
@@ -502,7 +597,7 @@ mod tests {
         assert_eq!(entry.protocol.unwrap().deployment_id, production);
         assert_eq!(entry.local_build.as_deref(), Some(LOCAL_RELEASE));
 
-        // The next `a4 dev` build calls its own deployment again.
+        // The next `a4 dev` build keeps the production deployment.
         let next = build(
             &format!("arete:h1:protocol-release:sha256:{}", "e".repeat(64)),
             "dep-local-2",
@@ -510,7 +605,7 @@ mod tests {
         let dev =
             install_local_protocol_build(&root.join("arete.toml"), "local-tip-jar", &next, true)
                 .unwrap();
-        assert!(dev.changed && dev.deployment_id == "dep-local-2");
+        assert!(dev.changed && dev.deployment_id.as_deref() == Some(production));
     }
 
     /// `a4 protocol deploy` after a version bump: the own dependency's
@@ -624,12 +719,15 @@ mod tests {
         let typescript = find("typescript", "local-tip-jar.ts");
         let rust = find("rust", "lib.rs");
         let python = find("python", "__init__.py");
+        // No production deployment yet, and never the dev one.
         for text in [&typescript, &rust, &python] {
-            assert!(text.contains("dep-local-1"), "{text}");
+            assert!(!text.contains("dep-local-1"), "{text}");
+        }
+        assert!(typescript.contains("  deployment: null,\n"), "{typescript}");
+        for text in [&rust, &python] {
             assert!(text.contains("https://api.example.test/api"));
             assert!(text.contains("https://api.example.test/ws/sessions"));
         }
-        assert!(typescript.contains("access: 'private'"), "{typescript}");
 
         let python_output = install
             .outputs

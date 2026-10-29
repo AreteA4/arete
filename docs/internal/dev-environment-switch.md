@@ -158,9 +158,20 @@ to the environment's deployment of that package, so two unpublished
 protocols behind one edge stay apart. Only the edge accepts this form; in
 direct mode resolve returns a deployment id (§4).
 
+Every answer the edge forwards on a `/api/protocol-deployments/…` route names
+the environment's deployment it called in `X-Arete-Dev-Deployment`. The
+installed descriptor never carries it (it names the production deployment, or
+none before the first publish), yet two things need it: a metadata wallet
+proof signs the deployment id, and the API checks it against the instance's
+own deployment; automations bind their store and match webhook deliveries by
+it. A protocol client takes it from that header (a `GET` of the deployment
+route when it has made no call yet), in direct mode from resolve, and only
+then builds a proof. In production the generated deployment is used; a
+descriptor without one fails with "not deployed to production yet".
+
 Every edge HTTP response carries `X-Arete-Dev-Edge: 1` and, for loopback
-origins, `Access-Control-Expose-Headers: X-Arete-Dev-Edge`, so browser
-`fetch` can read it. WebSocket clients can't read upgrade response headers,
+origins, `Access-Control-Expose-Headers` naming it and
+`X-Arete-Dev-Deployment`, so browser `fetch` can read them. WebSocket clients can't read upgrade response headers,
 so before a client opens its first socket (stack streams, JSON-RPC
 subscriptions) it checks the edge once with
 `GET <edge>/.well-known/arete-dev-edge`. The edge answers `200` with

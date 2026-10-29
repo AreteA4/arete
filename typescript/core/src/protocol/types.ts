@@ -69,8 +69,10 @@ export interface ProtocolDeploymentDescriptor {
   /** Where session tokens are minted, e.g. `https://api.arete.run/ws/sessions`. */
   readonly sessionEndpoint: string;
   /**
-   * `'dev'` when `a4 dev` generated the client for the deployment in a dev
-   * environment (a fork of mainnet). Absent for a published deployment.
+   * `'dev'` on clients older `a4` versions generated for a deployment in a
+   * dev environment. Current clients always name the production deployment;
+   * the `environment` client option (or `ARETE_ENVIRONMENT`) picks dev.
+   * @deprecated Read `client.environment` instead.
    */
   readonly environment?: 'dev';
 }
@@ -108,7 +110,12 @@ export interface ProtocolDefinition<
   readonly packageReleaseHash: string;
   readonly protocolSpecHash: string;
   readonly protocolReleaseHash: string;
-  readonly deployment: ProtocolDeploymentDescriptor;
+  /**
+   * The production deployment, or `null` before the protocol's first
+   * publish: such a client runs only in dev mode, where the dev environment
+   * names the deployment.
+   */
+  readonly deployment: ProtocolDeploymentDescriptor | null;
   readonly instanceVisibility: 'shared' | 'account';
   /** Client-callable steps only. */
   readonly steps: {

@@ -127,8 +127,8 @@ await serve(definition, runtime);                                  // @usearete/
 ```
 
 Each serves `POST …/webhook`, `GET|POST …/tick` (behind `CRON_SECRET`) and
-`GET …/health`, and refuses to start when `ARETE_CLUSTER` and the bundled
-client's cluster disagree. `npx @usearete/automations migrate` applies the store's
+`GET …/health`, and refuses to start when `ARETE_CLUSTER` and the client's
+cluster (`dev` when `ARETE_ENVIRONMENT=dev`, else `mainnet`) disagree. `npx @usearete/automations migrate` applies the store's
 migrations to `DATABASE_URL`; `npx @usearete/automations manifest` prints the
 events, schedules and sources a definition registers.
 

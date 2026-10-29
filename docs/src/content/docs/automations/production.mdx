@@ -14,16 +14,19 @@ handlers on mainnet. The handlers live in a definition (`defineAutomations`)
 that `a4 dev up` runs in development and your backend runs with
 `automations.use(definition)`. Only configuration changes:
 
-1. **Install the published client.** `a4 install --locked` replaces the client
-   `a4 dev` generated with the published one. The automations take their
-   target from the client: `dev` for the dev environment's deployment,
-   `mainnet` for the published one.
+1. **Unset the dev switch.** The installed client is the same file in both
+   places; `ARETE_ENVIRONMENT=dev` (which `a4 dev up` and `a4 dev run` set)
+   points it at the dev environment, and with the variable unset it calls
+   production. The automations take their target from it: `dev` in dev mode,
+   `mainnet` otherwise. If you changed the protocol's spec locally,
+   `a4 install --locked` restores the published client's types.
 2. **Allow mainnet in the policy.** A policy allows only `dev` unless it lists
    mainnet: `definePolicy({ ...definition.policy, deployments: [client.deploymentId], clusters: ["mainnet"] })`.
    The deployment id changes with the client, so build `deployments` from
    `client.deploymentId` rather than writing it in.
 3. **Point the simulator at your RPC.** `rpcSimulator(process.env.RPC_URL)`,
-   a mainnet RPC instead of `a4 dev up`'s local one.
+   a mainnet RPC. In dev mode a simulator is optional: without one the
+   automations simulate against the dev environment.
 4. **Use a real signer and store.** A delegated wallet provider such as
    [Privy](/automations/signing/) instead of a dev keypair, and a Postgres
    schema of its own: one store serves one deployment, so the dev
@@ -69,7 +72,7 @@ The steps are the same on every host:
 
 ```bash
 a4 protocol deploy                                # the protocol release
-a4 install --locked                               # the published client, not the dev one
+a4 install --check                                # the installed clients are the published ones
 DATABASE_URL=... npx @usearete/automations migrate    # the store's tables, once per schema change
 # set ARETE_SECRET_KEY, DATABASE_URL, RPC_URL, CRON_SECRET and the signer's secrets on the host
 npx wrangler deploy                               # or: vercel deploy --prod, fly deploy, ...
@@ -77,8 +80,8 @@ a4 protocol webhook add --url https://<host>/arete/webhook --secret-only | npx w
 ```
 
 Set `ARETE_CLUSTER=mainnet` to let the policy sign on mainnet. The adapters
-refuse to start when the bundled protocol client targets another cluster, for
-example a build made while `a4 dev up` had the dev client installed.
+refuse to start when `ARETE_CLUSTER` and the client's environment switch
+disagree, for example a host that still sets `ARETE_ENVIRONMENT=dev`.
 
 | Host                               | Workers                                       | Schedules and sources                     | Notes                                                                                 |
 | ---------------------------------- | --------------------------------------------- | ----------------------------------------- | ------------------------------------------------------------------------------------- |
