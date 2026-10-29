@@ -314,7 +314,9 @@ class Session:
         auth: Optional[AuthConfig] = None,
         http_client: Any = None,
         protocol_key_class: Optional[str] = None,
+        environment: Any = None,
     ) -> None:
+        self._environment = environment
         self._stack_clients = dict(stacks)
         self._program_map = dict(programs)
         self._members: Tuple[Arete, ...] = tuple(member_clients)
@@ -330,6 +332,12 @@ class Session:
         self._protocol_key_class = protocol_key_class
         self._protocol_clients: Dict[str, ProtocolClient] = {}
         self.protocols = AttrNamespace("session.protocols", self._protocol_clients)
+
+    @property
+    def environment(self) -> str:
+        """``"production"``, or ``"dev"`` when the dev environment switch is
+        on (every member decides it the same way)."""
+        return self._members[0].environment if self._members else "production"
 
     def protocol_client_options(self, definition: ProtocolDefinition) -> Dict[str, Any]:
         """Keyword arguments that build a client of ``definition`` sharing
@@ -348,6 +356,8 @@ class Session:
             if key in self._program_map
         }
         options: Dict[str, Any] = {"auth": self._auth, "stacks": stacks, "programs": programs}
+        if self._environment is not None:
+            options["environment"] = self._environment
         if isinstance(self._http_client, httpx.AsyncClient):
             options["http_client"] = self._http_client
         if self._protocol_key_class is not None:
@@ -536,6 +546,7 @@ async def create_session(
     protocols: Optional[Mapping[str, ProtocolDefinition]] = None,
     protocol_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
     protocol_key_class: Optional[str] = None,
+    environment: Any = None,
 ) -> Session:
     """Compose multiple stack and standalone-program clients behind one
     wallet.
@@ -551,7 +562,9 @@ async def create_session(
     ``chain`` + ``transactions`` and forbids ``endpoints`` fallback.
     ``protocols`` hoist their stacks and programs and become
     ``session.protocols.<key>`` (see the module docs); ``protocol_key_class``
-    names their key class when ``auth`` cannot tell.
+    names their key class when ``auth`` cannot tell. ``environment`` is the
+    dev environment switch for every member and protocol client (see
+    :mod:`arete.dev_environment`); unset, ``ARETE_ENVIRONMENT`` decides.
     """
     stack_entries = list((stacks or {}).items())
     program_entries = list((programs or {}).items())
@@ -758,6 +771,7 @@ async def create_session(
             auto_reconnect=member.get("auto_reconnect", True),
             http_client=http_client,
             connect_factory=connect_factory,
+            environment=environment,
         )
 
     connected_stacks: List[Tuple[str, Arete]] = []
@@ -859,6 +873,7 @@ async def create_session(
         auth=auth,
         http_client=http_client,
         protocol_key_class=protocol_key_class,
+        environment=environment,
     )
     try:
         for key, protocol in protocol_entries:

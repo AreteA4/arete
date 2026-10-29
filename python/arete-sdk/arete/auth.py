@@ -340,6 +340,10 @@ class AuthConfig:
     _explicit_api_url: Optional[str] = field(default=None, compare=False)
     """Internal: an API URL the app configured in code (never one from a
     descriptor). Its origin may receive an explicitly passed ``secret_key``."""
+    dev_environment: Optional[str] = field(default=None, compare=False)
+    """Internal: the dev environment (id or name) every session request
+    names, in dev direct mode. Set by the client from the dev environment
+    switch; ``None`` in production, where request bodies are unchanged."""
 
     @classmethod
     def from_api_key(cls, api_key: str, **kwargs) -> "AuthConfig":
@@ -525,8 +529,11 @@ def build_token_endpoint_request_body(
     target_id: Optional[str] = None,
     program_release_hash: Optional[str] = None,
     stack_release: Optional["StackRelease"] = None,
+    environment: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build the token endpoint POST body.
+
+    ``environment`` (dev direct mode only) names the dev environment.
 
     Untargeted: ``{"websocket_url", "scopes"[, "stackManifestHash",
     "liveAlias"]}`` — the served stack version is named only when
@@ -542,9 +549,13 @@ def build_token_endpoint_request_body(
         }
         if program_release_hash is not None:
             body["programReleaseHash"] = program_release_hash
+        if environment is not None:
+            body["environment"] = environment
         return body
     body = {"websocket_url": websocket_url or "", "scopes": list(scopes)}
     body.update(stack_release_fields(stack_release))
+    if environment is not None:
+        body["environment"] = environment
     return body
 
 
@@ -678,6 +689,11 @@ async def request_token_from_endpoint(
 
     error_code_header = response.headers.get("X-Error-Code")
     if response.status_code < 200 or response.status_code >= 300:
+        from .dev_environment import refusal_of_response
+
+        refusal = refusal_of_response(response)
+        if refusal is not None:
+            raise refusal
         raw = response.text
         error_code = None
         error_message = raw or response.reason_phrase
@@ -955,6 +971,11 @@ class AuthState:
             {
                 "websocket_url": self.websocket_url,
                 **stack_release_fields(self.stack_release),
+                **(
+                    {"environment": self.config.dev_environment}
+                    if self.config is not None and self.config.dev_environment
+                    else {}
+                ),
             },
         )
 

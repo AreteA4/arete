@@ -34,6 +34,7 @@ from typing import (
 
 from arete.auth import AuthConfig, resolve_auth_config
 from arete.chain import ChainClient, HttpChainClient
+from arete.dev_environment import DevMode, check_edge, resolve_switch_from_process
 from arete.connection import ConnectionManager
 from arete.errors import AreteError
 from arete.extensions import apply_connected_stack_extensions
@@ -278,8 +279,10 @@ class Arete:
         initial_data_timeout: Optional[float] = DEFAULT_INITIAL_DATA_TIMEOUT,
         http_client: Any = None,
         connect_factory: Optional[Callable[..., Any]] = None,
+        dev: Optional[Any] = None,  # arete._dev_client.DevWiring
     ) -> None:
         self._stack = stack
+        self._dev = dev
         self._wallet = wallet
         # ARETE_API_KEY applies before binding session endpoints are filled in.
         auth = resolve_auth_config(auth)
@@ -297,7 +300,14 @@ class Arete:
             else None
         )
         connection_kwargs: Dict[str, Any] = {"auto_reconnect": auto_reconnect}
-        if websocket_url is not None and auth is not None:
+        if dev is not None:
+            # Dev mode: the edge takes no credential; direct mode mints
+            # environment sessions for the environment's stack.
+            stack_release = dev.socket_release
+            if websocket_url is not None and dev.socket_auth is not None:
+                connection_kwargs["auth"] = dev.socket_auth
+                connection_kwargs["stack_release"] = stack_release
+        elif websocket_url is not None and auth is not None:
             connection_kwargs["auth"] = auth
             connection_kwargs["stack_release"] = stack_release
         if reconnect_intervals is not None:
@@ -320,17 +330,25 @@ class Arete:
             self._registry, stack.views, initial_data_timeout
         )
 
-        self._http = HttpAuthClient(
-            auth=auth,
-            websocket_url=websocket_url,
-            http_client=http_client,
-            stack_release=stack_release,
+        self._http = (
+            dev.query_http
+            if dev is not None
+            else HttpAuthClient(
+                auth=auth,
+                websocket_url=websocket_url,
+                http_client=http_client,
+                stack_release=stack_release,
+            )
         )
         self._hosted_read_clients: Dict[str, HttpAuthClient] = {}
         self._injected_http_client = http_client
 
         gateway = stack.gateway
-        if gateway is not None and (chain is None or transactions is None):
+        if dev is not None:
+            chain = chain if chain is not None else dev.chain
+            transactions = transactions if transactions is not None else dev.transactions
+            http_base_url = dev.query_base
+        elif gateway is not None and (chain is None or transactions is None):
             transports = create_hosted_solana_gateway_transports(
                 gateway, auth=auth, http_client=http_client
             )
@@ -390,8 +408,15 @@ class Arete:
         initial_data_timeout: Optional[float] = DEFAULT_INITIAL_DATA_TIMEOUT,
         http_client: Any = None,
         connect_factory: Optional[Callable[..., Any]] = None,
+        environment: Any = None,
     ) -> "Arete":
         """Connect a client to ``stack``.
+
+        ``environment`` is the dev environment switch: ``"production"``, or
+        ``{"kind": "dev", "url"?, "env"?}`` (:func:`arete.dev_environment.dev`).
+        Unset, ``ARETE_ENVIRONMENT`` decides (production by default). In dev
+        mode every surface goes to the project's dev environment, never to
+        production; ``client.environment`` reports the mode.
 
         ``transport`` is ``"websocket"`` (default) or ``"http"`` (skips the
         socket; view subscriptions fail fast with ``WEBSOCKET_DISABLED``).
@@ -413,6 +438,26 @@ class Arete:
         validate_program_reads(
             effective_stack, overrides, validate_descriptor_keys=False
         )
+
+        switch = resolve_switch_from_process(environment, lambda: resolve_auth_config(auth))
+        dev_mode = None
+        if switch.is_dev:
+            if (url is not None and url != stack.endpoints.ws) or (
+                http_url is not None and http_url != stack.endpoints.http
+            ):
+                raise AreteError(
+                    "A custom URL can't be used in dev mode: the stack is resolved by the "
+                    "identity it was installed with. Remove url/http_url, or connect in "
+                    "production.",
+                    "INVALID_CONFIG",
+                )
+            if http_client is None:
+                import httpx
+
+                http_client = httpx.AsyncClient()
+            dev_mode = DevMode.of(switch, resolve_auth_config(auth), http_client)
+            # Dev reads go to the environment, never to a local endpoint.
+            http_url = None
 
         requested_url = url if url is not None else (stack.endpoints.ws or None)
         connect_http_url = (
@@ -452,6 +497,20 @@ class Arete:
                 "INVALID_CONFIG",
             )
 
+        dev_wiring = None
+        if dev_mode is not None:
+            from arete import _dev_client
+
+            dev_wiring = await _dev_client.prepare(
+                effective_stack, dev_mode, overrides=overrides, http_client=http_client
+            )
+            if not http_only:
+                if dev_wiring.socket_error is not None:
+                    raise dev_wiring.socket_error
+                websocket_url = dev_wiring.websocket_url
+                if auto_connect and dev_wiring.edge_url is not None:
+                    await check_edge(http_client, dev_wiring.edge_url)
+
         client = cls(
             effective_stack,
             websocket_url=websocket_url,
@@ -469,6 +528,7 @@ class Arete:
             initial_data_timeout=initial_data_timeout,
             http_client=http_client,
             connect_factory=connect_factory,
+            dev=dev_wiring,
         )
         if not http_only and auto_connect:
             await client._connection.connect()
@@ -522,6 +582,8 @@ class Arete:
             self._stack, name, self._program_read_overrides
         )
         _validate_release_identity(name, definition, descriptor)
+        if self._dev is not None and descriptor is not None:
+            return self._dev.program_transport(name, definition, descriptor)
         if descriptor is None:
             return UnavailableProgramReadTransport(
                 f"Program '{name}' has no release-aware read descriptor"
@@ -569,6 +631,12 @@ class Arete:
         return self._aggregated_errors
 
     # -- surface -----------------------------------------------------------
+
+    @property
+    def environment(self) -> str:
+        """``"production"``, or ``"dev"`` when the dev environment switch is
+        on. Decided once, at connect."""
+        return "dev" if self._dev is not None else "production"
 
     @property
     def stack_name(self) -> str:
