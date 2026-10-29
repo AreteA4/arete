@@ -68,6 +68,15 @@ const FORWARDED_RESPONSE_HEADERS: [&str; 5] = [
     "etag",
 ];
 
+/// Protocol routes named by an id of their own, not a deployment: the
+/// protocol client reads instances, settles intents and fetches receipts
+/// here. The API checks the account may use each.
+const PROTOCOL_BY_ID_PREFIXES: [&str; 3] = [
+    "/api/protocol-instances/",
+    "/api/execution-intents/",
+    "/api/protocol-receipts/",
+];
+
 /// The dev refusal codes (the contract's table).
 pub mod codes {
     pub const STACK_NOT_LOADED: &str = "devenv-stack-not-loaded";
@@ -161,6 +170,9 @@ pub enum Route<'a> {
         segment: &'a str,
         rest: &'a str,
     },
+    /// A protocol route named by its own id (an instance, an execution
+    /// intent, a receipt): forwarded as it is, with the account key.
+    ProtocolById,
     /// Any other `/api/*` path.
     OtherApi,
     /// JSON-RPC and the health probe.
@@ -191,6 +203,12 @@ pub fn route(path: &str) -> Route<'_> {
     if let Some(after) = path.strip_prefix("/api/protocol-deployments/") {
         let (segment, rest) = after.split_once('/').unwrap_or((after, ""));
         return Route::Protocol { segment, rest };
+    }
+    if PROTOCOL_BY_ID_PREFIXES
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+    {
+        return Route::ProtocolById;
     }
     if path == "/api" || path.starts_with("/api/") {
         return Route::OtherApi;
@@ -329,6 +347,20 @@ impl Edge {
             Route::Protocol { segment, rest } => {
                 self.protocol(segment, rest, method, uri, headers, body)
                     .await
+            }
+            Route::ProtocolById => {
+                let api = self.rpc.api();
+                forward(
+                    &self.http,
+                    Outgoing {
+                        method: method.clone(),
+                        url: join(api.origin(), path, uri.query()),
+                        bearer: api.key(),
+                        content_type: headers.get(header::CONTENT_TYPE),
+                        body,
+                    },
+                )
+                .await
             }
             Route::OtherApi => unavailable(
                 "The edge serves the protocol routes of the Arete API only",
@@ -769,6 +801,13 @@ async fn forward(http: &reqwest::Client, outgoing: Outgoing<'_>) -> Response {
     };
     let status =
         StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    // An event stream (an instance's events) is passed through as it
+    // arrives, not buffered until the target closes it.
+    let streaming = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
     let mut headers = HeaderMap::new();
     for name in FORWARDED_RESPONSE_HEADERS {
         if let Some(value) = response
@@ -778,6 +817,15 @@ async fn forward(http: &reqwest::Client, outgoing: Outgoing<'_>) -> Response {
         {
             headers.insert(header::HeaderName::from_static(name), value);
         }
+    }
+    if streaming {
+        let mut answer = (
+            status,
+            axum::body::Body::from_stream(response.bytes_stream()),
+        )
+            .into_response();
+        answer.headers_mut().extend(headers);
+        return answer;
     }
     let body = match response.bytes().await {
         Ok(body) => body,
@@ -912,6 +960,16 @@ mod tests {
                 rest: "instances"
             }
         );
+        assert_eq!(
+            route("/api/protocol-instances/i-1/events"),
+            Route::ProtocolById
+        );
+        assert_eq!(
+            route("/api/execution-intents/e-1/submit"),
+            Route::ProtocolById
+        );
+        assert_eq!(route("/api/protocol-receipts/keys"), Route::ProtocolById);
+        assert_eq!(route("/api/protocols"), Route::OtherApi);
         assert_eq!(route("/api/keys"), Route::OtherApi);
         assert_eq!(route("/"), Route::Rpc);
         assert_eq!(route("/health"), Route::Rpc);

@@ -750,6 +750,18 @@ mod tests {
         assert_eq!(body["path"], "/api/protocol-deployments/env-dep/instances");
         assert_eq!(body["auth"], "Bearer a4_sk_x");
 
+        // Instances, intents and receipts are named by their own id:
+        // forwarded unchanged, with the account key.
+        let (status, body) = read(
+            get("/api/protocol-instances/i-1/metadata", None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["path"], "/api/protocol-instances/i-1/metadata");
+        assert_eq!(body["auth"], "Bearer a4_sk_x");
+
         // Refusals carry the code and the fix, and go nowhere else.
         let (status, body) = read(
             get("/stacks/default/views?stackManifestHash=h", None)
