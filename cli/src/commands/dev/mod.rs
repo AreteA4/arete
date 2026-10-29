@@ -29,6 +29,7 @@ pub mod deploy;
 pub mod edge;
 pub mod env;
 pub mod proxy;
+pub mod quotas;
 pub mod run;
 pub mod runtime;
 pub mod sdk_gen;

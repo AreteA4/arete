@@ -878,6 +878,24 @@ impl Session<'_> {
         let config = self.config;
         self.write_state()?;
         self.write_session()?;
+        if config.deploy {
+            // Before any stack loads: a project the environment's stack
+            // slots can't hold is refused with every stack named.
+            let lock = ProjectLock::load_optional(self.project.root.join("arete.lock"))
+                .ok()
+                .flatten()
+                .map(|lock| lock_stacks(&lock))
+                .unwrap_or_default();
+            super::quotas::preflight(
+                &config.api,
+                &self.env.id,
+                &config.project_root,
+                &lock,
+                config.protocol,
+                self.deploy_state.slug.as_deref(),
+            )
+            .await?;
+        }
 
         if config.protocol && config.deploy {
             self.build(&[]).await?;
