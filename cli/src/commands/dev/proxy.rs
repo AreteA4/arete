@@ -630,6 +630,15 @@ mod tests {
                 }),
             )
             .route(
+                "/api/protocol-instances/:id",
+                axum::routing::get(
+                    |axum::extract::Path(id): axum::extract::Path<String>| async move {
+                        let deployment = if id == "i-env" { "env-dep" } else { "prod-dep" };
+                        axum::Json(json!({ "id": id, "deploymentId": deployment }))
+                    },
+                ),
+            )
+            .route(
                 "/ws/sessions",
                 post(move |axum::Json(request): axum::Json<Value>| async move {
                     sessions.lock().unwrap().push(request);
@@ -751,16 +760,30 @@ mod tests {
         assert_eq!(body["auth"], "Bearer a4_sk_x");
 
         // Instances, intents and receipts are named by their own id:
-        // forwarded unchanged, with the account key.
+        // forwarded unchanged, with the account key, when they belong to
+        // the environment's deployment...
         let (status, body) = read(
-            get("/api/protocol-instances/i-1/metadata", None)
+            get("/api/protocol-instances/i-env/metadata", None)
                 .await
                 .unwrap(),
         )
         .await;
         assert_eq!(status, 200);
-        assert_eq!(body["path"], "/api/protocol-instances/i-1/metadata");
+        assert_eq!(body["path"], "/api/protocol-instances/i-env/metadata");
         assert_eq!(body["auth"], "Bearer a4_sk_x");
+        // ...and refused when they belong to production's.
+        let (status, body) = read(
+            get("/api/protocol-instances/i-prod/metadata", None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            (status, body["code"].clone()),
+            (403, json!("environment-token-refused"))
+        );
+        let (status, _) = read(get("/api/protocol-receipts/keys", None).await.unwrap()).await;
+        assert_eq!(status, 200);
 
         // Refusals carry the code and the fix, and go nowhere else.
         let (status, body) = read(

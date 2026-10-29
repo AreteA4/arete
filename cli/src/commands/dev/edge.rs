@@ -59,6 +59,10 @@ const RESOLVE_TTL: Duration = Duration::from_secs(10);
 const RENEW_BEFORE: i64 = 60;
 /// The largest identity header accepted.
 const MAX_IDENTITY: usize = 8 * 1024;
+/// Request headers sent on to a target; every other one (`Authorization`,
+/// cookies, `Origin`) is dropped.
+const FORWARDED_REQUEST_HEADERS: [&str; 4] =
+    ["content-type", "accept", "last-event-id", "if-none-match"];
 /// Response headers forwarded from a target; every other one is dropped.
 const FORWARDED_RESPONSE_HEADERS: [&str; 5] = [
     "content-type",
@@ -221,13 +225,19 @@ struct Outgoing<'a> {
     method: Method,
     url: String,
     bearer: &'a str,
-    content_type: Option<&'a HeaderValue>,
+    /// The request's headers; only [`FORWARDED_REQUEST_HEADERS`] are sent on.
+    headers: &'a HeaderMap,
     body: Bytes,
 }
 
 pub struct Edge {
     rpc: Arc<EnvRpc>,
     http: reqwest::Client,
+    /// The deployment each instance, intent and receipt (by its path)
+    /// belongs to.
+    owners: tokio::sync::Mutex<HashMap<String, String>>,
+    /// Deployments known to be the environment's.
+    environment_deployments: tokio::sync::Mutex<std::collections::HashSet<String>>,
     resolved: tokio::sync::Mutex<HashMap<String, (Instant, Value)>>,
     sessions: tokio::sync::Mutex<HashMap<String, (String, i64)>>,
 }
@@ -236,6 +246,8 @@ impl Edge {
     pub fn new(rpc: Arc<EnvRpc>) -> Self {
         Self {
             http: rpc.api().http().clone(),
+            owners: tokio::sync::Mutex::new(HashMap::new()),
+            environment_deployments: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             rpc,
             resolved: tokio::sync::Mutex::new(HashMap::new()),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
@@ -349,6 +361,9 @@ impl Edge {
                     .await
             }
             Route::ProtocolById => {
+                if let Err(response) = self.check_owner(path).await {
+                    return Some(response);
+                }
                 let api = self.rpc.api();
                 forward(
                     &self.http,
@@ -356,7 +371,7 @@ impl Edge {
                         method: method.clone(),
                         url: join(api.origin(), path, uri.query()),
                         bearer: api.key(),
-                        content_type: headers.get(header::CONTENT_TYPE),
+                        headers,
                         body,
                     },
                 )
@@ -400,7 +415,7 @@ impl Edge {
                     method: method.clone(),
                     url: join(endpoint, uri.path(), uri.query()),
                     bearer: &token.token,
-                    content_type: headers.get(header::CONTENT_TYPE),
+                    headers,
                     body: body.clone(),
                 },
             )
@@ -470,7 +485,7 @@ impl Edge {
                 method: method.clone(),
                 url: join(endpoint, &path, uri.query()),
                 bearer: &token,
-                content_type: headers.get(header::CONTENT_TYPE),
+                headers,
                 body,
             },
         )
@@ -549,7 +564,7 @@ impl Edge {
                 method: method.clone(),
                 url: join(http_url, &format!("/{rest}"), forwarded.as_deref()),
                 bearer: &token,
-                content_type: headers.get(header::CONTENT_TYPE),
+                headers,
                 body,
             },
         )
@@ -597,11 +612,115 @@ impl Edge {
                 method: method.clone(),
                 url: join(api.origin(), &path, uri.query()),
                 bearer: api.key(),
-                content_type: headers.get(header::CONTENT_TYPE),
+                headers,
                 body,
             },
         )
         .await
+    }
+
+    /// Refuse a request on an instance, intent or receipt that belongs to
+    /// a deployment outside the environment: the account key would reach
+    /// production through it. `Err` is the refusal.
+    #[allow(clippy::result_large_err)] // the refusal is the response to send
+    async fn check_owner(&self, path: &str) -> Result<(), Response> {
+        let Some((object, field)) = owned_object(path) else {
+            return Ok(());
+        };
+        let deployment = self.owner(&object, field).await?;
+        if self.in_environment(&deployment).await? {
+            return Ok(());
+        }
+        Err(refusal(
+            StatusCode::FORBIDDEN,
+            "environment-token-refused",
+            &format!(
+                "{object} belongs to deployment {deployment}, which is not in this environment"
+            ),
+            "Use it in production: unset ARETE_ENVIRONMENT.",
+        ))
+    }
+
+    /// The deployment the object at `object` (an API path) belongs to.
+    #[allow(clippy::result_large_err)] // the refusal is the response to send
+    async fn owner(&self, object: &str, field: OwnerField) -> Result<String, Response> {
+        if let Some(deployment) = self.owners.lock().await.get(object) {
+            return Ok(deployment.clone());
+        }
+        let api = self.rpc.api();
+        let response = self
+            .http
+            .get(join(api.origin(), object, None))
+            .bearer_auth(api.key())
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+            .map_err(|error| {
+                unavailable(
+                    &format!("The Arete API did not answer: {error}"),
+                    "Check your network and retry.",
+                )
+            })?;
+        let status = response.status().as_u16();
+        let body: Value = response.json().await.unwrap_or(Value::Null);
+        if !(200..300).contains(&status) {
+            let code = body["code"].as_str().unwrap_or("api-error");
+            let message = body["error"]
+                .as_str()
+                .unwrap_or("The Arete API refused the request");
+            return Err(refusal(
+                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
+                code,
+                message,
+                "Check the id; the edge serves only the environment's own protocol objects.",
+            ));
+        }
+        let deployment = match field {
+            OwnerField::Top => body["deploymentId"].as_str(),
+            OwnerField::Deployment => body["deployment"]["deploymentId"].as_str(),
+        }
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            unavailable(
+                &format!("{object} names no deployment"),
+                "Update a4 to a version that knows this API's answer.",
+            )
+        })?
+        .to_string();
+        let mut owners = self.owners.lock().await;
+        if owners.len() > 4096 {
+            owners.clear();
+        }
+        owners.insert(object.to_string(), deployment.clone());
+        Ok(deployment)
+    }
+
+    /// Whether `deployment` is the environment's deployment of its protocol.
+    #[allow(clippy::result_large_err)] // the refusal is the response to send
+    async fn in_environment(&self, deployment: &str) -> Result<bool, Response> {
+        if self
+            .environment_deployments
+            .lock()
+            .await
+            .contains(deployment)
+        {
+            return Ok(true);
+        }
+        let identity =
+            json!({ "protocols": [{ "package": deployment, "deploymentId": deployment }] });
+        let answer = self
+            .resolve(&identity)
+            .await
+            .map_err(|error| api_refusal(&error))?;
+        let ours = answer["protocols"][0]["status"] == "target"
+            && answer["protocols"][0]["deploymentId"].as_str() == Some(deployment);
+        if ours {
+            self.environment_deployments
+                .lock()
+                .await
+                .insert(deployment.to_string());
+        }
+        Ok(ours)
     }
 
     /// The one answer of `surface` in the resolve answer for `identity`, if
@@ -711,6 +830,36 @@ pub fn safe_path(path: &str) -> bool {
     })
 }
 
+/// Where an object's answer names its deployment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OwnerField {
+    /// `deploymentId` (an instance).
+    Top,
+    /// `deployment.deploymentId` (an execution intent, a receipt).
+    Deployment,
+}
+
+/// The object a by-id protocol path is about (`/api/protocol-instances/<id>`,
+/// ...) and where its answer names the deployment. `None` for paths about
+/// no deployment's object (the receipt verification keys).
+fn owned_object(path: &str) -> Option<(String, OwnerField)> {
+    for (prefix, field) in [
+        ("/api/protocol-instances/", OwnerField::Top),
+        ("/api/execution-intents/", OwnerField::Deployment),
+        ("/api/protocol-receipts/", OwnerField::Deployment),
+    ] {
+        let Some(rest) = path.strip_prefix(prefix) else {
+            continue;
+        };
+        let id = rest.split('/').next().unwrap_or_default();
+        if id.is_empty() || (prefix == "/api/protocol-receipts/" && id == "keys") {
+            return None;
+        }
+        return Some((format!("{prefix}{id}"), field));
+    }
+    None
+}
+
 /// The identity the request names for `surface`, as a resolve request.
 /// `Err` is the refusal to send.
 #[allow(clippy::result_large_err)] // the refusal is the response to send
@@ -782,10 +931,20 @@ async fn forward(http: &reqwest::Client, outgoing: Outgoing<'_>) -> Response {
         .unwrap_or(reqwest::Method::GET);
     let mut request = http
         .request(method, &outgoing.url)
-        .bearer_auth(outgoing.bearer)
-        .timeout(Duration::from_secs(120));
-    if let Some(content_type) = outgoing.content_type.and_then(|value| value.to_str().ok()) {
-        request = request.header(reqwest::header::CONTENT_TYPE, content_type);
+        .bearer_auth(outgoing.bearer);
+    // An event stream stays open as long as the client reads it.
+    let event_stream = outgoing
+        .headers
+        .get(header::ACCEPT)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.contains("text/event-stream"));
+    if !event_stream {
+        request = request.timeout(Duration::from_secs(120));
+    }
+    for name in FORWARDED_REQUEST_HEADERS {
+        if let Some(value) = outgoing.headers.get(name) {
+            request = request.header(name, value.as_bytes());
+        }
     }
     if !outgoing.body.is_empty() {
         request = request.body(outgoing.body.to_vec());
@@ -1045,6 +1204,29 @@ mod tests {
         ] {
             assert!(!safe_path(path), "{path}");
         }
+    }
+
+    #[test]
+    fn by_id_paths_name_their_object() {
+        assert_eq!(
+            owned_object("/api/protocol-instances/i-1/events"),
+            Some(("/api/protocol-instances/i-1".to_string(), OwnerField::Top))
+        );
+        assert_eq!(
+            owned_object("/api/execution-intents/e-1/submit"),
+            Some((
+                "/api/execution-intents/e-1".to_string(),
+                OwnerField::Deployment
+            ))
+        );
+        assert_eq!(
+            owned_object("/api/protocol-receipts/5sig"),
+            Some((
+                "/api/protocol-receipts/5sig".to_string(),
+                OwnerField::Deployment
+            ))
+        );
+        assert_eq!(owned_object("/api/protocol-receipts/keys"), None);
     }
 
     #[test]
