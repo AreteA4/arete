@@ -30,15 +30,25 @@ pub fn planned_stacks(
     listing: &[Value],
 ) -> Result<Vec<PlannedStack>> {
     let mut planned = Vec::new();
+    // The environment's registry stack deployments are named
+    // `registry-<package>-<digest>`, one per loaded alias. A package's
+    // aliases count as loaded up to the deployments it already has; the rest
+    // each need a slot.
+    let mut held_per_package = std::collections::BTreeMap::<&str, usize>::new();
     for (package, _, alias) in lock_stacks {
-        // The environment names a registry stack's deployment
-        // `registry-<package>-<digest>`.
-        let prefix = format!("registry-{package}-");
-        let loaded = listing.iter().any(|entry| {
-            entry["specName"]
-                .as_str()
-                .is_some_and(|name| name.starts_with(&prefix))
+        let held = held_per_package.entry(package.as_str()).or_insert_with(|| {
+            let prefix = format!("registry-{package}-");
+            listing
+                .iter()
+                .filter(|entry| {
+                    entry["specName"]
+                        .as_str()
+                        .is_some_and(|name| name.starts_with(&prefix))
+                })
+                .count()
         });
+        let loaded = *held > 0;
+        *held = held.saturating_sub(1);
         planned.push(PlannedStack {
             label: match alias {
                 Some(alias) => format!("registry stack {package} ({alias})"),
@@ -62,15 +72,47 @@ pub fn planned_stacks(
         });
     }
     for stack in super::custom_stacks::detect(root)?.stacks {
-        let loaded = listing
-            .iter()
-            .any(|entry| entry["specName"].as_str() == Some(stack.name.as_str()));
-        planned.push(PlannedStack {
-            label: format!("stack {}", stack.name),
-            loaded,
-        });
+        // `a4 dev up` deploys each live alias of a stack separately.
+        for name in project_stack_names(&stack) {
+            let loaded = listing
+                .iter()
+                .any(|entry| entry["specName"].as_str() == Some(name.as_str()));
+            planned.push(PlannedStack {
+                label: format!("stack {name}"),
+                loaded,
+            });
+        }
     }
     Ok(planned)
+}
+
+/// The deployment names one project stack loads under: one per live alias of
+/// an authored StackManifest (read as it is on disk), else the stack's own
+/// name (a Stack Source compiles to one live spec).
+fn project_stack_names(stack: &super::custom_stacks::CustomStack) -> Vec<String> {
+    use super::custom_stacks::StackOrigin;
+    let StackOrigin::Manifest {
+        manifest,
+        artifact_roots,
+        ..
+    } = &stack.origin
+    else {
+        return vec![stack.name.clone()];
+    };
+    match crate::commands::public_artifacts::load_local_artifact_stack_with_roots(
+        manifest,
+        artifact_roots,
+    ) {
+        Ok(artifacts) if !artifacts.live_specs.is_empty() => artifacts
+            .live_specs
+            .iter()
+            .enumerate()
+            .map(|(index, (alias, _))| {
+                crate::commands::up::child_spec_name(&stack.name, alias, index)
+            })
+            .collect(),
+        _ => vec![stack.name.clone()],
+    }
 }
 
 /// Refuse `planned` when the environment, which holds `held` stacks, has
@@ -170,13 +212,17 @@ mod tests {
                 Some("swaps".to_string()),
             ),
         ];
-        let listing = vec![json!({"specName": "registry-klend-0123456789abcdef"})];
+        let listing = vec![
+            json!({"specName": "registry-klend-0123456789abcdef"}),
+            json!({"specName": "registry-meteora-fedcba9876543210"}),
+        ];
         let planned = planned_stacks(root.path(), &lock, false, None, &listing).unwrap();
         assert_eq!(
             planned,
             vec![
                 stack("registry stack klend", true),
-                stack("registry stack meteora (pools)", false),
+                // One meteora alias is loaded; the other still needs a slot.
+                stack("registry stack meteora (pools)", true),
                 stack("registry stack meteora (swaps)", false),
             ]
         );
