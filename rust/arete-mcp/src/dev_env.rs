@@ -593,6 +593,14 @@ impl EnvApi {
     pub async fn stacks(&self, env: &str) -> Result<Value> {
         self.get(&Self::env_path(env, "/stacks")?).await
     }
+
+    /// The environment's overrides (`{kind, key, target, ...}`): program
+    /// releases and stack aliases the environment serves in place of the
+    /// installed ones.
+    pub async fn overrides(&self, env: &str) -> Result<Vec<Value>> {
+        let answer = self.get(&Self::env_path(env, "/overrides")?).await?;
+        Ok(answer["overrides"].as_array().cloned().unwrap_or_default())
+    }
 }
 
 /// Whether `error` is the API's "not found".

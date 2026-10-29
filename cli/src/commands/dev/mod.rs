@@ -27,6 +27,7 @@ pub mod capture;
 pub mod custom_stacks;
 pub mod deploy;
 pub mod env;
+pub mod promote;
 pub mod proxy;
 pub mod runtime;
 pub mod sdk_gen;
@@ -61,6 +62,11 @@ pub enum DevCommands {
     /// Stop a running `a4 dev up` for this project (the environment keeps
     /// its state and sleeps when idle)
     Down(DownArgs),
+    /// List what the app uses that exists only in the dev environment (local
+    /// protocol builds, changed programs, project stacks under a dependency's
+    /// alias), each with the command that publishes it; exits non-zero while
+    /// anything does
+    Promote(promote::PromoteArgs),
     /// Show the environment, the running session and the chain
     Status(EnvArgs),
     /// List your dev environments and your plan's quotas
@@ -481,6 +487,7 @@ pub fn run(command: DevCommands, json: bool) -> Result<()> {
         DevCommands::AdmitLocalPrograms => up::admission_worker(),
         DevCommands::Up(args) => up(args, json),
         DevCommands::Down(args) => down(args, json),
+        DevCommands::Promote(args) => promote::promote(args, json),
         DevCommands::Status(args) => block_on(status(args, json)),
         DevCommands::List => env::list(json),
         DevCommands::Use(args) => env::use_env(args.project, args.env, json),
