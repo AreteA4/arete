@@ -8,7 +8,7 @@
 
 import { DEFAULT_A4_API_URL } from './a4-profile';
 import { resolveAuthConfig, tokenEndpointApiKey } from './auth-keys';
-import { ARETE_API_URL_ENV } from './credential-destination';
+import { ARETE_API_URL_ENV, withTrustedApiUrl } from './credential-destination';
 import {
   DEV_ENVIRONMENT_CODES,
   DevEnvironmentError,
@@ -106,7 +106,10 @@ export async function resolveDevTargets(options: {
   readonly fetch: typeof fetch;
 }): Promise<DevResolveAnswer> {
   const url = devResolveUrl(options.environment, options.apiUrl);
-  const auth = resolveAuthConfig(options.auth);
+  // An apiUrl the app configured in code is trusted for the key the app
+  // passed itself; a key read from ARETE_API_KEY or a4 login is not sent
+  // there.
+  const auth = withTrustedApiUrl(resolveAuthConfig(options.auth), options.apiUrl);
   // Asserts that the key may go to this origin.
   const key = tokenEndpointApiKey(auth, url);
   if (!key) {

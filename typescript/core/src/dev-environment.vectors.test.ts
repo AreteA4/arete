@@ -548,3 +548,24 @@ describe('dev-environment-switch v1: refusals.json', () => {
     });
   }
 });
+
+describe('a refused stack with autoConnect on', () => {
+  it('returns the client: chain reads work and the stack fails with its code', async () => {
+    const testCase = vectors('refusals.json').cases
+      .find((candidate: any) => candidate.name.startsWith('devenv-stack-not-loaded: from resolve'));
+    const { input, expect: expected } = testCase;
+    const installed = targetsFile.installed[input.installed ?? 'default'];
+    const net = network({ resolveResponse: input.resolveResponse ?? SAME_RELEASES });
+    const client = await Arete.connect(stackOf(installed), {
+      environment: optionOf(input.mode),
+      auth: { secretKey: SECRET_KEY, websocketFactory: net.websocketFactory },
+      fetch: net.fetchImpl,
+      autoReconnect: false,
+    });
+    // Usable: reaches the fake chain service rather than a dev refusal.
+    expect(await settle(() => client.chain.accountWithContext(ADDRESS))).not.toBeInstanceOf(DevEnvironmentError);
+    expectRefusal(await settle(() => client.connect()), expected);
+    expect(net.sockets.length).toBe(0);
+    client.disconnect();
+  });
+});
