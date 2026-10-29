@@ -389,7 +389,17 @@ impl EnvApi {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
-        let url = format!("{}/api{path}", self.origin);
+        self.call_at(method, &format!("/api{path}"), body).await
+    }
+
+    /// `call` for a path under the origin itself (`/ws/sessions`).
+    async fn call_at(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+    ) -> Result<Value> {
+        let url = format!("{}{path}", self.origin);
         let mut request = self
             .http
             .request(method.clone(), &url)
@@ -592,6 +602,35 @@ impl EnvApi {
     /// The stack deployments loaded into the environment.
     pub async fn stacks(&self, env: &str) -> Result<Value> {
         self.get(&Self::env_path(env, "/stacks")?).await
+    }
+
+    /// Load a published registry stack (its StackManifest, at `live_alias`
+    /// when it has several) into the environment. `status` in the answer is
+    /// `loaded` or `already-loaded`.
+    pub async fn load_registry_stack(
+        &self,
+        env: &str,
+        stack_manifest_hash: &str,
+        live_alias: Option<&str>,
+    ) -> Result<Value> {
+        let mut body = json!({ "stackManifestHash": stack_manifest_hash });
+        if let Some(alias) = live_alias {
+            body["liveAlias"] = json!(alias);
+        }
+        self.post(&Self::env_path(env, "/stacks")?, body).await
+    }
+
+    /// The environment's targets for installed identities: `body` is a
+    /// resolve request, the answer has one target or refusal per identity.
+    pub async fn resolve(&self, env: &str, body: Value) -> Result<Value> {
+        self.post(&Self::env_path(env, "/resolve")?, body).await
+    }
+
+    /// Mint a session token at `/ws/sessions` (`body` names the target,
+    /// its scopes and, for an environment, `environment`).
+    pub async fn session(&self, body: Value) -> Result<Value> {
+        self.call_at(reqwest::Method::POST, "/ws/sessions", Some(body))
+            .await
     }
 }
 

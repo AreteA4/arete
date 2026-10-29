@@ -63,6 +63,9 @@ lists, per surface:
   `package:<package>` through the edge before the first publish) and
   `instancesUrl`, the URL of one real request (listing instances);
 - `resolveRequest`: what direct mode sends to resolve (`null`: no request).
+- `identityHeader`: in edge mode, the `X-Arete-Dev-Identity` value the
+  surface's requests carry, as parsed JSON (`null`: no header). Compare it
+  parsed, not as text.
 
 ## `refusals.json`
 

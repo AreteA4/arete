@@ -232,7 +232,8 @@
               "read"
             ]
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "transactions": {
           "endpoint": "https://solana.arete.run",
@@ -244,7 +245,8 @@
               "transaction:send"
             ]
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "programReads": {
           "klend": {
@@ -258,7 +260,8 @@
                 "read"
               ]
             },
-            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "identityHeader": null
           }
         },
         "stack": {
@@ -274,14 +277,16 @@
             "stackManifestHash": "arete:h1:stack-manifest:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
             "liveAlias": "default"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
-          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances",
+          "identityHeader": null
         }
       }
     },
@@ -301,19 +306,38 @@
         "chain": {
           "endpoint": "http://127.0.0.1:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "transactions": {
           "endpoint": "http://127.0.0.1:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "programReads": {
           "klend": {
             "endpoint": "http://127.0.0.1:8911",
             "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "tokenRequest": null,
-            "sessionEndpoint": null
+            "sessionEndpoint": null,
+            "identityHeader": {
+              "programReads": [
+                {
+                  "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                  "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                  "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              ]
+            }
           }
         },
         "stack": {
@@ -324,14 +348,24 @@
           },
           "sessionRequired": false,
           "sessionRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "http://127.0.0.1:8911/api",
           "sessionEndpoint": null,
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
-          "instancesUrl": "http://127.0.0.1:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
+          "instancesUrl": "http://127.0.0.1:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances",
+          "identityHeader": {
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+              }
+            ]
+          }
         }
       }
     },
@@ -351,19 +385,38 @@
         "chain": {
           "endpoint": "http://localhost:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "transactions": {
           "endpoint": "http://localhost:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "programReads": {
           "klend": {
             "endpoint": "http://localhost:8911",
             "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "tokenRequest": null,
-            "sessionEndpoint": null
+            "sessionEndpoint": null,
+            "identityHeader": {
+              "programReads": [
+                {
+                  "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                  "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                  "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              ]
+            }
           }
         },
         "stack": {
@@ -374,14 +427,24 @@
           },
           "sessionRequired": false,
           "sessionRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "http://localhost:8911/api",
           "sessionEndpoint": null,
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
-          "instancesUrl": "http://localhost:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
+          "instancesUrl": "http://localhost:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances",
+          "identityHeader": {
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+              }
+            ]
+          }
         }
       }
     },
@@ -401,19 +464,38 @@
         "chain": {
           "endpoint": "https://[::1]:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "transactions": {
           "endpoint": "https://[::1]:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "programReads": {
           "klend": {
             "endpoint": "https://[::1]:8911",
             "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "tokenRequest": null,
-            "sessionEndpoint": null
+            "sessionEndpoint": null,
+            "identityHeader": {
+              "programReads": [
+                {
+                  "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                  "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                  "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              ]
+            }
           }
         },
         "stack": {
@@ -424,14 +506,24 @@
           },
           "sessionRequired": false,
           "sessionRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "https://[::1]:8911/api",
           "sessionEndpoint": null,
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz0",
-          "instancesUrl": "https://[::1]:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances"
+          "instancesUrl": "https://[::1]:8911/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz0/instances",
+          "identityHeader": {
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+                "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz0"
+              }
+            ]
+          }
         }
       }
     },
@@ -531,7 +623,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "transactions": {
           "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
@@ -544,7 +637,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "programReads": {
           "klend": {
@@ -559,7 +653,8 @@
               ],
               "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
             },
-            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "identityHeader": null
           }
         },
         "stack": {
@@ -576,14 +671,16 @@
             "liveAlias": "default",
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
-          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances",
+          "identityHeader": null
         }
       }
     },
@@ -683,7 +780,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "transactions": {
           "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
@@ -696,7 +794,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "programReads": {
           "klend": {
@@ -711,7 +810,8 @@
               ],
               "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
             },
-            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "identityHeader": null
           }
         },
         "stack": {
@@ -728,14 +828,16 @@
             "liveAlias": "default",
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
-          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances",
+          "identityHeader": null
         }
       }
     },
@@ -835,7 +937,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "transactions": {
           "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
@@ -848,7 +951,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "programReads": {
           "klend": {
@@ -863,7 +967,8 @@
               ],
               "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
             },
-            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "identityHeader": null
           }
         },
         "stack": {
@@ -880,14 +985,16 @@
             "liveAlias": "default",
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
-          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances",
+          "identityHeader": null
         }
       }
     },
@@ -987,7 +1094,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "transactions": {
           "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
@@ -1000,7 +1108,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "programReads": {
           "klend": {
@@ -1015,7 +1124,8 @@
               ],
               "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
             },
-            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "identityHeader": null
           }
         },
         "stack": {
@@ -1032,14 +1142,16 @@
             "liveAlias": "default",
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
-          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances",
+          "identityHeader": null
         }
       }
     },
@@ -1138,7 +1250,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "transactions": {
           "endpoint": "https://devenv.arete.run/devenv/v1/denv_01jabcdefghjkmnpqrstvwxyz0",
@@ -1151,7 +1264,8 @@
             ],
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "programReads": {
           "klend": {
@@ -1166,7 +1280,8 @@
               ],
               "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
             },
-            "sessionEndpoint": "https://api.arete.run/ws/sessions"
+            "sessionEndpoint": "https://api.arete.run/ws/sessions",
+            "identityHeader": null
           }
         },
         "stack": {
@@ -1183,14 +1298,16 @@
             "liveAlias": "default",
             "environment": "denv_01jabcdefghjkmnpqrstvwxyz0"
           },
-          "sessionEndpoint": "https://api.arete.run/ws/sessions"
+          "sessionEndpoint": "https://api.arete.run/ws/sessions",
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "https://api.arete.run/api",
           "sessionEndpoint": "https://api.arete.run/ws/sessions",
           "deploymentId": "dep_01jabcdefghjkmnpqrstvwxyz9",
           "deploymentPathSegment": "dep_01jabcdefghjkmnpqrstvwxyz9",
-          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances"
+          "instancesUrl": "https://api.arete.run/api/protocol-deployments/dep_01jabcdefghjkmnpqrstvwxyz9/instances",
+          "identityHeader": null
         }
       }
     },
@@ -1210,19 +1327,38 @@
         "chain": {
           "endpoint": "http://127.0.0.1:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "chain": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "transactions": {
           "endpoint": "http://127.0.0.1:8911",
           "tokenRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": {
+            "transactions": {
+              "solanaGatewayBindingId": "sgb_0123456789abcdef0123456789abcdef"
+            }
+          }
         },
         "programReads": {
           "klend": {
             "endpoint": "http://127.0.0.1:8911",
             "pathReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "tokenRequest": null,
-            "sessionEndpoint": null
+            "sessionEndpoint": null,
+            "identityHeader": {
+              "programReads": [
+                {
+                  "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                  "programReadBindingId": "prb_0123456789abcdef0123456789abcdef",
+                  "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                }
+              ]
+            }
           }
         },
         "stack": {
@@ -1233,14 +1369,23 @@
           },
           "sessionRequired": false,
           "sessionRequest": null,
-          "sessionEndpoint": null
+          "sessionEndpoint": null,
+          "identityHeader": null
         },
         "protocol": {
           "apiUrl": "http://127.0.0.1:8911/api",
           "sessionEndpoint": null,
           "deploymentId": null,
           "deploymentPathSegment": "package:token-raise",
-          "instancesUrl": "http://127.0.0.1:8911/api/protocol-deployments/package:token-raise/instances"
+          "instancesUrl": "http://127.0.0.1:8911/api/protocol-deployments/package:token-raise/instances",
+          "identityHeader": {
+            "protocols": [
+              {
+                "package": "token-raise",
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+              }
+            ]
+          }
         }
       }
     }
