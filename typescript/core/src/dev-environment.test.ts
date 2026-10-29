@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Arete } from './client';
 import { createSession } from './session';
+import { resolveDevTargets } from './dev-targets';
+import { resolveEnvironmentSwitch, systemEnvironmentSwitchHost } from './dev-environment';
 import { createProtocolClient } from './protocol/client';
 import type { AnyProtocolDefinition } from './protocol/types';
 import type { StackDefinition } from './types';
@@ -201,10 +203,13 @@ describe('dev mode', () => {
   it('a stack without a release is not loaded in an environment', async () => {
     const { fetchImpl } = recordingFetch();
     const withoutRelease = { ...stack(), release: undefined } as StackDefinition;
-    await expect(Arete.connect(withoutRelease, {
+    // The client is still returned: only the stack's own calls fail.
+    const client = await Arete.connect(withoutRelease, {
       environment: { kind: 'dev', url: EDGE },
       fetch: fetchImpl,
-    })).rejects.toMatchObject({ code: 'devenv-stack-not-loaded' });
+    });
+    await expect(client.connect()).rejects.toMatchObject({ code: 'devenv-stack-not-loaded' });
+    client.disconnect();
   });
 
   it('a session decides once and hands the decision to every member', async () => {
@@ -264,5 +269,64 @@ describe('wallet sends in dev mode', () => {
     const { adapter, calls } = wallet();
     await expect(client.transaction([], { wallet: adapter })).resolves.toEqual({ signature: 'sig', slot: 1 });
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe('direct dev mode with a self-hosted API', () => {
+  const answer = { environment: { id: 'denv_1', name: 'my-env' } };
+  const request = { chain: { solanaGatewayBindingId: 'sgb_1' } };
+
+  it('sends an explicit key to the apiUrl the app configured', async () => {
+    const calls: string[] = [];
+    const fetchImpl = (async (url: string) => {
+      calls.push(url);
+      return new Response(JSON.stringify(answer), { status: 200 });
+    }) as unknown as typeof fetch;
+    await expect(resolveDevTargets({
+      environment: 'my-env',
+      request,
+      auth: { secretKey: 'a4_sk_selfhostedapitest00000000000000000' },
+      apiUrl: 'https://arete.internal.example',
+      fetch: fetchImpl,
+    })).resolves.toEqual(answer);
+    expect(calls).toEqual(['https://arete.internal.example/api/dev/environments/my-env/resolve']);
+  });
+
+  it('never sends ARETE_API_KEY to an apiUrl set in code', async () => {
+    vi.stubEnv('ARETE_API_KEY', 'a4_sk_selfhostedapitest00000000000000000');
+    const fetchImpl = vi.fn() as unknown as typeof fetch;
+    await expect(resolveDevTargets({
+      environment: 'my-env',
+      request,
+      auth: undefined,
+      apiUrl: 'https://arete.internal.example',
+      fetch: fetchImpl,
+    })).rejects.toMatchObject({ code: 'UNTRUSTED_CREDENTIAL_DESTINATION' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('a runtime that cannot read the session file', () => {
+  it('says so instead of reporting no session', () => {
+    const original = (process as { getBuiltinModule?: unknown }).getBuiltinModule;
+    const saved = { url: process.env.ARETE_DEV_URL, env: process.env.ARETE_DEV_ENV };
+    delete process.env.ARETE_DEV_URL;
+    delete process.env.ARETE_DEV_ENV;
+    (process as { getBuiltinModule?: unknown }).getBuiltinModule = undefined;
+    try {
+      const host = systemEnvironmentSwitchHost();
+      let error: unknown;
+      try {
+        resolveEnvironmentSwitch({ kind: 'dev' }, host);
+      } catch (thrown) {
+        error = thrown;
+      }
+      expect(error).toMatchObject({ code: 'devenv-not-configured' });
+      expect((error as Error).message).toContain('cannot read .arete/dev/session.json');
+    } finally {
+      (process as { getBuiltinModule?: unknown }).getBuiltinModule = original;
+      if (saved.url !== undefined) process.env.ARETE_DEV_URL = saved.url;
+      if (saved.env !== undefined) process.env.ARETE_DEV_ENV = saved.env;
+    }
   });
 });

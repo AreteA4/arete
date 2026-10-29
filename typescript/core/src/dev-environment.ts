@@ -324,7 +324,21 @@ export function systemEnvironmentSwitchHost(auth?: AuthConfig): EnvironmentSwitc
   return {
     browser,
     readVariable: (name) => (browser ? undefined : readEnvironmentVariable(name)),
-    readSessionEdgeUrl: () => (browser ? undefined : readSessionEdgeUrl(systemProfileHost())),
+    readSessionEdgeUrl: () => {
+      if (browser) return undefined;
+      const files = systemProfileHost();
+      // Node before 20.16 and 22.3 has no `process.getBuiltinModule`, so the
+      // SDK can't read files without a static `fs` import. Say so rather than
+      // report that no session exists.
+      if (!files) {
+        throw devNotConfigured(
+          'Dev mode is on, but no edge URL or environment is set, and this runtime cannot read '
+            + '.arete/dev/session.json (Node 20.16+ or 22.3+, Bun or Deno can). Set ARETE_DEV_URL '
+            + 'to the edge `a4 dev up` prints, or run the app with `a4 dev run -- <command>`'
+        );
+      }
+      return readSessionEdgeUrl(files);
+    },
     hasSecretKey: () => !browser && resolveSecretKey(auth) !== undefined,
   };
 }

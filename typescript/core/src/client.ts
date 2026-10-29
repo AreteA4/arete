@@ -1409,7 +1409,9 @@ export class Arete<TStack extends StackDefinition> {
       internalOptions
     );
 
-    if (!httpOnly && autoConnect) {
+    // A stack the dev environment refused fails its own stream and query
+    // calls; the client's other surfaces still work (contract §4.3).
+    if (!httpOnly && autoConnect && !(dev?.stack instanceof Error)) {
       await client.connection.connect();
     }
 
