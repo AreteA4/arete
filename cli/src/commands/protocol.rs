@@ -53,6 +53,7 @@ const SOURCES_SCHEMA: &str = "arete.protocol-build-sources/v1";
 const MAX_NAMED_CHANGES: usize = 10;
 const MAX_SLUG_LEN: usize = 63;
 
+pub mod app;
 pub mod init;
 pub mod listing;
 pub mod local_programs;

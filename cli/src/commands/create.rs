@@ -12,7 +12,7 @@ use crate::templates::{
 };
 use crate::ui;
 
-const TEMPLATE_CHOICES: &str = "react-ore|rust-ore|typescript-ore|python-ore";
+const TEMPLATE_CHOICES: &str = "protocol|protocol-app|react-ore|rust-ore|typescript-ore|python-ore";
 
 /// Human progress goes to stdout in normal mode and is suppressed with
 /// `--json`, where stdout carries exactly one JSON object.
@@ -89,6 +89,10 @@ pub fn create(
             "Directory '{}' already exists. Choose a different name or remove it first.",
             project_name
         );
+    }
+
+    if selected_template.is_protocol() {
+        return create_protocol(&project_name, selected_template, skip_install, json, start);
     }
 
     let manager = TemplateManager::new()?;
@@ -188,6 +192,96 @@ pub fn create(
     }
 
     Ok(())
+}
+
+/// The protocol templates, built into the CLI: `a4 protocol init`'s
+/// scaffold, and for `protocol-app` the app and server on top of it.
+fn create_protocol(
+    project_name: &str,
+    template: Template,
+    skip_install: bool,
+    json: bool,
+    start: std::time::Instant,
+) -> Result<()> {
+    let project_dir = Path::new(project_name);
+    if !json {
+        ui::print_step(&format!(
+            "Creating {} from {}...",
+            project_name.bold(),
+            template.display_name().cyan()
+        ));
+    }
+    let args = crate::commands::protocol::init::InitArgs {
+        dir: project_dir.to_path_buf(),
+        ..Default::default()
+    };
+    let outcome = if template == Template::ProtocolApp {
+        crate::commands::protocol::app::scaffold(&args)?
+    } else {
+        crate::commands::protocol::init::scaffold(&args)?
+    };
+    for warning in &outcome.warnings {
+        if !json {
+            ui::print_warning(warning);
+        }
+    }
+    say!(
+        json,
+        "  {} Protocol {} scaffolded",
+        ui::symbols::SUCCESS.green(),
+        outcome.name.bold()
+    );
+
+    let pm = detect_package_manager();
+    let installed_dependencies = if skip_install {
+        false
+    } else {
+        run_npm_install(project_dir, pm, json)?
+    };
+    let mut next = vec![format!("cd {project_name}")];
+    if !installed_dependencies {
+        next.push(install_command(pm).to_string());
+    }
+    next.push("a4 dev up".to_string());
+    if template == Template::ProtocolApp {
+        next.push(format!("{} app", run_script(pm)));
+    }
+
+    telemetry::record_create_completed(template.display_name(), start.elapsed());
+    if json {
+        let output = serde_json::json!({
+            "schemaVersion": 1,
+            "path": project_dir.display().to_string(),
+            "template": template.display_name(),
+            "protocol": outcome.name,
+            "installedDependencies": installed_dependencies,
+            "next": next,
+        });
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        println!();
+        println!(
+            "{} {}",
+            ui::symbols::SUCCESS.green().bold(),
+            "Ready!".bold()
+        );
+        println!();
+        println!("Deploy it to a dev environment and iterate (see README.md):");
+        println!();
+        println!("  {} {}", "$".dimmed(), next.join(" && ").cyan());
+        println!();
+    }
+    Ok(())
+}
+
+/// How a package manager runs a package.json script.
+fn run_script(pm: &str) -> &'static str {
+    match pm {
+        "yarn" => "yarn",
+        "pnpm" => "pnpm",
+        "bun" => "bun run",
+        _ => "npm run",
+    }
 }
 
 fn run_npm_install(project_dir: &Path, pm: &str, json: bool) -> Result<bool> {
