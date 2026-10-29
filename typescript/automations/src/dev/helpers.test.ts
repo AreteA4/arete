@@ -113,6 +113,16 @@ describe('@usearete/automations/dev', () => {
     expect(existsSync(path)).toBe(false);
   });
 
+  it('reports a failing periodic save instead of throwing from the timer', async () => {
+    const { root } = project();
+    const errors: unknown[] = [];
+    const store = fileMemoryStore(devClient, join(root, 'missing', 'store.bin'), { saveIntervalMs: 10, onSaveError: (error) => errors.push(error) });
+    await store.bindDeployment('dep');
+    await new Promise((done) => setTimeout(done, 50));
+    expect(errors.length).toBeGreaterThan(0);
+    expect(() => store.close()).toThrow();
+  });
+
   it('simulates on the RPC the dev session names, and checks the deployment', async () => {
     const { root } = project();
     const session = join(root, '.arete', 'dev', 'session.json');

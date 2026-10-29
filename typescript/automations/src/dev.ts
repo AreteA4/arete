@@ -177,13 +177,15 @@ export interface FileMemoryStoreOptions {
   readonly saveIntervalMs?: number;
   /** Called when the saved state belonged to another deployment and was moved aside. */
   readonly onArchive?: (archivedPath: string, deployment: string) => void;
+  /** Called when a periodic save fails (default: logged with `console.error`); the next one retries. */
+  readonly onSaveError?: (error: unknown) => void;
 }
 
 /** A memory store saved to a file. */
 export type FileMemoryStore = AutomationStore & {
   /** Write the state now, if it changed. */
   save(): void;
-  /** Stop the periodic save and write the state one last time. */
+  /** Stop the periodic save and write the state one last time (call it on shutdown). */
   close(): void;
 };
 
@@ -220,7 +222,19 @@ export function fileMemoryStore(client: DevClient, path: string, options: FileMe
     saved = next;
   };
   const intervalMs = options.saveIntervalMs ?? 1000;
-  const timer = intervalMs > 0 ? setInterval(save, intervalMs) : undefined;
+  // A failing periodic save (a full disk, a removed folder) must not stop
+  // the server: it is reported, and the next tick retries.
+  const onSaveError = options.onSaveError ?? ((error: unknown) => console.error(`fileMemoryStore: could not save ${file}:`, error));
+  const timer =
+    intervalMs > 0
+      ? setInterval(() => {
+          try {
+            save();
+          } catch (error) {
+            onSaveError(error);
+          }
+        }, intervalMs)
+      : undefined;
   timer?.unref();
   return Object.assign(store, {
     save,

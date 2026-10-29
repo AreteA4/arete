@@ -80,8 +80,11 @@ async function main() {
   // that targets production.
   const devWallets = dev ? devWalletsSigner(client) : null;
   let store: AutomationStore;
+  let closeStore = () => {};
   if (dev) {
-    store = fileMemoryStore(client, '.arete/dev/token-raise-store.bin');
+    const file = fileMemoryStore(client, '.arete/dev/token-raise-store.bin');
+    closeStore = () => file.close();
+    store = file;
   } else {
     const pool = new pg.Pool({ connectionString: env('DATABASE_URL') });
     const postgres = postgresStore(pool);
@@ -200,6 +203,15 @@ async function main() {
   });
 
   automations.start({ concurrency: 2 });
+  // Let running jobs finish and, in dev, write the file store before exiting.
+  const shutdown = async () => {
+    server.close();
+    await automations.stop();
+    closeStore();
+    process.exit(0);
+  };
+  process.once('SIGINT', () => void shutdown());
+  process.once('SIGTERM', () => void shutdown());
   server.listen(Number(env('PORT', '8787')), () => console.log(`listening on :${env('PORT', '8787')}`));
 }
 
