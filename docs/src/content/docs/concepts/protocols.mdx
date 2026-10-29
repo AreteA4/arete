@@ -27,8 +27,8 @@ A **release** is immutable protocol behavior, identified by a content hash.
 Changing the spec or handler code creates a different release. A review is
 evidence about that exact release.
 
-A **deployment** selects a release, resource versions, a fee policy, and access
-settings. An environment-bound dev deployment uses the fork's chain; a
+A **deployment** selects a release, resource versions, an optional creator fee
+wallet, and access settings. An environment-bound dev deployment uses the fork's chain; a
 production deployment uses mainnet. A deployment's id identifies what a client
 calls. A new dev release creates a new deployment rather than changing the old
 release in place.
