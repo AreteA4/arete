@@ -565,8 +565,11 @@ mod tests {
 
     /// An Arete API and its dev targets on one loopback origin: resolve
     /// answers a target for every surface but the stack, sessions mint
-    /// `session-token`, and every other request is echoed with the path,
-    /// query and `Authorization` it arrived with.
+    /// `session-token` (`session:<deployment>` for a protocol deployment),
+    /// and every other request is echoed with the path, query and
+    /// `Authorization` it arrived with. As the API does, an instance or
+    /// intent (`*-env-*` is the environment's deployment's, any other
+    /// production's) is answered only to a session for its deployment.
     async fn fake_api(stack_ws: Option<String>) -> (String, Arc<std::sync::Mutex<Vec<Value>>>) {
         use axum::routing::post;
         let minted = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -630,10 +633,24 @@ mod tests {
                 }),
             )
             .route(
+                "/api/protocol-receipts/:signature",
+                axum::routing::get(
+                    |axum::extract::Path(signature): axum::extract::Path<String>| async move {
+                        let deployment = if signature.contains("env") { "env-dep" } else { "prod-dep" };
+                        axum::Json(json!({ "signature": signature, "deployment": { "deploymentId": deployment } }))
+                    },
+                ),
+            )
+            .route(
                 "/ws/sessions",
                 post(move |axum::Json(request): axum::Json<Value>| async move {
+                    let token = if request["targetKind"] == "protocol-deployment" {
+                        format!("session:{}", request["targetId"].as_str().unwrap_or_default())
+                    } else {
+                        "session-token".to_string()
+                    };
                     sessions.lock().unwrap().push(request);
-                    axum::Json(json!({ "token": "session-token", "expires_at": 4_000_000_000i64 }))
+                    axum::Json(json!({ "token": token, "expires_at": 4_000_000_000i64 }))
                 }),
             )
             .fallback(|request: Request| async move {
@@ -643,11 +660,32 @@ mod tests {
                     .and_then(|value| value.to_str().ok())
                     .unwrap_or_default()
                     .to_string();
-                axum::Json(json!({
-                    "path": request.uri().path(),
-                    "query": request.uri().query(),
-                    "auth": auth,
-                }))
+                let path = request.uri().path().to_string();
+                let object = path
+                    .strip_prefix("/api/protocol-instances/")
+                    .or_else(|| path.strip_prefix("/api/execution-intents/"));
+                if let Some(object) = object {
+                    let owner = if object.split('/').next().unwrap_or_default().contains("env") {
+                        "env-dep"
+                    } else {
+                        "prod-dep"
+                    };
+                    if auth != format!("Bearer session:{owner}") {
+                        return (
+                            axum::http::StatusCode::NOT_FOUND,
+                            axum::Json(json!({ "code": "not-found" })),
+                        );
+                    }
+                }
+                (
+                    axum::http::StatusCode::OK,
+                    axum::Json(json!({
+                        "path": path,
+                        "query": request.uri().query(),
+                        "auth": auth,
+                        "method": request.method().as_str(),
+                    })),
+                )
             });
         tokio::spawn(async move {
             let _ = axum::serve(api, app).await;
@@ -736,7 +774,9 @@ mod tests {
         );
 
         // A protocol named by package before its first publish: the
-        // environment's deployment, with the account's key.
+        // environment's deployment, its flow routes with a protocol session
+        // minted for that deployment, its owner routes with the account's
+        // key.
         let (status, body) = read(
             get(
                 "/api/protocol-deployments/package:token-raise/instances",
@@ -748,7 +788,88 @@ mod tests {
         .await;
         assert_eq!(status, 200);
         assert_eq!(body["path"], "/api/protocol-deployments/env-dep/instances");
+        assert_eq!(body["auth"], "Bearer session:env-dep");
+        assert_eq!(
+            minted.lock().unwrap().last().unwrap(),
+            &json!({
+                "targetKind": "protocol-deployment", "targetId": "env-dep",
+                "scopes": ["protocol:read", "protocol:prepare:*", "protocol:submit"],
+                "environment": env,
+            })
+        );
+        let (status, body) = read(
+            get("/api/protocol-deployments/package:token-raise", None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(body["path"], "/api/protocol-deployments/env-dep");
         assert_eq!(body["auth"], "Bearer a4_sk_x");
+
+        // Instances and intents are named by their own id: forwarded
+        // unchanged, with a session for the environment's deployment of
+        // the protocol the request names...
+        let protocol = json!({ "protocols": [{ "package": "token-raise" }] });
+        for path in [
+            "/api/protocol-instances/i-env/metadata",
+            "/api/execution-intents/e-env",
+        ] {
+            let (status, body) = read(get(path, Some(protocol.clone())).await.unwrap()).await;
+            assert_eq!(status, 200, "{path}");
+            assert_eq!(body["path"], path);
+            assert_eq!(body["auth"], "Bearer session:env-dep");
+        }
+        let submitted = client
+            .post(format!("{edge}/api/execution-intents/e-env/submit"))
+            .header("authorization", "Bearer from-the-page")
+            .header("origin", "http://localhost:5173")
+            .header(edge::IDENTITY_HEADER, protocol.to_string())
+            .json(&json!({ "signedTransactions": ["AQ=="] }))
+            .send()
+            .await
+            .unwrap();
+        let (status, body) = read(submitted).await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            (
+                body["path"].clone(),
+                body["method"].clone(),
+                body["auth"].clone()
+            ),
+            (
+                json!("/api/execution-intents/e-env/submit"),
+                json!("POST"),
+                json!("Bearer session:env-dep")
+            )
+        );
+        // ...so production's are never answered, and a request that names
+        // no protocol is refused before it goes anywhere.
+        for path in [
+            "/api/protocol-instances/i-prod/metadata",
+            "/api/execution-intents/e-prod",
+        ] {
+            let (status, _) = read(get(path, Some(protocol.clone())).await.unwrap()).await;
+            assert_eq!(status, 404, "{path}");
+        }
+        let (status, body) = read(get("/api/execution-intents/e-env", None).await.unwrap()).await;
+        assert_eq!(
+            (status, body["code"].clone()),
+            (503, json!("devenv-surface-unavailable"))
+        );
+
+        // Receipts take the account's key: forwarded when they are the
+        // environment deployment's, refused when they are production's.
+        let (status, body) = read(get("/api/protocol-receipts/5env", None).await.unwrap()).await;
+        assert_eq!(status, 200);
+        assert_eq!(body["signature"], "5env");
+        let (status, body) = read(get("/api/protocol-receipts/5prod", None).await.unwrap()).await;
+        assert_eq!(
+            (status, body["code"].clone()),
+            (403, json!("environment-token-refused"))
+        );
+        let (status, _) = read(get("/api/protocol-receipts/keys", None).await.unwrap()).await;
+        assert_eq!(status, 200);
 
         // Refusals carry the code and the fix, and go nowhere else.
         let (status, body) = read(

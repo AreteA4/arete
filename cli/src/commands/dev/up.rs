@@ -617,7 +617,29 @@ async fn admit_local_programs(
 /// stack with several live specs, each alias.
 fn lock_stacks(lock: &ProjectLock) -> Vec<(String, String, Option<String>)> {
     let mut stacks = Vec::new();
+    let mut add =
+        |package: &str, hash: &str, lives: &[crate::project::lockfile::LockedLiveSpec]| {
+            if lives.len() > 1 {
+                for live in lives {
+                    stacks.push((
+                        package.to_string(),
+                        hash.to_string(),
+                        Some(live.alias.clone()),
+                    ));
+                }
+            } else {
+                stacks.push((package.to_string(), hash.to_string(), None));
+            }
+        };
     for dependency in &lock.dependencies {
+        // The stacks an installed protocol hoists are registry stacks too.
+        for stack in &dependency.stacks {
+            add(
+                &stack.package,
+                &stack.stack_manifest_hash,
+                &stack.live_specs,
+            );
+        }
         let (DependencyKind::Stack, Some(package), Some(hash)) = (
             dependency.kind,
             dependency.source.strip_prefix("registry:"),
@@ -625,14 +647,10 @@ fn lock_stacks(lock: &ProjectLock) -> Vec<(String, String, Option<String>)> {
         ) else {
             continue;
         };
-        if dependency.live_specs.len() > 1 {
-            for live in &dependency.live_specs {
-                stacks.push((package.to_string(), hash.clone(), Some(live.alias.clone())));
-            }
-        } else {
-            stacks.push((package.to_string(), hash.clone(), None));
-        }
+        add(package, hash, &dependency.live_specs);
     }
+    stacks.sort();
+    stacks.dedup();
     stacks
 }
 
@@ -1728,11 +1746,25 @@ mod tests {
             generator_contract: String::new(),
             local_build: None,
         };
+        let mut protocol = stack("raise", "registry:raise", &[]);
+        protocol.kind = DependencyKind::Protocol;
+        protocol.stack_manifest_hash = None;
+        protocol.stacks = vec![crate::project::lockfile::LockedProtocolStack {
+            alias: "ledger".into(),
+            package: "raise-ledger".into(),
+            version: "1.0.0".into(),
+            package_release_hash: "release".into(),
+            stack_manifest_hash: "hash-ledger".into(),
+            live_specs: Vec::new(),
+            programs: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+        }];
         let mut lock = ProjectLock::empty("manifest".into());
         lock.dependencies = vec![
             stack("klend", "registry:klend", &["default"]),
             stack("multi", "registry:multi", &["fast", "slow"]),
             stack("mine", "path:stacks/mine.stack.yaml", &["default"]),
+            protocol,
         ];
         let some = |value: &str| Some(value.to_string());
         assert_eq!(
@@ -1741,6 +1773,7 @@ mod tests {
                 ("klend".to_string(), "hash-klend".to_string(), None),
                 ("multi".to_string(), "hash-multi".to_string(), some("fast")),
                 ("multi".to_string(), "hash-multi".to_string(), some("slow")),
+                ("raise-ledger".to_string(), "hash-ledger".to_string(), None),
             ]
         );
     }
