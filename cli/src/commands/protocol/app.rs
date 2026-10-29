@@ -71,7 +71,7 @@ const TSCONFIG: &str = r#"{
 }
 "#;
 
-const GITIGNORE_LINES: [&str; 2] = ["dist/", ".env.local"];
+const GITIGNORE_LINES: [&str; 3] = ["dist/", ".env", ".env.local"];
 
 /// The template's README section, after the scaffold's.
 const README: &str = r#"
@@ -171,6 +171,7 @@ fn package_json(scaffold: &str) -> Result<String> {
         &mut value,
         "dependencies",
         json!({
+            "@privy-io/node": "^0.37.0",
             "@solana/web3.js": "^1.98.0",
             "@usearete/automations": version,
             "@usearete/react": version,
@@ -198,8 +199,9 @@ fn package_json(scaffold: &str) -> Result<String> {
     Ok(format!("{}\n", serde_json::to_string_pretty(&value)?))
 }
 
-/// `a4 create <dir> --template protocol-app`: the protocol scaffold, then
-/// the app on top of it.
+/// `a4 create <dir> --template protocol-app`: the protocol scaffold with
+/// the app on top of it, both written before the System Program install
+/// (which needs the registry), so a failed install leaves the whole project.
 pub fn scaffold(args: &InitArgs) -> Result<InitOutcome> {
     let dir = &args.dir;
     let clashing: Vec<&str> = APP_FILES
@@ -214,9 +216,11 @@ pub fn scaffold(args: &InitArgs) -> Result<InitOutcome> {
             clashing.join(", ")
         );
     }
-    let mut outcome = super::init::scaffold(args)?;
-    add_app(dir, &outcome.name, &mut outcome.written)?;
-    Ok(outcome)
+    super::init::scaffold_extended(args, |dir, name| {
+        let mut written = Vec::new();
+        add_app(dir, name, &mut written)?;
+        Ok(written)
+    })
 }
 
 /// Write the app over a fresh protocol scaffold in `dir`.
@@ -301,12 +305,36 @@ mod tests {
         assert_eq!(package["devDependencies"]["tsx"], "^4.19.0");
 
         let gitignore = std::fs::read_to_string(project.join(".gitignore")).unwrap();
-        for line in ["node_modules/", ".arete/", "dist/", ".env.local"] {
+        for line in ["node_modules/", ".arete/", "dist/", ".env", ".env.local"] {
             assert!(gitignore.lines().any(|l| l == line), "{line}");
         }
         let readme = std::fs::read_to_string(project.join("README.md")).unwrap();
         assert!(readme.contains("## The app"));
         assert!(readme.contains("a4 install --locked"));
+    }
+
+    #[test]
+    fn a_failed_install_leaves_the_app_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("my-app");
+        let args = InitArgs {
+            dir: project.clone(),
+            ..InitArgs::default()
+        };
+        let error = super::super::init::scaffold_inner(
+            &args,
+            |_| anyhow::bail!("not logged in"),
+            |dir, name| {
+                let mut written = Vec::new();
+                add_app(dir, name, &mut written)?;
+                Ok(written)
+            },
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("not logged in"));
+        assert!(project.join("protocol.ts").is_file());
+        assert!(project.join("app/src/App.tsx").is_file());
+        assert!(project.join("server/index.ts").is_file());
     }
 
     #[test]

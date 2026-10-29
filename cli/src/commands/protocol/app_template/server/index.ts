@@ -15,6 +15,7 @@
  * signs, Postgres keeps jobs and consent (`npm run server -- --migrate`
  * once), and RPC_URL simulates. See README.md.
  */
+import { existsSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
 import {
@@ -33,6 +34,9 @@ import { createProtocolClient } from "@usearete/sdk";
 
 import definition from "../automations/index.js";
 import protocol from "../generated/typescript/protocols/{{slug}}/{{slug}}.js";
+
+// Settings from .env (see .env.example); variables already set win.
+if (existsSync(".env")) process.loadEnvFile(".env");
 
 function env(name: string, fallback?: string): string {
   const value = process.env[name] || fallback;
@@ -136,14 +140,17 @@ async function main() {
       if (req.method === "GET" && url.pathname === "/arete/health") return json(res, 200, { ok: true, dev });
       if (!fromApp(req)) return json(res, 401, { error: "unauthorized" });
       const body = req.method === "POST" ? (JSON.parse(String(await readBody(req))) as Record<string, string & number>) : {};
-      const expiresAt = Number(body.expiresAt ?? Date.now() + 30 * 86_400_000);
       // 1. The message the user signs to opt in, then 2. their signature.
+      // The expiry is part of the signed message: the grant sends back the
+      // one the message returned.
       if (req.method === "POST" && url.pathname === "/consent/message") {
+        const expiresAt = Number(body.expiresAt ?? Date.now() + 30 * 86_400_000);
         const proof = await automations.consent.proofMessage(consentFields(body.wallet, body.instanceId, body.amount, expiresAt));
-        return json(res, 200, { message: proof.message, nonce: proof.nonce, issuedAt: proof.issuedAt });
+        return json(res, 200, { message: proof.message, nonce: proof.nonce, issuedAt: proof.issuedAt, expiresAt });
       }
       if (req.method === "POST" && url.pathname === "/consent/grant") {
-        const fields = consentFields(body.wallet, body.instanceId, body.amount, expiresAt);
+        if (body.expiresAt === undefined) return json(res, 400, { error: "send the expiresAt /consent/message returned" });
+        const fields = consentFields(body.wallet, body.instanceId, body.amount, Number(body.expiresAt));
         return json(res, 200, await automations.consent.grant({ ...fields, nonce: body.nonce, issuedAt: body.issuedAt, signature: body.signature }));
       }
       if (req.method === "DELETE" && url.pathname.startsWith("/consent/")) {
@@ -152,6 +159,7 @@ async function main() {
       // Dev only: a dev wallet (name or address) signs its own consent.
       if (devWallets && req.method === "POST" && url.pathname === "/dev/consent") {
         const wallet = devWallets.resolve(body.wallet) ?? body.wallet;
+        const expiresAt = Number(body.expiresAt ?? Date.now() + 30 * 86_400_000);
         return json(res, 200, await grantDevConsent(automations, devWallets, consentFields(wallet, body.instanceId, body.amount, expiresAt)));
       }
       return json(res, 404, { error: "not found" });
