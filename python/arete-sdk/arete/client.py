@@ -283,6 +283,7 @@ class Arete:
     ) -> None:
         self._stack = stack
         self._dev = dev
+        self._owned_dev_http: Any = None
         self._wallet = wallet
         # ARETE_API_KEY applies before binding session endpoints are filled in.
         auth = resolve_auth_config(auth)
@@ -441,6 +442,7 @@ class Arete:
 
         switch = resolve_switch_from_process(environment, lambda: resolve_auth_config(auth))
         dev_mode = None
+        owned_http: Any = None
         if switch.is_dev:
             if (url is not None and url != stack.endpoints.ws) or (
                 http_url is not None and http_url != stack.endpoints.http
@@ -454,7 +456,8 @@ class Arete:
             if http_client is None:
                 import httpx
 
-                http_client = httpx.AsyncClient()
+                # Owned by the client; closed by aclose() or a failed setup.
+                http_client = owned_http = httpx.AsyncClient()
             dev_mode = DevMode.of(switch, resolve_auth_config(auth), http_client)
             # Dev reads go to the environment, never to a local endpoint.
             http_url = None
@@ -497,6 +500,59 @@ class Arete:
                 "INVALID_CONFIG",
             )
 
+        try:
+            return await cls._connect_resolved(
+                effective_stack,
+                dev_mode=dev_mode,
+                owned_http=owned_http,
+                http_only=http_only,
+                websocket_url=websocket_url,
+                http_base=http_base,
+                connect_http_url=connect_http_url,
+                overrides=overrides,
+                auth=auth,
+                wallet=wallet,
+                chain=chain,
+                transactions=transactions,
+                execution=execution,
+                auto_connect=auto_connect,
+                auto_reconnect=auto_reconnect,
+                reconnect_intervals=reconnect_intervals,
+                max_reconnect_attempts=max_reconnect_attempts,
+                initial_data_timeout=initial_data_timeout,
+                http_client=http_client,
+                connect_factory=connect_factory,
+            )
+        except BaseException:
+            if owned_http is not None:
+                await owned_http.aclose()
+            raise
+
+    @classmethod
+    async def _connect_resolved(
+        cls,
+        effective_stack: StackDef,
+        *,
+        dev_mode: Any,
+        owned_http: Any,
+        http_only: bool,
+        websocket_url: Optional[str],
+        http_base: Optional[str],
+        connect_http_url: Optional[str],
+        overrides: Mapping[str, ProgramReadDescriptor],
+        auth: Optional[AuthConfig],
+        wallet: Optional[WalletAdapter],
+        chain: Optional[ChainClient],
+        transactions: Optional[TransactionTransport],
+        execution: Optional[Mapping[str, Any]],
+        auto_connect: bool,
+        auto_reconnect: bool,
+        reconnect_intervals: Optional[Sequence[float]],
+        max_reconnect_attempts: Optional[int],
+        initial_data_timeout: Optional[float],
+        http_client: Any,
+        connect_factory: Optional[Callable[..., Any]],
+    ) -> "Arete":
         dev_wiring = None
         if dev_mode is not None:
             from arete import _dev_client
@@ -506,12 +562,6 @@ class Arete:
             )
             if not http_only:
                 websocket_url = dev_wiring.websocket_url
-                if (
-                    auto_connect
-                    and websocket_url is not None
-                    and dev_wiring.edge_url is not None
-                ):
-                    await check_edge(http_client, dev_wiring.edge_url)
 
         client = cls(
             effective_stack,
@@ -532,13 +582,21 @@ class Arete:
             connect_factory=connect_factory,
             dev=dev_wiring,
         )
+        client._owned_dev_http = owned_http
+        if dev_wiring is not None and dev_wiring.edge_url is not None:
+            # The edge is checked once, before the first socket opens,
+            # however that socket is opened.
+            edge_url, edge_http = dev_wiring.edge_url, http_client
+            client._connection.before_first_connect(
+                lambda: check_edge(edge_http, edge_url)
+            )
         if dev_wiring is not None and dev_wiring.socket_error is not None:
             # The environment refused the stack: its views raise the
             # refusal, and the client's other surfaces keep working.
             client._connection.refuse(dev_wiring.socket_error)
             http_only = True
         if not http_only and auto_connect:
-            await client._connection.connect()
+            await client.connect_socket()
         return apply_connected_stack_extensions(client, effective_stack)
 
     # -- internals ---------------------------------------------------------
@@ -878,6 +936,9 @@ class Arete:
         await self._http.aclose()
         for client in self._hosted_read_clients.values():
             await client.aclose()
+        if self._owned_dev_http is not None:
+            await self._owned_dev_http.aclose()
+            self._owned_dev_http = None
 
     async def __aenter__(self) -> "Arete":
         return self

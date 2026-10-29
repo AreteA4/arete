@@ -65,7 +65,8 @@ from typing import (
 
 import httpx
 
-from arete.auth import AuthConfig
+from arete.auth import AuthConfig, resolve_auth_config
+from arete.dev_environment import resolve_switch_from_process
 from arete.chain import ChainClient, HttpChainClient
 from arete.client import Arete
 from arete.errors import AreteError, ProgramKeyConflictError
@@ -523,6 +524,32 @@ class Session:
         )
 
 
+async def _dev_session_transports(
+    gateway: Any, switch: Any, auth: Optional[AuthConfig], http_client: Any
+) -> Any:
+    """A composition session's shared chain and transaction transports in
+    dev mode: through the edge, or at the environment's gateway targets."""
+    from arete.dev_environment import DevMode, gateway_identity
+    from arete.gateway import dev_gateway_transports
+
+    owned = not isinstance(http_client, httpx.AsyncClient)
+    client = httpx.AsyncClient() if owned else http_client
+    try:
+        mode = DevMode.of(switch, resolve_auth_config(auth), client)
+        answer = None
+        if mode.resolver is not None:
+            answer = await mode.resolver.resolve(
+                {
+                    "chain": gateway_identity(gateway.chain),
+                    "transactions": gateway_identity(gateway.transactions),
+                }
+            )
+        return dev_gateway_transports(gateway, mode, answer, http_client=http_client)
+    finally:
+        if owned:
+            await client.aclose()
+
+
 async def create_session(
     *,
     stacks: Optional[Mapping[str, StackDef]] = None,
@@ -615,11 +642,18 @@ async def create_session(
                 "composition sessions require one consistent generated gateway "
                 "or explicit chain and transaction transports"
             )
-        generated_transports = create_hosted_solana_gateway_transports(
-            generated_gateway,
-            auth=auth,
-            http_client=http_client,
-        )
+        switch = resolve_switch_from_process(environment, lambda: resolve_auth_config(auth))
+        if switch.is_dev:
+            # The shared transports go to the dev environment too.
+            generated_transports = await _dev_session_transports(
+                generated_gateway, switch, auth, http_client
+            )
+        else:
+            generated_transports = create_hosted_solana_gateway_transports(
+                generated_gateway,
+                auth=auth,
+                http_client=http_client,
+            )
         chain = chain or generated_transports.chain
         transactions = transactions or generated_transports.transactions
     if program_reads:

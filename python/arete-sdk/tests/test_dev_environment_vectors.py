@@ -587,3 +587,79 @@ async def test_a_refused_stack_leaves_the_other_surfaces_working(
     except Exception:
         pass
     assert any(str(r.url).startswith("http://127.0.0.1:8911/chain/") for r in recorder.take())
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_socket_still_checks_the_edge(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arete import Arete
+
+    monkeypatch.setenv("ARETE_ENVIRONMENT", "dev")
+    monkeypatch.setenv("ARETE_DEV_URL", "http://127.0.0.1:8911")
+    # Not an edge: no marker on any answer.
+    http = answering(200, {}, {"result": 1})
+    stack = stack_def(TARGETS["installed"]["default"])
+    client = await Arete.connect(stack, http_client=http, auto_connect=False)
+    with pytest.raises(AreteError) as raised:
+        await client.connect_socket()
+    assert raised.value.code == "devenv-edge-unreachable"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stack_session_keeps_its_code() -> None:
+    from arete.auth import AuthState
+
+    refusal = {
+        "schemaVersion": 1,
+        "error": "not loaded",
+        "code": "devenv-stack-not-loaded",
+        "retryable": False,
+        "fix": "the fix",
+    }
+    state = AuthState(
+        "wss://s1.devstack.arete.run",
+        AuthConfig(token_endpoint="https://api.arete.run/ws/sessions", secret_key=SECRET),
+    )
+    state._http_session = answering(409, {}, refusal)
+    with pytest.raises(DevEnvironmentError) as raised:
+        await state.resolve_token()
+    assert raised.value.code == "devenv-stack-not-loaded"
+    assert raised.value.fix == "the fix"
+
+
+@pytest.mark.asyncio
+async def test_a_composition_session_shares_dev_transports(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arete import create_session
+
+    monkeypatch.setenv("ARETE_ENVIRONMENT", "dev")
+    monkeypatch.setenv("ARETE_DEV_URL", "http://127.0.0.1:8911")
+    recorder = Recorder()
+    stack = stack_def(TARGETS["installed"]["default"])
+    session = await create_session(
+        stacks={"klend": stack},
+        mode="composition",
+        transport="http",
+        http_client=recorder.client(),
+    )
+    assert session.environment == "dev"
+    recorder.take()
+    try:
+        await session.chain.lamports("11111111111111111111111111111111")
+    except Exception:
+        pass
+    (request,) = recorder.take()
+    assert str(request.url).startswith("http://127.0.0.1:8911/chain/")
+    assert "Authorization" not in request.headers
+
+
+@pytest.mark.asyncio
+async def test_a_dev_client_closes_the_http_client_it_made(monkeypatch: pytest.MonkeyPatch) -> None:
+    from arete import Arete
+
+    monkeypatch.setenv("ARETE_ENVIRONMENT", "dev")
+    monkeypatch.setenv("ARETE_DEV_URL", "http://127.0.0.1:8911")
+    stack = stack_def(TARGETS["installed"]["default"])
+    client = await Arete.connect(stack, transport="http")
+    owned = client._owned_dev_http
+    assert owned is not None and not owned.is_closed
+    await client.aclose()
+    assert owned.is_closed

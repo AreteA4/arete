@@ -911,7 +911,10 @@ class AuthState:
                 token = await self._fetch_token_from_endpoint(token_endpoint)
                 return self._set_token(token)
             except Exception as e:
-                if isinstance(e, AuthError):
+                from .dev_environment import DevEnvironmentError
+
+                # A dev refusal keeps its wire code and fix.
+                if isinstance(e, (AuthError, DevEnvironmentError)):
                     raise
                 raise AuthError(
                     f"Failed to fetch authentication token from endpoint: {e}",

@@ -143,6 +143,7 @@ class ConnectionManager:
         is exactly what older clients send."""
         self._websocket_url = websocket_url or None
         self._refused: Optional[BaseException] = None
+        self._preflight: Optional[Callable[[], Awaitable[None]]] = None
         if auth_state is not None:
             self._auth_state = auth_state
         elif auth is not None:
@@ -209,6 +210,9 @@ class ConnectionManager:
         self._require_websocket_url()
         if self.is_connected():
             return
+        if self._preflight is not None:
+            await self._preflight()
+            self._preflight = None
         loop = asyncio.get_running_loop()
         waiter: "asyncio.Future[None]" = loop.create_future()
         self._connect_waiters.append(waiter)
@@ -669,6 +673,11 @@ class ConnectionManager:
                 waiter.set_result(slot)
 
     # -- internals: state --------------------------------------------------
+
+    def before_first_connect(self, check: Callable[[], Awaitable[None]]) -> None:
+        """Run ``check`` once before the first socket opens; until it
+        passes, connecting raises its error."""
+        self._preflight = check
 
     def refuse(self, error: BaseException) -> None:
         """No socket: a dev environment refused the stack. Connecting and
