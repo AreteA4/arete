@@ -593,6 +593,15 @@ impl EnvApi {
     pub async fn stacks(&self, env: &str) -> Result<Value> {
         self.get(&Self::env_path(env, "/stacks")?).await
     }
+
+    /// The environment's targets for installed identities (Program Read
+    /// bindings and releases, gateway bindings, stacks, protocols): each a
+    /// `{"status": "target", …}` or a `{"status": "refused", code, message,
+    /// fix}`.
+    pub async fn resolve(&self, env: &str, identities: Value) -> Result<Value> {
+        self.post(&Self::env_path(env, "/resolve")?, identities)
+            .await
+    }
 }
 
 /// Whether `error` is the API's "not found".

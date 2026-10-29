@@ -620,7 +620,7 @@ pub fn run(command: DevCommands, json: bool) -> Result<()> {
     }
 }
 
-fn block_on<T, F: std::future::Future<Output = Result<T>>>(future: F) -> Result<T> {
+pub(crate) fn block_on<T, F: std::future::Future<Output = Result<T>>>(future: F) -> Result<T> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
