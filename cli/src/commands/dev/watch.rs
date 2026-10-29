@@ -1,8 +1,8 @@
 //! A polling watcher over the protocol sources: `protocol.ts` (and any
 //! other `protocol.*` file), `handlers/`, `idl/` and `arete.lock`, so an
 //! `a4 install` or `a4 update` of a program the protocol imports redeploys
-//! it. Polling keeps it free of platform file-event APIs; a project is
-//! small.
+//! it, and each local SDK extension directory arete.toml names. Polling
+//! keeps it free of platform file-event APIs; a project is small.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -63,6 +63,7 @@ pub fn snapshot(root: &Path) -> Snapshot {
         record(&root.join(file), &mut snapshot);
     }
     snapshot.extend(super::custom_stacks::snapshot(root));
+    snapshot.extend(super::local_extensions::snapshot(root));
     snapshot
 }
 

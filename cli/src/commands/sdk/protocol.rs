@@ -126,6 +126,7 @@ pub(crate) fn generate_project_protocol(
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .with_context(|| format!("Failed to generate stack '{key}' of protocol '{alias}'"))?;
@@ -201,6 +202,7 @@ pub(crate) fn generate_project_protocol(
                         stack_endpoints: None,
                         reference: None,
                         program_install: None,
+                        extensions: None,
                     },
                 )
                 .with_context(|| {

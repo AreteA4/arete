@@ -3,7 +3,8 @@
 //!
 //! An app developed with `ARETE_ENVIRONMENT=dev` may call things production
 //! does not have yet: a protocol built locally, a program the environment
-//! changed, a project stack loaded under a dependency's alias. The check
+//! changed, a project stack loaded under a dependency's alias, an SDK
+//! generated with an unpublished extension. The check
 //! lists each and exits non-zero while any remain, so CI can gate a
 //! production deploy on it. The deploy story is: run the check, publish what
 //! it lists, `a4 install --locked`, deploy the app with `ARETE_ENVIRONMENT`
@@ -59,18 +60,33 @@ fn pinned_programs(dependency: &LockedDependency) -> Vec<(&str, Option<&str>)> {
 
 /// What `lock` alone says exists only in development.
 pub fn lock_pending(lock: &ProjectLock) -> Vec<Pending> {
-    lock.dependencies
-        .iter()
-        .filter_map(|dependency| {
-            let build = dependency.local_build.as_ref()?;
-            Some(Pending {
-                kind: "local-protocol-build",
-                name: dependency.alias.clone(),
-                detail: format!("the protocol client is generated from a local build ({build})"),
-                fix: "Publish it with `a4 protocol deploy` in the protocol's project, then run `a4 install --locked` here".into(),
-            })
+    let builds = lock.dependencies.iter().filter_map(|dependency| {
+        let build = dependency.local_build.as_ref()?;
+        Some(Pending {
+            kind: "local-protocol-build",
+            name: dependency.alias.clone(),
+            detail: format!("the protocol client is generated from a local build ({build})"),
+            fix: "Publish it with `a4 protocol deploy` in the protocol's project, then run `a4 install --locked` here".into(),
         })
-        .collect()
+    });
+    let extensions = lock.dependencies.iter().filter_map(|dependency| {
+        let extension = dependency.local_extension.as_ref()?;
+        Some(Pending {
+            kind: "local-extension",
+            name: dependency.alias.clone(),
+            detail: format!(
+                "the {} SDK is generated with a local SDK extension ({extension})",
+                dependency.kind
+            ),
+            fix: format!(
+                "Publish the extension upstream in a new release of the {} package, remove `extensions` from [dependencies.{}.{}] in arete.toml, then run `a4 install --locked`",
+                dependency.kind,
+                dependency.kind.namespace(),
+                dependency.alias
+            ),
+        })
+    });
+    builds.chain(extensions).collect()
 }
 
 /// What the environment's `overrides` serve in place of what `lock` pins.
@@ -223,6 +239,7 @@ mod tests {
             targets: Vec::new(),
             generator_contract: String::new(),
             local_build: None,
+            local_extension: None,
         }
     }
 
@@ -250,6 +267,27 @@ mod tests {
         assert_eq!(pending[0].kind, "local-protocol-build");
         assert_eq!(pending[0].name, "token-raise");
         assert!(pending[0].fix.contains("a4 protocol deploy"));
+    }
+
+    #[test]
+    fn a_local_extension_is_pending() {
+        let mut lock = lock();
+        lock.dependencies[1].local_extension = Some("ab".repeat(32));
+        let pending = lock_pending(&lock);
+        let kinds: Vec<_> = pending
+            .iter()
+            .map(|item| (item.kind, item.name.as_str()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("local-protocol-build", "token-raise"),
+                ("local-extension", "klend"),
+            ]
+        );
+        assert!(pending[1].detail.contains(&"ab".repeat(32)));
+        assert!(pending[1].fix.contains("[dependencies.stacks.klend]"));
+        assert!(pending[1].fix.contains("a4 install --locked"));
     }
 
     #[test]

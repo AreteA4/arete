@@ -1071,6 +1071,7 @@ impl Reporter {
 
 /// Run the deploy flow against `client`. Prints progress unless `json`.
 pub fn execute(client: &ApiClient, args: &DeployArgs, json: bool) -> Result<DeployOutcome> {
+    crate::project::installer::refuse_local_extensions(&args.dir)?;
     if args.no_build {
         check_build_is_current(&args.dir)?;
     } else {

@@ -143,6 +143,7 @@ pub(super) fn generate_rust_protocol(
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .with_context(|| format!("Failed to generate stack '{key}' of protocol '{alias}'"))?;
@@ -219,6 +220,7 @@ pub(super) fn generate_rust_protocol(
                         stack_endpoints: None,
                         reference: None,
                         program_install: None,
+                        extensions: None,
                     },
                 )
                 .with_context(|| {

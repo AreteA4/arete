@@ -1418,7 +1418,30 @@ impl Session<'_> {
         // This pass reports only its own work, never startup's or the last
         // pass's (a failed build returns before the client is generated).
         self.pass = PassReport::default();
+        let (extensions, only_extensions) =
+            super::local_extensions::changed(&self.project.root, &changed);
         let result = async {
+            // A local SDK extension changed: regenerate only its SDK (which
+            // resolves through the blocking registry client), and deploy
+            // nothing when nothing else changed.
+            let root = self.project.root.clone();
+            let installs = tokio::task::spawn_blocking(move || {
+                super::local_extensions::regenerate(&root, &extensions)
+            })
+            .await??;
+            for install in installs {
+                self.events.emit(
+                    "sdk-regenerated",
+                    &format!(
+                        "Regenerated {} {} with its local SDK extension",
+                        install.kind, install.alias
+                    ),
+                    json!(install),
+                );
+            }
+            if only_extensions {
+                return Ok(());
+            }
             if self.config.protocol {
                 self.redeploy(&names).await?;
             }
