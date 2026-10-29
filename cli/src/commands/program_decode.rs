@@ -288,12 +288,14 @@ fn install_for(
 }
 
 /// The registry reference of arete.toml's program dependency `alias`.
+// Bound before returning: the dependency iterator borrows `manifest`.
+#[allow(clippy::let_and_return)]
 fn alias_reference(config_path: &Path, alias: &str) -> Option<String> {
     if !config_path.exists() {
         return None;
     }
     let (manifest, _, _) = crate::project::installer::validate_project(config_path, true).ok()?;
-    manifest
+    let reference = manifest
         .dependencies()
         .find_map(|(kind, name, dependency)| match &dependency.source {
             DependencySourceV1::Registry(source)
@@ -302,7 +304,8 @@ fn alias_reference(config_path: &Path, alias: &str) -> Option<String> {
                 Some(source.registry.clone())
             }
             _ => None,
-        })
+        });
+    reference
 }
 
 /// The registry program that owns the account.
