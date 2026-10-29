@@ -818,15 +818,22 @@ async fn refusal_text(response: Response) -> String {
 }
 
 /// Whether every segment of `path`, percent-decoded, is a plain name: no
-/// `.` or `..`, no `/` or `\\` inside it.
+/// `.` or `..`, no `\\`, and no `/` except inside a `package:<package>`
+/// segment, which is resolved rather than forwarded.
 pub fn safe_path(path: &str) -> bool {
     path.split('/').all(|segment| {
         let decoded = percent_encoding::percent_decode_str(segment).decode_utf8_lossy();
-        decoded != "."
-            && decoded != ".."
-            && !decoded.contains('/')
-            && !decoded.contains('\\')
-            && !segment.contains('\\')
+        if segment.contains('\\') || decoded.contains('\\') {
+            return false;
+        }
+        // A protocol named by package (`package:<package>`) may contain an
+        // encoded `/`: the edge resolves it and never forwards the segment.
+        let parts: Vec<&str> = match decoded.strip_prefix("package:") {
+            Some(package) => package.split('/').collect(),
+            None if decoded.contains('/') => return false,
+            None => vec![decoded.as_ref()],
+        };
+        parts.iter().all(|part| *part != "." && *part != "..")
     })
 }
 
@@ -1189,6 +1196,12 @@ mod tests {
     fn forwarded_paths_never_leave_their_route() {
         assert!(safe_path(
             "/api/protocol-deployments/package:token-raise/instances"
+        ));
+        assert!(safe_path(
+            "/api/protocol-deployments/package:%40acme%2Ftoken-raise/instances"
+        ));
+        assert!(!safe_path(
+            "/api/protocol-deployments/package:%2E%2E%2Fkeys/instances"
         ));
         assert!(safe_path(
             "/v1/releases/arete:h1:program-release:sha256:aa/accounts/X/y"
