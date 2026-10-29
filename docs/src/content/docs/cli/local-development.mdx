@@ -240,6 +240,17 @@ public-env-prefixes = ["VITE_"]
 Unset `ARETE_ENVIRONMENT` (or run without `a4 dev run`) and the same app
 uses production.
 
+Servers, CI and agents with a secret key can skip the edge: set
+`ARETE_ENVIRONMENT=dev` and `ARETE_DEV_ENV=<name|id>` and the SDKs resolve
+the environment's copies themselves. In code, pass the switch to the client
+instead of using the variables (Rust: `.environment(EnvironmentOption::dev())`
+on the builder). `client.environment` (Rust: `client.environment()`) tells
+dev from production.
+
+`a4 stream`, `a4 protocol actions`, `a4 protocol squads` and the MCP protocol
+tools follow `ARETE_ENVIRONMENT` too: `dev` acts on the `a4 dev` session as
+`--dev` does. A value other than `production` or `dev` is an error.
+
 ## Working with the environment
 
 Every command takes `--env <name|id>` (default `ARETE_DEV_ENV`, else the
