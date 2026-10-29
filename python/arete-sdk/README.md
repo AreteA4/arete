@@ -218,6 +218,26 @@ async def stream_session(auth):
     await session.close()
 ```
 
+## Dev environments
+
+The same installed SDK reads and sends through your project's `a4 dev`
+environment when the dev environment switch is on. With `a4 dev up`
+running, `a4 dev run -- python app.py` sets `ARETE_ENVIRONMENT=dev` and
+`ARETE_DEV_URL` (the loopback edge); no key is needed in the app. Servers
+and CI with a secret key can set `ARETE_ENVIRONMENT=dev` and
+`ARETE_DEV_ENV=<name|id>` instead. In code:
+
+```python
+from arete.dev_environment import dev
+
+client = await Arete.connect(STACK, environment=dev())  # or "production"
+assert client.environment == "dev"
+```
+
+Nothing falls back to production: a surface the environment can't serve
+raises `arete.DevEnvironmentError` with the code and a fix
+(`error.fix`).
+
 ## Development
 
 ```bash
