@@ -31,6 +31,7 @@ use tokio::process::{Child, Command};
 use super::api::DevApi;
 use super::automations::{self, AutomationsConfig};
 use super::deploy::{run_build, DeployOutcome, DeploySettings, DeployState, Deployer, BUILD_DIR};
+use super::lease;
 use super::proxy::{self, RpcProxy};
 use super::runtime::{pid_alive, LogSink};
 use super::sdk_gen::{self, LocalProtocol};
@@ -219,6 +220,8 @@ pub struct UpConfig {
     pub show_token: bool,
     /// A Vite dev server to proxy the UI's files to (UI development).
     pub ui_dev_url: Option<String>,
+    /// `--take-over`: take the environment's lease from another project.
+    pub take_over: bool,
 }
 
 /// Prints `a4 dev up` progress: JSON event lines on stdout with `--json`,
@@ -411,6 +414,8 @@ struct Session<'a> {
     admission: Option<Child>,
     /// What the current watch pass did, for its `pass` event.
     pass: PassReport,
+    /// The environment's lease, when the API has leases.
+    lease: Option<lease::Held>,
 }
 
 /// One watch pass's outcome: the protocol deployment, the project stacks and
@@ -642,6 +647,26 @@ pub async fn run(config: UpConfig) -> Result<()> {
         name: view["name"].as_str().unwrap_or_default().to_string(),
     };
     EnvSelection::new(&env.id, &env.name, config.api.origin()).save(&project.environment_path())?;
+    // One project per environment: the lease comes before anything deploys.
+    let held = lease::take(&config.api, &env.id, &config.project_root, config.take_over).await?;
+    match &held {
+        Some(held) => {
+            let human = match &held.replaced {
+                Some(previous) => format!(
+                    "Took the environment over from {previous}; its deployments there are removed"
+                ),
+                None => "This project holds the environment".to_string(),
+            };
+            events.emit(
+                "lease",
+                &human,
+                json!({ "leaseGeneration": held.generation(), "replaced": held.replaced }),
+            );
+        }
+        None => events.log.line(
+            "This Arete API has no environment leases; another project could use the environment at the same time",
+        ),
+    }
     events.emit(
         "environment",
         &format!(
@@ -717,12 +742,20 @@ pub async fn run(config: UpConfig) -> Result<()> {
         ui,
         admission: None,
         pass: PassReport::default(),
+        lease: held,
     };
     let result = session.supervise(&token).await;
+    // A write refused because the environment was taken over ends the run
+    // as a takeover, whatever else the error says.
+    let result =
+        result.map_err(|error| lease::lease_lost(&error).map_or(error, anyhow::Error::new));
     if let Some(runner) = &mut session.automations {
         runner.stop().await;
     }
     let stopped = stop_admission(&mut session.admission).await;
+    if let Some(held) = session.lease.take() {
+        held.release().await;
+    }
     let result = result.and(stopped);
     let Session {
         events, ui, proxy, ..
@@ -776,6 +809,10 @@ fn error_fields(error: &anyhow::Error) -> Value {
 }
 
 impl Session<'_> {
+    fn lease_generation(&self) -> Option<i64> {
+        self.lease.as_ref().map(lease::Held::generation)
+    }
+
     fn write_state(&self) -> Result<()> {
         let state = DevState {
             schema: STATE_SCHEMA.into(),
@@ -840,7 +877,8 @@ impl Session<'_> {
             self.build(&[]).await?;
             self.deployer = Some(Deployer {
                 project_root: config.project_root.clone(),
-                api: DevApi::new(config.api.origin(), config.api.key()),
+                api: DevApi::new(config.api.origin(), config.api.key())
+                    .with_lease(self.lease_generation()),
                 environment: self.env.id.clone(),
                 settings: config.settings.clone(),
                 state_path: self.project.deploy_state_path(),
@@ -1304,6 +1342,7 @@ impl Session<'_> {
             &self.config.api,
             &self.env.id,
             &self.events.log,
+            self.lease_generation(),
         )
         .await?;
         for stack in &stacks {
@@ -1333,9 +1372,11 @@ impl Session<'_> {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         #[cfg(not(unix))]
         let mut terminate = ();
+        let lost = self.lease.as_ref().map(lease::Held::watch);
         tokio::select! {
             _ = &mut ctrl_c => return interrupted_start(self.config.once),
             _ = terminated(&mut terminate) => return interrupted_start(self.config.once),
+            taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
             result = self.start(token) => result?,
         }
         if self.config.once {
@@ -1356,6 +1397,7 @@ impl Session<'_> {
             tokio::select! {
                 _ = &mut ctrl_c => return Ok(()),
                 _ = terminated(&mut terminate) => return Ok(()),
+                taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
                 _ = tick.tick() => {}
             }
             if let Some(runner) = &mut self.automations {
@@ -1377,6 +1419,7 @@ impl Session<'_> {
             tokio::select! {
                 _ = &mut ctrl_c => return Ok(()),
                 _ = terminated(&mut terminate) => return Ok(()),
+                taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
                 result = self.watch_pass(&mut snapshot) => result?,
             }
         }
@@ -1429,6 +1472,10 @@ impl Session<'_> {
         }
         .await;
         if let Err(error) = &result {
+            // Never retried: another project holds the environment now.
+            if let Some(lost) = lease::lease_lost(error) {
+                return Err(lost.into());
+            }
             self.events.emit(
                 "deploy-failed",
                 &format!("Redeploy failed: {error:#}"),

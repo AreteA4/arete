@@ -1305,10 +1305,12 @@ pub(crate) fn deploy_environment_stack(
     name: &str,
     stack: LocalArtifactStack,
     source_idls: serde_json::Value,
+    lease: Option<i64>,
 ) -> Result<()> {
     let client = ApiClient::with_base_url(origin)
         .with_api_key(key.to_string())
-        .with_environment_stacks(environment, source_idls)?;
+        .with_environment_stacks(environment, source_idls)?
+        .with_environment_lease(lease);
     deploy_artifact_stack_with_deployment_name(
         &client,
         stack,

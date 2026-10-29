@@ -201,6 +201,9 @@ fn http_client() -> reqwest::blocking::Client {
 #[derive(Debug, Clone)]
 pub struct ApiClient {
     environment_stacks: Option<(String, serde_json::Value)>,
+    /// The dev environment lease generation an environment stack build
+    /// carries.
+    environment_lease: Option<i64>,
     base_url: String,
     api_key: Option<String>,
     client: reqwest::blocking::Client,
@@ -1483,6 +1486,7 @@ impl ApiClient {
 
         Ok(ApiClient {
             environment_stacks: None,
+            environment_lease: None,
             base_url,
             api_key,
             client: http_client(),
@@ -2062,6 +2066,13 @@ impl ApiClient {
         Ok(self)
     }
 
+    /// Send the dev environment's lease generation with environment stack
+    /// builds.
+    pub(crate) fn with_environment_lease(mut self, generation: Option<i64>) -> Self {
+        self.environment_lease = generation;
+        self
+    }
+
     /// Create a build from explicit public artifacts.
     pub fn create_artifact_build(
         &self,
@@ -2084,11 +2095,15 @@ impl ApiClient {
                 serde_json::to_value(&req)?,
             ),
         };
-        let response = self
+        let mut request = self
             .client
             .post(format!("{}{path}", self.base_url))
             .bearer_auth(api_key)
-            .json(&body)
+            .json(&body);
+        if let (Some(_), Some(generation)) = (&self.environment_stacks, self.environment_lease) {
+            request = request.header(arete_mcp::dev_env::LEASE_HEADER, generation.to_string());
+        }
+        let response = request
             .send()
             .context("Failed to send artifact build request")?;
 
@@ -3020,6 +3035,7 @@ impl ApiClient {
     pub(crate) fn with_base_url(base_url: &str) -> Self {
         ApiClient {
             environment_stacks: None,
+            environment_lease: None,
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: None,
             client: http_client(),

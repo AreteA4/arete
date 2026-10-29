@@ -27,6 +27,7 @@ pub mod capture;
 pub mod custom_stacks;
 pub mod deploy;
 pub mod env;
+pub mod lease;
 pub mod proxy;
 pub mod runtime;
 pub mod sdk_gen;
@@ -231,6 +232,11 @@ pub struct UpArgs {
     /// ones built into a4 (UI development)
     #[arg(long, value_name = "URL", hide = true)]
     pub ui_dev_url: Option<String>,
+
+    /// Take the environment over when another project's `a4 dev up` holds
+    /// it: that run stops, and what it deployed there is removed
+    #[arg(long)]
+    pub take_over: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -1061,7 +1067,11 @@ async fn status(args: EnvArgs, json: bool) -> Result<()> {
     } else {
         let rpc = args.rpc().await?;
         let view = rpc.api().get_env(rpc.env()).await.map_err(env::explain)?;
-        json!({ "environment": arete_mcp::dev_env::public_view(&view) })
+        let mut report = json!({ "environment": arete_mcp::dev_env::public_view(&view) });
+        if let Ok(Some(lease)) = rpc.api().lease(rpc.env()).await {
+            report["lease"] = arete_mcp::dev::lease_view(&lease);
+        }
+        report
     };
     if report["environment"]["state"] == "running" && report.get("chain").is_none() {
         if let Ok(rpc) = args.rpc().await {
@@ -1078,6 +1088,22 @@ async fn status(args: EnvArgs, json: bool) -> Result<()> {
 
 fn print_status(report: &Value) {
     print!("{}", render_status(report));
+}
+
+/// Who holds the environment, from the report's `lease`.
+fn lease_line(lease: &Value) -> Option<String> {
+    if let Some(error) = lease["error"].as_str() {
+        return Some(format!("unknown ({error})"));
+    }
+    let holder = lease["holder"].as_str()?;
+    Some(if lease["held"] == true {
+        format!(
+            "{holder} until {} (another project: `a4 dev up --take-over`, or `a4 dev branch` for its own copy)",
+            lease["expiresAt"].as_str().unwrap_or("?")
+        )
+    } else {
+        format!("nobody (last: {holder})")
+    })
 }
 
 /// `a4 dev status`'s readable report.
@@ -1104,6 +1130,9 @@ fn render_status(report: &Value) -> String {
         }
         if let Some(bytes) = env["storageBytes"].as_i64() {
             let _ = writeln!(out, "  storage     {bytes} bytes");
+        }
+        if let Some(holder) = lease_line(&report["lease"]) {
+            let _ = writeln!(out, "  held by     {holder}");
         }
     }
     let session = &report["session"];
@@ -1242,6 +1271,7 @@ fn up(args: UpArgs, json: bool) -> Result<()> {
         open_ui: args.open,
         show_token: args.show_token,
         ui_dev_url: args.ui_dev_url.clone(),
+        take_over: args.take_over,
     };
     block_on(up::run(config))
 }
