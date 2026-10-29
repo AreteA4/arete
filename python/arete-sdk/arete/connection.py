@@ -144,6 +144,7 @@ class ConnectionManager:
         self._websocket_url = websocket_url or None
         self._refused: Optional[BaseException] = None
         self._preflight: Optional[Callable[[], Awaitable[None]]] = None
+        self._disconnects = 0
         if auth_state is not None:
             self._auth_state = auth_state
         elif auth is not None:
@@ -211,7 +212,14 @@ class ConnectionManager:
         if self.is_connected():
             return
         if self._preflight is not None:
+            # The check is part of the attempt: a disconnect while it runs
+            # cancels the attempt, and no socket opens afterwards.
+            epoch = self._disconnects
             await self._preflight()
+            if self._disconnects != epoch:
+                raise AreteConnectionError(
+                    "WebSocket connection attempt was cancelled", "CONNECTION_CANCELLED"
+                )
             self._preflight = None
         loop = asyncio.get_running_loop()
         waiter: "asyncio.Future[None]" = loop.create_future()
@@ -226,6 +234,7 @@ class ConnectionManager:
                 self._connect_waiters.remove(waiter)
 
     async def disconnect(self) -> None:
+        self._disconnects += 1
         self._closing = True
         self._reject_connect_waiters(AreteConnectionError(
             "WebSocket connection attempt was cancelled", "CONNECTION_CANCELLED"

@@ -663,3 +663,52 @@ async def test_a_dev_client_closes_the_http_client_it_made(monkeypatch: pytest.M
     assert owned is not None and not owned.is_closed
     await client.aclose()
     assert owned.is_closed
+
+
+@pytest.mark.asyncio
+async def test_a_disconnect_during_the_edge_check_cancels_the_attempt() -> None:
+    import asyncio
+
+    from arete.connection import ConnectionManager
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def slow_check() -> None:
+        started.set()
+        await release.wait()
+
+    opened: List[str] = []
+
+    async def factory(url: str, headers: Any) -> Any:
+        opened.append(url)
+        raise RuntimeError("no socket in this test")
+
+    manager = ConnectionManager(
+        "ws://127.0.0.1:8911/stacks/default", connect_factory=factory, auto_reconnect=False
+    )
+    manager.before_first_connect(slow_check)
+    attempt = asyncio.ensure_future(manager.connect())
+    await started.wait()
+    await manager.disconnect()
+    release.set()
+    with pytest.raises(AreteError) as raised:
+        await attempt
+    assert raised.value.code == "CONNECTION_CANCELLED"
+    assert opened == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_uses_resolve_once() -> None:
+    import asyncio
+
+    from arete.dev_environment import DirectResolver
+
+    recorder = Recorder({"chain": {"status": "target", "endpoint": "https://e"}})
+    resolver = DirectResolver(
+        "my-env", AuthConfig(secret_key=SECRET), recorder.client()
+    )
+    request = {"chain": {"solanaGatewayBindingId": "sgb_x"}}
+    answers = await asyncio.gather(*(resolver.resolve(request) for _ in range(5)))
+    assert all(answer == answers[0] for answer in answers)
+    assert len(split(recorder.take())[1]) == 1

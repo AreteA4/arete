@@ -584,7 +584,7 @@ class DirectResolver:
         self._auth = auth
         self._http = http
         self._cache: Dict[str, Dict[str, Any]] = {}
-        self._lock = asyncio.Lock()
+        self._pending: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
 
     @property
     def auth(self) -> Any:
@@ -595,32 +595,44 @@ class DirectResolver:
         return self._http
 
     async def resolve(self, request: Mapping[str, Any]) -> Dict[str, Any]:
+        """The answer for ``request``, resolved once. Concurrent first uses
+        of one identity share one request; other identities don't wait."""
         key = identity_header(request)
-        async with self._lock:
-            if key in self._cache:
-                return self._cache[key]
-            from .auth import api_key_for_endpoint
+        if key in self._cache:
+            return self._cache[key]
+        pending = self._pending.get(key)
+        if pending is None:
+            pending = asyncio.ensure_future(self._fetch(request))
+            self._pending[key] = pending
+        try:
+            answer = await asyncio.shield(pending)
+        finally:
+            if pending.done() and self._pending.get(key) is pending:
+                del self._pending[key]
+        self._cache[key] = answer
+        return answer
 
-            secret = api_key_for_endpoint(self._auth, self.url)
-            if not secret:
-                raise not_configured("Direct mode has no secret key to resolve with")
-            response = await self._http.post(
-                self.url,
-                json=dict(request),
-                headers={"Authorization": f"Bearer {secret}"},
+    async def _fetch(self, request: Mapping[str, Any]) -> Dict[str, Any]:
+        from .auth import api_key_for_endpoint
+
+        secret = api_key_for_endpoint(self._auth, self.url)
+        if not secret:
+            raise not_configured("Direct mode has no secret key to resolve with")
+        response = await self._http.post(
+            self.url,
+            json=dict(request),
+            headers={"Authorization": f"Bearer {secret}"},
+        )
+        if not 200 <= response.status_code < 300:
+            refusal = refusal_of_response(response)
+            if refusal is not None:
+                raise refusal
+            from .http import _decode_json_body, _new_http_request_error
+
+            raise _new_http_request_error(
+                response.status_code, self.url, _decode_json_body(response.content)
             )
-            if not 200 <= response.status_code < 300:
-                refusal = refusal_of_response(response)
-                if refusal is not None:
-                    raise refusal
-                from .http import _decode_json_body, _new_http_request_error
-
-                raise _new_http_request_error(
-                    response.status_code, self.url, _decode_json_body(response.content)
-                )
-            answer = response.json()
-            self._cache[key] = answer
-            return answer
+        return response.json()
 
     def prime(self, request: Mapping[str, Any], answer: Dict[str, Any]) -> None:
         """Keep ``answer`` as the answer for ``request`` (a part of a larger
