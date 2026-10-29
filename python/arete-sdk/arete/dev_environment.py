@@ -604,13 +604,17 @@ class DirectResolver:
         if pending is None:
             pending = asyncio.ensure_future(self._fetch(request))
             self._pending[key] = pending
-        try:
-            answer = await asyncio.shield(pending)
-        finally:
-            if pending.done() and self._pending.get(key) is pending:
-                del self._pending[key]
-        self._cache[key] = answer
-        return answer
+
+            # Settled whether or not a caller is still waiting: a success
+            # is kept, a failure is forgotten so the next use asks again.
+            def settle(task: "asyncio.Future[Dict[str, Any]]", key: str = key) -> None:
+                if self._pending.get(key) is task:
+                    del self._pending[key]
+                if not task.cancelled() and task.exception() is None:
+                    self._cache.setdefault(key, task.result())
+
+            pending.add_done_callback(settle)
+        return await asyncio.shield(pending)
 
     async def _fetch(self, request: Mapping[str, Any]) -> Dict[str, Any]:
         from .auth import api_key_for_endpoint

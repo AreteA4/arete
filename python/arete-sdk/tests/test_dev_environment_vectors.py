@@ -712,3 +712,34 @@ async def test_concurrent_first_uses_resolve_once() -> None:
     answers = await asyncio.gather(*(resolver.resolve(request) for _ in range(5)))
     assert all(answer == answers[0] for answer in answers)
     assert len(split(recorder.take())[1]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_resolve_is_retried_even_when_its_caller_went_away() -> None:
+    import asyncio
+
+    from arete.dev_environment import DirectResolver
+
+    calls: List[int] = []
+    gate = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            await gate.wait()
+            return httpx.Response(503, json={"error": "down"})
+        return httpx.Response(200, json={"chain": {"status": "target", "endpoint": "https://e"}})
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    resolver = DirectResolver("my-env", AuthConfig(secret_key=SECRET), http)
+    request = {"chain": {"solanaGatewayBindingId": "sgb_x"}}
+    first = asyncio.ensure_future(resolver.resolve(request))
+    await asyncio.sleep(0)
+    while not calls:
+        await asyncio.sleep(0)
+    first.cancel()
+    gate.set()
+    await asyncio.sleep(0.01)
+    answer = await resolver.resolve(request)
+    assert answer["chain"]["endpoint"] == "https://e"
+    assert len(calls) == 2
