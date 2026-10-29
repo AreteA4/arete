@@ -205,16 +205,16 @@ const client = await Arete.connect(MY_STACK, {
 });
 ```
 
-| Option                   | Type                 | Default                 | Description                                                        |
-| ------------------------ | -------------------- | ----------------------- | ------------------------------------------------------------------ |
-| `url`                    | `string`             | `stack.url`             | Override the stack's default URL                                   |
-| `maxEntriesPerView`      | `number \| null`     | `10000`                 | Max entries per view before LRU eviction                           |
-| `autoConnect`            | `boolean`            | `true`                  | Start the initial WebSocket connection                             |
-| `autoReconnect`          | `boolean`            | `true`                  | Recover after an established WebSocket connection is lost          |
-| `validateFrames`         | `boolean`            | `true`                  | Log generated-schema frame rejections                              |
-| `onFrameValidationError` | `function`           | —                       | Observe structured generated-schema frame rejections               |
-| `apiUrl`                 | `string`             | `https://api.arete.run` | Arete API origin for `client.platform`                             |
-| `platform`               | `PlatformHttpClient` | built from `auth`       | Arete API client to use; see [Arete API client](#arete-api-client) |
+| Option                   | Type                                          | Default                                  | Description                                                                          |
+| ------------------------ | --------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------ |
+| `url`                    | `string`                                      | `stack.url`                              | Override the stack's default URL                                                     |
+| `maxEntriesPerView`      | `number \| null`                              | `10000`                                  | Max entries per view before LRU eviction                                             |
+| `autoConnect`            | `boolean`                                     | `true`                                   | Start the initial WebSocket connection                                               |
+| `autoReconnect`          | `boolean`                                     | `true`                                   | Recover after an established WebSocket connection is lost                            |
+| `validateFrames`         | `boolean`                                     | `true`                                   | Log generated-schema frame rejections                                                |
+| `onFrameValidationError` | `function`                                    | —                                        | Observe structured generated-schema frame rejections                                 |
+| `apiUrl`                 | `string`                                      | `https://api.arete.run`                  | Arete API origin for `client.platform`                                               |
+| `platform`               | `PlatformHttpClient`                          | built from `auth`                        | Arete API client to use; see [Arete API client](#arete-api-client)                   |
 | `environment`            | `'production' \| { kind: 'dev', url?, env? }` | `ARETE_ENVIRONMENT`, else `'production'` | Production or the project's dev environment; see [Dev environment](#dev-environment) |
 
 `autoConnect` and `autoReconnect` control separate lifecycle phases. Set `autoConnect: false` to create a disconnected client that the application connects later. Set `autoReconnect: false` when the application will handle a later connection loss itself.

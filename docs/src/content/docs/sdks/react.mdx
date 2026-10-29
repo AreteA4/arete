@@ -130,7 +130,7 @@ require a publishable key as shown above.
 | `maxReconnectAttempts`   | Reconnect attempt limit                                                                                     |
 | `maxEntriesPerView`      | Per-view store limit, or `null` for unlimited                                                               |
 | `flushIntervalMs`        | Store update batching interval                                                                              |
-| `environment`            | `'production'` (default) or `{ kind: 'dev', url }` for the project's dev environment; see below              |
+| `environment`            | `'production'` (default) or `{ kind: 'dev', url }` for the project's dev environment; see below             |
 
 `autoConnect` and `autoReconnect` control separate lifecycle phases. Setting `autoConnect={false}` does not disable automatic recovery for a connection the app later establishes, but `canRetry` remains false because provider-owned replacement attempts would also stay disconnected; use the client lifecycle directly. Setting `autoReconnect={false}` does not prevent the provider's initial connection.
 
