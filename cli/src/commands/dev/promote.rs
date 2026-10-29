@@ -13,7 +13,7 @@ use std::path::Path;
 
 use anyhow::{bail, Result};
 use arete_mcp::dev::DevProject;
-use arete_mcp::dev_env::EnvApi;
+use arete_mcp::dev_env::{EnvApi, EnvSelection};
 use clap::Args;
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -63,11 +63,18 @@ pub fn lock_pending(lock: &ProjectLock) -> Vec<Pending> {
         .iter()
         .filter_map(|dependency| {
             let build = dependency.local_build.as_ref()?;
+            // `--locked` restores a pinned published release; a protocol
+            // never published has none, so it installs the new release.
+            let fix = if dependency.is_published() {
+                "Publish it with `a4 protocol deploy` in the protocol's project, then run `a4 install` here (or `a4 install --locked` to go back to the release arete.lock pins)"
+            } else {
+                "Publish it with `a4 protocol deploy` in the protocol's project, then run `a4 install` here"
+            };
             Some(Pending {
                 kind: "local-protocol-build",
                 name: dependency.alias.clone(),
                 detail: format!("the protocol client is generated from a local build ({build})"),
-                fix: "Publish it with `a4 protocol deploy` in the protocol's project, then run `a4 install --locked` here".into(),
+                fix: fix.into(),
             })
         })
         .collect()
@@ -111,15 +118,29 @@ pub fn override_pending(lock: &ProjectLock, overrides: &[Value]) -> Vec<Pending>
                 let Some((manifest, alias)) = key.split_once('#') else {
                     continue;
                 };
-                for dependency in lock.dependencies.iter().filter(|dependency| {
-                    dependency.stack_manifest_hash.as_deref() == Some(manifest)
-                }) {
+                // A stack dependency pins its own manifest; a protocol pins
+                // the stacks it hoists, reported under the protocol.
+                for dependency in lock.dependencies.iter() {
+                    let hoisted = dependency
+                        .stacks
+                        .iter()
+                        .find(|stack| stack.stack_manifest_hash == manifest);
+                    let detail = if let Some(stack) = hoisted {
+                        format!(
+                            "the environment serves a project stack under the live alias '{alias}' of its stack '{}' ({})",
+                            stack.alias, stack.package
+                        )
+                    } else if dependency.stack_manifest_hash.as_deref() == Some(manifest) {
+                        format!(
+                            "the environment serves a project stack under the dependency's live alias '{alias}'"
+                        )
+                    } else {
+                        continue;
+                    };
                     pending.push(Pending {
                         kind: "stack-alias-override",
                         name: dependency.alias.clone(),
-                        detail: format!(
-                            "the environment serves a project stack under the dependency's live alias '{alias}'"
-                        ),
+                        detail,
                         fix: "Publish the project stack with `a4 up`, point the dependency at it in arete.toml, then `a4 install`".into(),
                     });
                 }
@@ -128,6 +149,16 @@ pub fn override_pending(lock: &ProjectLock, overrides: &[Value]) -> Vec<Pending>
         }
     }
     pending
+}
+
+/// The project's environment selection. Only a missing one means "check the
+/// lock alone": an unreadable or malformed one fails the check rather than
+/// skipping the environment's overrides.
+fn selection(project: Option<&DevProject>) -> Result<Option<EnvSelection>> {
+    match project {
+        Some(project) => project.load_selection(),
+        None => Ok(None),
+    }
 }
 
 pub fn promote(args: PromoteArgs, json_output: bool) -> Result<()> {
@@ -147,9 +178,7 @@ pub fn promote(args: PromoteArgs, json_output: bool) -> Result<()> {
         );
     };
     let mut pending = lock_pending(&lock);
-    let selection = project
-        .as_ref()
-        .and_then(|project| project.load_selection().ok().flatten());
+    let selection = selection(project.as_ref())?;
     let environment = match &selection {
         Some(selection) => {
             let overrides = super::block_on(async {
@@ -199,7 +228,7 @@ fn report(root: &Path, pending: &[Pending], environment: Option<&Value>, json_ou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::project::lockfile::{LockedDependency, LockedProgram};
+    use crate::project::lockfile::{LockedDependency, LockedProgram, LockedProtocolStack};
     use crate::project::manifest::DependencyKind;
 
     fn dependency(alias: &str, kind: DependencyKind) -> LockedDependency {
@@ -229,6 +258,20 @@ mod tests {
     fn lock() -> ProjectLock {
         let mut raise = dependency("token-raise", DependencyKind::Protocol);
         raise.local_build = Some("arete:h1:protocol-release:sha256:aa".into());
+        let mut lending = dependency("lending", DependencyKind::Protocol);
+        lending.requirement = Some("^1".into());
+        lending.version = Some("1.0.0".into());
+        lending.package_release_hash = Some("release-lending".into());
+        lending.stacks = vec![LockedProtocolStack {
+            alias: "rates".into(),
+            package: "lending-rates".into(),
+            version: "1.0.0".into(),
+            package_release_hash: "release-rates".into(),
+            stack_manifest_hash: "manifest-rates".into(),
+            live_specs: Vec::new(),
+            programs: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+        }];
         let mut klend = dependency("klend", DependencyKind::Stack);
         klend.stack_manifest_hash = Some("manifest-klend".into());
         klend.programs = vec![LockedProgram {
@@ -239,7 +282,12 @@ mod tests {
             sdk_extension_hashes: Vec::new(),
         }];
         let mut lock = ProjectLock::empty("manifest".into());
-        lock.dependencies = vec![raise, klend, dependency("clean", DependencyKind::Program)];
+        lock.dependencies = vec![
+            raise,
+            lending,
+            klend,
+            dependency("clean", DependencyKind::Program),
+        ];
         lock
     }
 
@@ -250,6 +298,18 @@ mod tests {
         assert_eq!(pending[0].kind, "local-protocol-build");
         assert_eq!(pending[0].name, "token-raise");
         assert!(pending[0].fix.contains("a4 protocol deploy"));
+        // Never published: `--locked` has no release to restore.
+        assert!(!pending[0].fix.contains("--locked"));
+    }
+
+    #[test]
+    fn a_local_build_of_a_published_protocol_can_go_back_to_its_pin() {
+        let mut lock = lock();
+        let lending = &mut lock.dependencies[1];
+        lending.local_build = Some("arete:h1:protocol-release:sha256:bb".into());
+        let pending = lock_pending(&lock);
+        let lending = pending.iter().find(|item| item.name == "lending").unwrap();
+        assert!(lending.fix.contains("a4 install --locked"));
     }
 
     #[test]
@@ -262,6 +322,8 @@ mod tests {
             json!({ "kind": "program_release", "key": "Other", "target": "x" }),
             json!({ "kind": "stack_alias", "key": "manifest-klend#default", "target": "17" }),
             json!({ "kind": "stack_alias", "key": "manifest-other#default", "target": "18" }),
+            // A stack a protocol hoists, reported under the protocol.
+            json!({ "kind": "stack_alias", "key": "manifest-rates#default", "target": "19" }),
         ];
         let pending = override_pending(&lock(), &overrides);
         let kinds: Vec<_> = pending
@@ -273,8 +335,27 @@ mod tests {
             [
                 ("program-release-override", "klend"),
                 ("stack-alias-override", "klend"),
+                ("stack-alias-override", "lending"),
             ]
         );
         assert!(pending[0].detail.contains("release-changed"));
+        assert!(pending[2].detail.contains("'rates' (lending-rates)"));
+    }
+
+    #[test]
+    fn only_a_missing_selection_checks_the_lock_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = DevProject::new(dir.path());
+        assert!(selection(None).unwrap().is_none());
+        assert!(selection(Some(&project)).unwrap().is_none());
+        std::fs::create_dir_all(project.dev_dir()).unwrap();
+        std::fs::write(project.environment_path(), "{not json").unwrap();
+        assert!(selection(Some(&project)).is_err());
+        std::fs::write(
+            project.environment_path(),
+            r#"{"schema":"other","id":"denv_01hzx3k8m9q2r4s5t6v7w8x9yz","name":"x","apiUrl":"https://api.example"}"#,
+        )
+        .unwrap();
+        assert!(selection(Some(&project)).is_err());
     }
 }
