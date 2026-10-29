@@ -714,3 +714,132 @@ async fn edge_requests_name_the_identity_and_carry_no_credential() {
         json!({ "chain": { "solanaGatewayBindingId": installed.gateway.chain.solana_gateway_binding_id } })
     );
 }
+
+/// A Program Read built the way generated code builds it
+/// (`ProgramBuilder::account_transport_of` with the program's address)
+/// names `programId` in the edge identity header and in direct mode's
+/// resolve request.
+#[tokio::test]
+async fn program_reads_name_the_program_id_in_edge_and_direct_mode() {
+    use std::sync::{Arc, Mutex};
+
+    use axum::extract::Request;
+    use axum::response::IntoResponse;
+
+    #[derive(Debug, Clone)]
+    struct Seen {
+        path: String,
+        identity: Option<String>,
+        body: Value,
+    }
+    let seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    let recorded = seen.clone();
+    let answer_origin = origin.clone();
+    let app = axum::Router::new().fallback(move |request: Request| {
+        let recorded = recorded.clone();
+        let origin = answer_origin.clone();
+        async move {
+            let path = request.uri().path().to_string();
+            let identity = request
+                .headers()
+                .get(DEV_IDENTITY_HEADER)
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string);
+            let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+            recorded.lock().unwrap().push(Seen {
+                path: path.clone(),
+                identity,
+                body,
+            });
+            let json = if path.ends_with("/resolve") {
+                json!({
+                    "environment": { "id": "denv_01jabcdefghjkmnpqrstvwxyz0", "name": "my-env" },
+                    "programReads": [{
+                        "status": "target",
+                        "endpoint": origin,
+                        "programReleaseHash": "arete:h1:program-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "releaseDiffers": false
+                    }]
+                })
+            } else if path.ends_with("/ws/sessions") {
+                json!({ "token": "t", "expires_at": 4_102_444_800u64 })
+            } else {
+                Value::Null
+            };
+            ([(DEV_EDGE_HEADER, "1")], axum::Json(json)).into_response()
+        }
+    });
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+
+    let file = load("targets.json");
+    let mut descriptor_json = file["installed"]["default"]["programReads"]["klend"].clone();
+    descriptor_json["transport"]["binding"]["endpoint"] = json!(origin);
+    descriptor_json["transport"]["binding"]["auth"]["sessionEndpoint"] =
+        json!(format!("{origin}/ws/sessions"));
+    let descriptor: ProgramReadDescriptor = serde_json::from_value(descriptor_json).unwrap();
+    let program_id = file["installed"]["default"]["programs"]["klend"]["programId"]
+        .as_str()
+        .unwrap();
+    let request = crate::program_read_transport::ProgramReadRequest::Fetch {
+        account: "Reserve",
+        address: "x",
+    };
+    let http = reqwest::Client::new();
+
+    // Edge.
+    let edge = crate::program::ProgramBuilder::for_client(http.clone(), None, None, None).with_dev(
+        Some(DevMode::Edge {
+            edge_url: origin.clone(),
+        }),
+        None,
+    );
+    edge.account_transport_of("klend", Some(program_id), &descriptor)
+        .unwrap()
+        .read(&request)
+        .await
+        .expect("edge read");
+    let identity: Value = serde_json::from_str(
+        seen.lock().unwrap()[0]
+            .identity
+            .as_deref()
+            .expect("identity header"),
+    )
+    .unwrap();
+    assert_eq!(identity["programReads"][0]["programId"], json!(program_id));
+    seen.lock().unwrap().clear();
+
+    // Direct.
+    let auth = AuthConfig::default()
+        .with_secret_key("a4_sk_vector")
+        .with_api_url(origin.clone());
+    let resolver = DirectResolver::new(
+        "denv_01jabcdefghjkmnpqrstvwxyz0".to_string(),
+        auth,
+        http.clone(),
+    )
+    .at(&origin);
+    let direct = crate::program::ProgramBuilder::for_client(http, None, None, None)
+        .with_dev(Some(DevMode::Direct(Arc::new(resolver))), None);
+    direct
+        .account_transport_of("klend", Some(program_id), &descriptor)
+        .unwrap()
+        .read(&request)
+        .await
+        .expect("direct read");
+    let seen = seen.lock().unwrap();
+    let resolve = seen
+        .iter()
+        .find(|request| request.path.ends_with("/resolve"))
+        .expect("a resolve request");
+    assert_eq!(
+        resolve.body["programReads"][0]["programId"],
+        json!(program_id)
+    );
+}

@@ -967,6 +967,13 @@ impl DirectResolver {
         }
     }
 
+    /// This resolver calling resolve at `api_origin` (tests).
+    #[cfg(test)]
+    pub(crate) fn at(mut self, api_origin: &str) -> Self {
+        self.url = resolve_url(api_origin, &self.environment);
+        self
+    }
+
     pub fn environment(&self) -> &str {
         &self.environment
     }
