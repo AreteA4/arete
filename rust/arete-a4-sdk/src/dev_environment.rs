@@ -917,6 +917,9 @@ pub async fn check_edge(http: &reqwest::Client, edge_url: &str) -> Result<(), Ar
 // Direct mode
 // ---------------------------------------------------------------------------
 
+/// One identity's resolve answer, fetched once.
+type ResolveCell = Arc<tokio::sync::OnceCell<Arc<Value>>>;
+
 /// Calls resolve for one client, with the client's secret key, and keeps
 /// every answer for the life of the client.
 pub struct DirectResolver {
@@ -924,8 +927,9 @@ pub struct DirectResolver {
     url: String,
     auth: AuthConfig,
     http: reqwest::Client,
-    /// Held across the request, so concurrent first uses resolve once.
-    cache: tokio::sync::Mutex<HashMap<String, Arc<Value>>>,
+    /// One cell per identity: concurrent first uses of an identity share
+    /// one request, and other identities are not held up by it.
+    cache: std::sync::Mutex<HashMap<String, ResolveCell>>,
 }
 
 impl std::fmt::Debug for DirectResolver {
@@ -963,7 +967,7 @@ impl DirectResolver {
             url,
             auth,
             http,
-            cache: tokio::sync::Mutex::new(HashMap::new()),
+            cache: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -990,10 +994,19 @@ impl DirectResolver {
     /// The answer for `request`, resolved once.
     pub async fn resolve(&self, request: &ResolveRequest) -> Result<Arc<Value>, AreteError> {
         let key = request.identity_header();
-        let mut cache = self.cache.lock().await;
-        if let Some(answer) = cache.get(&key) {
-            return Ok(answer.clone());
-        }
+        let cell = self
+            .cache
+            .lock()
+            .expect("resolve cache")
+            .entry(key)
+            .or_default()
+            .clone();
+        cell.get_or_try_init(|| self.fetch(request))
+            .await
+            .map(Arc::clone)
+    }
+
+    async fn fetch(&self, request: &ResolveRequest) -> Result<Arc<Value>, AreteError> {
         let Some(key_value) = self.auth.api_key_for(&self.url)? else {
             return Err(not_configured(
                 "Direct mode has no secret key to resolve with",
@@ -1031,9 +1044,7 @@ impl DirectResolver {
         }
         let answer: Value = serde_json::from_slice(&body)
             .map_err(|error| AreteError::Serialization(error.to_string()))?;
-        let answer = Arc::new(answer);
-        cache.insert(key, answer.clone());
-        Ok(answer)
+        Ok(Arc::new(answer))
     }
 
     /// A secret-key auth config minting environment tokens at
