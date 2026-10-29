@@ -15,7 +15,15 @@
 //!   (WebSocket, and HTTP queries under the same path), with a stack session
 //!   minted for the environment.
 //! - `/api/protocol-deployments/<id | package:<package>>/*`: the Arete API,
-//!   at the environment's deployment of the protocol, with the account's key.
+//!   at the environment's deployment of the protocol: the flow, prepare and
+//!   Squads routes with a protocol session minted for that deployment, the
+//!   others with the account's key.
+//! - `/api/protocol-instances/*`, `/api/execution-intents/*`: the Arete API,
+//!   with a protocol session for the environment's deployment of the
+//!   protocol the request names. The API serves only that deployment's
+//!   instances and intents to it.
+//! - `/api/protocol-receipts/*`: the Arete API, with the account's key, for
+//!   a receipt of the environment's deployment.
 //! - `POST /ws/sessions`: a token only the edge accepts, for code that always
 //!   mints. The edge ignores every `Authorization` it receives.
 //! - `GET /.well-known/arete-dev-edge`: `{"edge": 1}`, so an SDK can check
@@ -74,12 +82,22 @@ const FORWARDED_RESPONSE_HEADERS: [&str; 5] = [
 
 /// Protocol routes named by an id of their own, not a deployment: the
 /// protocol client reads instances, settles intents and fetches receipts
-/// here. The API checks the account may use each.
+/// here. The API checks the session or the account may use each.
 const PROTOCOL_BY_ID_PREFIXES: [&str; 3] = [
     "/api/protocol-instances/",
     "/api/execution-intents/",
     "/api/protocol-receipts/",
 ];
+
+/// What a session the edge mints for a protocol deployment may do: the
+/// protocol client reads, prepares and submits with it.
+const PROTOCOL_SESSION_SCOPES: [&str; 3] =
+    ["protocol:read", "protocol:prepare:*", "protocol:submit"];
+
+/// The routes under `/api/protocol-deployments/<id>/` the API authorizes by
+/// protocol session (flow reads, prepare, Squads onboarding); the others
+/// take the account's key.
+const PROTOCOL_SESSION_ROUTES: [&str; 4] = ["instances", "wallets", "steps", "squads"];
 
 /// The dev refusal codes (the contract's table).
 pub mod codes {
@@ -233,8 +251,7 @@ struct Outgoing<'a> {
 pub struct Edge {
     rpc: Arc<EnvRpc>,
     http: reqwest::Client,
-    /// The deployment each instance, intent and receipt (by its path)
-    /// belongs to.
+    /// The deployment each receipt (by its path) belongs to.
     owners: tokio::sync::Mutex<HashMap<String, String>>,
     /// Deployments known to be the environment's.
     environment_deployments: tokio::sync::Mutex<std::collections::HashSet<String>>,
@@ -360,23 +377,7 @@ impl Edge {
                 self.protocol(segment, rest, method, uri, headers, body)
                     .await
             }
-            Route::ProtocolById => {
-                if let Err(response) = self.check_owner(path).await {
-                    return Some(response);
-                }
-                let api = self.rpc.api();
-                forward(
-                    &self.http,
-                    Outgoing {
-                        method: method.clone(),
-                        url: join(api.origin(), path, uri.query()),
-                        bearer: api.key(),
-                        headers,
-                        body,
-                    },
-                )
-                .await
-            }
+            Route::ProtocolById => self.protocol_by_id(path, method, uri, headers, body).await,
             Route::OtherApi => unavailable(
                 "The edge serves the protocol routes of the Arete API only",
                 "Call other Arete API routes with your API key, not through the edge.",
@@ -606,12 +607,21 @@ impl Edge {
             format!("/api/protocol-deployments/{deployment}/{rest}")
         };
         let api = self.rpc.api();
+        let session_route = PROTOCOL_SESSION_ROUTES.contains(&rest.split('/').next().unwrap_or(""));
+        let session = if session_route {
+            match self.protocol_session(deployment).await {
+                Ok(token) => Some(token),
+                Err(response) => return response,
+            }
+        } else {
+            None
+        };
         forward(
             &self.http,
             Outgoing {
                 method: method.clone(),
                 url: join(api.origin(), &path, uri.query()),
-                bearer: api.key(),
+                bearer: session.as_deref().unwrap_or(api.key()),
                 headers,
                 body,
             },
@@ -619,15 +629,77 @@ impl Edge {
         .await
     }
 
-    /// Refuse a request on an instance, intent or receipt that belongs to
-    /// a deployment outside the environment: the account key would reach
-    /// production through it. `Err` is the refusal.
+    /// An instance, intent or receipt route. Instances and intents take a
+    /// protocol session, minted for the environment's deployment of the
+    /// protocol the request names: the API answers only that deployment's
+    /// objects to it, so the request never reaches production's. Receipts
+    /// take the account's key, and only the environment deployment's are
+    /// forwarded.
+    async fn protocol_by_id(
+        &self,
+        path: &str,
+        method: &Method,
+        uri: &Uri,
+        headers: &HeaderMap,
+        body: Bytes,
+    ) -> Response {
+        let api = self.rpc.api();
+        let session = if path.starts_with("/api/protocol-receipts/") {
+            if let Err(response) = self.check_owner(path).await {
+                return response;
+            }
+            None
+        } else {
+            let identity = match identity(headers, "protocols") {
+                Ok(identity) => identity,
+                Err(response) => return response,
+            };
+            let target = match self.target(&identity, "protocols").await {
+                Ok(target) => target,
+                Err(response) => return response,
+            };
+            let Some(deployment) = target["deploymentId"].as_str() else {
+                return unavailable("resolve named no protocol deployment", "Update a4.");
+            };
+            match self.protocol_session(deployment).await {
+                Ok(token) => Some(token),
+                Err(response) => return response,
+            }
+        };
+        forward(
+            &self.http,
+            Outgoing {
+                method: method.clone(),
+                url: join(api.origin(), path, uri.query()),
+                bearer: session.as_deref().unwrap_or(api.key()),
+                headers,
+                body,
+            },
+        )
+        .await
+    }
+
+    /// A protocol session for the environment's `deployment`.
+    #[allow(clippy::result_large_err)] // the refusal is the response to send
+    async fn protocol_session(&self, deployment: &str) -> Result<String, Response> {
+        self.session(json!({
+            "targetKind": "protocol-deployment",
+            "targetId": deployment,
+            "scopes": PROTOCOL_SESSION_SCOPES,
+        }))
+        .await
+        .map_err(|error| api_refusal(&error))
+    }
+
+    /// Refuse a request on a receipt that belongs to a deployment outside
+    /// the environment: the account key would reach production through it.
+    /// `Err` is the refusal.
     #[allow(clippy::result_large_err)] // the refusal is the response to send
     async fn check_owner(&self, path: &str) -> Result<(), Response> {
-        let Some((object, field)) = owned_object(path) else {
+        let Some(object) = owned_object(path) else {
             return Ok(());
         };
-        let deployment = self.owner(&object, field).await?;
+        let deployment = self.owner(&object).await?;
         if self.in_environment(&deployment).await? {
             return Ok(());
         }
@@ -641,9 +713,9 @@ impl Edge {
         ))
     }
 
-    /// The deployment the object at `object` (an API path) belongs to.
+    /// The deployment the receipt at `object` (an API path) belongs to.
     #[allow(clippy::result_large_err)] // the refusal is the response to send
-    async fn owner(&self, object: &str, field: OwnerField) -> Result<String, Response> {
+    async fn owner(&self, object: &str) -> Result<String, Response> {
         if let Some(deployment) = self.owners.lock().await.get(object) {
             return Ok(deployment.clone());
         }
@@ -672,21 +744,19 @@ impl Edge {
                 StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY),
                 code,
                 message,
-                "Check the id; the edge serves only the environment's own protocol objects.",
+                "Check the signature; the edge serves only the environment's own receipts.",
             ));
         }
-        let deployment = match field {
-            OwnerField::Top => body["deploymentId"].as_str(),
-            OwnerField::Deployment => body["deployment"]["deploymentId"].as_str(),
-        }
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| {
-            unavailable(
-                &format!("{object} names no deployment"),
-                "Update a4 to a version that knows this API's answer.",
-            )
-        })?
-        .to_string();
+        let deployment = body["deployment"]["deploymentId"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                unavailable(
+                    &format!("{object} names no deployment"),
+                    "Update a4 to a version that knows this API's answer.",
+                )
+            })?
+            .to_string();
         let mut owners = self.owners.lock().await;
         if owners.len() > 4096 {
             owners.clear();
@@ -837,34 +907,16 @@ pub fn safe_path(path: &str) -> bool {
     })
 }
 
-/// Where an object's answer names its deployment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum OwnerField {
-    /// `deploymentId` (an instance).
-    Top,
-    /// `deployment.deploymentId` (an execution intent, a receipt).
-    Deployment,
-}
-
-/// The object a by-id protocol path is about (`/api/protocol-instances/<id>`,
-/// ...) and where its answer names the deployment. `None` for paths about
-/// no deployment's object (the receipt verification keys).
-fn owned_object(path: &str) -> Option<(String, OwnerField)> {
-    for (prefix, field) in [
-        ("/api/protocol-instances/", OwnerField::Top),
-        ("/api/execution-intents/", OwnerField::Deployment),
-        ("/api/protocol-receipts/", OwnerField::Deployment),
-    ] {
-        let Some(rest) = path.strip_prefix(prefix) else {
-            continue;
-        };
-        let id = rest.split('/').next().unwrap_or_default();
-        if id.is_empty() || (prefix == "/api/protocol-receipts/" && id == "keys") {
-            return None;
-        }
-        return Some((format!("{prefix}{id}"), field));
+/// The receipt a receipt path is about (`/api/protocol-receipts/<signature>`).
+/// `None` for every other path, and for the receipt verification keys,
+/// which belong to no deployment.
+fn owned_object(path: &str) -> Option<String> {
+    let rest = path.strip_prefix("/api/protocol-receipts/")?;
+    let id = rest.split('/').next().unwrap_or_default();
+    if id.is_empty() || id == "keys" {
+        return None;
     }
-    None
+    Some(format!("/api/protocol-receipts/{id}"))
 }
 
 /// The identity the request names for `surface`, as a resolve request.
@@ -1220,26 +1272,14 @@ mod tests {
     }
 
     #[test]
-    fn by_id_paths_name_their_object() {
-        assert_eq!(
-            owned_object("/api/protocol-instances/i-1/events"),
-            Some(("/api/protocol-instances/i-1".to_string(), OwnerField::Top))
-        );
-        assert_eq!(
-            owned_object("/api/execution-intents/e-1/submit"),
-            Some((
-                "/api/execution-intents/e-1".to_string(),
-                OwnerField::Deployment
-            ))
-        );
+    fn receipt_paths_name_their_receipt() {
         assert_eq!(
             owned_object("/api/protocol-receipts/5sig"),
-            Some((
-                "/api/protocol-receipts/5sig".to_string(),
-                OwnerField::Deployment
-            ))
+            Some("/api/protocol-receipts/5sig".to_string())
         );
         assert_eq!(owned_object("/api/protocol-receipts/keys"), None);
+        assert_eq!(owned_object("/api/protocol-instances/i-1/events"), None);
+        assert_eq!(owned_object("/api/execution-intents/e-1/submit"), None);
     }
 
     #[test]
