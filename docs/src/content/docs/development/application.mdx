@@ -112,8 +112,10 @@ if (client.environment === "dev") {
 }
 ```
 
-Load dev-only code lazily behind that check, so a production bundle doesn't
-contain it.
+Load dev-only code lazily behind that check, so production clients never
+load it. A bundler can still emit the lazy chunk; to keep the code out of
+the production build entirely, put it behind a build-time check as well
+(for example `import.meta.env.DEV` in Vite).
 
 ## One project per environment
 
