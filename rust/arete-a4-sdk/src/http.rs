@@ -541,6 +541,13 @@ impl HttpAuthClient {
             .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
 
         if !status.is_success() {
+            if let Some(refusal) = crate::dev_environment::refusal_error(
+                status.as_u16(),
+                header_code.as_deref(),
+                &body,
+            ) {
+                return Err(refusal);
+            }
             let mut error = AreteError::from_auth_response(
                 status.as_u16(),
                 header_code.as_deref(),

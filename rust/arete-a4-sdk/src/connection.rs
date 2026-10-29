@@ -519,6 +519,13 @@ impl RuntimeAuthState {
         })?;
 
         if !status.is_success() {
+            if let Some(refusal) = crate::dev_environment::refusal_error(
+                status.as_u16(),
+                header_code.as_deref(),
+                body.as_ref(),
+            ) {
+                return Err(refusal);
+            }
             return Err(AreteError::from_auth_response(
                 status.as_u16(),
                 header_code.as_deref(),

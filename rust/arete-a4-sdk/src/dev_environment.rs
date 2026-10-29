@@ -63,7 +63,6 @@ pub mod codes {
 const NOT_CONFIGURED_FIX: &str = "Run the app with `a4 dev run -- <command>`, start `a4 dev up`, \
      or set `ARETE_DEV_ENV` with a secret key.";
 const EDGE_UNREACHABLE_FIX: &str = "Start `a4 dev up` in the project (it serves the edge).";
-const STACK_NOT_LOADED_FIX: &str = "Run `a4 dev up`: it loads every stack in `arete.lock`.";
 
 /// Whether `code` is one of the dev refusal codes (and so becomes an
 /// [`AreteError::DevEnvironment`] wherever a service answers with it).

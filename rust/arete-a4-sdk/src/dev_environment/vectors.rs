@@ -7,7 +7,6 @@ use serde_json::{json, Value};
 
 use super::*;
 use crate::auth::DEFAULT_HOSTED_TOKEN_ENDPOINT;
-use crate::chain::ChainClient;
 use crate::gateway::HostedSolanaGatewayBindings;
 use crate::http::{AuthTokenTarget, HttpAuthClient};
 use crate::read::ProgramReadDescriptor;
