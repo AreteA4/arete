@@ -308,7 +308,8 @@ impl DevApi {
     }
 
     /// Disable a deployment (the owner route). One that is already disabled
-    /// (`409`) counts as disabled.
+    /// (`409`) counts as disabled; a `409` because the environment was taken
+    /// over is [`super::lease::LeaseLost`].
     pub async fn disable(&self, deployment_id: &str) -> Result<()> {
         let (status, body) = self
             .call(
@@ -317,6 +318,15 @@ impl DevApi {
                 Some(&json!({})),
             )
             .await?;
+        if body["code"] == arete_mcp::dev_env::LEASE_LOST {
+            return Err(super::lease::LeaseLost {
+                holder: body["holder"]
+                    .as_str()
+                    .unwrap_or("another project")
+                    .to_string(),
+            }
+            .into());
+        }
         if status.is_success() || status == reqwest::StatusCode::CONFLICT {
             return Ok(());
         }

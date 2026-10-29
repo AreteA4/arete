@@ -707,7 +707,12 @@ pub async fn run(config: UpConfig) -> Result<()> {
     ui.set_environment(json!({ "id": env.id, "name": env.name }));
     ui.start_feeds(rpc.clone());
 
-    let deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
+    let mut deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
+    // Another project held the environment since this one last deployed:
+    // its takeover disabled what this project left there.
+    if held.as_ref().is_some_and(|held| held.replaced.is_some()) {
+        deploy_state = deploy_state.without_deployments();
+    }
     let automation_events = events.clone();
     let mut session = Session {
         config: &config,

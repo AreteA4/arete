@@ -85,11 +85,12 @@ pub fn holder_label(root: &Path) -> String {
     format!("{name} (a4 dev up)")
 }
 
-/// `devenv-environment-leased`, explained.
+/// `devenv-environment-leased`, explained: the API's answer (which names
+/// the holder), then what to do.
 fn explain_refusal(error: anyhow::Error) -> anyhow::Error {
     if api_code(&error) == Some(LEASED) {
-        return error.context(
-            "Another project is using this dev environment. Run `a4 dev up --take-over` to move it to this project, or give this project its own copy with `a4 dev branch` and `a4 dev up --env <name>`",
+        return anyhow::anyhow!(
+            "{error}\nAnother project is using this dev environment. Run `a4 dev up --take-over` to move it to this project, or give this project its own copy with `a4 dev branch` and `a4 dev up --env <name>`"
         );
     }
     error
@@ -198,9 +199,8 @@ async fn renew(
         match api.renew_lease(&env, &project, &holder, generation).await {
             Ok(_) => {}
             Err(error) if api_code(&error) == Some(LEASE_LOST) => {
-                let holder = current_holder(&api, &env)
-                    .await
-                    .or_else(|| holder_in(&format!("{error:#}")))
+                // Stop the session now; the holder comes from the refusal.
+                let holder = holder_in(&format!("{error:#}"))
                     .unwrap_or_else(|| "another project".to_string());
                 let _ = lost.send(Some(LeaseLost { holder }));
                 return;
@@ -208,11 +208,6 @@ async fn renew(
             Err(_) => {}
         }
     }
-}
-
-async fn current_holder(api: &EnvApi, env: &str) -> Option<String> {
-    let lease = api.lease(env).await.ok()??;
-    lease["holder"].as_str().map(str::to_string)
 }
 
 #[cfg(test)]
