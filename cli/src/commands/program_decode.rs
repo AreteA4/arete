@@ -75,9 +75,7 @@ pub fn run(config_path: &str, args: DecodeArgs, json_output: bool) -> Result<()>
     let client = ApiClient::new()?;
     let decoded = match read_target(&args)? {
         ReadTarget::Production => decode_production(&client, config_path, &args)?,
-        ReadTarget::Dev(env) => {
-            crate::commands::dev::block_on(decode_dev(&client, config_path, &args, env))?
-        }
+        ReadTarget::Dev(env) => decode_dev(&client, config_path, &args, env)?,
     };
     print_decoded(&decoded, json_output)
 }
@@ -184,23 +182,40 @@ fn decode_production(client: &ApiClient, config_path: &str, args: &DecodeArgs) -
     })
 }
 
-async fn decode_dev(
+/// The environment calls are async; the registry, session and Program Read
+/// calls are blocking. Each async step runs to completion on one runtime
+/// before any blocking call, so no blocking client runs inside it.
+fn decode_dev(
     client: &ApiClient,
     config_path: &str,
     args: &DecodeArgs,
     env_args: &EnvArgs,
 ) -> Result<Decoded> {
-    let rpc = env_args.rpc().await?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Failed to start the async runtime")?;
+    let (rpc, info) = runtime.block_on(async {
+        let rpc = env_args.rpc().await?;
+        let info = rpc
+            .call(
+                "getAccountInfo",
+                json!([args.address, { "encoding": "base64", "commitment": "processed" }]),
+            )
+            .await
+            .map_err(crate::commands::dev::env::explain)?;
+        anyhow::Ok((rpc, info))
+    })?;
     let env = rpc.env().to_string();
-    let info = rpc
-        .call(
-            "getAccountInfo",
-            json!([args.address, { "encoding": "base64", "commitment": "processed" }]),
-        )
-        .await
-        .map_err(crate::commands::dev::env::explain)?;
     let raw = raw_from_rpc(&info)?
         .ok_or_else(|| anyhow!("No account exists at {} in {env}", args.address))?;
+    // `--project` names the project, so its arete.toml names the aliases.
+    let project_config = env_args
+        .project
+        .project
+        .as_ref()
+        .map(|dir| dir.join("arete.toml").display().to_string());
+    let config_path = project_config.as_deref().unwrap_or(config_path);
     let install = match args.program.as_deref() {
         Some(program) => install_for(client, config_path, program)?,
         None => owner_install(client, &raw.owner, &args.address)?,
@@ -209,9 +224,8 @@ async fn decode_dev(
     let (binding_id, _, session_endpoint) = program_read_binding(&install)?;
     let account = account_type(&install, &raw, args.account.as_deref())?;
     let installed_release = install.release.program_release_hash.clone();
-    let resolved = rpc
-        .api()
-        .resolve(
+    let resolved = runtime
+        .block_on(rpc.api().resolve(
             &env,
             json!({
                 "programReads": [{
@@ -220,9 +234,10 @@ async fn decode_dev(
                     "programReleaseHash": installed_release,
                 }],
             }),
-        )
-        .await
+        ))
         .map_err(crate::commands::dev::env::explain)?;
+    drop(rpc);
+    drop(runtime);
     let (endpoint, release) = dev_program_read_target(&resolved)?;
     let token = client.mint_target_session(
         &session_endpoint,
