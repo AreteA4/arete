@@ -647,26 +647,6 @@ pub async fn run(config: UpConfig) -> Result<()> {
         name: view["name"].as_str().unwrap_or_default().to_string(),
     };
     EnvSelection::new(&env.id, &env.name, config.api.origin()).save(&project.environment_path())?;
-    // One project per environment: the lease comes before anything deploys.
-    let held = lease::take(&config.api, &env.id, &config.project_root, config.take_over).await?;
-    match &held {
-        Some(held) => {
-            let human = match &held.replaced {
-                Some(previous) => format!(
-                    "Took the environment over from {previous}; its deployments there are removed"
-                ),
-                None => "This project holds the environment".to_string(),
-            };
-            events.emit(
-                "lease",
-                &human,
-                json!({ "leaseGeneration": held.generation(), "replaced": held.replaced }),
-            );
-        }
-        None => events.log.line(
-            "This Arete API has no environment leases; another project could use the environment at the same time",
-        ),
-    }
     events.emit(
         "environment",
         &format!(
@@ -707,6 +687,36 @@ pub async fn run(config: UpConfig) -> Result<()> {
     ui.set_environment(json!({ "id": env.id, "name": env.name }));
     ui.start_feeds(rpc.clone());
 
+    // One project per environment: the lease comes before anything deploys,
+    // and after the fallible local setup, so every exit from here on goes
+    // through the session's shutdown, which releases it.
+    let held = match lease::take(&config.api, &env.id, &config.project_root, config.take_over).await
+    {
+        Ok(held) => held,
+        Err(error) => {
+            ui.shutdown();
+            proxy.stop().await;
+            return Err(error);
+        }
+    };
+    match &held {
+        Some(held) => {
+            let human = match &held.replaced {
+                Some(previous) => format!(
+                    "Took the environment over from {previous}; its deployments there are removed"
+                ),
+                None => "This project holds the environment".to_string(),
+            };
+            events.emit(
+                "lease",
+                &human,
+                json!({ "leaseGeneration": held.generation(), "replaced": held.replaced }),
+            );
+        }
+        None => events.log.line(
+            "This Arete API has no environment leases; another project could use the environment at the same time",
+        ),
+    }
     let mut deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
     // Another project held the environment since this one last deployed:
     // its takeover disabled what this project left there.
