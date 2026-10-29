@@ -203,13 +203,13 @@ the installed SDKs call in production. With `ARETE_ENVIRONMENT=dev` and
 and send through the environment without being regenerated, and without an
 Arete key or token in the app:
 
-| Route on the edge | Serves |
-| --- | --- |
-| `/chain/…`, `/transactions/v1/…` | chain reads and transactions against the environment |
-| `/v1/releases/<release>/…` | program account reads (Program Read) against the environment |
+| Route on the edge                         | Serves                                                                                    |
+| ----------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `/chain/…`, `/transactions/v1/…`          | chain reads and transactions against the environment                                      |
+| `/v1/releases/<release>/…`                | program account reads (Program Read) against the environment                              |
 | `/stacks/<liveAlias>?stackManifestHash=…` | the environment's copy of an installed stack (WebSocket, and queries under the same path) |
-| `/api/protocol-deployments/<id>/…` | your protocol's deployment in the environment |
-| `GET /.well-known/arete-dev-edge` | `{"edge": 1}`: the SDKs check it before opening a socket |
+| `/api/protocol-deployments/<id>/…`        | your protocol's deployment in the environment                                             |
+| `GET /.well-known/arete-dev-edge`         | `{"edge": 1}`: the SDKs check it before opening a socket                                  |
 
 The edge holds your key, resolves each installed identity to the
 environment's copy and attaches the right token itself. It never returns a
