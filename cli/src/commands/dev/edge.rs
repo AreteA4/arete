@@ -209,6 +209,7 @@ struct Outgoing<'a> {
 
 pub struct Edge {
     rpc: Arc<EnvRpc>,
+    http: reqwest::Client,
     resolved: tokio::sync::Mutex<HashMap<String, (Instant, Value)>>,
     sessions: tokio::sync::Mutex<HashMap<String, (String, i64)>>,
 }
@@ -216,6 +217,7 @@ pub struct Edge {
 impl Edge {
     pub fn new(rpc: Arc<EnvRpc>) -> Self {
         Self {
+            http: rpc.api().http().clone(),
             rpc,
             resolved: tokio::sync::Mutex::new(HashMap::new()),
             sessions: tokio::sync::Mutex::new(HashMap::new()),
@@ -281,6 +283,17 @@ impl Edge {
         body: Bytes,
     ) -> Option<Response> {
         let path = uri.path();
+        if route(path) == Route::Rpc {
+            return None;
+        }
+        // A forwarded path never leaves its route: a target URL would
+        // normalize `..` away, after the route was chosen and its
+        // credential attached.
+        if !safe_path(path) {
+            return Some(bad_request(
+                "The path has a dot segment, an encoded separator or a backslash",
+            ));
+        }
         Some(match route(path) {
             Route::Rpc => return None,
             Route::WellKnown => (
@@ -349,13 +362,16 @@ impl Edge {
                 Ok(token) => token,
                 Err(error) => return api_refusal(&error),
             };
-            let response = forward(Outgoing {
-                method: method.clone(),
-                url: join(endpoint, uri.path(), uri.query()),
-                bearer: &token.token,
-                content_type: headers.get(header::CONTENT_TYPE),
-                body: body.clone(),
-            })
+            let response = forward(
+                &self.http,
+                Outgoing {
+                    method: method.clone(),
+                    url: join(endpoint, uri.path(), uri.query()),
+                    bearer: &token.token,
+                    content_type: headers.get(header::CONTENT_TYPE),
+                    body: body.clone(),
+                },
+            )
             .await;
             if response.status() == StatusCode::UNAUTHORIZED && !renewed {
                 renewed = true;
@@ -416,13 +432,16 @@ impl Edge {
         } else {
             format!("/v1/releases/{served}/{rest}")
         };
-        forward(Outgoing {
-            method: method.clone(),
-            url: join(endpoint, &path, uri.query()),
-            bearer: &token,
-            content_type: headers.get(header::CONTENT_TYPE),
-            body,
-        })
+        forward(
+            &self.http,
+            Outgoing {
+                method: method.clone(),
+                url: join(endpoint, &path, uri.query()),
+                bearer: &token,
+                content_type: headers.get(header::CONTENT_TYPE),
+                body,
+            },
+        )
         .await
     }
 
@@ -492,13 +511,16 @@ impl Edge {
             );
         };
         let forwarded = without(&query, "stackManifestHash");
-        forward(Outgoing {
-            method: method.clone(),
-            url: join(http_url, &format!("/{rest}"), forwarded.as_deref()),
-            bearer: &token,
-            content_type: headers.get(header::CONTENT_TYPE),
-            body,
-        })
+        forward(
+            &self.http,
+            Outgoing {
+                method: method.clone(),
+                url: join(http_url, &format!("/{rest}"), forwarded.as_deref()),
+                bearer: &token,
+                content_type: headers.get(header::CONTENT_TYPE),
+                body,
+            },
+        )
         .await
     }
 
@@ -537,13 +559,16 @@ impl Edge {
             format!("/api/protocol-deployments/{deployment}/{rest}")
         };
         let api = self.rpc.api();
-        forward(Outgoing {
-            method: method.clone(),
-            url: join(api.origin(), &path, uri.query()),
-            bearer: api.key(),
-            content_type: headers.get(header::CONTENT_TYPE),
-            body,
-        })
+        forward(
+            &self.http,
+            Outgoing {
+                method: method.clone(),
+                url: join(api.origin(), &path, uri.query()),
+                bearer: api.key(),
+                content_type: headers.get(header::CONTENT_TYPE),
+                body,
+            },
+        )
         .await
     }
 
@@ -641,6 +666,19 @@ async fn refusal_text(response: Response) -> String {
     text[..end].to_string()
 }
 
+/// Whether every segment of `path`, percent-decoded, is a plain name: no
+/// `.` or `..`, no `/` or `\\` inside it.
+pub fn safe_path(path: &str) -> bool {
+    path.split('/').all(|segment| {
+        let decoded = percent_encoding::percent_decode_str(segment).decode_utf8_lossy();
+        decoded != "."
+            && decoded != ".."
+            && !decoded.contains('/')
+            && !decoded.contains('\\')
+            && !segment.contains('\\')
+    })
+}
+
 /// The identity the request names for `surface`, as a resolve request.
 /// `Err` is the refusal to send.
 #[allow(clippy::result_large_err)] // the refusal is the response to send
@@ -707,10 +745,10 @@ fn without(pairs: &[(String, String)], name: &str) -> Option<String> {
 
 /// Send one request to a target and answer with its status, the forwarded
 /// headers and the body.
-async fn forward(outgoing: Outgoing<'_>) -> Response {
+async fn forward(http: &reqwest::Client, outgoing: Outgoing<'_>) -> Response {
     let method = reqwest::Method::from_bytes(outgoing.method.as_str().as_bytes())
         .unwrap_or(reqwest::Method::GET);
-    let mut request = reqwest::Client::new()
+    let mut request = http
         .request(method, &outgoing.url)
         .bearer_auth(outgoing.bearer)
         .timeout(Duration::from_secs(120));
@@ -741,7 +779,17 @@ async fn forward(outgoing: Outgoing<'_>) -> Response {
             headers.insert(header::HeaderName::from_static(name), value);
         }
     }
-    let body = response.bytes().await.unwrap_or_default();
+    let body = match response.bytes().await {
+        Ok(body) => body,
+        Err(error) => {
+            return refusal(
+                StatusCode::BAD_GATEWAY,
+                codes::SURFACE_UNAVAILABLE,
+                &format!("The environment's answer could not be read: {error}"),
+                "Retry the request; check `a4 dev status` if it keeps failing.",
+            )
+        }
+    };
     let mut answer = (status, body).into_response();
     answer.headers_mut().extend(headers);
     answer
@@ -918,6 +966,27 @@ mod tests {
             "https://x.test/a/b?q=1"
         );
         assert_eq!(join("wss://s.test", "", None), "wss://s.test");
+    }
+
+    #[test]
+    fn forwarded_paths_never_leave_their_route() {
+        assert!(safe_path(
+            "/api/protocol-deployments/package:token-raise/instances"
+        ));
+        assert!(safe_path(
+            "/v1/releases/arete:h1:program-release:sha256:aa/accounts/X/y"
+        ));
+        for path in [
+            "/api/protocol-deployments/package:x/../../protocols",
+            "/api/protocol-deployments/package:x/%2e%2e/%2E%2E/protocols",
+            "/api/protocol-deployments/package:x/.%2e/protocols",
+            "/api/protocol-deployments/x/./instances",
+            "/api/protocol-deployments/x%2f..%2fkeys/instances",
+            "/chain/v1/..\\..\\api",
+            "/stacks/default/%5c..",
+        ] {
+            assert!(!safe_path(path), "{path}");
+        }
     }
 
     #[test]
