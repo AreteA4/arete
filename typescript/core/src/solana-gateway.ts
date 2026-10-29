@@ -1,4 +1,10 @@
 import { createChainClient, type ChainClient } from './chain';
+import {
+  createDevServiceFetch,
+  createEdgeFetch,
+  type DevEnvironmentSwitch,
+} from './dev-environment';
+import { gatewayTarget, type DevHttpTarget, type DevResolveAnswer } from './dev-targets';
 import { ConnectionManager } from './connection';
 import { isApiCredentialAuth, withSessionMintEndpoint } from './api-credential';
 import { resolveAuthConfig } from './auth-keys';
@@ -124,14 +130,103 @@ export function createHostedSolanaGatewayTransports(
   bindings: HostedSolanaGatewayBindings,
   options: HostedSolanaGatewayTransportOptions = {}
 ): HostedSolanaGatewayTransports {
+  validateGatewayBindings(bindings);
+  return buildHostedTransports(bindings, options, resolveFetch(options.fetch), {
+    chain: bindings.chain.endpoint,
+    transactions: bindings.transactions.endpoint,
+  });
+}
+
+function validateGatewayBindings(bindings: HostedSolanaGatewayBindings): void {
   validateBinding('chain', bindings.chain, ['read']);
   validateBinding(
     'transactions',
     bindings.transactions,
     ['transaction:inspect', 'transaction:send']
   );
+}
 
+/** A chain client whose every request fails with `error`. */
+export function unavailableChainClient(error: Error): ChainClient {
+  return createChainClient(UNAVAILABLE_BASE, (() => Promise.reject(error)) as typeof fetch);
+}
+
+/** A transaction transport whose every request fails with `error`. */
+export function unavailableTransactionTransport(error: Error): TransactionTransport {
+  return createTransactionTransport(UNAVAILABLE_BASE, () => Promise.reject(error));
+}
+
+const UNAVAILABLE_BASE = 'https://unavailable.invalid';
+
+export interface DevSolanaGatewayTransportOptions extends HostedSolanaGatewayTransportOptions {
+  readonly dev: DevEnvironmentSwitch;
+  /** Direct mode: the resolve answer. */
+  readonly answer?: DevResolveAnswer;
+}
+
+/**
+ * Chain and transaction transports for dev mode: through the edge (no
+ * credential, the binding named in `X-Arete-Dev-Identity`), or to the
+ * environment's gateway with environment tokens (direct). A capability the
+ * environment refused fails with that refusal; the other keeps working.
+ */
+export function createDevSolanaGatewayTransports(
+  bindings: HostedSolanaGatewayBindings,
+  options: DevSolanaGatewayTransportOptions
+): HostedSolanaGatewayTransports {
+  validateGatewayBindings(bindings);
   const fetchImpl = resolveFetch(options.fetch);
+  const target = (capability: 'chain' | 'transactions'): DevHttpTarget | Error => {
+    try {
+      return gatewayTarget(options.dev, options.answer, capability, bindings[capability]);
+    } catch (error) {
+      return error instanceof Error ? error : new Error(String(error));
+    }
+  };
+  const chain = target('chain');
+  const transactions = target('transactions');
+
+  if (options.dev.via === 'edge') {
+    const edge = options.dev.edgeUrl;
+    const chainFetch = chain instanceof Error
+      ? undefined
+      : createEdgeFetch(edge, fetchImpl, chain.identity);
+    const transactionFetch = transactions instanceof Error
+      ? undefined
+      : createEdgeFetch(edge, fetchImpl, transactions.identity);
+    return {
+      chain: chainFetch ? createChainClient(edge, chainFetch) : unavailableChainClient(chain as Error),
+      transactions: transactionFetch
+        ? createTransactionTransport(edge, (input, init) => transactionFetch(input, init))
+        : unavailableTransactionTransport(transactions as Error),
+    };
+  }
+
+  const direct = buildHostedTransports(
+    bindings,
+    options,
+    createDevServiceFetch(fetchImpl),
+    {
+      chain: chain instanceof Error ? UNAVAILABLE_BASE : chain.endpoint,
+      transactions: transactions instanceof Error ? UNAVAILABLE_BASE : transactions.endpoint,
+    },
+    options.dev.environment
+  );
+  return {
+    chain: chain instanceof Error ? unavailableChainClient(chain) : direct.chain,
+    transactions: transactions instanceof Error
+      ? unavailableTransactionTransport(transactions)
+      : direct.transactions,
+  };
+}
+
+function buildHostedTransports(
+  bindings: HostedSolanaGatewayBindings,
+  options: HostedSolanaGatewayTransportOptions,
+  fetchImpl: typeof fetch,
+  endpoints: { readonly chain: string; readonly transactions: string },
+  sessionEnvironment?: string
+): HostedSolanaGatewayTransports {
   const managers = new Map<string, ConnectionManager>();
   const bindingAuthentication = (
     binding: HostedSolanaGatewayCapabilityBinding
@@ -158,7 +253,12 @@ export function createHostedSolanaGatewayTransports(
         : `session-endpoint:${binding.auth.sessionEndpoint}`;
       manager = managers.get(identity);
       if (!manager) {
-        manager = new ConnectionManager({ websocketUrl: null, auth, fetch: fetchImpl });
+        manager = new ConnectionManager({
+          websocketUrl: null,
+          auth,
+          fetch: fetchImpl,
+          ...(sessionEnvironment !== undefined ? { sessionEnvironment } : {}),
+        });
         managers.set(identity, manager);
       }
     }
@@ -210,7 +310,7 @@ export function createHostedSolanaGatewayTransports(
 
   return {
     chain: createChainClient(
-      bindings.chain.endpoint,
+      endpoints.chain,
       ((input: RequestInfo | URL, init?: RequestInit) => chainFetch(
         typeof input === 'string'
           ? input
@@ -221,7 +321,7 @@ export function createHostedSolanaGatewayTransports(
       )) as typeof fetch
     ),
     transactions: createTransactionTransport(
-      bindings.transactions.endpoint,
+      endpoints.transactions,
       (input, init, scope: TransactionAuthScope, requirePreDispatchMarker) =>
         transactionFetch(input, init, scope, requirePreDispatchMarker)
     ),

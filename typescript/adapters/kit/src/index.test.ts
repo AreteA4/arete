@@ -172,6 +172,15 @@ describe('createWalletAdapter', () => {
     }));
   });
 
+  it('says it submits through the client transport unless a transport was chosen', () => {
+    const signer = { address: 'primary-signer' } as never;
+    expect(createWalletAdapter({ signer }).submitsThrough).toBe('context');
+    expect(createWalletAdapter({ signer, transport: 'auto' }).submitsThrough).toBe('context');
+    expect(createWalletAdapter({ signer, transport: 'direct' }).submitsThrough).toBe('adapter');
+    expect(createWalletAdapter({ signer, transport: {} as TransactionTransport }).submitsThrough)
+      .toBe('adapter');
+  });
+
   it('uses Arete auto mode without constructing a subscription confirmer', async () => {
     const transport = {
       getLatestBlockhash: vi.fn(async () => ({

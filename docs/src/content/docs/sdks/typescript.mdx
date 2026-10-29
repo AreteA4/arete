@@ -215,8 +215,24 @@ const client = await Arete.connect(MY_STACK, {
 | `onFrameValidationError` | `function`           | —                       | Observe structured generated-schema frame rejections               |
 | `apiUrl`                 | `string`             | `https://api.arete.run` | Arete API origin for `client.platform`                             |
 | `platform`               | `PlatformHttpClient` | built from `auth`       | Arete API client to use; see [Arete API client](#arete-api-client) |
+| `environment`            | `'production' \| { kind: 'dev', url?, env? }` | `ARETE_ENVIRONMENT`, else `'production'` | Production or the project's dev environment; see [Dev environment](#dev-environment) |
 
 `autoConnect` and `autoReconnect` control separate lifecycle phases. Set `autoConnect: false` to create a disconnected client that the application connects later. Set `autoReconnect: false` when the application will handle a later connection loss itself.
+
+### Dev environment
+
+The same installed SDKs run against production or against your project's dev environment (a fork of mainnet). Nothing is regenerated; one switch decides, once per client:
+
+- Unset, or `ARETE_ENVIRONMENT=production`: production, exactly as generated.
+- `ARETE_ENVIRONMENT=dev` (servers and scripts) or `environment: { kind: 'dev' }`: the dev environment. The target is the edge `a4 dev up` serves (`ARETE_DEV_URL`, or found from the running `a4 dev up`), or an environment reached directly with a secret key (`ARETE_DEV_ENV`). `a4 dev run -- <command>` sets these for you.
+- Browsers read no variables: pass the option from your framework's public variables, for example `environment: import.meta.env.VITE_ARETE_ENVIRONMENT === 'dev' ? { kind: 'dev', url: import.meta.env.VITE_ARETE_DEV_URL } : 'production'`. Through the edge the page holds no Arete key.
+
+```typescript
+const client = await Arete.connect(MY_STACK, { environment: { kind: 'dev' } });
+client.environment; // 'dev'
+```
+
+Chain reads, transactions, program account reads, the stack stream and queries, and protocol clients all follow the switch. A surface the environment can't serve fails with a `DevEnvironmentError` whose `code` (`devenv-not-configured`, `devenv-edge-unreachable`, `devenv-stack-not-loaded`, …) and `fix` say what to do; the SDK never falls back to production. In dev mode transactions are signed by the wallet and sent through the client's transaction transport, so the wallet adapter must be sign-only (the Arete kit and web3.js adapters are, unless you give them their own `transport`). `url` and `httpUrl` can't be combined with dev mode. `createSession` and `createProtocolClient` take the same `environment` option.
 
 ### Connection State
 

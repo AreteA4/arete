@@ -1,4 +1,6 @@
 export { AreteProvider, useAreteContext, useConnectionState } from './provider';
+export { AreteEnvironmentBadge, useAreteEnvironment } from './environment';
+export type { AreteEnvironmentBadgeProps } from './environment';
 export {
   AreteSessionProvider,
   AreteSessionUnavailableError,
@@ -154,6 +156,7 @@ export {
   safeToRawAmount,
   stringifyBigints,
   unwrapOperationExecutionError,
+  DevEnvironmentError,
 } from '@usearete/sdk';
 
 export type {
@@ -240,6 +243,8 @@ export type {
   PlatformHttpResponse,
   SocketIssue,
   StringifiedBigints,
+  ClientEnvironment,
+  EnvironmentOption,
 } from '@usearete/sdk';
 
 export type {

@@ -38,7 +38,36 @@ import type { Frame } from './frame';
 import { mergeSendOptions, resolveTransactionBuildOptions } from './wallet/types';
 import type { WalletAdapter, BuiltInstruction, SendOptions } from './wallet/types';
 import { createChainClient, type ChainClient } from './chain';
-import { createHostedSolanaGatewayTransports } from './solana-gateway';
+import {
+  createDevSolanaGatewayTransports,
+  createHostedSolanaGatewayTransports,
+  unavailableChainClient,
+  unavailableTransactionTransport,
+} from './solana-gateway';
+import {
+  assertDevWalletSubmission,
+  checkDevEdge,
+  createDevServiceFetch,
+  createEdgeFetch,
+  devSurfaceUnavailable,
+  resolveEnvironmentSwitch,
+  systemEnvironmentSwitchHost,
+  withQueryParameter,
+  type ClientEnvironment,
+  type DevEnvironmentSwitch,
+  type EnvironmentOption,
+} from './dev-environment';
+import {
+  isEmptyResolveRequest,
+  programReadIdentity,
+  programReadTarget,
+  resolveDevTargets,
+  stackTarget,
+  type DevResolveAnswer,
+  type DevResolveEntry,
+  type DevResolveRequest,
+  type DevStackTarget,
+} from './dev-targets';
 import type {
   InstructionHandler,
   ExecutionResult,
@@ -454,6 +483,25 @@ export interface ConnectOptions<
    * `tokenKind: 'api'`); sessions pass theirs.
    */
   platform?: PlatformHttpClient;
+  /**
+   * Production (the default) or the project's dev environment. Unset, the
+   * `ARETE_ENVIRONMENT` variable decides outside browsers (`production` or
+   * `dev`). `{ kind: 'dev' }` takes its target from `ARETE_DEV_URL`,
+   * `ARETE_DEV_ENV` or the running `a4 dev up`; `url` names the edge
+   * `a4 dev up` serves (browsers), `env` an environment reached directly
+   * with a secret key (servers). Decided once, when the client is created.
+   */
+  environment?: EnvironmentOption;
+}
+
+/** @internal How a dev-mode client reaches its environment. */
+interface DevClientPlan {
+  readonly dev: DevEnvironmentSwitch;
+  /** Direct mode: the answer for each program read, by program key. */
+  readonly programReads: ReadonlyMap<string, DevResolveEntry | undefined>;
+  readonly answer?: DevResolveAnswer;
+  /** The stack's socket and queries, or why it has none. */
+  readonly stack: DevStackTarget | Error;
 }
 
 /** @deprecated Use ConnectOptions instead */
@@ -480,6 +528,8 @@ export interface AreteOptionsWithStorage<TStack extends StackDefinition> extends
    * `tokenKind: 'api'`); sessions pass theirs.
    */
   platform?: PlatformHttpClient;
+  /** @internal Set by `Arete.connect` in dev mode. */
+  dev?: DevClientPlan;
 }
 
 export interface TransactionOptions<TSigner = unknown> {
@@ -626,6 +676,64 @@ function composeExecutionCallbacks<T>(
   };
 }
 
+/** Never opened: a refused stack fails before its socket is created. */
+const REFUSED_STACK_SOCKET = 'ws://refused-stack.invalid';
+
+/**
+ * Where a dev-mode client's surfaces go. Direct mode resolves the client's
+ * installed identities once, here; the edge resolves them itself.
+ */
+async function planDevClient(
+  dev: DevEnvironmentSwitch,
+  stack: StackDefinition,
+  overrides: Readonly<Record<string, ProgramReadOverride>>,
+  options: ConnectOptions<any, any> | undefined
+): Promise<DevClientPlan> {
+  const readPrograms: string[] = [];
+  const request: DevResolveRequest = {};
+  for (const [name, definition] of Object.entries(stack.programs ?? {})) {
+    if (!hasProgramAccountReads(definition)) continue;
+    const descriptor = effectiveProgramRead(stack, name, overrides[name]);
+    if (descriptor?.transport.kind !== 'hosted-binding' || !definition.programId) continue;
+    readPrograms.push(name);
+    (request.programReads ??= []).push(
+      programReadIdentity(definition.programId, descriptor.transport.binding, descriptor.release)
+    );
+  }
+  let answer: DevResolveAnswer | undefined;
+  if (dev.via === 'direct') {
+    if (stack.gateway && (options?.chain === undefined || options?.transactions === undefined)) {
+      request.chain = { solanaGatewayBindingId: stack.gateway.chain.solanaGatewayBindingId };
+      request.transactions = {
+        solanaGatewayBindingId: stack.gateway.transactions.solanaGatewayBindingId,
+      };
+    }
+    if (stack.release) request.stacks = [stack.release];
+    const fetchImpl = options?.fetch ?? globalThis.fetch?.bind(globalThis);
+    answer = isEmptyResolveRequest(request)
+      ? {}
+      : await resolveDevTargets({
+          environment: dev.environment,
+          request,
+          auth: options?.auth,
+          apiUrl: options?.apiUrl,
+          fetch: fetchImpl,
+        });
+  }
+  let stackPlan: DevStackTarget | Error;
+  try {
+    stackPlan = stackTarget(dev, answer?.stacks?.[0], stack.release);
+  } catch (error) {
+    stackPlan = error instanceof Error ? error : new Error(String(error));
+  }
+  return {
+    dev,
+    answer,
+    programReads: new Map(readPrograms.map((name, index) => [name, answer?.programReads?.[index]])),
+    stack: stackPlan,
+  };
+}
+
 export class Arete<TStack extends StackDefinition> {
   private readonly connection: ConnectionManager;
   private readonly storage: StorageAdapter;
@@ -645,10 +753,19 @@ export class Arete<TStack extends StackDefinition> {
    * reports the transport its session connected it with.
    */
   readonly transport: 'ws' | 'http';
+  /**
+   * `'dev'` when this client talks to the project's dev environment,
+   * `'production'` otherwise. Decided once, when the client was created.
+   */
+  readonly environment: ClientEnvironment;
+  private readonly dev: DevClientPlan | undefined;
+  private edgeCheck: Promise<void> | undefined;
   private readonly httpBaseUrl: string | undefined;
   private readonly connectHttpUrl: string | undefined;
   private readonly programReadOverrides: Readonly<Record<string, ProgramReadOverride>>;
   private readonly fetchImpl: typeof fetch;
+  /** Stack HTTP requests: dev refusals from a dev stack throw as such. */
+  private readonly dataFetch: typeof fetch;
   private readonly auth: import('./types').AuthConfig | undefined;
   private readonly executionDefaults?: OperationExecutionOptions<any>;
   private readonly apiUrl?: string;
@@ -671,6 +788,11 @@ export class Arete<TStack extends StackDefinition> {
     this.connectHttpUrl = connectHttpUrl;
     this.programReadOverrides = programReadOverrides;
     this.fetchImpl = options.fetch ?? this.resolveFetchImpl();
+    this.dev = options.dev;
+    this.environment = options.dev ? 'dev' : 'production';
+    this.dataFetch = options.dev?.dev.via === 'direct'
+      ? createDevServiceFetch(this.fetchImpl)
+      : this.fetchImpl;
     // One credential source for every connection, transport and API client
     // this client builds (sessions hand theirs in).
     // An explicit apiUrl is trusted for a credential the app passed in `auth`.
@@ -694,17 +816,19 @@ export class Arete<TStack extends StackDefinition> {
       warnOnValidationError: options.validateFrames !== false,
       onValidationError: options.onFrameValidationError,
     });
-    this.connection = new ConnectionManager({
-      websocketUrl: url,
-      autoReconnect: options.autoReconnect,
-      reconnectIntervals: options.reconnectIntervals,
-      maxReconnectAttempts: options.maxReconnectAttempts,
-      auth: this.auth,
-      fetch: this.fetchImpl,
-      // The release names the version served at the generated endpoint. A
-      // different `url` points somewhere the generator knew nothing about.
-      release: url !== null && url === this.stack.endpoints.ws ? this.stack.release : undefined,
-    });
+    this.connection = this.dev === undefined
+      ? new ConnectionManager({
+          websocketUrl: url,
+          autoReconnect: options.autoReconnect,
+          reconnectIntervals: options.reconnectIntervals,
+          maxReconnectAttempts: options.maxReconnectAttempts,
+          auth: this.auth,
+          fetch: this.fetchImpl,
+          // The release names the version served at the generated endpoint. A
+          // different `url` points somewhere the generator knew nothing about.
+          release: url !== null && url === this.stack.endpoints.ws ? this.stack.release : undefined,
+        })
+      : this.createDevConnection(url, this.dev, options);
     this.processor.useCursorTracker(this.connection.cursors);
     this.subscriptionRegistry = new SubscriptionRegistry(this.connection, this.queryStore);
 
@@ -717,6 +841,28 @@ export class Arete<TStack extends StackDefinition> {
 
     this._views = createTypedViews(this.stack, this.storage, this.subscriptionRegistry);
     this._queries = this.buildQueries();
+    if (this.dev) {
+      const devGateway = this.stack.gateway
+        && (options.chain === undefined || options.transactions === undefined)
+        ? createDevSolanaGatewayTransports(this.stack.gateway, {
+            auth: this.auth,
+            fetch: this.fetchImpl,
+            dev: this.dev.dev,
+            answer: this.dev.answer,
+          })
+        : undefined;
+      const noGateway = devSurfaceUnavailable(
+        `'${this.stack.name}' has no Solana gateway binding, so dev mode cannot read the chain or send through it`,
+        'Use an SDK installed from the registry (`a4 install`): it carries the gateway binding.'
+      );
+      this._chain = options.chain ?? devGateway?.chain ?? unavailableChainClient(noGateway);
+      this._transactions = options.transactions
+        ?? devGateway?.transactions
+        ?? unavailableTransactionTransport(noGateway);
+      this._programs = this.buildPrograms();
+      this.transport = url === null ? 'http' : 'ws';
+      return;
+    }
     const hostedGateway = this.stack.gateway
       && (options.chain === undefined || options.transactions === undefined)
       ? createHostedSolanaGatewayTransports(this.stack.gateway, {
@@ -754,6 +900,57 @@ export class Arete<TStack extends StackDefinition> {
       );
     }
     return globalThis.fetch.bind(globalThis);
+  }
+
+  /** The stack socket's connection in dev mode (contract §3). */
+  private createDevConnection(
+    url: string | null,
+    dev: DevClientPlan,
+    options: AreteOptionsWithStorage<TStack>
+  ): ConnectionManager {
+    const shared = {
+      websocketUrl: url,
+      autoReconnect: options.autoReconnect,
+      reconnectIntervals: options.reconnectIntervals,
+      maxReconnectAttempts: options.maxReconnectAttempts,
+      auth: this.auth,
+    };
+    if (dev.dev.via === 'edge') {
+      // The edge authenticates; it is checked before any socket is opened.
+      return new ConnectionManager({
+        ...shared,
+        fetch: this.fetchImpl,
+        noCredentials: true,
+        beforeConnect: () => this.checkEdge(),
+      });
+    }
+    const stack = dev.stack instanceof Error ? undefined : dev.stack;
+    return new ConnectionManager({
+      ...shared,
+      fetch: createDevServiceFetch(this.fetchImpl),
+      beforeConnect: () => this.checkEdge(),
+      ...(stack
+        ? {
+            release: stack.sessionRelease,
+            hostedSession: true,
+            sessionEnvironment: stack.environment,
+            sessionWebsocketUrl: stack.websocketUrl,
+          }
+        : {}),
+    });
+  }
+
+  /** `GET /.well-known/arete-dev-edge`, once; a failure is checked again next time. */
+  private checkEdge(): Promise<void> {
+    // A stack the environment refused opens no socket.
+    if (this.dev?.stack instanceof Error) return Promise.reject(this.dev.stack);
+    const dev = this.dev?.dev;
+    if (dev?.via !== 'edge') return Promise.resolve();
+    this.edgeCheck ??= checkDevEdge(dev.edgeUrl, this.fetchImpl).catch((error: unknown) => {
+      this.edgeCheck = undefined;
+      throw error;
+    });
+    return this.edgeCheck;
   }
 
   private buildQueries(): QueriesInterface<TStack['queries']> {
@@ -858,6 +1055,54 @@ export class Arete<TStack extends StackDefinition> {
     const descriptor = effectiveProgramRead(this.stack, name, this.programReadOverrides[name]);
     validateReleaseIdentity(name, definition, descriptor?.release);
 
+    if (this.dev) {
+      if (descriptor?.transport.kind !== 'hosted-binding') {
+        return createProgramReadTransport({
+          kind: 'refused',
+          error: devSurfaceUnavailable(
+            `Program '${name}' has no hosted Program Read binding, so dev mode cannot read its accounts`,
+            'Install the program from the registry (`a4 install program`) to read it in dev mode.'
+          ),
+        });
+      }
+      const { binding } = descriptor.transport;
+      let target;
+      try {
+        target = programReadTarget(
+          this.dev.dev,
+          this.dev.programReads.get(name),
+          definition.programId,
+          binding,
+          descriptor.release
+        );
+      } catch (error) {
+        return createProgramReadTransport({
+          kind: 'refused',
+          error: error instanceof Error ? error : new Error(String(error)),
+        });
+      }
+      if (this.dev.dev.via === 'edge') {
+        return createProgramReadTransport({
+          kind: 'dev-edge',
+          endpoint: target.endpoint,
+          release: descriptor.release,
+          fetch: createEdgeFetch(this.dev.dev.edgeUrl, this.fetchImpl, target.identity),
+        });
+      }
+      return createProgramReadTransport({
+        kind: 'hosted-binding',
+        release: descriptor.release,
+        binding,
+        auth: this.auth,
+        fetch: createDevServiceFetch(this.fetchImpl),
+        dev: {
+          endpoint: target.endpoint,
+          pathRelease: target.pathRelease,
+          environment: this.dev.dev.environment,
+        },
+      });
+    }
+
     if (descriptor?.transport.kind === 'local-http') {
       return createProgramReadTransport({
         kind: 'local-http',
@@ -961,6 +1206,13 @@ export class Arete<TStack extends StackDefinition> {
     path: string,
     options?: { method?: 'GET' | 'POST'; body?: unknown }
   ): Promise<T> {
+    if (this.dev) {
+      return parseReadResponse<T>(await this.devStackQuery(path, {
+        method: options?.method ?? 'GET',
+        headers: options?.body === undefined ? undefined : { 'content-type': 'application/json' },
+        body: options?.body === undefined ? undefined : JSON.stringify(options.body),
+      }), path);
+    }
     const response = await this.authenticatedFetch(this.resolveReadUrl(path), {
       method: options?.method ?? 'GET',
       headers: options?.body === undefined ? undefined : { 'content-type': 'application/json' },
@@ -982,7 +1234,7 @@ export class Arete<TStack extends StackDefinition> {
       if (token) {
         headers.set('authorization', `Bearer ${token}`);
       }
-      return this.fetchImpl(input, {
+      return this.dataFetch(input, {
         ...init,
         headers,
       });
@@ -1004,6 +1256,26 @@ export class Arete<TStack extends StackDefinition> {
     }
 
     return response;
+  }
+
+  /**
+   * A stack HTTP query in dev mode: through the edge under
+   * `/stacks/<liveAlias>` with `stackManifestHash`, or to the environment's
+   * stack with its environment session.
+   */
+  private async devStackQuery(path: string, init: RequestInit): Promise<Response> {
+    const dev = this.dev!;
+    if (dev.stack instanceof Error) throw dev.stack;
+    const base = dev.stack.queryBaseUrl;
+    if (base instanceof Error) throw base;
+    let url = `${base}${path.startsWith('/') ? path : `/${path}`}`;
+    for (const [name, value] of Object.entries(dev.stack.queryParams)) {
+      url = withQueryParameter(url, name, value);
+    }
+    if (dev.dev.via === 'edge') {
+      return createEdgeFetch(dev.dev.edgeUrl, this.fetchImpl, undefined)(url, init);
+    }
+    return this.authenticatedFetch(url, init, ['read']);
   }
 
   private authenticatedStackFetch(
@@ -1048,6 +1320,17 @@ export class Arete<TStack extends StackDefinition> {
     options?: ConnectOptions<TPrograms, T['programs']>
   ): Promise<ConnectedArete<StackWithAttachedPrograms<T, TPrograms>, T>> {
     validateProgramReads(stack, undefined);
+    const environment = resolveEnvironmentSwitch(
+      options?.environment,
+      systemEnvironmentSwitchHost(options?.auth)
+    );
+    const devMode = environment.mode === 'dev' ? environment : undefined;
+    if (devMode && (options?.url !== undefined || options?.httpUrl !== undefined)) {
+      throw new AreteError(
+        'url and httpUrl cannot be combined with dev mode: the dev environment decides where the stack is served',
+        'INVALID_CONFIG'
+      );
+    }
     const attachedPrograms = options?.programs as TPrograms;
     const effectiveStack = withPrograms(stack, attachedPrograms);
     const programReadOverrides = options?.programReads ?? {};
@@ -1055,7 +1338,9 @@ export class Arete<TStack extends StackDefinition> {
 
     const requestedUrl = options?.url ?? stack.endpoints.ws;
     const connectHttpUrl = options?.httpUrl;
-    validateLocalProgramReadEndpoints(effectiveStack, programReadOverrides, connectHttpUrl);
+    if (!devMode) {
+      validateLocalProgramReadEndpoints(effectiveStack, programReadOverrides, connectHttpUrl);
+    }
     const autoConnect = options?.autoConnect !== false;
     const independentlyReadable = hasCompleteIndependentProgramReads(
       effectiveStack,
@@ -1086,8 +1371,16 @@ export class Arete<TStack extends StackDefinition> {
       );
     }
 
+    const dev = devMode
+      ? await planDevClient(devMode, effectiveStack, programReadOverrides, options)
+      : undefined;
+    const socketUrl = dev && url !== null
+      ? (dev.stack instanceof Error ? REFUSED_STACK_SOCKET : dev.stack.websocketUrl)
+      : url;
+
     const internalOptions: AreteOptionsWithStorage<StackWithAttachedPrograms<T, TPrograms>> = {
       stack: effectiveStack,
+      dev,
       httpUrl,
       storage: options?.storage,
       maxEntriesPerView: options?.maxEntriesPerView,
@@ -1109,7 +1402,7 @@ export class Arete<TStack extends StackDefinition> {
     };
 
     const client = new Arete(
-      url,
+      socketUrl,
       httpUrl || undefined,
       connectHttpUrl,
       programReadOverrides,
@@ -1216,6 +1509,7 @@ export class Arete<TStack extends StackDefinition> {
     // adapter, so an unsupported request throws the typed options error rather
     // than a wrapped execution failure.
     resolveTransactionBuildOptions(sendOptions, wallet);
+    if (this.environment === 'dev') assertDevWalletSubmission(wallet);
     try {
       const result = await wallet.signAndSend(instructions, sendOptions, {
         transactionTransport: options?.transactionTransport ?? this._transactions,
