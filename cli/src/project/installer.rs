@@ -4859,6 +4859,9 @@ fn attach_project_provenance(
             if let ResolvedRegistryDependency::Protocol { protocol, .. } = resolved.as_ref() {
                 value["project"]["localBuildDeploymentId"] =
                     serde_json::json!(protocol.deployment.deployment_id);
+                if protocol.production_deployment {
+                    value["project"]["localBuildDeployment"] = serde_json::json!("production");
+                }
             }
         }
     }
@@ -5295,6 +5298,7 @@ fn local_build_resolution(
     spec_json: &serde_json::Value,
     release_hash: &str,
     deployment: super::resolver::ResolvedProtocolDeployment,
+    production_deployment: bool,
 ) -> Result<ResolvedRegistryDependency> {
     let spec = arete_hash::protocol::validate_protocol_spec_value(spec_json)
         .map_err(|error| anyhow::anyhow!("protocol-spec.json is invalid: {error}"))?;
@@ -5315,6 +5319,7 @@ fn local_build_resolution(
             deployment,
             live_stack: None,
             local_dev: true,
+            production_deployment,
         }),
         stacks: Vec::new(),
         programs: Vec::new(),
@@ -5383,6 +5388,10 @@ fn resolve_unpublished_local_build(
             &protocol.deployment_id,
             &protocol.deployment_access,
         ),
+        // Not known from the lock alone: the next `a4 dev` then names no
+        // deployment rather than trusting one an older `a4` may have
+        // written for the dev environment.
+        false,
     )?;
     Ok(ResolvedProjectDependency::Registry {
         kind: DependencyKind::Protocol,
@@ -5436,8 +5445,11 @@ pub fn install_local_protocol_build(
         LocalBuildDeployment::Deployed { id, access } => (id.clone(), access.clone()),
         LocalBuildDeployment::Locked => locked
             .filter(|protocol| {
-                previous.is_some_and(LockedDependency::is_published)
-                    && !protocol.deployment_id.is_empty()
+                !protocol.deployment_id.is_empty()
+                    && (previous.is_some_and(LockedDependency::is_published)
+                        || outputs.iter().all(|output| {
+                            production_provenance(&output.path, &protocol.deployment_id)
+                        }))
             })
             .map(|protocol| {
                 (
@@ -5497,6 +5509,7 @@ pub fn install_local_protocol_build(
         &build.spec_json,
         &build.release_hash,
         deployment_urls(&build.api_base, &deployment_id, &access),
+        !deployment_id.is_empty(),
     )?;
     let entry = match previous.filter(|entry| entry.is_published()) {
         Some(published) => LockedDependency {
@@ -5562,6 +5575,17 @@ pub fn install_local_protocol_build(
         published,
         outputs: output_paths,
         changed: true,
+    })
+}
+
+/// Whether the client in `output` was generated for production deployment
+/// `deployment` (`a4 protocol deploy` before the release was published).
+/// An older `a4` wrote dev deployments into a never-published entry the
+/// same way, without this mark.
+fn production_provenance(output: &Path, deployment: &str) -> bool {
+    read_provenance_project(output).is_some_and(|project| {
+        project["localBuildDeploymentId"] == deployment
+            && project["localBuildDeployment"] == "production"
     })
 }
 

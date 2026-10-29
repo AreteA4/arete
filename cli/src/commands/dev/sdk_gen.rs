@@ -380,13 +380,23 @@ mod tests {
             },
             ..build(LOCAL_RELEASE, "unused")
         };
-        install_local_protocol_build(
+        let first = install_local_protocol_build(
             &root.join("arete.toml"),
             "local-tip-jar",
             &older,
             ensured.lock_was_fresh,
         )
         .unwrap();
+        // An older `a4` did not mark where the deployment came from.
+        let provenance = first.outputs[0].join("sdk-provenance.json");
+        let mut value: Value =
+            serde_json::from_slice(&std::fs::read(&provenance).unwrap()).unwrap();
+        assert_eq!(value["project"]["localBuildDeployment"], "production");
+        value["project"]
+            .as_object_mut()
+            .unwrap()
+            .remove("localBuildDeployment");
+        std::fs::write(&provenance, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
         let next = format!("arete:h1:protocol-release:sha256:{}", "f".repeat(64));
         let install = install_local_protocol_build(
             &root.join("arete.toml"),
@@ -589,9 +599,8 @@ mod tests {
         assert_eq!(entry.protocol.unwrap().deployment_id, production);
         assert_eq!(entry.local_build.as_deref(), Some(LOCAL_RELEASE));
 
-        // Until the release is published (and installed), the next `a4 dev`
-        // build names no deployment: a never-published entry's is not
-        // trusted, so production fails closed instead of calling a dev one.
+        // The next `a4 dev` build keeps the production deployment, which
+        // the client's provenance says `a4 protocol deploy` recorded.
         let next = build(
             &format!("arete:h1:protocol-release:sha256:{}", "e".repeat(64)),
             "dep-local-2",
@@ -599,7 +608,7 @@ mod tests {
         let dev =
             install_local_protocol_build(&root.join("arete.toml"), "local-tip-jar", &next, true)
                 .unwrap();
-        assert!(dev.changed && dev.deployment_id.is_none());
+        assert!(dev.changed && dev.deployment_id.as_deref() == Some(production));
     }
 
     /// `a4 protocol deploy` after a version bump: the own dependency's

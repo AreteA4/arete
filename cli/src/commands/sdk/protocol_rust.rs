@@ -1424,6 +1424,7 @@ mod tests {
             },
             live_stack: None,
             local_dev: false,
+            production_deployment: false,
         }
     }
 
