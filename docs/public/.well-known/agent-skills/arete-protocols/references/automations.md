@@ -230,8 +230,9 @@ against the same shared cases.
 - `keypairSigner(secretKey)` from `/keypair`: dev wallets and tests only.
 - `privySigner({ privy, walletIdFor, authorizationPrivateKey })` from
   `/privy`: Privy server wallets where the user added the app's authorization
-  key. It signs (never sends) `v0` transactions; a Privy denial ends the step
-  `refused` with rule `provider_policy`.
+  key. It signs (never sends) transactions, preferring V1 and falling back to
+  `v0` (`transactionFormats: ['v0']` limits it to `v0`); a Privy denial ends
+  the step `refused` with rule `provider_policy`.
 - `privyPolicyFor(policy, grant)` builds the provider-side policy to attach to
   the user's wallet. Privy sees only top-level instructions, so for a
   protocol step it can bound programs and expiry, not amounts; show its
