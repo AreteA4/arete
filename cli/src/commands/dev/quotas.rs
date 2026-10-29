@@ -226,10 +226,10 @@ mod tests {
                 stack("registry stack meteora (swaps)", false),
             ]
         );
-        // The free tier with one slot left refuses, naming every stack.
-        let error = check(&planned, 4, "free", 5).unwrap_err().to_string();
+        // A full free tier refuses, naming every stack.
+        let error = check(&planned, 5, "free", 5).unwrap_err().to_string();
         assert!(
-            error.contains("registry stack meteora (pools): 1 slot"),
+            error.contains("registry stack meteora (pools): 0 slots (already loaded)"),
             "{error}"
         );
         assert!(
