@@ -37,6 +37,7 @@ PROGRAM_READ_CONTRACT_VERSION = "program-read-http/v1"
 
 LOCAL_HTTP = "local-http"
 HOSTED_BINDING = "hosted-binding"
+UNAVAILABLE = "unavailable"
 
 _BINDING_ID_RE = re.compile(r"^prb_[A-Za-z0-9_-]{32}$")
 
@@ -81,10 +82,22 @@ class ProgramReadBinding:
 
 @dataclass(frozen=True)
 class LocalHttpTransportDef:
-    """Local transport addressing the connect-time HTTP endpoint."""
+    """Local transport addressing a self-hosted Arete server: ``endpoint`` when
+    generation named one (``endpoint_source="explicit"``), else the
+    connect-time HTTP endpoint (SDKs generated before that)."""
 
     endpoint_source: str = "connect-http-url"
+    endpoint: Optional[str] = None
     kind: ClassVar[str] = LOCAL_HTTP
+
+
+@dataclass(frozen=True)
+class UnavailableTransportDef:
+    """No read endpoint: every account read fails with ``message``, which
+    says how to get one."""
+
+    message: str
+    kind: ClassVar[str] = UNAVAILABLE
 
 
 @dataclass(frozen=True)
@@ -100,7 +113,7 @@ class ProgramReadDescriptor:
     """Generated release identity with one explicit, non-inheriting read transport."""
 
     release: ProgramReleaseReference
-    transport: Union[LocalHttpTransportDef, HostedBindingTransportDef]
+    transport: Union[LocalHttpTransportDef, HostedBindingTransportDef, UnavailableTransportDef]
 
     @property
     def transport_kind(self) -> str:
@@ -130,12 +143,26 @@ def program_read_descriptor_from_wire(data: Mapping[str, Any]) -> ProgramReadDes
         raise _coded_error("Program read descriptor requires a transport", "INVALID_CONFIG")
     kind = transport_data.get("kind")
     if kind == LOCAL_HTTP:
-        if transport_data.get("endpointSource") != "connect-http-url":
+        source = transport_data.get("endpointSource")
+        if source == "explicit":
+            return ProgramReadDescriptor(
+                release=release,
+                transport=LocalHttpTransportDef(
+                    endpoint_source="explicit",
+                    endpoint=transport_data.get("endpoint", ""),
+                ),
+            )
+        if source != "connect-http-url":
             raise _coded_error(
-                "Local HTTP transport must use endpointSource 'connect-http-url'",
+                "Local HTTP transport must use endpointSource 'explicit' or 'connect-http-url'",
                 "INVALID_CONFIG",
             )
         return ProgramReadDescriptor(release=release, transport=LocalHttpTransportDef())
+    if kind == UNAVAILABLE:
+        return ProgramReadDescriptor(
+            release=release,
+            transport=UnavailableTransportDef(message=transport_data.get("message", "")),
+        )
     if kind == HOSTED_BINDING:
         binding_data = transport_data.get("binding")
         binding_data = binding_data if isinstance(binding_data, Mapping) else {}
@@ -176,9 +203,23 @@ def program_read_descriptor_to_wire(descriptor: ProgramReadDescriptor) -> dict:
         "programSpecHash": descriptor.release.program_spec_hash,
     }
     if isinstance(descriptor.transport, LocalHttpTransportDef):
+        if descriptor.transport.endpoint_source == "explicit":
+            return {
+                "release": release,
+                "transport": {
+                    "kind": LOCAL_HTTP,
+                    "endpointSource": "explicit",
+                    "endpoint": descriptor.transport.endpoint,
+                },
+            }
         return {
             "release": release,
             "transport": {"kind": LOCAL_HTTP, "endpointSource": "connect-http-url"},
+        }
+    if isinstance(descriptor.transport, UnavailableTransportDef):
+        return {
+            "release": release,
+            "transport": {"kind": UNAVAILABLE, "message": descriptor.transport.message},
         }
     binding = descriptor.transport.binding
     auth: dict = {
@@ -222,6 +263,17 @@ def _is_non_empty(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _is_http_url(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return bool(host) and parts.scheme in ("http", "https")
+
+
 def _is_secure_or_loopback_http_url(value: str) -> bool:
     try:
         parts = urlsplit(value)
@@ -257,10 +309,26 @@ def validate_program_read_descriptor(
         )
     kind = getattr(transport, "kind", None)
     if kind == LOCAL_HTTP:
-        if getattr(transport, "endpoint_source", None) != "connect-http-url":
+        source = getattr(transport, "endpoint_source", None)
+        if source == "explicit":
+            if not _is_http_url(getattr(transport, "endpoint", None)):
+                raise _coded_error(
+                    f"Program '{program_name}' local HTTP transport requires an "
+                    "http(s) endpoint",
+                    "INVALID_CONFIG",
+                )
+            return
+        if source != "connect-http-url":
             raise _coded_error(
                 f"Program '{program_name}' local HTTP transport must use "
-                "endpointSource 'connect-http-url'",
+                "endpointSource 'explicit' or 'connect-http-url'",
+                "INVALID_CONFIG",
+            )
+        return
+    if kind == UNAVAILABLE:
+        if not _is_non_empty(getattr(transport, "message", None)):
+            raise _coded_error(
+                f"Program '{program_name}' unavailable transport requires a message",
                 "INVALID_CONFIG",
             )
         return
@@ -395,7 +463,11 @@ class HttpProgramReadTransport:
     ) -> "HttpProgramReadTransport":
         """Validate a descriptor and build the matching transport."""
         validate_program_read_descriptor(program_name, descriptor)
+        if descriptor.transport_kind == UNAVAILABLE:
+            raise _coded_error(descriptor.transport.message, "INVALID_CONFIG")
         if descriptor.transport_kind == LOCAL_HTTP:
+            if descriptor.transport.endpoint_source == "explicit":
+                return cls.local_http(descriptor.transport.endpoint, descriptor.release, http)
             if not _is_non_empty(connect_http_url):
                 raise _coded_error(
                     f"Program '{program_name}' local HTTP reads require a "

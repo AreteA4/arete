@@ -2427,6 +2427,7 @@ mod tests {
         .unwrap();
         LocalArtifactStack {
             manifest_path: PathBuf::from("HostedComposition.stack-manifest.json"),
+            read_endpoint: None,
             manifest_hash: stack_manifest.artifact_hash.to_string(),
             program_specs: Vec::new(),
             live_specs,

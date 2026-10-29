@@ -175,13 +175,37 @@ export interface HostedSolanaGatewayBindings {
   readonly transactions: HostedSolanaGatewayCapabilityBinding;
 }
 
-/** Generated release identity with one explicit, non-inheriting read transport. */
+/**
+ * Generated release identity with one explicit, non-inheriting read transport.
+ *
+ * - `local-http` reads a self-hosted Arete server: the URL generation named
+ *   (`endpointSource: 'explicit'`), or `ConnectOptions.httpUrl` for SDKs
+ *   generated before that (`'connect-http-url'`).
+ * - `hosted-binding` reads hosted Program Read.
+ * - `unavailable` has no read endpoint; every account read fails with
+ *   `message`, which says how to get one.
+ */
 export type ProgramReadDescriptor =
   | {
       readonly release: ProgramReleaseReference;
       readonly transport: {
         readonly kind: 'local-http';
         readonly endpointSource: 'connect-http-url';
+      };
+    }
+  | {
+      readonly release: ProgramReleaseReference;
+      readonly transport: {
+        readonly kind: 'local-http';
+        readonly endpointSource: 'explicit';
+        readonly endpoint: string;
+      };
+    }
+  | {
+      readonly release: ProgramReleaseReference;
+      readonly transport: {
+        readonly kind: 'unavailable';
+        readonly message: string;
       };
     }
   | {

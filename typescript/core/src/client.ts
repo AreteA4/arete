@@ -149,6 +149,22 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+function isHttpUrl(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
+/** Whether a `local-http` descriptor reads `ConnectOptions.httpUrl`. */
+function readsConnectHttpUrl(descriptor: ProgramReadDescriptor | undefined): boolean {
+  return descriptor?.transport.kind === 'local-http'
+    && descriptor.transport.endpointSource === 'connect-http-url';
+}
+
 function isSecureOrLoopbackHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -181,9 +197,27 @@ export function validateProgramReadDescriptor(
     );
   }
   if (descriptor.transport.kind === 'local-http') {
+    if (descriptor.transport.endpointSource === 'explicit') {
+      if (!isHttpUrl(descriptor.transport.endpoint)) {
+        throw new AreteError(
+          `Program '${programName}' local HTTP transport requires an http(s) endpoint`,
+          'INVALID_CONFIG'
+        );
+      }
+      return;
+    }
     if (descriptor.transport.endpointSource !== 'connect-http-url') {
       throw new AreteError(
-        `Program '${programName}' local HTTP transport must use endpointSource 'connect-http-url'`,
+        `Program '${programName}' local HTTP transport must use endpointSource 'explicit' or 'connect-http-url'`,
+        'INVALID_CONFIG'
+      );
+    }
+    return;
+  }
+  if (descriptor.transport.kind === 'unavailable') {
+    if (!isNonEmptyString(descriptor.transport.message)) {
+      throw new AreteError(
+        `Program '${programName}' unavailable transport requires a message`,
         'INVALID_CONFIG'
       );
     }
@@ -263,8 +297,12 @@ function hasCompleteIndependentProgramReads(
     .filter(([, definition]) => hasProgramAccountReads(definition));
   return programs.length > 0 && readablePrograms.every(([name]) => {
     const read = effectiveProgramRead(stack, name, overrides?.[name]);
+    // An unavailable read never needs a stack endpoint: it fails at read
+    // time with its own fix.
     return read?.transport.kind === 'hosted-binding'
-      || (read?.transport.kind === 'local-http' && isNonEmptyString(connectHttpUrl));
+      || read?.transport.kind === 'unavailable'
+      || (read?.transport.kind === 'local-http'
+        && (!readsConnectHttpUrl(read) || isNonEmptyString(connectHttpUrl)));
   });
 }
 
@@ -276,7 +314,7 @@ function validateLocalProgramReadEndpoints(
   for (const [name, definition] of Object.entries(stack.programs ?? {})) {
     if (!hasProgramAccountReads(definition)) continue;
     const descriptor = effectiveProgramRead(stack, name, overrides?.[name]);
-    if (descriptor?.transport.kind === 'local-http' && !isNonEmptyString(connectHttpUrl)) {
+    if (readsConnectHttpUrl(descriptor) && !isNonEmptyString(connectHttpUrl)) {
       throw new AreteError(
         `Program '${name}' local HTTP transport requires ConnectOptions.httpUrl`,
         'INVALID_CONFIG'
@@ -861,9 +899,17 @@ export class Arete<TStack extends StackDefinition> {
     if (descriptor?.transport.kind === 'local-http') {
       return createProgramReadTransport({
         kind: 'local-http',
-        endpoint: this.connectHttpUrl!,
+        endpoint: descriptor.transport.endpointSource === 'explicit'
+          ? descriptor.transport.endpoint
+          : this.connectHttpUrl!,
         release: descriptor.release,
         fetch: this.fetchImpl,
+      });
+    }
+    if (descriptor?.transport.kind === 'unavailable') {
+      return createProgramReadTransport({
+        kind: 'unavailable',
+        message: descriptor.transport.message,
       });
     }
     if (descriptor?.transport.kind === 'hosted-binding') {

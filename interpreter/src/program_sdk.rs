@@ -7,6 +7,46 @@ use crate::ast::{
 use arete_idl as idl_parser;
 use std::collections::BTreeMap;
 
+/// What an account read says in an SDK generated offline without a read
+/// endpoint: where account reads come from instead.
+pub fn offline_program_read_message(program: &str) -> String {
+    format!(
+        "Program '{program}' has no account read endpoint: this SDK was generated offline. \
+         Install the program from the registry (`a4 install program <package>`) and use \
+         `a4 dev` for a dev environment, or regenerate with \
+         `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server"
+    )
+}
+
+/// The wire read descriptor of a program in an SDK generated offline:
+/// `local-http` naming `read_endpoint` when one is given, otherwise
+/// `unavailable` with [`offline_program_read_message`].
+pub fn offline_program_read_descriptor(
+    program: &str,
+    program_release_hash: &str,
+    program_spec_hash: &str,
+    read_endpoint: Option<&str>,
+) -> serde_json::Value {
+    let transport = match read_endpoint {
+        Some(endpoint) => serde_json::json!({
+            "kind": "local-http",
+            "endpointSource": "explicit",
+            "endpoint": endpoint,
+        }),
+        None => serde_json::json!({
+            "kind": "unavailable",
+            "message": offline_program_read_message(program),
+        }),
+    };
+    serde_json::json!({
+        "release": {
+            "programReleaseHash": program_release_hash,
+            "programSpecHash": program_spec_hash,
+        },
+        "transport": transport,
+    })
+}
+
 pub fn build_program_only_stack_spec_from_idl(
     idl: &idl_parser::IdlSpec,
     stack_name: &str,

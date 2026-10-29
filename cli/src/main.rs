@@ -445,7 +445,9 @@ enum Commands {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)] // Clap owns this short-lived command value.
 enum SdkCommands {
-    /// Create SDK from a stack
+    /// Generate an SDK offline from a stack, IDL or local artifacts. Apps
+    /// use `a4 install` for registry SDKs and `a4 dev` for a dev
+    /// environment; this is for programs and stacks not in the registry yet
     Create(SdkCreateArgs),
 
     /// Regenerate SDKs for every configured stack
@@ -606,6 +608,14 @@ struct SdkCreateArgs {
     /// stack const). Rust and Python program SDKs need --program-spec or --idl.
     #[arg(long)]
     program_only: bool,
+
+    /// Self-hosted Arete server that serves account reads for the SDK's
+    /// programs (`http(s)://…`). Without it, an SDK generated offline builds
+    /// instructions and PDAs but its account reads fail with how to get one:
+    /// install the program from the registry (`a4 install program`) and use
+    /// `a4 dev` for a dev environment
+    #[arg(long, value_name = "URL")]
+    read_endpoint: Option<String>,
 }
 
 #[derive(Args)]
@@ -1735,6 +1745,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.program_module,
                 create_args.program_extensions,
                 create_args.program_only,
+                create_args.read_endpoint,
             ),
             SdkCommands::Sync(sync_args) => commands::sdk::sync(
                 &cli.config,

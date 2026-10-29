@@ -1200,6 +1200,7 @@ fn a_refused_bundle_leaves_the_output_untouched() {
                             .display()
                             .to_string(),
                     ),
+                    None,
                 ),
             }
         };
