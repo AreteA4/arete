@@ -479,10 +479,13 @@ impl RuntimeAuthState {
             .config
             .as_ref()
             .and_then(|config| config.stack_release.as_ref());
-        let mut request = self
-            .http_client
-            .post(token_endpoint)
-            .json(&TokenEndpointRequest::new(&self.websocket_url, release));
+        let mut request = self.http_client.post(token_endpoint).json(
+            &TokenEndpointRequest::new(&self.websocket_url, release).in_environment(
+                self.config
+                    .as_ref()
+                    .and_then(|config| config.dev_environment.as_deref()),
+            ),
+        );
 
         if let Some(config) = self.config.as_ref() {
             // Fails, before anything is sent, when an account credential

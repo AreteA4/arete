@@ -52,7 +52,8 @@ pub struct SquadsTarget {
 
 impl SquadsTarget {
     fn is_dev(&self) -> bool {
-        self.dev || self.project.is_some()
+        // A malformed ARETE_ENVIRONMENT fails in `tool_target`.
+        self.dev || self.project.is_some() || arete_mcp::dev::environment_is_dev().unwrap_or(false)
     }
 
     fn tool_target(&self) -> Result<arete_mcp::protocol_agent::TargetArgs> {

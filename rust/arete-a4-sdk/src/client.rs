@@ -2,9 +2,14 @@ use crate::auth::{AuthConfig, AuthToken, StackRelease, TokenTransport};
 use crate::chain::{derive_http_endpoint, ChainClient, ChainError, HttpChainClient};
 use crate::config::{AreteConfig, ConnectionConfig};
 use crate::connection::{ConnectionManager, ConnectionState};
+use crate::dev_environment::{
+    self, resolve_switch_from_process, DevMode, EdgeRequestPolicy, EdgeTokens, Environment,
+    EnvironmentOption, GatewayIdentity, RefusedTokens, ResolveRequest, StackIdentity, Surface,
+    SwitchResult,
+};
 use crate::entity::Stack;
 use crate::error::{AreteError, SocketIssue};
-use crate::gateway::create_hosted_solana_gateway_transports;
+use crate::gateway::{create_hosted_solana_gateway_transports, dev_gateway_transports};
 use crate::http::{HttpAuthClient, TokenSource};
 use crate::instruction::{BuiltInstruction, ErrorMetadata};
 use crate::operations::{
@@ -14,6 +19,8 @@ use crate::operations::{
     TransactionFailureOutcome,
 };
 use crate::program::Programs;
+use crate::program_read_transport::BearerTokenSource;
+use crate::read::QueryExecutor;
 use crate::store::{SharedStore, StoreConfig};
 use crate::transactions::{HttpTransactionTransport, TransactionError, TransactionTransport};
 use crate::view::Views;
@@ -314,6 +321,7 @@ pub struct Arete<S: Stack> {
     /// so a [`ProgramContext`](crate::ProgramContext) sees the current wallet.
     wallet: crate::program::WalletSlot,
     signer_registry: Arc<SignerRegistry>,
+    environment: Environment,
     pub views: S::Views,
     pub programs: S::Programs,
     _stack: PhantomData<S>,
@@ -386,6 +394,12 @@ impl<S: Stack> Arete<S> {
                 timeout,
             )
         })
+    }
+
+    /// `Production`, or `Dev` when the dev environment switch is on
+    /// (`client.environment` in the other SDKs). Decided once, at connect.
+    pub fn environment(&self) -> Environment {
+        self.environment
     }
 
     /// The transport mode this client was connected with.
@@ -544,6 +558,7 @@ pub struct AreteBuilder<S: Stack> {
     chain: Option<Arc<dyn ChainClient>>,
     transactions: Option<Arc<dyn TransactionTransport>>,
     signer_registry: Option<Arc<SignerRegistry>>,
+    environment: Option<EnvironmentOption>,
     _stack: PhantomData<S>,
 }
 
@@ -558,8 +573,19 @@ impl<S: Stack> AreteBuilder<S> {
             chain: None,
             transactions: None,
             signer_registry: None,
+            environment: None,
             _stack: PhantomData,
         }
+    }
+
+    /// The dev environment switch. `EnvironmentOption::Production` is
+    /// production whatever the variables say; `EnvironmentOption::Dev`
+    /// reads and sends through a dev environment. Unset, `ARETE_ENVIRONMENT`
+    /// decides (`production` by default). See
+    /// [`crate::dev_environment`].
+    pub fn environment(mut self, environment: EnvironmentOption) -> Self {
+        self.environment = Some(environment);
+        self
     }
 
     pub fn url(mut self, url: &str) -> Self {
@@ -780,6 +806,7 @@ impl<S: Stack> AreteBuilder<S> {
             chain,
             transactions,
             signer_registry,
+            environment,
             _stack: _,
         } = self;
 
@@ -790,6 +817,26 @@ impl<S: Stack> AreteBuilder<S> {
         // Validate keys and apply ARETE_API_KEY before any binding session
         // endpoint is filled in.
         config.auth = crate::auth::resolve_auth_config(config.auth)?;
+
+        let switch = resolve_switch_from_process(environment.as_ref(), config.auth.as_ref())?;
+        if switch != SwitchResult::Production {
+            let http = reqwest::Client::new();
+            let dev = DevMode::of(&switch, config.auth.as_ref(), &http)?
+                .expect("dev mode for a dev switch");
+            return Self::connect_dev(DevConnect {
+                dev,
+                url,
+                http_url,
+                transport,
+                config,
+                wallet,
+                chain,
+                transactions,
+                signer_registry,
+                http,
+            })
+            .await;
+        }
 
         // The generated release names the version served at the generated
         // URL; a different URL points somewhere the generator knew nothing
@@ -900,9 +947,227 @@ impl<S: Stack> AreteBuilder<S> {
             transactions,
             wallet,
             signer_registry: signer_registry.unwrap_or_default(),
+            environment: Environment::Production,
             views,
             programs,
             _stack: PhantomData,
         })
     }
+
+    /// Connect in dev mode (`docs/internal/dev-environment-switch.md` §3):
+    /// every surface goes to the edge, or to the environment's targets
+    /// resolved once for the identities this stack was generated with.
+    /// Nothing is sent to a production endpoint.
+    async fn connect_dev(parts: DevConnect) -> Result<Arete<S>, AreteError> {
+        let DevConnect {
+            dev,
+            url,
+            http_url,
+            transport,
+            config,
+            wallet,
+            chain,
+            transactions,
+            signer_registry,
+            http,
+        } = parts;
+        if url != S::url() || http_url.is_some() {
+            return Err(AreteError::InvalidConfig(
+                "A custom URL can't be used in dev mode: the stack is resolved by the identity it \
+                 was installed with. Remove AreteBuilder::url/http_url, or connect in production."
+                    .to_string(),
+            ));
+        }
+
+        let gateway = S::gateway();
+        let release = StackRelease::of::<S>();
+        let answer = match &dev {
+            DevMode::Direct(resolver) => {
+                let request = ResolveRequest {
+                    chain: gateway.as_ref().map(|gateway| GatewayIdentity {
+                        solana_gateway_binding_id: gateway.chain.solana_gateway_binding_id.clone(),
+                    }),
+                    transactions: gateway.as_ref().map(|gateway| GatewayIdentity {
+                        solana_gateway_binding_id: gateway
+                            .transactions
+                            .solana_gateway_binding_id
+                            .clone(),
+                    }),
+                    stacks: release.iter().map(StackIdentity::from).collect(),
+                    ..ResolveRequest::default()
+                };
+                if request.is_empty() {
+                    None
+                } else {
+                    Some(resolver.resolve(&request).await?)
+                }
+            }
+            DevMode::Edge { .. } => None,
+        };
+
+        let (dev_chain, dev_transactions) =
+            dev_gateway_transports(gateway.as_ref(), &dev, answer.as_deref(), &http);
+        let chain = chain.unwrap_or(dev_chain);
+        let transactions = transactions.unwrap_or(dev_transactions);
+
+        // The stack: its socket URL and auth, and where its queries go.
+        let stack = match (&dev, &release) {
+            (_, None) => Err(dev_environment::stack_not_loaded(S::name())),
+            (DevMode::Edge { edge_url }, Some(release)) => {
+                let (base, query) = dev_environment::edge_stack_query(edge_url, release);
+                let policy = EdgeRequestPolicy {
+                    query,
+                    ..EdgeRequestPolicy::new(edge_url, None)
+                };
+                Ok(DevStack {
+                    websocket_url: dev_environment::edge_stack_websocket_url(edge_url, release),
+                    socket_auth: None,
+                    query_base: Ok(base),
+                    query_tokens: Arc::new(EdgeTokens { policy }) as Arc<dyn BearerTokenSource>,
+                    tokens: Arc::new(HttpAuthClient::new(None, None, http.clone())),
+                    edge_url: Some(edge_url.clone()),
+                })
+            }
+            (DevMode::Direct(resolver), Some(release)) => answer
+                .as_deref()
+                .ok_or_else(|| dev_environment::stack_not_loaded(S::name()))
+                .and_then(|answer| {
+                    let target = dev_environment::surface_target(answer, Surface::Stack(0))?;
+                    let websocket_url =
+                        dev_environment::target_str(target, "websocketUrl")?.to_string();
+                    let served = dev_environment::target_str(target, "stackManifestHash")?;
+                    let mut auth = resolver.token_auth(crate::auth::DEFAULT_HOSTED_TOKEN_ENDPOINT);
+                    auth.stack_release = Some(StackRelease {
+                        stack_manifest_hash: served.to_string(),
+                        live_alias: release.live_alias.clone(),
+                    });
+                    let tokens = Arc::new(HttpAuthClient::new(
+                        Some(auth.clone()),
+                        Some(websocket_url.clone()),
+                        http.clone(),
+                    ));
+                    let query_base = dev_environment::stack_query_base(target, S::name());
+                    Ok(DevStack {
+                        websocket_url,
+                        socket_auth: Some(auth),
+                        query_base,
+                        query_tokens: tokens.clone() as Arc<dyn BearerTokenSource>,
+                        tokens,
+                        edge_url: None,
+                    })
+                }),
+        };
+
+        let (connection_url, connection_auth, auth_client, queries, http_base_url, edge_url) =
+            match stack {
+                Ok(stack) => {
+                    let (queries, base) = match stack.query_base {
+                        Ok(base) => (
+                            QueryExecutor::new(base.clone(), http.clone())
+                                .with_auth(stack.query_tokens),
+                            Some(base),
+                        ),
+                        Err(error) => (refused_queries(error, &http), None),
+                    };
+                    (
+                        Ok(stack.websocket_url),
+                        stack.socket_auth,
+                        stack.tokens,
+                        queries,
+                        base,
+                        stack.edge_url,
+                    )
+                }
+                Err(error) => (
+                    Err(error.clone()),
+                    None,
+                    Arc::new(HttpAuthClient::new(None, None, http.clone())),
+                    refused_queries(error, &http),
+                    None,
+                    None,
+                ),
+            };
+
+        let store = SharedStore::with_config(StoreConfig {
+            max_entries_per_view: config.max_entries_per_view,
+        });
+        let mut connection_config: ConnectionConfig = config.clone().into();
+        connection_config.auth = connection_auth;
+        let connection = match transport {
+            Transport::WebSocket => {
+                let connection_url = connection_url?;
+                if let Some(edge_url) = &edge_url {
+                    dev_environment::check_edge(&http, edge_url).await?;
+                }
+                ConnectionManager::new(connection_url, connection_config, store.clone()).await?
+            }
+            Transport::Http => ConnectionManager::new_disabled(connection_config, store.clone()),
+        };
+
+        let view_builder = crate::view::ViewBuilder::new(
+            connection.clone(),
+            store.clone(),
+            config.initial_data_timeout,
+        );
+        let views = S::Views::from_builder(view_builder);
+        let wallet: crate::program::WalletSlot = Arc::new(RwLock::new(wallet));
+        let program_builder = crate::program::ProgramBuilder::for_client(
+            http,
+            http_base_url.clone(),
+            Some(auth_client.clone()),
+            config.auth.clone(),
+        )
+        .with_client_runtime(chain.clone(), wallet.clone())
+        .with_dev(Some(dev), Some(queries));
+        let programs = S::Programs::from_builder(program_builder);
+
+        Ok(Arete {
+            connection,
+            store,
+            config,
+            transport,
+            http_base_url,
+            auth_client,
+            chain,
+            transactions,
+            wallet,
+            signer_registry: signer_registry.unwrap_or_default(),
+            environment: Environment::Dev,
+            views,
+            programs,
+            _stack: PhantomData,
+        })
+    }
+}
+
+/// What [`AreteBuilder::connect_dev`] connects with.
+struct DevConnect {
+    dev: DevMode,
+    url: String,
+    http_url: Option<String>,
+    transport: Transport,
+    config: AreteConfig,
+    wallet: Option<Arc<dyn WalletAdapter>>,
+    chain: Option<Arc<dyn ChainClient>>,
+    transactions: Option<Arc<dyn TransactionTransport>>,
+    signer_registry: Option<Arc<SignerRegistry>>,
+    http: reqwest::Client,
+}
+
+/// A stack in dev mode.
+struct DevStack {
+    websocket_url: String,
+    /// The socket's auth: none through the edge, environment sessions direct.
+    socket_auth: Option<AuthConfig>,
+    query_base: Result<String, AreteError>,
+    query_tokens: Arc<dyn BearerTokenSource>,
+    tokens: Arc<HttpAuthClient>,
+    /// The edge to check before the socket opens.
+    edge_url: Option<String>,
+}
+
+/// Stack queries that fail with `error` before anything is sent.
+fn refused_queries(error: AreteError, http: &reqwest::Client) -> QueryExecutor {
+    QueryExecutor::new(dev_environment::REFUSED_ENDPOINT, http.clone())
+        .with_auth(Arc::new(RefusedTokens { error }) as Arc<dyn BearerTokenSource>)
 }
