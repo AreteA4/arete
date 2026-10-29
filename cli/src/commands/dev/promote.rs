@@ -332,7 +332,7 @@ mod tests {
     #[test]
     fn a_local_extension_is_pending() {
         let mut lock = lock();
-        lock.dependencies[1].local_extension = Some("ab".repeat(32));
+        lock.dependencies[2].local_extension = Some("ab".repeat(32));
         let pending = lock_pending(&lock);
         let kinds: Vec<_> = pending
             .iter()
