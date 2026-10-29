@@ -176,8 +176,13 @@ export const isDev = clientCluster(client) === "dev";
 ```
 
 ```tsx
-{isDev && <button onClick={() => fetch(`${devApi}/dev/v1/airdrop`, { method: "POST", body: JSON.stringify({ pubkey, sol: 5 }) })}>Fund (dev)</button>}
+{isDev && <button onClick={() => fetch("/dev/v1/airdrop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ pubkey, sol: 5 }) })}>Fund (dev)</button>}
 ```
+
+`/dev/v1` is `a4 dev up`'s dev API, which accepts requests from its own
+origin only: let the app's dev server proxy it (Vite's `server.proxy`, with
+the `origin` header set to the dev API's), and never call it from a
+production build.
 
 - Gate on the client, never on `NODE_ENV` or a hostname: a production build
   can hold a dev client by mistake, and the gate must follow the client.
@@ -185,9 +190,12 @@ export const isDev = clientCluster(client) === "dev";
   production client, so a build that still calls one fails at startup.
   Keep the production signer, store and simulator beside them and choose by
   `isDev`.
-- In a browser bundle, load dev-only modules with a dynamic
-  `import()` inside the `isDev` branch, so the production bundle doesn't
-  carry them.
+- In a browser bundle, load dev-only modules with a dynamic `import()`
+  inside the `isDev` branch. The bundler still emits them as a separate
+  chunk (`isDev` is only known at run time), but a production client never
+  loads or runs them; keep secrets and keys out of them regardless. The
+  dev API itself (`/dev/v1`, beside `a4 dev up`) does not exist in
+  production.
 
 ## Dev and production builds of one app
 
