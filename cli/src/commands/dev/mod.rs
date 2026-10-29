@@ -1061,7 +1061,11 @@ async fn status(args: EnvArgs, json: bool) -> Result<()> {
     } else {
         let rpc = args.rpc().await?;
         let view = rpc.api().get_env(rpc.env()).await.map_err(env::explain)?;
-        json!({ "environment": arete_mcp::dev_env::public_view(&view) })
+        let stacks = match rpc.api().stacks(rpc.env()).await {
+            Ok(listing) => Value::Array(arete_mcp::dev::environment_stacks(&listing)),
+            Err(error) => json!({ "error": format!("{error:#}") }),
+        };
+        json!({ "environment": arete_mcp::dev_env::public_view(&view), "stacks": stacks })
     };
     if report["environment"]["state"] == "running" && report.get("chain").is_none() {
         if let Ok(rpc) = args.rpc().await {
@@ -1172,7 +1176,39 @@ fn render_status(report: &Value) -> String {
     } else if let Some(error) = chain["error"].as_str() {
         let _ = writeln!(out, "  chain       {}", error.red());
     }
+    render_stacks(&mut out, &report["stacks"]);
     out
+}
+
+/// Each stack loaded into the environment, with the slot it started at:
+/// nothing seeds a stack, so an empty view is not a broken one.
+fn render_stacks(out: &mut String, stacks: &Value) {
+    use std::fmt::Write as _;
+    if let Some(error) = stacks["error"].as_str() {
+        let _ = writeln!(out, "  stacks      {}", error.red());
+        return;
+    }
+    let Some(stacks) = stacks.as_array().filter(|stacks| !stacks.is_empty()) else {
+        return;
+    };
+    let _ = writeln!(out, "  stacks");
+    for stack in stacks {
+        let state = if stack["serving"] == true {
+            String::new()
+        } else {
+            format!(" {}", "(not serving)".dimmed())
+        };
+        let _ = writeln!(
+            out,
+            "    {}{state}\n      {}",
+            stack["name"].as_str().unwrap_or("?"),
+            stack["holds"].as_str().unwrap_or_default()
+        );
+    }
+    let _ = writeln!(
+        out,
+        "    (an account enters a stack when the environment touches it: send a transaction or run `a4 dev scenario`; program account reads show current state)"
+    );
 }
 
 fn up(args: UpArgs, json: bool) -> Result<()> {
@@ -1311,6 +1347,33 @@ mod tests {
         }
         assert!(json_output.contains("hs_token=<redacted>"), "{json_output}");
         assert!(plain_output.contains("stream URL"), "{plain_output}");
+    }
+
+    #[test]
+    fn dev_status_names_each_stack_and_its_load_slot() {
+        let listing = json!({
+            "envId": "denv_01hzx3k8m9q2r4s5t6v7w8x9yz",
+            "stacks": [
+                {"deploymentId": 7, "specName": "registry-klend-0123456789abcdef", "assigned": true,
+                 "websocketUrl": "wss://s1.devstack.example.test", "loadedSlot": 312_000_123_u64},
+                {"deploymentId": 8, "specName": "older", "assigned": false,
+                 "websocketUrl": "wss://s2.devstack.example.test", "loadedSlot": null},
+            ],
+        });
+        let report = json!({
+            "environment": { "id": "denv_01hzx3k8m9q2r4s5t6v7w8x9yz", "state": "running" },
+            "stacks": arete_mcp::dev::environment_stacks(&listing),
+        });
+        let plain = render_status(&report);
+        assert!(plain.contains("registry-klend-0123456789abcdef"), "{plain}");
+        assert!(
+            plain.contains("started empty at slot 312000123: it holds only accounts the environment touches from then on"),
+            "{plain}"
+        );
+        assert!(plain.contains("started empty when it loaded"), "{plain}");
+        assert!(plain.contains("a4 dev scenario"), "{plain}");
+        assert_eq!(report["stacks"][0]["loadedSlot"], 312_000_123_u64);
+        assert_eq!(report["stacks"][1]["serving"], false);
     }
 
     #[test]

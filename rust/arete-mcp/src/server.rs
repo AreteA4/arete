@@ -1572,7 +1572,10 @@ impl AreteMcp {
                           `stack.streamUrl` with its read session token redacted. A WebSocket \
                           client gets a valid URL from `.arete/dev/session.json` \
                           (`stackSession.streamUrl`, kept fresh while `a4 dev up` runs) or \
-                          uses `a4 stream --dev`. \
+                          uses `a4 stream --dev`. `stacks` lists the stacks loaded into the \
+                          environment: each started empty at `loadedSlot` and holds only the \
+                          accounts the environment touched since (a transaction or a \
+                          scenario override). \
                           Environments sleep when idle and keep their state; any RPC call or \
                           `dev_wake` wakes one. Start `a4 dev up` in a terminal to create one; \
                           these tools never start or stop local processes."
@@ -1594,9 +1597,14 @@ impl AreteMcp {
         } else {
             Value::Null
         };
+        let stacks = match rpc.api().stacks(rpc.env()).await {
+            Ok(listing) => Value::Array(crate::dev::environment_stacks(&listing)),
+            Err(error) => json!({ "error": format!("{error:#}") }),
+        };
         shaped_result(&json!({
             "environment": crate::dev_env::public_view(&environment),
             "chain": chain,
+            "stacks": stacks,
         }))
     }
 

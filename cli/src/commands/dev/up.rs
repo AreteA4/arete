@@ -1079,8 +1079,8 @@ impl Session<'_> {
             Ok(Some(stack)) => {
                 self.events.emit(
                     "stack",
-                    &format!("Stack {} is serving at {}", stack.name, stack.ws_url),
-                    json!({ "stack": stack.name, "wsUrl": stack.ws_url }),
+                    &stack.serving_line(),
+                    json!({ "stack": stack.name, "wsUrl": stack.ws_url, "loadedSlot": stack.loaded_slot }),
                 );
                 self.stack = Some((stack.name, stack.ws_url));
                 true
@@ -1307,8 +1307,8 @@ impl Session<'_> {
         )
         .await?;
         for stack in &stacks {
-            self.events.emit("stack", &format!("Stack {} is serving at {}", stack.name, stack.ws_url),
-                json!({ "stack": stack.name, "wsUrl": stack.ws_url, "deploymentId": stack.deployment_id }));
+            self.events.emit("stack", &stack.serving_line(),
+                json!({ "stack": stack.name, "wsUrl": stack.ws_url, "deploymentId": stack.deployment_id, "loadedSlot": stack.loaded_slot }));
         }
         self.pass.stacks = Some(stacks.iter().map(|stack| stack.name.clone()).collect());
         if !self.config.protocol {
