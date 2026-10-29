@@ -17,7 +17,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -924,7 +924,8 @@ pub struct DirectResolver {
     url: String,
     auth: AuthConfig,
     http: reqwest::Client,
-    cache: Mutex<HashMap<String, Arc<Value>>>,
+    /// Held across the request, so concurrent first uses resolve once.
+    cache: tokio::sync::Mutex<HashMap<String, Arc<Value>>>,
 }
 
 impl std::fmt::Debug for DirectResolver {
@@ -962,7 +963,7 @@ impl DirectResolver {
             url,
             auth,
             http,
-            cache: Mutex::new(HashMap::new()),
+            cache: tokio::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -982,7 +983,8 @@ impl DirectResolver {
     /// The answer for `request`, resolved once.
     pub async fn resolve(&self, request: &ResolveRequest) -> Result<Arc<Value>, AreteError> {
         let key = request.identity_header();
-        if let Some(answer) = self.cache.lock().expect("resolve cache").get(&key) {
+        let mut cache = self.cache.lock().await;
+        if let Some(answer) = cache.get(&key) {
             return Ok(answer.clone());
         }
         let Some(key_value) = self.auth.api_key_for(&self.url)? else {
@@ -1023,10 +1025,7 @@ impl DirectResolver {
         let answer: Value = serde_json::from_slice(&body)
             .map_err(|error| AreteError::Serialization(error.to_string()))?;
         let answer = Arc::new(answer);
-        self.cache
-            .lock()
-            .expect("resolve cache")
-            .insert(key, answer.clone());
+        cache.insert(key, answer.clone());
         Ok(answer)
     }
 

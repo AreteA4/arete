@@ -1094,13 +1094,19 @@ impl<S: Stack> AreteBuilder<S> {
         let mut connection_config: ConnectionConfig = config.clone().into();
         connection_config.auth = connection_auth;
         let connection = match transport {
-            Transport::WebSocket => {
-                let connection_url = connection_url?;
-                if let Some(edge_url) = &edge_url {
-                    dev_environment::check_edge(&http, edge_url).await?;
+            Transport::WebSocket => match connection_url {
+                Ok(connection_url) => {
+                    if let Some(edge_url) = &edge_url {
+                        dev_environment::check_edge(&http, edge_url).await?;
+                    }
+                    ConnectionManager::new(connection_url, connection_config, store.clone()).await?
                 }
-                ConnectionManager::new(connection_url, connection_config, store.clone()).await?
-            }
+                // The environment refused the stack: its views fail with the
+                // refusal, and the client's other surfaces keep working.
+                Err(refusal) => {
+                    ConnectionManager::new_refused(connection_config, store.clone(), refusal)
+                }
+            },
             Transport::Http => ConnectionManager::new_disabled(connection_config, store.clone()),
         };
 
