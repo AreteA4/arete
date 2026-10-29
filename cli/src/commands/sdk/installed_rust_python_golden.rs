@@ -743,6 +743,7 @@ fn create_offline_stack(
         Vec::new(),
         program_extensions,
         false,
+        None,
     )
 }
 

@@ -577,6 +577,7 @@ pub async fn deploy(
                 (
                     LocalArtifactStack {
                         manifest_path: path.clone(),
+                        read_endpoint: None,
                         manifest_hash: manifest.artifact_hash.to_string(),
                         program_specs: serde_json::from_value(out["programSpecs"].clone())?,
                         live_specs: vec![(alias, live)],
