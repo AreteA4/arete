@@ -564,6 +564,29 @@ contents of `.arete/dev/automations/webhook-secret`:
 forward = "http://localhost:3000/api/arete-webhook"
 ```
 
+Your server can run on what `a4 dev up` itself uses, from
+`@usearete/automations/dev` (Node.js only):
+
+```ts
+import { devSimulator, devWalletsSigner, fileMemoryStore, grantDevConsent, routingSigner } from "@usearete/automations/dev";
+
+const devWallets = devWalletsSigner(client);              // signs for .arete/dev/wallets/*, messages too
+const automations = createAutomations({
+  client,
+  signer: routingSigner(client, [devWallets, privy]),    // dev wallets first, then Privy for other wallets
+  simulator: devSimulator(client),                        // the fork, through a4 dev up's local RPC
+  store: fileMemoryStore(client, ".arete/dev/app-store.bin"),
+  policy,
+});
+await grantDevConsent(automations, devWallets, { wallet: "alice", deploymentId: client.deploymentId, steps: ["refund"], limits, expiresAt });
+```
+
+Each helper throws when the client targets production, so keep the
+production signer, simulator and store beside them and pick by
+`clientCluster(client) === "dev"`. (That reads the environment from the
+client's deployment; it is temporary, until the SDK exposes the environment
+on the client.)
+
 `a4 dev consent` opts a dev wallet in, signing the consent message with the
 wallet's key as a user's wallet would in your app (entry mode only):
 

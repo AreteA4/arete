@@ -14,7 +14,7 @@ import { fakeProtocol, PROGRAM } from '../test-support/fake-protocol';
 import { ALICE, harness, storedGrant } from '../test-support/harness';
 import { type PumpClient, type SignedDelivery, signDelivery, startEventPump } from './events';
 import { devStackConnector, loadDefinition, projectTsImport, runDev } from './runner';
-import { devWalletsSigner, readDevWallets } from './signer';
+import { readDevWallets, walletsSigner } from './signer';
 
 const SECRET = 'whsec_dev';
 const tick = async (times = 20) => {
@@ -194,7 +194,7 @@ describe('dev wallets', () => {
     const message = new TextEncoder().encode('consent');
     expect(ed25519.verify(wallets.byName.get('alice')!.signMessage(message), message, decodeBase58(address)!)).toBe(true);
 
-    const signer = devWalletsSigner(dir);
+    const signer = walletsSigner(dir);
     expect(await signer.canSign(address)).toBe(true);
     expect(await signer.canSign(ALICE)).toBe(false);
     await expect(signer.signTransactions({ wallet: ALICE } as never)).rejects.toThrow(/not a dev wallet/);

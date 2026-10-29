@@ -109,6 +109,17 @@ change. In production, `await automations.use(definition)` registers the same
 handlers on a runtime you configure, with
 `definePolicy({ ...definition.policy, deployments, clusters })`.
 
+With `[dev.automations] forward = "<your webhook URL>"` instead, `a4 dev up`
+only delivers the events, and your own server runs the automations.
+`@usearete/automations/dev` (Node.js only) has what the dev runner uses:
+`devWalletsSigner(client)` (the project's dev wallets, which also sign
+messages, for consents), `routingSigner(client, [devWallets, privy])` (the
+first signer that can sign for a wallet does), `fileMemoryStore(client,
+path)`, `devSimulator(client)` (the fork, through `a4 dev up`'s local RPC)
+and `grantDevConsent(automations, devWallets, fields)`. Each throws unless
+the client targets a dev environment. `examples/token-raise/server.ts` runs
+on them in dev.
+
 ## Deploying
 
 `npx @usearete/automations add <cloudflare|vercel|node>` writes `runtime.ts`

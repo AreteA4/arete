@@ -59,8 +59,22 @@ end the raise.
 
 To run the whole server below against the dev environment instead (the
 consent routes too), use `forward = "http://localhost:8787/arete/webhook"`
-and start `server.ts` with `ARETE_WEBHOOK_SECRET` set to the contents of
-`.arete/dev/automations/webhook-secret`.
+and start `server.ts` from the protocol's project:
+
+```bash
+ARETE_SECRET_KEY=<secret key> APP_API_TOKEN=dev \
+ARETE_WEBHOOK_SECRET="$(cat .arete/dev/automations/webhook-secret)" \
+PROGRAMS='["<program id>"]' npx tsx server.ts
+curl -X POST localhost:8787/dev/consent -H "authorization: Bearer dev" -d '{"wallet":"alice"}'
+```
+
+With the dev client it runs on `@usearete/automations/dev` only: dev
+wallets sign (and Privy, for any other wallet, with `SIGNER=privy`), jobs
+and consent are kept in `.arete/dev/token-raise-store.bin`, transactions
+simulate on the fork, and `POST /dev/consent` signs alice's consent with
+her dev wallet, as `a4 dev consent` does in entry mode. None of it runs
+with the published client: each helper throws when the client targets
+production.
 
 ## Run it in production
 
@@ -85,8 +99,8 @@ and start `server.ts` with `ARETE_WEBHOOK_SECRET` set to the contents of
    |---|---|
    | `ARETE_SECRET_KEY` | A secret key for the deployment |
    | `ARETE_WEBHOOK_SECRET` | The signing secret of a webhook endpoint subscribed to `raise.failed`, pointing at `/arete/webhook` |
-   | `DATABASE_URL` | Postgres for the store |
-   | `RPC_URL` | Simulates each transaction. Defaults to `a4 dev up`'s local RPC (`http://127.0.0.1:48700`) for a dev client; required for mainnet |
+   | `DATABASE_URL` | Postgres for the store (a dev client uses a file under `.arete/dev/` instead) |
+   | `RPC_URL` | Simulates each transaction (mainnet). With a dev client the fork is used instead, through `a4 dev up`'s local RPC |
    | `ALLOW_MAINNET` | `1` to let the policy sign on mainnet; without it only the dev environment is allowed |
    | `PROGRAMS` | JSON list of the protocol's program ids |
    | `APP_DOMAIN` | The host name users see in the consent message |

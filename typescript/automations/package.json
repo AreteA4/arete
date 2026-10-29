@@ -47,6 +47,11 @@
       "import": "./dist/node.js",
       "require": "./dist/node.cjs"
     },
+    "./dev": {
+      "types": "./dist/dev.d.ts",
+      "import": "./dist/dev.js",
+      "require": "./dist/dev.cjs"
+    },
     "./package.json": "./package.json"
   },
   "typesVersions": {
@@ -71,6 +76,9 @@
       ],
       "node": [
         "./dist/node.d.ts"
+      ],
+      "dev": [
+        "./dist/dev.d.ts"
       ]
     }
   },
