@@ -142,6 +142,7 @@ class ConnectionManager:
         served stack version in the session request; without it the request
         is exactly what older clients send."""
         self._websocket_url = websocket_url or None
+        self._refused: Optional[BaseException] = None
         if auth_state is not None:
             self._auth_state = auth_state
         elif auth is not None:
@@ -669,7 +670,15 @@ class ConnectionManager:
 
     # -- internals: state --------------------------------------------------
 
+    def refuse(self, error: BaseException) -> None:
+        """No socket: a dev environment refused the stack. Connecting and
+        subscribing raise ``error``; the client's other surfaces keep
+        working."""
+        self._refused = error
+
     def _require_websocket_url(self) -> str:
+        if self._refused is not None:
+            raise self._refused
         if self._websocket_url is None:
             raise AreteError(
                 "WebSocket transport is disabled (client was connected with "

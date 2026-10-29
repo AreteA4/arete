@@ -562,3 +562,28 @@ async def test_a_production_client_reports_production(monkeypatch: pytest.Monkey
     stack = stack_def(TARGETS["installed"]["default"])
     client = await Arete.connect(stack, transport="http", http_client=Recorder().client())
     assert client.environment == "production"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_stack_leaves_the_other_surfaces_working(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Edge mode with a stack that has no release: the stack refuses with
+    devenv-stack-not-loaded, chain reads still go to the edge."""
+    from dataclasses import replace
+
+    from arete import Arete
+
+    monkeypatch.setenv("ARETE_ENVIRONMENT", "dev")
+    monkeypatch.setenv("ARETE_DEV_URL", "http://127.0.0.1:8911")
+    recorder = Recorder()
+    stack = replace(stack_def(TARGETS["installed"]["default"]), release=None)
+    client = await Arete.connect(stack, http_client=recorder.client())
+    with pytest.raises(AreteError) as raised:
+        await client.connect_socket()
+    assert raised.value.code == "devenv-stack-not-loaded"
+    try:
+        await client.chain.lamports("11111111111111111111111111111111")
+    except Exception:
+        pass
+    assert any(str(r.url).startswith("http://127.0.0.1:8911/chain/") for r in recorder.take())

@@ -505,10 +505,12 @@ class Arete:
                 effective_stack, dev_mode, overrides=overrides, http_client=http_client
             )
             if not http_only:
-                if dev_wiring.socket_error is not None:
-                    raise dev_wiring.socket_error
                 websocket_url = dev_wiring.websocket_url
-                if auto_connect and dev_wiring.edge_url is not None:
+                if (
+                    auto_connect
+                    and websocket_url is not None
+                    and dev_wiring.edge_url is not None
+                ):
                     await check_edge(http_client, dev_wiring.edge_url)
 
         client = cls(
@@ -530,6 +532,11 @@ class Arete:
             connect_factory=connect_factory,
             dev=dev_wiring,
         )
+        if dev_wiring is not None and dev_wiring.socket_error is not None:
+            # The environment refused the stack: its views raise the
+            # refusal, and the client's other surfaces keep working.
+            client._connection.refuse(dev_wiring.socket_error)
+            http_only = True
         if not http_only and auto_connect:
             await client._connection.connect()
         return apply_connected_stack_extensions(client, effective_stack)
