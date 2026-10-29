@@ -497,9 +497,10 @@ A dependency in `arete.toml` with `extensions = { path = "<dir>" }` uses the
 SDK extension bundle in that directory instead of the published one (see
 [Testing an unpublished SDK extension](/cli/commands/#testing-an-unpublished-sdk-extension)).
 Run `a4 install` once to generate it. After that, `a4 dev up` watches the
-directory and regenerates only that dependency's SDK when a file changes,
-recording the new bundle as `local_extension` in `arete.lock`. Changes that
-touch only extension files don't redeploy the protocol or your stacks.
+bundle's files (its `extensions.json` and the files it lists, or its entry)
+and regenerates only that dependency's SDK when one changes, recording the new
+bundle as `local_extension` in `arete.lock`. Changes that touch only extension
+files don't redeploy the protocol or your stacks.
 
 ## Agents (MCP)
 

@@ -1,6 +1,7 @@
 //! Local SDK extensions under `a4 dev up`: each registry program or stack
-//! dependency with `extensions = { path = "<dir>" }` in arete.toml has that
-//! directory watched, and a change regenerates only that dependency's SDK
+//! dependency with `extensions = { path = "<dir>" }` in arete.toml has its
+//! bundle's files watched (never the whole directory, which may hold the
+//! generated SDK itself), and a change regenerates only that dependency's SDK
 //! with the bundle as it is now (arete.lock records it as
 //! `local_extension`).
 
@@ -12,8 +13,39 @@ use crate::project::installer::{install_local_extensions, LocalExtensionInstall}
 use crate::project::manifest::DependencyKind;
 use crate::project::ProjectManifest;
 
-/// Each dependency with a local SDK extension, and the bundle directory.
-fn directories(root: &Path) -> Vec<(DependencyKind, String, PathBuf)> {
+/// The files a bundle in `dir` is read from: its `extensions.json`, each
+/// file that manifest lists, and the entries read without one.
+fn bundle_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = [
+        "extensions.json",
+        "index.ts",
+        "extensions.rs",
+        "extensions.py",
+    ]
+    .iter()
+    .map(|name| dir.join(name))
+    .collect();
+    let listed = std::fs::read(dir.join("extensions.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    if let Some(listed) = listed
+        .as_ref()
+        .and_then(|manifest| manifest["files"].as_array())
+    {
+        files.extend(
+            listed
+                .iter()
+                .filter_map(|file| file.as_str())
+                .map(|file| dir.join(file)),
+        );
+    }
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// Each dependency with a local SDK extension, and its bundle's files.
+fn bundles(root: &Path) -> Vec<(DependencyKind, String, Vec<PathBuf>)> {
     let Ok(manifest) = ProjectManifest::load(root.join("arete.toml")) else {
         return Vec::new();
     };
@@ -21,34 +53,44 @@ fn directories(root: &Path) -> Vec<(DependencyKind, String, PathBuf)> {
         .dependencies()
         .filter_map(|(kind, alias, dependency)| {
             let extensions = dependency.extensions.as_ref()?;
-            Some((kind, alias.clone(), root.join(&extensions.path)))
+            Some((
+                kind,
+                alias.clone(),
+                bundle_files(&root.join(&extensions.path)),
+            ))
         })
         .collect()
 }
 
-/// The files of every local SDK extension directory now.
+/// The files of every local SDK extension bundle now.
 pub fn snapshot(root: &Path) -> super::watch::Snapshot {
     let mut snapshot = super::watch::Snapshot::new();
-    for (_, _, dir) in directories(root) {
-        super::watch::walk(&dir, &mut snapshot, 0);
+    for (_, _, files) in bundles(root) {
+        for file in files {
+            if let Ok(metadata) = std::fs::metadata(&file) {
+                if metadata.is_file() {
+                    snapshot.insert(file, (metadata.modified().ok(), metadata.len()));
+                }
+            }
+        }
     }
     snapshot
 }
 
-/// The dependencies whose local SDK extension directory holds a changed
-/// path, and whether every changed path is only an extension file: one that
+/// The dependencies whose local SDK extension bundle has a changed file,
+/// and whether every changed path is only an extension file: one that
 /// exists now and that the protocol and stack watch does not also cover (a
 /// bundle may share a directory with them). A removed file counts as a
 /// source change, to be safe.
 pub fn changed(root: &Path, changed: &[PathBuf]) -> (Vec<(DependencyKind, String)>, bool) {
-    let directories = directories(root);
+    let bundles = bundles(root);
     let sources = super::watch::source_snapshot(root);
     let mut selected = Vec::new();
     let mut only_extensions = !changed.is_empty();
     for path in changed {
         let mut inside = false;
-        for (kind, alias, dir) in &directories {
-            if path.starts_with(dir) {
+        for (kind, alias, files) in &bundles {
+            if files.contains(path) {
                 inside = true;
                 if !selected
                     .iter()
@@ -144,9 +186,44 @@ version = "^1.0.0"
         assert_eq!(changed(root, &[root.join("index.ts")]), (ore.clone(), true));
         assert_eq!(
             changed(root, &[root.join("protocol.ts")]),
-            (ore.clone(), false)
+            (Vec::new(), false)
         );
-        // Removed: maybe a source file, so rebuild.
-        assert_eq!(changed(root, &[root.join("gone.ts")]), (ore, false));
+        // A removed bundle file may have been a source file too: rebuild.
+        std::fs::remove_file(root.join("index.ts")).unwrap();
+        assert_eq!(changed(root, &[root.join("index.ts")]), (ore, false));
+    }
+
+    #[test]
+    fn the_generated_sdk_beside_a_bundle_is_not_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("arete.toml"),
+            MANIFEST.replace("extensions/ore", "."),
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("extensions.json"),
+            r#"{"entry":"ore-extensions.ts","files":["ore-extensions.ts"]}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("ore-extensions.ts"), "export {};").unwrap();
+        std::fs::create_dir_all(root.join("generated/typescript/programs/ore")).unwrap();
+        std::fs::write(
+            root.join("generated/typescript/programs/ore/ore-extensions.ts"),
+            "export {};",
+        )
+        .unwrap();
+        assert_eq!(
+            snapshot(root).keys().cloned().collect::<Vec<_>>(),
+            [root.join("extensions.json"), root.join("ore-extensions.ts")]
+        );
+        assert_eq!(
+            changed(
+                root,
+                &[root.join("generated/typescript/programs/ore/ore-extensions.ts")]
+            ),
+            (Vec::new(), false)
+        );
     }
 }

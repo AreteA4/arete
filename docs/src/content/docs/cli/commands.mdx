@@ -2157,7 +2157,7 @@ While a dependency uses a local extension:
 - `a4 install --check`, `a4 protocol deploy` and `a4 dev promote --check`
   fail.
 - `a4 install --locked` refuses to run until `extensions` is removed.
-- `a4 dev up` watches the directory and regenerates the SDK when it changes.
+- `a4 dev up` watches the bundle's files and regenerates the SDK when one changes.
 
 The override is not part of the lock's resolution, so adding or removing it
 leaves `arete.lock` fresh. To go back to the published extension, publish
