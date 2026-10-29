@@ -46,9 +46,6 @@ pub struct LocalProtocol {
     /// The protocol slug: the registry package the client installs as.
     pub slug: String,
     pub release_hash: String,
-    /// The deployment in the dev environment. Never written into the
-    /// client; an older `a4` wrote it into arete.lock, where it is dropped.
-    pub deployment_id: String,
 }
 
 impl LocalProtocol {
@@ -57,7 +54,7 @@ impl LocalProtocol {
     pub fn from_project(root: &Path) -> Result<Self> {
         let project = DevProject::new(root);
         let state = DeployState::load(&project.deploy_state_path());
-        let (Some(slug), Some(release_hash), Some(deployment_id)) =
+        let (Some(slug), Some(release_hash), Some(_)) =
             (state.slug, state.release_hash, state.deployment_id)
         else {
             bail!("No deployment in the dev environment yet; `a4 dev up` deploys the protocol");
@@ -67,7 +64,6 @@ impl LocalProtocol {
             spec_json: build.spec_json,
             slug,
             release_hash,
-            deployment_id,
         })
     }
 
@@ -179,9 +175,7 @@ pub fn sync_installed_client(
     let build = LocalProtocolBuild {
         spec_json: protocol.spec_json.clone(),
         release_hash: protocol.release_hash.clone(),
-        deployment: LocalBuildDeployment::Locked {
-            dev_deployment: Some(protocol.deployment_id.clone()),
-        },
+        deployment: LocalBuildDeployment::Locked,
         api_base: api_base.to_string(),
     };
     let install = install_local_protocol_build(
@@ -219,14 +213,12 @@ mod tests {
     }
 
     /// What `a4 dev` generates after a deploy into the environment as
-    /// `local_id`.
-    fn build(release_hash: &str, local_id: &str) -> LocalProtocolBuild {
+    /// `_local_id`, which the client never names.
+    fn build(release_hash: &str, _local_id: &str) -> LocalProtocolBuild {
         LocalProtocolBuild {
             spec_json: spec(),
             release_hash: release_hash.into(),
-            deployment: LocalBuildDeployment::Locked {
-                dev_deployment: Some(local_id.into()),
-            },
+            deployment: LocalBuildDeployment::Locked,
             api_base: "https://api.example.test".into(),
         }
     }
@@ -343,9 +335,9 @@ mod tests {
             assert!(!same.changed, "{deployment}");
         }
 
-        // arete.lock names a production deployment the generated files do
-        // not (an `a4 protocol deploy` recorded elsewhere): the client is
-        // generated again and keeps it.
+        // A deployment in a never-published entry is not trusted: an older
+        // `a4` wrote dev deployments there. The client is generated again
+        // without it.
         let mut edited = ProjectLock::load(root.join("arete.lock")).unwrap();
         edited.dependencies[0]
             .protocol
@@ -360,12 +352,12 @@ mod tests {
             true,
         )
         .unwrap();
-        assert!(regenerated.changed);
+        assert!(regenerated.changed && regenerated.deployment_id.is_none());
         let module =
             std::fs::read_to_string(regenerated.outputs[0].join("local-tip-jar.ts")).unwrap();
         assert!(
-            module.contains("33333333-3333-4333-8333-333333333333")
-                && !module.contains("dep-local-3"),
+            module.contains("  deployment: null,\n")
+                && !module.contains("33333333-3333-4333-8333-333333333333"),
             "{module}"
         );
 
@@ -374,8 +366,8 @@ mod tests {
         assert!(problems[0].problem.contains("never published"));
     }
 
-    /// A lock an older `a4` wrote names the dev environment's deployment:
-    /// it is not kept as if it were production's.
+    /// A lock an older `a4` wrote names a dev deployment, even one older
+    /// than the environment's current one: it is not kept as production's.
     #[test]
     fn a_dev_deployment_an_older_a4_locked_is_dropped() {
         let dir = project(&[]);
@@ -399,7 +391,7 @@ mod tests {
         let install = install_local_protocol_build(
             &root.join("arete.toml"),
             "local-tip-jar",
-            &build(&next, "dep-env-old"),
+            &build(&next, "dep-env-new"),
             true,
         )
         .unwrap();
@@ -508,7 +500,6 @@ mod tests {
                 spec_json: spec(),
                 slug: "local-tip-jar".into(),
                 release_hash: LOCAL_RELEASE.into(),
-                deployment_id: "dep-env-9".into(),
             },
             &[],
             "https://api.example.test",
@@ -528,11 +519,12 @@ mod tests {
     fn a_redeploy_in_the_environment_leaves_the_client_alone() {
         let dir = project(&[]);
         let root = dir.path();
-        let protocol = |deployment: &str| LocalProtocol {
+        // The environment's deployment is not an input: the client never
+        // names it.
+        let protocol = |_deployment: &str| LocalProtocol {
             spec_json: spec(),
             slug: "local-tip-jar".into(),
             release_hash: LOCAL_RELEASE.into(),
-            deployment_id: deployment.into(),
         };
         let first = sync_installed_client(
             root,
@@ -597,7 +589,9 @@ mod tests {
         assert_eq!(entry.protocol.unwrap().deployment_id, production);
         assert_eq!(entry.local_build.as_deref(), Some(LOCAL_RELEASE));
 
-        // The next `a4 dev` build keeps the production deployment.
+        // Until the release is published (and installed), the next `a4 dev`
+        // build names no deployment: a never-published entry's is not
+        // trusted, so production fails closed instead of calling a dev one.
         let next = build(
             &format!("arete:h1:protocol-release:sha256:{}", "e".repeat(64)),
             "dep-local-2",
@@ -605,7 +599,7 @@ mod tests {
         let dev =
             install_local_protocol_build(&root.join("arete.toml"), "local-tip-jar", &next, true)
                 .unwrap();
-        assert!(dev.changed && dev.deployment_id.as_deref() == Some(production));
+        assert!(dev.changed && dev.deployment_id.is_none());
     }
 
     /// `a4 protocol deploy` after a version bump: the own dependency's

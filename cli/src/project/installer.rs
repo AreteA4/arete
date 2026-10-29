@@ -5203,12 +5203,12 @@ pub enum LocalBuildDeployment {
     /// `a4 protocol deploy` before the release is published: the production
     /// deployment just activated.
     Deployed { id: String, access: String },
-    /// `a4 dev`: the production deployment arete.lock already pins, or none
-    /// before the first deploy. The dev environment's deployment is never
+    /// `a4 dev`: the production deployment of the published release
+    /// arete.lock pins, or none. The dev environment's deployment is never
     /// written into the client: SDKs in dev mode find it by resolving the
-    /// installed identity. `dev_deployment` is the environment's
-    /// deployment, which an older `a4` wrote into the lock; it is dropped.
-    Locked { dev_deployment: Option<String> },
+    /// installed identity. A never-published entry's locked deployment is
+    /// not kept, since an older `a4` wrote dev deployments there.
+    Locked,
 }
 
 /// One local build of this project's protocol.
@@ -5434,10 +5434,10 @@ pub fn install_local_protocol_build(
     let locked = previous.and_then(|entry| entry.protocol.as_ref());
     let (deployment_id, access) = match &build.deployment {
         LocalBuildDeployment::Deployed { id, access } => (id.clone(), access.clone()),
-        LocalBuildDeployment::Locked { dev_deployment } => locked
+        LocalBuildDeployment::Locked => locked
             .filter(|protocol| {
-                !protocol.deployment_id.is_empty()
-                    && Some(&protocol.deployment_id) != dev_deployment.as_ref()
+                previous.is_some_and(LockedDependency::is_published)
+                    && !protocol.deployment_id.is_empty()
             })
             .map(|protocol| {
                 (
@@ -5452,7 +5452,7 @@ pub fn install_local_protocol_build(
 
     // `a4 dev` with the published release's own spec: the installed client
     // already is the published one, byte for byte. Nothing to generate.
-    if matches!(build.deployment, LocalBuildDeployment::Locked { .. })
+    if matches!(build.deployment, LocalBuildDeployment::Locked)
         && previous.is_some_and(|entry| {
             entry.is_published()
                 && entry.local_build.is_none()
@@ -11574,9 +11574,7 @@ source = { workspace = "ore-sdk" }
                 release_marker.to_string().repeat(64)
             ),
             // What `a4 dev` passes after deploying into the environment.
-            deployment: LocalBuildDeployment::Locked {
-                dev_deployment: Some("local-1".into()),
-            },
+            deployment: LocalBuildDeployment::Locked,
             api_base: "https://api.example.test".into(),
         }
     }

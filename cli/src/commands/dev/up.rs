@@ -1196,7 +1196,6 @@ impl Session<'_> {
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("the protocol has no slug yet"))?,
                 release_hash: outcome.release_hash.clone(),
-                deployment_id: outcome.deployment_id.clone(),
             };
             sdk_gen::sync_installed_client(
                 &self.project.root,

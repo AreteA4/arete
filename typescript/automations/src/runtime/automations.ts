@@ -37,7 +37,7 @@ import type { ProtocolSigner } from '../signer/signer';
 import { isSignerRefusal } from '../signer/signer';
 import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/verify';
 import { type AppendSource, type AppendTrigger, evaluateSignal, type ListSource, type ViewSource } from '../sources/view';
-import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
+import { type AutomationStore, type ConsentGrant, type NewStepJob, StoreDeploymentError } from '../store/store';
 import { type AutomationsDefinition, type AutomationsSetup, connectStack, type StackConnector } from './define';
 import {
   checkScheduleEvery,
@@ -545,16 +545,24 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
   // by deployment, so the store refuses a second one.
   // In dev mode the client learns the environment's deployment first: the
   // generated one is production's (or none before the first publish).
-  let binding: Promise<void> | null = null;
-  const bound = () => {
+  let binding: Promise<string> | null = null;
+  const bound = async () => {
     binding ??= (async () => {
       if (client.resolveDeployment) await client.resolveDeployment();
-      await store.bindDeployment(client.deploymentId);
+      const deployment = client.deploymentId;
+      await store.bindDeployment(deployment);
+      return deployment;
     })().catch((error: unknown) => {
       binding = null;
       throw error;
     });
-    return binding;
+    const deployment = await binding;
+    // A redeploy into the dev environment moves the client to a new
+    // deployment; its work must not land in this deployment's store.
+    if (client.deploymentId !== deployment) {
+      // The store's own error: one store per deployment.
+      throw new StoreDeploymentError(deployment, client.deploymentId);
+    }
   };
 
   const accept = async (delivery: Omit<Delivery, 'receivedAt'>) => {

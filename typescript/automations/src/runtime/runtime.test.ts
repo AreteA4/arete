@@ -741,6 +741,14 @@ describe('webhooks and streams', () => {
     expect(h.refused).toHaveLength(0);
     expect(h.outcomes[0]).toMatchObject({ state: 'completed', step: 'rebalance', deploymentId: DEPLOYMENT });
     expect(asked).toBe(1);
+
+    // A redeploy moves the client to a new deployment: no more work lands
+    // in this deployment's store.
+    current = 'dep-redeployed';
+    await expect(h.automations.acceptWebhook(body, signed(body, now, 'dlv-2'), { secret: SECRET })).rejects.toBeInstanceOf(
+      StoreDeploymentError,
+    );
+    await expect(h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't2' })).rejects.toBeInstanceOf(StoreDeploymentError);
   });
 
   it('dedupes on the signed emission id, not the unsigned delivery header', async () => {
