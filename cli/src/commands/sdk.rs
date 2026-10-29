@@ -10846,9 +10846,10 @@ mod tests {
             "programReleaseHash: \"{}\"",
             identity.release_hash
         )));
+        // Generated offline: account reads say how to get an endpoint.
         assert!(output
             .stack_definition
-            .contains("transport: { kind: 'local-http', endpointSource: 'connect-http-url' }"));
+            .contains("transport: { kind: 'unavailable', message: "));
         assert!(!output.stack_definition.contains("path:"));
     }
 

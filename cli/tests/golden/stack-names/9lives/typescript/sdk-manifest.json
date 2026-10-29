@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:e787b5781dc27709378b7438282eb938cc9f256f67ab7f35dc2209f7d2f513cb"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:8eedbade8d63f68137de0a1c614f7372c0c69d9c246d27b6af0b6643b98cc62d",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:b91bbabffcfff8981edb1004934ea152776d4c587eb7cefdc5ba0abe2de0a6f1",
   "extensions": null,
   "artifacts": [
     "9lives-core.ts",
