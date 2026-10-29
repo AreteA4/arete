@@ -36,9 +36,13 @@ pub fn snapshot(root: &Path) -> super::watch::Snapshot {
 }
 
 /// The dependencies whose local SDK extension directory holds a changed
-/// path, and whether every changed path is in one.
+/// path, and whether every changed path is only an extension file: one that
+/// exists now and that the protocol and stack watch does not also cover (a
+/// bundle may share a directory with them). A removed file counts as a
+/// source change, to be safe.
 pub fn changed(root: &Path, changed: &[PathBuf]) -> (Vec<(DependencyKind, String)>, bool) {
     let directories = directories(root);
+    let sources = super::watch::source_snapshot(root);
     let mut selected = Vec::new();
     let mut only_extensions = !changed.is_empty();
     for path in changed {
@@ -54,7 +58,7 @@ pub fn changed(root: &Path, changed: &[PathBuf]) -> (Vec<(DependencyKind, String
                 }
             }
         }
-        only_extensions &= inside;
+        only_extensions &= inside && path.is_file() && !sources.contains_key(path);
     }
     (selected, only_extensions)
 }
@@ -123,5 +127,26 @@ version = "^1.0.0"
             changed(root, &[root.join("protocol.ts")]),
             (Vec::new(), false)
         );
+    }
+
+    #[test]
+    fn a_bundle_sharing_the_protocol_directory_still_rebuilds_the_protocol() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(
+            root.join("arete.toml"),
+            MANIFEST.replace("extensions/ore", "."),
+        )
+        .unwrap();
+        std::fs::write(root.join("index.ts"), "export {};").unwrap();
+        std::fs::write(root.join("protocol.ts"), "a").unwrap();
+        let ore = vec![(DependencyKind::Program, "ore".to_string())];
+        assert_eq!(changed(root, &[root.join("index.ts")]), (ore.clone(), true));
+        assert_eq!(
+            changed(root, &[root.join("protocol.ts")]),
+            (ore.clone(), false)
+        );
+        // Removed: maybe a source file, so rebuild.
+        assert_eq!(changed(root, &[root.join("gone.ts")]), (ore, false));
     }
 }

@@ -5300,11 +5300,23 @@ type LocalExtensions =
 /// Read every local SDK extension bundle the manifest names. A bundle
 /// extends one target, which the dependency must generate.
 fn local_extensions(manifest: &ProjectManifest) -> Result<LocalExtensions> {
+    local_extensions_of(manifest, |_| true)
+}
+
+/// [`local_extensions`] of the dependencies `selected` accepts; no other
+/// bundle is read.
+fn local_extensions_of(
+    manifest: &ProjectManifest,
+    selected: impl Fn(&(DependencyKind, String)) -> bool,
+) -> Result<LocalExtensions> {
     let mut bundles = LocalExtensions::new();
     for (kind, alias, dependency) in manifest.dependencies() {
         let Some(extensions) = &dependency.extensions else {
             continue;
         };
+        if !selected(&(kind, alias.clone())) {
+            continue;
+        }
         let bundle =
             crate::commands::sdk::local_extension_bundle(&manifest.root.join(&extensions.path))
                 .with_context(|| {
@@ -5381,7 +5393,7 @@ pub struct LocalExtensionInstall {
 /// (`a4 dev up` when a bundle changes). Only those dependencies' outputs
 /// and lock entries change, so a protocol client `a4 dev` generated from a
 /// local build stays. arete.lock must be fresh and already install each
-/// dependency; a bundle already recorded and generated is skipped.
+/// dependency.
 pub fn install_local_extensions(
     manifest_path: &Path,
     selected: &[(DependencyKind, String)],
@@ -5392,14 +5404,9 @@ pub fn install_local_extensions(
     let lock = ProjectLock::load_optional(&lock_path)?
         .filter(|lock| lock.is_fresh(&manifest.manifest_hash))
         .ok_or_else(|| anyhow::anyhow!("arete.lock is missing or stale; run `a4 install`"))?;
-    let mut extensions = local_extensions(&manifest)?;
-    extensions.retain(|key, bundle| {
-        selected.contains(key)
-            && !lock.dependencies.iter().any(|entry| {
-                (entry.kind, entry.alias.as_str()) == (key.0, key.1.as_str())
-                    && entry.local_extension.as_deref() == Some(bundle.content_hash.as_str())
-            })
-    });
+    // Always regenerated: a change the content hash leaves out (such as
+    // `extensionApi`) still changes the generated SDK.
+    let extensions = local_extensions_of(&manifest, |key| selected.contains(key))?;
     if extensions.is_empty() {
         return Ok(Vec::new());
     }
@@ -12306,10 +12313,6 @@ source = { workspace = "ore-sdk" }
                 .as_deref(),
             Some(edited.as_str())
         );
-        // Already generated: nothing to do, nothing resolved.
-        assert!(install_local_extensions(&manifest, &selected)
-            .unwrap()
-            .is_empty());
 
         // Remove the override: `--locked` restores the published extension.
         fs::write(&manifest, &published_manifest).unwrap();

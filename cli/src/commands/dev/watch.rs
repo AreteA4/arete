@@ -47,6 +47,14 @@ pub(super) fn walk(dir: &Path, snapshot: &mut Snapshot, depth: usize) {
 
 /// The watched files of `root` now.
 pub fn snapshot(root: &Path) -> Snapshot {
+    let mut snapshot = source_snapshot(root);
+    snapshot.extend(super::local_extensions::snapshot(root));
+    snapshot
+}
+
+/// The watched files that rebuild the protocol or the project's stacks:
+/// [`snapshot`] without the local SDK extension directories.
+pub fn source_snapshot(root: &Path) -> Snapshot {
     let mut snapshot = Snapshot::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
@@ -63,7 +71,6 @@ pub fn snapshot(root: &Path) -> Snapshot {
         record(&root.join(file), &mut snapshot);
     }
     snapshot.extend(super::custom_stacks::snapshot(root));
-    snapshot.extend(super::local_extensions::snapshot(root));
     snapshot
 }
 
