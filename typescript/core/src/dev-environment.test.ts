@@ -166,6 +166,25 @@ describe('dev mode', () => {
     client.disconnect();
   });
 
+  it('needs no production endpoints: the environment supplies them', async () => {
+    const { fetchImpl } = recordingFetch();
+    const bare = {
+      ...stack(),
+      endpoints: {},
+      programs: {},
+      programReads: {},
+    } as unknown as StackDefinition;
+    await expect(Arete.connect(bare, { environment: 'production', autoConnect: false }))
+      .rejects.toMatchObject({ code: 'INVALID_CONFIG' });
+    const client = await Arete.connect(bare, {
+      environment: { kind: 'dev', url: EDGE },
+      fetch: fetchImpl,
+      autoConnect: false,
+    });
+    expect(client.environment).toBe('dev');
+    expect(client.transport).toBe('ws');
+  });
+
   it('a session decides once and hands the decision to every member', async () => {
     const { urls, fetchImpl } = recordingFetch();
     const session = await createSession(
