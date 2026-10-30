@@ -13,7 +13,7 @@
       "type": "archive",
       "description": "Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server, and stream a local protocol's stack from a4 dev with a4 stream --dev (including its TUI). Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.",
       "url": "/.well-known/agent-skills/arete-streams.tar.gz",
-      "digest": "sha256:075d8a55d32ed3ad30d9f38dd52b2ad5678bfefd8411bc1467cbb4203df04a6e"
+      "digest": "sha256:3a31a757538adcaf48085a8885fdb59c0dcb8dadd3df8cad5251aa8681809412"
     },
     {
       "name": "arete-programs",
@@ -34,14 +34,14 @@
       "type": "archive",
       "description": "Publish Solana ProgramSpecs and plan, deploy, inspect, stop, archive, promote, or delete hosted Arete resources. Use for a4 program lifecycle, a4 up, deployment branches/previews, hosted stack operations, and taking an Arete Protocol to a private hosted deployment with a4 protocol deploy (review, activation outcomes, the owner-private registry package). This skill performs external mutations only when the user's request authorizes them; use arete-stack-authoring for local DSL and artifact work and arete-protocols for protocol authoring and a4 dev.",
       "url": "/.well-known/agent-skills/arete-deploy.tar.gz",
-      "digest": "sha256:0a2c2895adc5d804427a91a3f401ca9dbcff9049ab3ae5158aab1169d26c7adf"
+      "digest": "sha256:f6a3d7747307ece5c4f001f1b4ae71f68aed4e406b8b11f7b6975f8d40fde402"
     },
     {
       "name": "arete-protocols",
       "type": "archive",
-      "description": "Author Arete Protocols with defineProtocol (machines, guards, instruction templates, reviewed handlers, reactions, fees), scaffold them with a4 protocol init, iterate with a4 dev on an Arete cloud fork (generated client, a4 stream --dev), deploy privately with a4 protocol deploy and install the result with a4 install protocol, use installed protocols from TypeScript, Rust or Python apps (instances, allowedSteps, prepare, sign, submit, metadata, events, webhooks, Squads proposer onboarding), and act on a protocol as an agent with a wallet (a4 protocol actions, the MCP protocol tools, an opt-in signer policy), and automate user-signed steps from an app backend with @usearete/automations (triggers, schedules, consent, spending limits, signers, deploying to Cloudflare, Vercel or a Node host). Use when composing existing Solana programs into a hosted multi-step flow or transaction workflow, or when an app calls a protocol. Do not use for a single program call (arete-programs), stack views (arete-streams) or stack authoring (arete-stack-authoring).",
+      "description": "Author Arete Protocols with defineProtocol (machines, guards, instruction templates, reviewed handlers, reactions, fees), scaffold them with a4 protocol init, iterate with a4 dev on an Arete cloud fork (generated client, a4 stream --dev), deploy privately with a4 protocol deploy and install the result with a4 install protocol, use installed protocols from TypeScript, Rust or Python apps (instances, allowedSteps, prepare, sign, submit, metadata, events, webhooks, Squads multisig setup), and act on a protocol as an agent with a wallet (a4 protocol actions, the MCP protocol tools, an opt-in signer policy), and automate user-signed steps from an app backend with @usearete/automations (triggers, schedules, consent, spending limits, signers, deploying to Cloudflare, Vercel or a Node host). Use when composing existing Solana programs into a hosted multi-step flow or transaction workflow, or when an app calls a protocol. Do not use for a single program call (arete-programs), stack views (arete-streams) or stack authoring (arete-stack-authoring).",
       "url": "/.well-known/agent-skills/arete-protocols.tar.gz",
-      "digest": "sha256:30fa8dc9c5e13625d1ff3204275b8e895b254a0d167c42ffba4eba1363d21f29"
+      "digest": "sha256:35825146afb354544f97a978d11d2a479413259f7236c4cf35fff71949a80ff5"
     }
   ]
 }

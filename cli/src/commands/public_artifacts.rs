@@ -250,6 +250,7 @@ pub(crate) fn cache_ore_stack_fixture(cache_root: &Path, alias: &str) -> LockedD
         targets: vec![InstallTarget::TypeScript],
         generator_contract: crate::project::GENERATOR_CONTRACT.into(),
         local_build: None,
+        local_extension: None,
     };
     for (kind, file) in [
         ("stack-manifest", "OreStream.stack-manifest.json"),

@@ -108,7 +108,7 @@ pub mod vault {
         pub fn vault_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::VaultVault>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Vault",
-                std::sync::Arc::new(self.builder.account_transport("vault", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("vault", Some("2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM"), &read_descriptor())?),
             ))
         }
     }

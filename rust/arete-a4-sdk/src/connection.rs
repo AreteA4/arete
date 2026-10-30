@@ -77,6 +77,9 @@ struct ConnectionManagerInner {
     /// HTTP-only mode: no socket is ever opened and subscription acquisition
     /// fails with [`AreteError::WebSocketDisabled`].
     disabled: bool,
+    /// Why a disabled manager has no socket, when it is not HTTP-only: a
+    /// dev environment refused the stack.
+    refused: Option<AreteError>,
 }
 
 #[derive(Clone)]
@@ -156,6 +159,7 @@ impl ConnectionManager {
             socket_issue_tx: socket_issue_tx.clone(),
             store: store.clone(),
             disabled: false,
+            refused: None,
         };
 
         spawn_connection_loop(
@@ -207,7 +211,25 @@ impl ConnectionManager {
                 socket_issue_tx,
                 store,
                 disabled: true,
+                refused: None,
             }),
+        }
+    }
+
+    /// A manager with no socket because a dev environment refused the
+    /// stack: every subscription fails with `refusal`, and the rest of the
+    /// client keeps working.
+    pub(crate) fn new_refused(
+        config: ConnectionConfig,
+        store: SharedStore,
+        refusal: AreteError,
+    ) -> Self {
+        let manager = Self::new_disabled(config, store);
+        let mut inner = Arc::try_unwrap(manager.inner)
+            .unwrap_or_else(|_| unreachable!("a new manager has one owner"));
+        inner.refused = Some(refusal);
+        Self {
+            inner: Arc::new(inner),
         }
     }
 
@@ -220,7 +242,11 @@ impl ConnectionManager {
         if !self.inner.disabled {
             return Ok(());
         }
-        let error = AreteError::WebSocketDisabled;
+        let error = self
+            .inner
+            .refused
+            .clone()
+            .unwrap_or(AreteError::WebSocketDisabled);
         set_last_error(&self.inner.last_error, error.clone()).await;
         Err(error)
     }
@@ -479,10 +505,13 @@ impl RuntimeAuthState {
             .config
             .as_ref()
             .and_then(|config| config.stack_release.as_ref());
-        let mut request = self
-            .http_client
-            .post(token_endpoint)
-            .json(&TokenEndpointRequest::new(&self.websocket_url, release));
+        let mut request = self.http_client.post(token_endpoint).json(
+            &TokenEndpointRequest::new(&self.websocket_url, release).in_environment(
+                self.config
+                    .as_ref()
+                    .and_then(|config| config.dev_environment.as_deref()),
+            ),
+        );
 
         if let Some(config) = self.config.as_ref() {
             // Fails, before anything is sent, when an account credential
@@ -516,6 +545,13 @@ impl RuntimeAuthState {
         })?;
 
         if !status.is_success() {
+            if let Some(refusal) = crate::dev_environment::refusal_error(
+                status.as_u16(),
+                header_code.as_deref(),
+                body.as_ref(),
+            ) {
+                return Err(refusal);
+            }
             return Err(AreteError::from_auth_response(
                 status.as_u16(),
                 header_code.as_deref(),

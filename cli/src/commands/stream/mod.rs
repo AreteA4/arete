@@ -402,7 +402,18 @@ fn dev_feeds(stack: &dev::DevStack, target: &protocols::DevTarget) -> Result<Vec
     })
 }
 
-pub fn run(args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
+pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
+    // ARETE_ENVIRONMENT=dev streams from the `a4 dev` session, as --dev
+    // does. A replay (--load) reads a file and goes nowhere.
+    if !args.dev && args.load.is_none() && arete_mcp::dev::environment_is_dev()? {
+        if args.url.is_some() {
+            bail!(
+                "ARETE_ENVIRONMENT=dev streams from the a4 dev session, but --url names another \
+                 endpoint. Unset ARETE_ENVIRONMENT (or set it to production) to use --url."
+            );
+        }
+        args.dev = true;
+    }
     if args.dev {
         return run_dev(args, json);
     }

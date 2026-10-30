@@ -10,7 +10,15 @@ export interface Simulator {
   call(method: string, params: readonly unknown[]): Promise<unknown>;
 }
 
+import { DevEnvironmentError, type EnvironmentOption, resolveEnvironmentSwitch } from '@usearete/sdk';
+
 export interface RpcSimulatorOptions {
+  /**
+   * Without a URL: dev mode (this option, else `ARETE_ENVIRONMENT=dev`)
+   * simulates on the dev environment through the `a4 dev up` edge
+   * (`ARETE_DEV_URL`, or the running session's). Production needs a URL.
+   */
+  readonly environment?: EnvironmentOption;
   /** Defaults to the global `fetch`. */
   readonly fetch?: typeof fetch;
   /** Extra request headers, for example an RPC provider's API key. */
@@ -23,8 +31,13 @@ export interface RpcSimulatorOptions {
   readonly timeoutMs?: number;
 }
 
-/** A {@link Simulator} over a JSON-RPC URL. */
-export function rpcSimulator(url: string, options: RpcSimulatorOptions = {}): Simulator {
+/**
+ * A {@link Simulator} over a JSON-RPC URL. With no URL, dev mode uses the
+ * dev environment (its fork's state) through the `a4 dev up` edge;
+ * production has no default.
+ */
+export function rpcSimulator(url?: string, options: RpcSimulatorOptions = {}): Simulator {
+  url ??= devSimulatorUrl(options.environment);
   const fetchImpl = options.fetch ?? globalThis.fetch;
   if (typeof fetchImpl !== 'function') {
     throw new TypeError('rpcSimulator needs a fetch implementation');
@@ -72,4 +85,22 @@ export function rpcSimulator(url: string, options: RpcSimulatorOptions = {}): Si
       }
     },
   };
+}
+
+/** The edge's JSON-RPC, which serves the dev environment's fork. */
+function devSimulatorUrl(option: EnvironmentOption | undefined): string {
+  const environment = resolveEnvironmentSwitch(option);
+  if (environment.mode === 'production') {
+    throw new TypeError(
+      'rpcSimulator needs a JSON-RPC URL in production; only dev mode simulates against the dev environment by default',
+    );
+  }
+  if (environment.via === 'direct') {
+    throw new DevEnvironmentError(
+      'devenv-surface-unavailable',
+      'Direct dev mode has no JSON-RPC endpoint to simulate on',
+      { fix: 'Run through the `a4 dev up` edge (`a4 dev run -- <command>`), or pass rpcSimulator a JSON-RPC URL.' },
+    );
+  }
+  return environment.edgeUrl;
 }

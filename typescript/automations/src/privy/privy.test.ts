@@ -13,6 +13,7 @@ import { TOKEN_PROGRAMS } from '../policy/authority';
 const TOKEN = TOKEN_PROGRAMS[0];
 import { ALICE, ALICE_SEED, harness, storedGrant } from '../test-support/harness';
 import { type PrivyClientLike, privyPolicyFor, privySigner } from './privy';
+import type { ProtocolTransactionFormat } from '@usearete/sdk';
 
 const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const AUTH_KEY = 'wallet-auth:test-authorization-key';
@@ -32,9 +33,13 @@ function fakePrivy(behaviour: Behaviour, policyIds: string[] = ['pol-1']) {
           }
           if (behaviour === 'fail') throw Object.assign(new Error('upstream timeout'), { status: 503 });
           const bytes = decodeBase64(input.transaction)!;
-          // The last instruction data byte (a v0 message ends with its lookup-table count).
-          if (behaviour === 'tamper') bytes[bytes.length - 2] = bytes[bytes.length - 2]! ^ 1;
           const decoded = decodeTransaction(bytes);
+          if (behaviour === 'tamper') {
+            // The last instruction data byte: a v1 message ends with it, a v0
+            // message with its lookup-table count after it.
+            const at = decoded.message.end - (decoded.version === 1 ? 1 : 2);
+            bytes[at] = bytes[at]! ^ 1;
+          }
           bytes.set(ed25519.sign(bytes.subarray(decoded.message.start, decoded.message.end), ALICE_SEED), decoded.signatureOffset);
           return { signedTransaction: encodeBase64(bytes) };
         },
@@ -45,12 +50,13 @@ function fakePrivy(behaviour: Behaviour, policyIds: string[] = ['pol-1']) {
   return { client, calls };
 }
 
-function privyHarness(behaviour: Behaviour, policyIds?: string[]) {
+function privyHarness(behaviour: Behaviour, policyIds?: string[], transactionFormats?: readonly ProtocolTransactionFormat[]) {
   const privy = fakePrivy(behaviour, policyIds);
   const signer = privySigner({
     privy: privy.client,
     walletIdFor: async (wallet) => (wallet === ALICE ? 'w-alice' : null),
     authorizationPrivateKey: AUTH_KEY,
+    ...(transactionFormats ? { transactionFormats } : {}),
   });
   const h = harness({}, { signer, consent: { domain: 'app.example' } });
   h.automations.on<{ wallet: string }>('deposit', (payload, ctx) => [ctx.step('deposit', { wallet: payload.wallet, instance: 'inst-1' })]);
@@ -58,27 +64,40 @@ function privyHarness(behaviour: Behaviour, policyIds?: string[]) {
 }
 
 describe('privySigner', () => {
-  it('signs exact bytes through Privy, as v0, authorized by the app key', async () => {
+  it('signs exact bytes through Privy, as v1 by default, authorized by the app key', async () => {
     const h = privyHarness('sign');
+    expect(h.signer.supportedTransactionFormats).toEqual(['v1', 'v0']);
     await h.store.consent.put(storedGrant(ALICE, h.clock.now()));
     await h.automations.dispatch('deposit', { wallet: ALICE }, { id: 'a' });
     await h.automations.drain();
     expect(h.outcomes[0]).toMatchObject({ state: 'completed' });
-    expect(h.fake.prepareCalls[0]!.options?.transactionFormat).toBe('v0');
+    expect(h.fake.prepareCalls[0]!.options?.transactionFormat).toBe('v1');
     expect(h.privy.calls[0]).toMatchObject({
       walletId: 'w-alice',
       input: { authorization_context: { authorization_private_keys: [AUTH_KEY] } },
     });
   });
 
-  it('refuses bytes Privy changed', async () => {
-    const h = privyHarness('tamper');
+  it('signs as v0 when the app limits it to v0', async () => {
+    const h = privyHarness('sign', undefined, ['v0']);
     await h.store.consent.put(storedGrant(ALICE, h.clock.now()));
     await h.automations.dispatch('deposit', { wallet: ALICE }, { id: 'a' });
     await h.automations.drain();
-    expect(h.refused[0]).toMatchObject({ code: 'signer_modified' });
-    expect(h.fake.submitCalls).toHaveLength(0);
+    expect(h.outcomes[0]).toMatchObject({ state: 'completed' });
+    expect(h.fake.prepareCalls[0]!.options?.transactionFormat).toBe('v0');
   });
+
+  for (const format of ['v1', 'v0'] as const) {
+    it(`refuses ${format} bytes Privy changed`, async () => {
+      const h = privyHarness('tamper', undefined, [format]);
+      await h.store.consent.put(storedGrant(ALICE, h.clock.now()));
+      await h.automations.dispatch('deposit', { wallet: ALICE }, { id: 'a' });
+      await h.automations.drain();
+      expect(h.fake.prepareCalls[0]!.options?.transactionFormat).toBe(format);
+      expect(h.refused[0]).toMatchObject({ code: 'signer_modified' });
+      expect(h.fake.submitCalls).toHaveLength(0);
+    });
+  }
 
   it('surfaces a Privy policy refusal as provider_policy', async () => {
     const h = privyHarness('deny');

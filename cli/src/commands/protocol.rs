@@ -217,7 +217,8 @@ pub fn protocol_target(
     dev: bool,
     project: Option<&str>,
 ) -> Result<arete_mcp::protocol_agent::TargetArgs> {
-    let dev = dev || project.is_some();
+    // ARETE_ENVIRONMENT=dev acts on the `a4 dev` session, as --dev does.
+    let dev = dev || project.is_some() || arete_mcp::dev::environment_is_dev()?;
     let (deployment, protocol) = match target.map(str::trim) {
         Some(target) if !target.is_empty() => {
             if is_deployment_id(target) {
@@ -1071,6 +1072,7 @@ impl Reporter {
 
 /// Run the deploy flow against `client`. Prints progress unless `json`.
 pub fn execute(client: &ApiClient, args: &DeployArgs, json: bool) -> Result<DeployOutcome> {
+    crate::project::installer::refuse_local_extensions(&args.dir)?;
     if args.no_build {
         check_build_is_current(&args.dir)?;
     } else {

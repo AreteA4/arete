@@ -42,6 +42,7 @@ from arete.auth import (
     should_refresh_token,
     stack_release_fields,
 )
+from arete.dev_environment import refusal_of_response
 from arete.errors import AreteError, AuthError
 
 try:  # Seam: arete.errors.HttpRequestError is provided by the core error module.
@@ -240,8 +241,14 @@ class HttpAuthClient:
         websocket_url: Optional[str] = None,
         http_client: Optional[Any] = None,  # httpx.AsyncClient, injectable for tests
         stack_release: Optional[Any] = None,  # arete.stack.StackRelease
+        edge: Optional[Any] = None,  # arete.dev_environment.EdgePolicy
+        refused: Optional[BaseException] = None,
     ) -> None:
-        self._auth = resolve_auth_config(auth)
+        # Dev mode: requests through the `a4 dev up` edge carry no
+        # credential; a refused surface fails before anything is sent.
+        self._edge = edge
+        self._refused = refused
+        self._auth = None if edge is not None else resolve_auth_config(auth)
         self._websocket_url = websocket_url
         # Named only in untargeted session requests; targeted requests never
         # carry it.
@@ -270,18 +277,27 @@ class HttpAuthClient:
         (``code``, ``message``, ``retryable``, ``retry_after``,
         ``suggested_action``, ``docs_url``) attached when present.
         """
+        if self._refused is not None:
+            raise self._refused
         effective_scopes = self._effective_scopes(target, scopes)
         # `send` scope only gates the replay below; nothing is added to the
         # outbound request (the marker is a response header — see module docs).
         send_scoped = any(_is_send_scope(scope) for scope in effective_scopes)
 
         request_headers: Dict[str, str] = dict(headers or {})
+        if self._edge is not None:
+            request_headers.update(self._edge.headers())
+            if self._edge.params:
+                params = {**dict(params or {}), **dict(self._edge.params)}
 
         response = await self._attempt(
             method, url, json_body, params, request_headers, target, effective_scopes, False
         )
         if 200 <= response.status_code < 300:
             return _decode_json_body(response.content)
+        refusal = refusal_of_response(response)
+        if refusal is not None:
+            raise refusal
 
         code = _parse_wire_error_code(response.headers.get(ERROR_CODE_HEADER))
         body = _decode_json_body(response.content)
@@ -304,6 +320,9 @@ class HttpAuthClient:
             )
             if 200 <= response.status_code < 300:
                 return _decode_json_body(response.content)
+            refusal = refusal_of_response(response)
+            if refusal is not None:
+                raise refusal
             body = _decode_json_body(response.content)
 
         raise _new_http_request_error(response.status_code, url, body)
@@ -316,6 +335,10 @@ class HttpAuthClient:
         force_refresh: bool = False,
     ) -> Optional[str]:
         """Resolve a bearer token per the strategy order (None when unauthenticated)."""
+        if self._refused is not None:
+            raise self._refused
+        if self._edge is not None:
+            return None
         effective_scopes = self._effective_scopes(target, scopes)
         if target is not None:
             target._validate()
@@ -378,6 +401,7 @@ class HttpAuthClient:
                 target_id=target.target_id if target is not None else None,
                 program_release_hash=target.release_hash if target is not None else None,
                 stack_release=self._stack_release if target is None else None,
+                environment=auth.dev_environment if auth is not None else None,
             )
             return await request_token_from_endpoint(self._http, endpoint, auth, body)
         return None
@@ -538,14 +562,18 @@ class HttpAuthClient:
         scopes: Sequence[str],
         force_refresh: bool,
     ) -> httpx.Response:
-        token = await self.get_token(
-            target=target, scopes=scopes, force_refresh=force_refresh
+        token = (
+            None
+            if self._edge is not None
+            else await self.get_token(
+                target=target, scopes=scopes, force_refresh=force_refresh
+            )
         )
         request_headers = dict(headers)
         if token:
             request_headers["Authorization"] = f"Bearer {token}"
         try:
-            return await self._http.request(
+            response = await self._http.request(
                 method.upper(),
                 url,
                 json=json_body,
@@ -553,9 +581,14 @@ class HttpAuthClient:
                 headers=request_headers,
             )
         except httpx.HTTPError as e:
+            if self._edge is not None:
+                raise self._edge.send_error(e) from e
             raise _new_http_request_error(
                 0, url, {"message": f"HTTP request to '{url}' failed: {e}"}
             ) from e
+        if self._edge is not None:
+            self._edge.check(response)
+        return response
 
 
 def derive_http_endpoint(websocket_url: str) -> str:

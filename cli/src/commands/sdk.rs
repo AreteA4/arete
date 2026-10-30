@@ -1113,6 +1113,7 @@ fn create_local_program_sdk(
         stack_endpoints: None,
         reference: None,
         program_install: None,
+        extensions: None,
     };
     let local = LocalProgramSdk {
         extensions: extensions.as_deref().map(Path::new),
@@ -1373,6 +1374,10 @@ pub(crate) struct ProjectGenerationOptions<'a> {
     /// How the project installed a program dependency: a TypeScript program
     /// SDK carries it as `programInstall`.
     pub program_install: Option<&'a ProgramInstallIdentity>,
+    /// A local SDK extension bundle (arete.toml `extensions = { path }`):
+    /// its `extensions.json` or entry file, staged as `a4 sdk create
+    /// --extensions` stages it, in place of the published extension.
+    pub extensions: Option<&'a Path>,
 }
 
 /// How a project installed a program: the identity a protocol reads from the
@@ -1964,7 +1969,7 @@ fn generate_project_stack_source(
                     options.typescript_package,
                     None,
                     None,
-                    None,
+                    options.extensions,
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                 )?;
@@ -1980,7 +1985,7 @@ fn generate_project_stack_source(
                 options.typescript_package,
                 source.default_websocket_url(),
                 source.default_http_url(),
-                None,
+                options.extensions,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 false,
@@ -1998,7 +2003,7 @@ fn generate_project_stack_source(
         }
         InstallTarget::Rust => {
             if let Some(composition) = source.composition_artifacts() {
-                if source.hosted_extensions().is_some() {
+                if source.hosted_extensions().is_some() || options.extensions.is_some() {
                     anyhow::bail!(
                         "multi-live Rust package extensions require a composition-wrapper contract"
                     );
@@ -2050,14 +2055,14 @@ fn generate_project_stack_source(
                     &format!("{}-stack", options.alias),
                     options.rust_module,
                     source.default_websocket_url(),
-                    None,
+                    options.extensions,
                     &[],
                 )
             }
         }
         InstallTarget::Python => {
             if let Some(composition) = source.composition_artifacts() {
-                if source.hosted_extensions().is_some() {
+                if source.hosted_extensions().is_some() || options.extensions.is_some() {
                     anyhow::bail!(
                         "multi-live Python package extensions require a composition-wrapper contract"
                     );
@@ -2114,7 +2119,7 @@ fn generate_project_stack_source(
                     &format!("{}-stack", options.alias),
                     options.python_module,
                     source.default_websocket_url(),
-                    None,
+                    options.extensions,
                     &[],
                 )
             }
@@ -2143,7 +2148,7 @@ fn generate_project_program(
                     options.alias,
                     options.output,
                     options.typescript_package,
-                    None,
+                    options.extensions,
                     hosted_artifact.as_ref(),
                     options.program_install,
                 )?;
@@ -2169,10 +2174,18 @@ fn generate_project_program(
             Ok(())
         }
         InstallTarget::Rust => {
-            generate_rust_program_sdk(program_spec, install, options, &LocalProgramSdk::default())
+            let local = LocalProgramSdk {
+                extensions: options.extensions,
+                ..LocalProgramSdk::default()
+            };
+            generate_rust_program_sdk(program_spec, install, options, &local)
         }
         InstallTarget::Python => {
-            generate_python_program_sdk(program_spec, install, options, &LocalProgramSdk::default())
+            let local = LocalProgramSdk {
+                extensions: options.extensions,
+                ..LocalProgramSdk::default()
+            };
+            generate_python_program_sdk(program_spec, install, options, &local)
         }
     }
 }
@@ -4266,6 +4279,80 @@ fn staged_extension_content_hash(artifact: &ResolvedExtensionsArtifact) -> Strin
         artifact.sdk_range.as_deref(),
         artifact.language.as_deref(),
     )
+}
+
+/// A local SDK extension bundle: a dependency's arete.toml `extensions =
+/// { path = "<dir>" }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalExtensionBundle {
+    /// The target the bundle extends: its declared `language`
+    /// (TypeScript when it declares none).
+    pub target: crate::project::manifest::InstallTarget,
+    /// What generation reads: the bundle's `extensions.json`, or its single
+    /// entry file.
+    pub path: PathBuf,
+    /// [`sdk_extension_content_hash`] of the bundle, the hash the registry
+    /// gives it once published.
+    pub content_hash: String,
+}
+
+/// Read the SDK extension bundle in `dir` as `a4 sdk create --extensions`
+/// does: its `extensions.json` manifest or, without one, a single
+/// `index.ts`, `extensions.rs` or `extensions.py` entry.
+pub(crate) fn local_extension_bundle(dir: &Path) -> Result<LocalExtensionBundle> {
+    use crate::project::manifest::InstallTarget;
+
+    if !dir.is_dir() {
+        anyhow::bail!("SDK extension directory {} does not exist", dir.display());
+    }
+    let manifest_path = dir.join("extensions.json");
+    let (path, artifact) = if manifest_path.is_file() {
+        let artifact = build_extensions_artifact_from_manifest(
+            read_extensions_manifest(&manifest_path)?,
+            dir,
+        )?;
+        (manifest_path, artifact)
+    } else {
+        let entries = [
+            ("index.ts", None),
+            ("extensions.rs", Some(EXTENSIONS_LANGUAGE_RUST)),
+            ("extensions.py", Some(EXTENSIONS_LANGUAGE_PYTHON)),
+        ]
+        .into_iter()
+        .filter(|(entry, _)| dir.join(entry).is_file())
+        .collect::<Vec<_>>();
+        let [(entry, language)] = entries.as_slice() else {
+            anyhow::bail!(
+                "{} holds {} SDK extension entry: add an extensions.json naming the entry and its files, or exactly one index.ts, extensions.rs or extensions.py",
+                dir.display(),
+                if entries.is_empty() { "no" } else { "more than one" }
+            );
+        };
+        let path = dir.join(entry);
+        let artifact = infer_extensions_artifact_from_entry_with_language(
+            &path,
+            language.map(str::to_string),
+        )?;
+        (path, artifact)
+    };
+    let target = match artifact
+        .language
+        .as_deref()
+        .unwrap_or(EXTENSIONS_LANGUAGE_TYPESCRIPT)
+    {
+        EXTENSIONS_LANGUAGE_TYPESCRIPT => InstallTarget::TypeScript,
+        EXTENSIONS_LANGUAGE_RUST => InstallTarget::Rust,
+        EXTENSIONS_LANGUAGE_PYTHON => InstallTarget::Python,
+        other => anyhow::bail!(
+            "The SDK extension in {} declares language '{other}'; expected typescript, rust or python",
+            dir.display()
+        ),
+    };
+    Ok(LocalExtensionBundle {
+        target,
+        path,
+        content_hash: staged_extension_content_hash(&artifact),
+    })
 }
 
 /// A hosted Rust or Python bundle must be exactly the content the registry
@@ -11833,6 +11920,7 @@ mod tests {
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .expect("local program generation should succeed");
@@ -11852,6 +11940,7 @@ mod tests {
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .expect("local stack generation should succeed");
@@ -11870,6 +11959,7 @@ mod tests {
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .expect("local python generation should succeed");

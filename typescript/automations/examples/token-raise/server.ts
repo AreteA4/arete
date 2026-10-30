@@ -69,10 +69,12 @@ async function privyConfigured(): Promise<ProtocolSigner[]> {
 
 async function main() {
   const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, { auth: { secretKey: env('ARETE_SECRET_KEY') } });
-  // A client `a4 dev` generated targets the dev environment; the published
-  // one (`a4 install --locked`) targets mainnet, which the policy allows only
-  // with ALLOW_MAINNET=1. (Temporary: this reads the environment from the
-  // client's deployment until the SDK exposes it on the client.)
+  // In dev mode the client learns the environment's deployment first; the
+  // dev helpers and the policy name the deployment the jobs will target.
+  await client.resolveDeployment();
+  // In dev mode (`ARETE_ENVIRONMENT=dev`, which `a4 dev up` and `a4 dev run`
+  // set) the client targets the dev environment; otherwise mainnet, which the
+  // policy allows only with ALLOW_MAINNET=1.
   const dev = clientCluster(client) === 'dev';
 
   // Dev: the project's dev wallets first, then Privy for any other wallet;

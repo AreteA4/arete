@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, Dict, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
 from arete.auth import AuthConfig, resolve_auth_config
@@ -235,3 +235,86 @@ def create_hosted_solana_gateway_transports(
         target=target_for(bindings.transactions),
     )
     return HostedSolanaGatewayTransports(chain=chain, transactions=transactions)
+
+
+def dev_gateway_transports(
+    bindings: Optional[HostedSolanaGatewayBindings],
+    dev: Any,  # arete.dev_environment.DevMode
+    answer: Optional[Mapping[str, Any]],
+    *,
+    http_client: Optional[Any] = None,
+) -> HostedSolanaGatewayTransports:
+    """Chain and transaction transports in dev mode
+    (``docs/internal/dev-environment-switch.md`` §3): through the edge with
+    each binding's identity, or at the environment's targets from the
+    client's resolve answer, minting environment tokens. A surface the
+    environment refused, or one the installed SDK has no binding for, fails
+    every call with its refusal and sends nothing."""
+    from .dev_environment import (
+        EdgePolicy,
+        gateway_identity,
+        surface_target,
+        surface_unavailable,
+        target_str,
+    )
+
+    refused_endpoint = "http://127.0.0.1:9"
+
+    def route(
+        binding: Optional[HostedSolanaGatewayCapabilityBinding], surface: str, what: str
+    ) -> Tuple[str, HttpAuthClient, Optional[AuthTokenTarget]]:
+        def refused(error: BaseException) -> Tuple[str, HttpAuthClient, None]:
+            return (
+                refused_endpoint,
+                HttpAuthClient(auth=None, http_client=http_client, refused=error),
+                None,
+            )
+
+        if binding is None:
+            return refused(
+                surface_unavailable(
+                    f"{what} are not available in dev mode: the installed SDK has no Solana "
+                    "gateway binding",
+                    "Install the stack or program from the registry (`a4 install`) to use "
+                    "it in a dev environment.",
+                )
+            )
+        if dev.resolver is None:
+            policy = EdgePolicy.for_identity(
+                dev.edge_url, {surface: gateway_identity(binding)}
+            )
+            return (
+                dev.edge_url,
+                HttpAuthClient(auth=None, http_client=http_client, edge=policy),
+                None,
+            )
+        try:
+            if answer is None:
+                raise surface_unavailable(f"{what} were not resolved", "Update the SDK.")
+            endpoint = target_str(surface_target(answer, surface), "endpoint")
+        except AreteError as error:
+            return refused(error)
+        client = HttpAuthClient(
+            auth=dev.resolver.token_auth(binding.auth.session_endpoint),
+            websocket_url=None,
+            http_client=http_client,
+        )
+        return (
+            endpoint,
+            client,
+            AuthTokenTarget(
+                kind=SOLANA_GATEWAY_BINDING_KIND,
+                target_id=binding.solana_gateway_binding_id,
+            ),
+        )
+
+    chain_endpoint, chain_http, chain_target = route(
+        bindings.chain if bindings else None, "chain", "Chain reads"
+    )
+    tx_endpoint, tx_http, tx_target = route(
+        bindings.transactions if bindings else None, "transactions", "Transactions"
+    )
+    return HostedSolanaGatewayTransports(
+        chain=HttpChainClient(chain_endpoint, chain_http, target=chain_target),
+        transactions=HttpTransactionTransport(tx_endpoint, tx_http, target=tx_target),
+    )

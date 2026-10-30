@@ -1,17 +1,19 @@
 /**
  * `arete-automations dev`: what `a4 dev up` runs for `[dev.automations]` in
  * arete.toml. It loads the project's automations definition and runs it
- * against the dev environment `.arete/dev/session.json` describes:
+ * against the project's dev environment. `a4 dev up` runs it with
+ * `ARETE_ENVIRONMENT=dev` and `ARETE_DEV_URL` (its edge), so the installed
+ * SDKs call the environment:
  *
- * - the client the definition's protocol module carries (the one `a4 dev`
- *   generated, so its deployment is the dev environment's);
+ * - the client of the definition's protocol module, in dev mode: the
+ *   environment's deployment of the protocol, named by the edge;
  * - a signer for every dev wallet, and a policy for that deployment only;
- * - a simulator on `a4 dev up`'s local RPC (the fork's state);
+ * - a simulator on the environment (the fork's state), through the edge;
  * - a memory store saved under `.arete/dev/automations/`, so jobs, consent
  *   and spending survive the restarts that reload the handlers;
  * - the environment's protocol events, forwarded as signed webhook
  *   deliveries (dev environments send no webhooks);
- * - view sources on the environment's stack;
+ * - view sources on the environment's stacks, through the edge;
  * - schedules, ticked on the environment's clock (so `a4 dev warp` moves
  *   them too).
  *
@@ -28,13 +30,13 @@ import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { Arete, createProtocolClient } from '@usearete/sdk';
-import type { ProtocolDefinition } from '@usearete/sdk';
+import type { EnvironmentOption, ProtocolDefinition } from '@usearete/sdk';
 
 import type { ConsentFields, ConsentLimits } from '../consent/consent';
 import { encodeBase58 } from '../policy/encoding';
 import { definePolicy } from '../policy/policy';
 import { rpcSimulator } from '../policy/simulator';
-import { type Automations, type AutomationOutcome, clientCluster, createAutomations } from '../runtime/automations';
+import { type Automations, type AutomationOutcome, createAutomations } from '../runtime/automations';
 import { type AutomationsDefinition, isAutomationsDefinition, type StackConnector } from '../runtime/define';
 import { devWalletsSigner, fileMemoryStore } from '../dev';
 import { type EventPump, type PumpClient, startEventPump } from './events';
@@ -63,8 +65,6 @@ interface DevSessionFile {
   readonly rpcUrl: string;
   readonly deploymentId?: string | null;
   readonly protocolSlug?: string | null;
-  readonly stack?: string | null;
-  readonly stackWsUrl?: string | null;
 }
 
 export interface DevRunner {
@@ -165,55 +165,19 @@ export async function loadDefinition(entry: string): Promise<AutomationsDefiniti
   return definition;
 }
 
-/** How long `connect` waits for the dev environment's stack to be found. */
-const STACK_WAIT_MS = 20_000;
-
 /**
- * Stacks of the dev environment connect to it, with session tokens minted
- * from the API key. The session is read at each connect, and a connect made
- * before `a4 dev up` has found the environment's stack waits for it, so a
- * stack still starting is not mistaken for one the environment lacks. (`a4
- * dev up` also restarts the runner when the deployment or stack changes.)
+ * Stacks connect through the installed stack SDK in dev mode: the edge
+ * streams the environment's deployment of each stack. A stack the
+ * environment lacks is refused (`devenv-stack-not-loaded`), never read from
+ * production.
  */
-export function devStackConnector(
-  readCurrent: () => DevSessionFile | null,
-  apiKey: string,
-  log: Log,
-  waitMs = STACK_WAIT_MS,
-): StackConnector {
-  const warned = new Set<string>();
+export function devStackConnector(): StackConnector {
   return async (stack) => {
-    let session = readCurrent();
-    if (!session?.stack) {
-      log(`waiting for the dev environment's stack before connecting ${stack.name}`);
-      for (let waited = 0; waited < waitMs && !session?.stack; waited += 500) {
-        await sleep(500);
-        session = readCurrent();
-      }
-    }
-    if (session?.stack && session.stackWsUrl && session.deploymentId && stack.name === session.stack) {
-      const { stackWsUrl: url, sessionEndpoint, deploymentId } = session;
-      return Arete.connect(stack, {
-        url,
-        auth: {
-          getToken: async () => {
-            const response = await fetch(sessionEndpoint, {
-              method: 'POST',
-              headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-              body: JSON.stringify({ websocket_url: url, protocolDeploymentId: deploymentId }),
-            });
-            if (!response.ok) throw new Error(`minting a stack session failed: HTTP ${response.status}`);
-            const body = (await response.json()) as { token: string; expires_at?: number };
-            return { token: body.token, ...(body.expires_at !== undefined ? { expiresAt: body.expires_at } : {}) };
-          },
-        },
-      }) as never;
-    }
-    if (!warned.has(stack.name)) {
-      warned.add(stack.name);
-      log(`stack ${stack.name} is not in the dev environment; its sources read the published stack's data`);
-    }
-    return Arete.connect(stack) as never;
+    const client = await Arete.connect(stack, { environment: { kind: 'dev' } });
+    // A stack the environment refused still returns a client (its other
+    // surfaces work); a source needs the stack itself, so surface the refusal.
+    await client.connect();
+    return client as never;
   };
 }
 
@@ -237,8 +201,10 @@ function describe(outcome: AutomationOutcome): string {
 function bareClient(
   session: DevSessionFile & { deploymentId: string },
   apiKey: string,
-  newClient: (definition: ProtocolDefinition, apiKey: string) => unknown,
+  newClient: (definition: ProtocolDefinition, apiKey: string, environment?: EnvironmentOption) => unknown,
 ): PumpClient {
+  // The environment's deployment by id, with the account's key: this
+  // client is the runner's own, not an installed SDK.
   const definition = {
     kind: 'protocol',
     name: session.protocolSlug ?? 'protocol',
@@ -247,19 +213,24 @@ function bareClient(
       access: 'private',
       apiUrl: `${session.apiUrl.replace(/\/$/, '')}/api`,
       sessionEndpoint: session.sessionEndpoint,
-      environment: 'dev',
     },
     steps: {},
     events: {},
   } as unknown as ProtocolDefinition;
-  return newClient(definition, apiKey) as PumpClient;
+  return newClient(definition, apiKey, 'production') as PumpClient;
 }
 
 /** Test seams. */
 export interface DevRunnerOverrides {
-  /** Builds the protocol client (default `createProtocolClient` with the API key). */
-  readonly createClient?: (definition: ProtocolDefinition, apiKey: string) => unknown;
+  /**
+   * Builds the protocol client (default `createProtocolClient` with the API
+   * key; the environment switch decides where it goes unless given).
+   */
+  readonly createClient?: (definition: ProtocolDefinition, apiKey: string, environment?: EnvironmentOption) => unknown;
 }
+
+/** How long the runner waits for the edge to name the deployment `a4 dev up` just made. */
+const DEPLOYMENT_WAIT_MS = 15_000;
 
 export async function runDev(
   config: DevRunnerConfig,
@@ -267,7 +238,9 @@ export async function runDev(
   overrides: DevRunnerOverrides = {},
 ): Promise<DevRunner> {
   const newClient =
-    overrides.createClient ?? ((definition: ProtocolDefinition, apiKey: string) => createProtocolClient(definition, { auth: { secretKey: apiKey } }));
+    overrides.createClient ??
+    ((definition: ProtocolDefinition, apiKey: string, environment?: EnvironmentOption) =>
+      createProtocolClient(definition, { auth: { secretKey: apiKey }, ...(environment ? { environment } : {}) }));
   const devDir = join(config.root, '.arete', 'dev');
   const stateDir = join(devDir, 'automations');
   mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -293,21 +266,26 @@ export async function runDev(
   if (config.entry) {
     const entry = resolve(config.root, config.entry);
     const definition = await loadDefinition(entry);
-    const client = newClient(definition.protocol, config.apiKey) as ReturnType<typeof createProtocolClient>;
-    if (clientCluster(client) !== 'dev') {
+    const create = () => newClient(definition.protocol, config.apiKey) as ReturnType<typeof createProtocolClient>;
+    let client = create();
+    // `a4 dev up` sets the switch; only an override gets here in production.
+    if (client.environment !== 'dev') {
       throw new Error(
-        `${entry} imports the published client (deployment ${client.deploymentId}), which targets mainnet. ` +
-          'a4 dev runs automations against the dev environment only: `a4 dev sdk` generates its client.',
+        `the protocol client of ${entry} runs in production (ARETE_ENVIRONMENT is ${process.env.ARETE_ENVIRONMENT || 'unset'}), so it would target mainnet. ` +
+          'a4 dev runs automations against the dev environment only: leave ARETE_ENVIRONMENT to `a4 dev up`.',
       );
     }
-    // A stale client would run the workers and the event pump against the
-    // old deployment. a4 dev up restarts the runner once the client is
-    // regenerated (it watches the generated client).
-    if (client.deploymentId !== session.deploymentId) {
-      throw new Error(
-        `the generated client names deployment ${client.deploymentId}, but the dev environment runs ${session.deploymentId}; ` +
-          'run `a4 dev sdk` to regenerate it',
-      );
+    // The client calls the environment's deployment, which the edge names.
+    // Right after a redeploy the edge may still name the previous one for a
+    // few seconds; a4 dev up restarts the runner on each new deployment.
+    for (let waited = 0; ; waited += 1000) {
+      const deployment = await client.resolveDeployment();
+      if (deployment === session.deploymentId) break;
+      if (waited >= DEPLOYMENT_WAIT_MS) {
+        throw new Error(`the dev environment's deployment is ${deployment}, but a4 dev up deployed ${session.deploymentId}`);
+      }
+      await sleep(1000);
+      client = create();
     }
 
     // One store per deployment: a redeploy to a new deployment starts afresh
@@ -320,7 +298,7 @@ export async function runDev(
     saveStore = () => store.save();
 
     const walletsDir = join(devDir, 'wallets');
-    const rpc = rpcSimulator(session.rpcUrl);
+    const rpc = rpcSimulator(undefined, { environment: { kind: 'dev' } });
     const running = createAutomations({
       client,
       signer: devWalletsSigner(client, walletsDir),
@@ -336,10 +314,7 @@ export async function runDev(
       onOutcome: (outcome) => log(describe(outcome)),
       onError: (error, context) => log(`error (${context.phase}${context.jobId ? ` ${context.jobId}` : ''}): ${(error as Error)?.message ?? error}`),
     });
-    const sessionPath = join(devDir, 'session.json');
-    await running.use(definition as AutomationsDefinition<any>, {
-      connect: devStackConnector(() => readJson<DevSessionFile | null>(sessionPath, null), config.apiKey, log),
-    });
+    await running.use(definition as AutomationsDefinition<any>, { connect: devStackConnector() });
     running.start({ pollInterval: '1s' });
     ticker = startScheduleTicker(running, () => chainNow(rpc), log);
     automations = running;

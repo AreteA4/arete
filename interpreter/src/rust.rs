@@ -3099,7 +3099,9 @@ mod tests {
         assert!(programs.contains(
             "pub fn counter_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::Counter>, arete_sdk::AreteError>"
         ));
-        assert!(programs.contains("self.builder.account_transport(\"demo\", &read_descriptor())?"));
+        assert!(programs.contains(&format!(
+            "self.builder.account_transport_of(\"demo\", Some(\"{TEST_PROGRAM_ID}\"), &read_descriptor())?"
+        )));
         assert!(programs.contains("arete_sdk::AccountReader::new(\n                \"Counter\","));
     }
 
@@ -6678,9 +6680,12 @@ fn generate_stack_programs_rs(
                     ),
                 };
                 reader_methods.push(format!(
-                    "        /// {doc}\n        pub fn {method_name}(&self) -> Result<arete_sdk::AccountReader<{value_type}>, arete_sdk::AreteError> {{\n            Ok(arete_sdk::AccountReader::new(\n                {account_literal},\n                std::sync::Arc::new(self.builder.account_transport({program_literal}, &read_descriptor())?),\n            ))\n        }}",
+                    "        /// {doc}\n        pub fn {method_name}(&self) -> Result<arete_sdk::AccountReader<{value_type}>, arete_sdk::AreteError> {{\n            Ok(arete_sdk::AccountReader::new(\n                {account_literal},\n                std::sync::Arc::new(self.builder.account_transport_of({program_literal}, Some({program_id_literal}), &read_descriptor())?),\n            ))\n        }}",
                     account_literal = rust_string_literal(&account.account),
                     program_literal = rust_string_literal(&raw_name),
+                    // The program's address is part of the identity a dev
+                    // environment resolves its Program Read by.
+                    program_id_literal = rust_string_literal(program_id),
                 ));
             }
         }

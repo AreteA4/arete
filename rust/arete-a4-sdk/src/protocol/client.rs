@@ -27,6 +27,11 @@ use super::metadata_proof::{
 use super::sse::{ServerSentEvent, ServerSentEventParser};
 use super::types::*;
 use crate::auth::{classify_api_key, ApiKeyClass, AuthConfig};
+use crate::dev_environment::{
+    resolve_switch_from_process, surface_target, target_str, DevMode, DirectResolver,
+    EdgeRequestPolicy, Environment, EnvironmentOption, ProtocolIdentity, ResolveRequest, Surface,
+    SwitchResult,
+};
 use crate::error::{AreteError, AuthErrorCode};
 use crate::http::{
     parse_wire_error_code, AuthTokenRequest, AuthTokenTarget, HttpAuthClient, TokenSource,
@@ -107,6 +112,7 @@ impl ProtocolError {
             Self::Auth(AreteError::UntrustedCredentialDestination { .. }) => {
                 Some(crate::error::UNTRUSTED_CREDENTIAL_DESTINATION)
             }
+            Self::Auth(AreteError::DevEnvironment(error)) => Some(&error.code),
             _ => None,
         }
     }
@@ -156,6 +162,11 @@ pub struct ProtocolClientOptions {
     /// definition names a live stack. [`crate::Session::protocol_client`]
     /// sets the session's members.
     pub live_views: Option<Arc<dyn ProtocolLiveViews>>,
+    /// The dev environment switch; unset, `ARETE_ENVIRONMENT` decides. In dev
+    /// mode the client calls the environment's deployment of this protocol
+    /// (through the `a4 dev up` edge, or resolved with a secret key), never
+    /// the production one.
+    pub environment: Option<EnvironmentOption>,
 }
 
 impl std::fmt::Debug for ProtocolClientOptions {
@@ -168,6 +179,7 @@ impl std::fmt::Debug for ProtocolClientOptions {
             .field("session_endpoint", &self.session_endpoint)
             .field("deployment_id", &self.deployment_id)
             .field("live_views", &self.live_views.is_some())
+            .field("environment", &self.environment)
             .finish_non_exhaustive()
     }
 }
@@ -213,6 +225,12 @@ impl ProtocolClientOptions {
     }
 
     /// Call `deployment_id` instead of the generated deployment.
+    /// The dev environment switch ([`crate::dev_environment`]).
+    pub fn with_environment(mut self, environment: EnvironmentOption) -> Self {
+        self.environment = Some(environment);
+        self
+    }
+
     pub fn with_deployment_id(mut self, deployment_id: impl Into<String>) -> Self {
         self.deployment_id = Some(deployment_id.into());
         self
@@ -414,6 +432,74 @@ struct Http {
     tokens: HttpAuthClient,
     refreshable: bool,
     deployment_id: String,
+    /// Dev mode through the edge: no credential, the identity header.
+    edge: Option<EdgeRequestPolicy>,
+    /// Dev direct mode: the environment's deployment, resolved on first use.
+    direct: Option<DirectProtocol>,
+}
+
+/// A protocol client in dev direct mode. URLs are built for the installed
+/// deployment and moved to the environment's deployment when sent.
+struct DirectProtocol {
+    resolver: Arc<DirectResolver>,
+    identity: ProtocolIdentity,
+    /// `<installed api>/protocol-deployments/<installed segment>`.
+    installed_prefix: String,
+    installed_api_url: String,
+    target: tokio::sync::OnceCell<DirectProtocolTarget>,
+}
+
+struct DirectProtocolTarget {
+    api_url: String,
+    deployment_id: String,
+    tokens: HttpAuthClient,
+}
+
+impl DirectProtocol {
+    async fn target(&self) -> Result<&DirectProtocolTarget, AreteError> {
+        self.target
+            .get_or_try_init(|| async {
+                let request = ResolveRequest {
+                    protocols: vec![self.identity.clone()],
+                    ..ResolveRequest::default()
+                };
+                let answer = self.resolver.resolve(&request).await?;
+                let target = surface_target(&answer, Surface::Protocol(0))?;
+                let api_url = target_str(target, "apiUrl")?
+                    .trim_end_matches('/')
+                    .to_string();
+                let deployment_id = target_str(target, "deploymentId")?.to_string();
+                let session_endpoint = target_str(target, "sessionEndpoint")?;
+                // Protocol sessions name the environment's deployment; the
+                // token is bound to its environment.
+                let mut auth = self.resolver.auth().clone();
+                auth.token = None;
+                auth.get_token = None;
+                auth.token_endpoint = Some(session_endpoint.to_string());
+                Ok(DirectProtocolTarget {
+                    tokens: HttpAuthClient::new(Some(auth), None, self.resolver.http().clone()),
+                    api_url,
+                    deployment_id,
+                })
+            })
+            .await
+    }
+
+    fn route(&self, url: &str, target: &DirectProtocolTarget) -> Result<String, ProtocolError> {
+        if let Some(rest) = url.strip_prefix(&self.installed_prefix) {
+            return Ok(format!(
+                "{}/protocol-deployments/{}{rest}",
+                target.api_url,
+                segment(&target.deployment_id, "deploymentId")?
+            ));
+        }
+        match url.strip_prefix(&self.installed_api_url) {
+            Some(rest) => Ok(format!("{}{rest}", target.api_url)),
+            None => Err(ProtocolError::InvalidInput(format!(
+                "{url} is not a protocol API URL of this client"
+            ))),
+        }
+    }
 }
 
 struct Outgoing<'a> {
@@ -484,23 +570,30 @@ fn body_code(body: &[u8]) -> Option<String> {
         .map(str::to_string)
 }
 
-impl Http {
-    fn token_request(&self, scopes: &[String]) -> AuthTokenRequest {
-        AuthTokenRequest::targeted(
-            scopes.to_vec(),
-            AuthTokenTarget::protocol_deployment(self.deployment_id.clone()),
-        )
-    }
+fn token_request(deployment_id: &str, scopes: &[String]) -> AuthTokenRequest {
+    AuthTokenRequest::targeted(
+        scopes.to_vec(),
+        AuthTokenTarget::protocol_deployment(deployment_id.to_string()),
+    )
+}
 
+impl Http {
     async fn attempt(
         &self,
+        tokens: &HttpAuthClient,
+        deployment_id: &str,
         request: &Outgoing<'_>,
         force_refresh: bool,
     ) -> Result<Reply, ProtocolError> {
-        let token = self
-            .tokens
-            .token(&self.token_request(request.scopes), force_refresh)
-            .await?;
+        let token = match &self.edge {
+            // Edge requests carry no credential.
+            Some(_) => None,
+            None => {
+                tokens
+                    .token(&token_request(deployment_id, request.scopes), force_refresh)
+                    .await?
+            }
+        };
         let mut builder = self
             .client
             .request(request.method.clone(), &request.url)
@@ -514,10 +607,16 @@ impl Http {
         if let Some(body) = &request.body {
             builder = builder.json(body);
         }
-        let response = builder
-            .send()
-            .await
-            .map_err(|error| ProtocolError::Transport(error.to_string()))?;
+        if let Some(edge) = &self.edge {
+            builder = edge.apply(builder);
+        }
+        let response = builder.send().await.map_err(|error| match &self.edge {
+            Some(edge) => ProtocolError::Auth(edge.send_error(&error)),
+            None => ProtocolError::Transport(error.to_string()),
+        })?;
+        if let Some(edge) = &self.edge {
+            edge.check(response.headers())?;
+        }
         Ok(Reply {
             status: response.status().as_u16(),
             header_code: response
@@ -532,7 +631,51 @@ impl Http {
     /// Send once; on a refreshable authentication failure, re-mint the
     /// session and send exactly once more.
     async fn send(&self, request: &Outgoing<'_>) -> Result<Reply, ProtocolError> {
-        let reply = self.attempt(request, request.force_refresh).await?;
+        let routed;
+        let (tokens, deployment_id, request) = match &self.direct {
+            Some(direct) => {
+                let target = direct.target().await?;
+                routed = Outgoing {
+                    method: request.method.clone(),
+                    url: direct.route(&request.url, target)?,
+                    scopes: request.scopes,
+                    body: request.body.clone(),
+                    headers: request.headers.clone(),
+                    force_refresh: request.force_refresh,
+                };
+                (&target.tokens, target.deployment_id.as_str(), &routed)
+            }
+            None => (&self.tokens, self.deployment_id.as_str(), request),
+        };
+        let reply = self.send_with(tokens, deployment_id, request).await?;
+        if reply.is_success() {
+            return Ok(reply);
+        }
+        // A dev environment refusal becomes the error it names.
+        let status = reply.status;
+        let header_code = reply.header_code.clone();
+        let body = reply.bytes().await?;
+        if let Some(refusal) =
+            crate::dev_environment::refusal_error(status, header_code.as_deref(), &body)
+        {
+            return Err(ProtocolError::Auth(refusal));
+        }
+        Ok(Reply {
+            status,
+            header_code,
+            body: ReplyBody::Read(body),
+        })
+    }
+
+    async fn send_with(
+        &self,
+        tokens: &HttpAuthClient,
+        deployment_id: &str,
+        request: &Outgoing<'_>,
+    ) -> Result<Reply, ProtocolError> {
+        let reply = self
+            .attempt(tokens, deployment_id, request, request.force_refresh)
+            .await?;
         if reply.is_success() || !self.refreshable {
             return Ok(reply);
         }
@@ -544,8 +687,8 @@ impl Http {
         }
         let body = reply.bytes().await?;
         if refresh_header || is_refresh_code(body_code(&body).as_deref()) {
-            self.tokens.invalidate(&self.token_request(request.scopes));
-            return self.attempt(request, true).await;
+            tokens.invalidate(&token_request(deployment_id, request.scopes));
+            return self.attempt(tokens, deployment_id, request, true).await;
         }
         Ok(Reply {
             status,
@@ -645,6 +788,10 @@ fn access_rejection<G: ProtocolGuardCode>(
 struct Inner {
     definition: ProtocolDefinition,
     deployment_id: String,
+    /// The deployment's path segment: the encoded id, or, in dev mode
+    /// before the first publish, `package:<package>`.
+    deployment_segment: String,
+    environment: Environment,
     api_url: String,
     key_class: ProtocolKeyClass,
     http: Http,
@@ -762,13 +909,17 @@ impl ProtocolClient {
             api_url,
             session_endpoint,
         } = resolve_protocol_endpoints(definition, &options, |name| std::env::var(name).ok());
+        let auth = crate::auth::resolve_auth_config(options.auth.clone())?;
+        let switch = resolve_switch_from_process(options.environment.as_ref(), auth.as_ref())?;
+        if switch != SwitchResult::Production {
+            return Self::new_dev(definition, options, auth, switch, deployment_id, api_url);
+        }
         if deployment_id.is_empty() {
             return Err(ProtocolError::InvalidInput(
                 "the protocol definition names no deployment".into(),
             ));
         }
 
-        let auth = crate::auth::resolve_auth_config(options.auth)?;
         let key_class = runtime_key_class(auth.as_ref(), options.key_class);
         let explicit_publishable = auth
             .as_ref()
@@ -800,7 +951,119 @@ impl ProtocolClient {
             .is_some_and(|auth| auth.get_token.is_some() || auth.token.is_none());
         let client = options.http_client.unwrap_or_default();
         let tokens = HttpAuthClient::new(auth, None, client.clone());
+        let deployment_segment = segment(&deployment_id, "deploymentId")?;
+        Ok(Self::assemble(
+            definition,
+            options.steps,
+            options.live_views,
+            key_class,
+            Http {
+                client,
+                tokens,
+                refreshable,
+                deployment_id: deployment_id.clone(),
+                edge: None,
+                direct: None,
+            },
+            deployment_id,
+            deployment_segment,
+            api_url,
+            Environment::Production,
+        ))
+    }
 
+    /// A client in dev mode (`docs/internal/dev-environment-switch.md` §3):
+    /// through the edge, naming the protocol's installed identity, or at the
+    /// environment's deployment resolved with the secret key.
+    fn new_dev(
+        definition: &ProtocolDefinition,
+        options: ProtocolClientOptions,
+        auth: Option<AuthConfig>,
+        switch: SwitchResult,
+        deployment_id: String,
+        installed_api_url: String,
+    ) -> Result<Self, ProtocolError> {
+        let key_class = runtime_key_class(auth.as_ref(), options.key_class);
+        let client = options.http_client.clone().unwrap_or_default();
+        let identity = ProtocolIdentity {
+            package: definition.package.to_string(),
+            protocol_release_hash: definition.protocol_release_hash.to_string(),
+            deployment_id: (!deployment_id.is_empty()).then(|| deployment_id.clone()),
+        };
+        let segment_of = |deployment_id: &str| {
+            crate::dev_environment::edge_protocol_segment(Some(deployment_id), definition.package)
+        };
+        let (http, deployment_segment, api_url) =
+            match DevMode::of(&switch, auth.as_ref(), &client)?.expect("dev mode for a dev switch")
+            {
+                DevMode::Edge { edge_url } => {
+                    let request = ResolveRequest {
+                        protocols: vec![identity],
+                        ..ResolveRequest::default()
+                    };
+                    (
+                        Http {
+                            client: client.clone(),
+                            tokens: HttpAuthClient::new(None, None, client),
+                            refreshable: false,
+                            deployment_id: deployment_id.clone(),
+                            edge: Some(EdgeRequestPolicy::new(&edge_url, Some(&request))),
+                            direct: None,
+                        },
+                        segment_of(&deployment_id),
+                        crate::dev_environment::edge_protocol_api_url(&edge_url),
+                    )
+                }
+                DevMode::Direct(resolver) => {
+                    let deployment_segment = segment_of(&deployment_id);
+                    let installed_api_url = installed_api_url.trim_end_matches('/').to_string();
+                    (
+                        Http {
+                            client: client.clone(),
+                            tokens: HttpAuthClient::new(None, None, client),
+                            refreshable: true,
+                            deployment_id: deployment_id.clone(),
+                            edge: None,
+                            direct: Some(DirectProtocol {
+                                resolver,
+                                identity,
+                                installed_prefix: format!(
+                                    "{installed_api_url}/protocol-deployments/{deployment_segment}"
+                                ),
+                                installed_api_url: installed_api_url.clone(),
+                                target: tokio::sync::OnceCell::new(),
+                            }),
+                        },
+                        deployment_segment,
+                        installed_api_url,
+                    )
+                }
+            };
+        Ok(Self::assemble(
+            definition,
+            options.steps,
+            options.live_views,
+            key_class,
+            http,
+            deployment_id,
+            deployment_segment,
+            api_url,
+            Environment::Dev,
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        definition: &ProtocolDefinition,
+        steps: Option<Vec<String>>,
+        live_views: Option<Arc<dyn ProtocolLiveViews>>,
+        key_class: ProtocolKeyClass,
+        http: Http,
+        deployment_id: String,
+        deployment_segment: String,
+        api_url: String,
+        environment: Environment,
+    ) -> Self {
         let read_scopes = vec![PROTOCOL_READ_SCOPE.to_string()];
         let mut transaction_scopes = vec![
             PROTOCOL_READ_SCOPE.to_string(),
@@ -809,7 +1072,7 @@ impl ProtocolClient {
         match key_class {
             ProtocolKeyClass::Secret => transaction_scopes.push(PROTOCOL_PREPARE_ANY_SCOPE.into()),
             ProtocolKeyClass::Publishable => {
-                let steps = options.steps.unwrap_or_else(|| {
+                let steps = steps.unwrap_or_else(|| {
                     definition
                         .steps
                         .iter()
@@ -821,23 +1084,25 @@ impl ProtocolClient {
             }
         }
 
-        Ok(Self {
+        Self {
             inner: Arc::new(Inner {
                 definition: *definition,
-                http: Http {
-                    client,
-                    tokens,
-                    refreshable,
-                    deployment_id: deployment_id.clone(),
-                },
+                http,
                 deployment_id,
+                deployment_segment,
+                environment,
                 api_url,
                 key_class,
                 read_scopes,
                 transaction_scopes,
-                live_views: options.live_views,
+                live_views,
             }),
-        })
+        }
+    }
+
+    /// `Production`, or `Dev` when the dev environment switch is on.
+    pub fn environment(&self) -> Environment {
+        self.inner.environment
     }
 
     pub fn definition(&self) -> &ProtocolDefinition {
@@ -956,7 +1221,7 @@ impl ProtocolClient {
             format!(
                 "{}/protocol-deployments/{}/steps/{}/prepare",
                 self.inner.api_url,
-                segment(&self.inner.deployment_id, "deploymentId")?,
+                self.inner.deployment_segment.clone(),
                 segment(step_name, "step")?
             )
         } else {
@@ -1110,7 +1375,7 @@ impl ProtocolClient {
         Ok(format!(
             "{}/protocol-deployments/{}/squads/{route}",
             self.inner.api_url,
-            segment(&self.inner.deployment_id, "deploymentId")?
+            self.inner.deployment_segment.clone()
         ))
     }
 
@@ -1155,7 +1420,7 @@ impl ProtocolClient {
         let mut url = url::Url::parse(&format!(
             "{}/protocol-deployments/{}/instances",
             self.inner.api_url,
-            segment(&self.inner.deployment_id, "deploymentId")?
+            self.inner.deployment_segment.clone()
         ))
         .map_err(|error| ProtocolError::InvalidInput(format!("invalid API URL: {error}")))?;
         {
@@ -1239,7 +1504,7 @@ impl ProtocolClient {
         let mut url = url::Url::parse(&format!(
             "{}/protocol-deployments/{}/wallets/{}/actions",
             self.inner.api_url,
-            segment(&self.inner.deployment_id, "deploymentId")?,
+            self.inner.deployment_segment.clone(),
             segment(&request.wallet, "wallet")?
         ))
         .map_err(|error| ProtocolError::InvalidInput(format!("invalid API URL: {error}")))?;

@@ -138,6 +138,16 @@ export interface AreteConfig {
    * applies to clients created afterwards; call `retry()` to reconnect one.
    */
   auth?: CoreAuthConfig;
+  /**
+   * Production (the default) or the project's dev environment. A browser
+   * reads no process variable, so pass it from the framework's public
+   * variables, for example
+   * `environment={import.meta.env.VITE_ARETE_ENVIRONMENT === 'dev' ? { kind: 'dev', url: import.meta.env.VITE_ARETE_DEV_URL } : 'production'}`.
+   * In dev mode every client the provider creates goes through the edge
+   * `a4 dev up` serves; the page holds no Arete key. Applies to clients
+   * created afterwards, like `auth`.
+   */
+  environment?: CoreConnectOptions['environment'];
 }
 
 /**
