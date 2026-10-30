@@ -26,9 +26,11 @@ pub mod automations;
 pub mod capture;
 pub mod custom_stacks;
 pub mod deploy;
+pub mod edge;
 pub mod env;
 pub mod lease;
 pub mod proxy;
+pub mod run;
 pub mod runtime;
 pub mod sdk_gen;
 pub mod squads;
@@ -62,6 +64,10 @@ pub enum DevCommands {
     /// Stop a running `a4 dev up` for this project (the environment keeps
     /// its state and sleeps when idle)
     Down(DownArgs),
+    /// Run a command with its installed SDKs in dev mode: it gets
+    /// ARETE_ENVIRONMENT=dev and ARETE_DEV_URL (the running `a4 dev up`),
+    /// plus public copies for browser frameworks (VITE_, NEXT_PUBLIC_, ...)
+    Run(run::RunArgs),
     /// Show the environment, the running session and the chain
     Status(EnvArgs),
     /// List your dev environments and your plan's quotas
@@ -487,6 +493,7 @@ pub fn run(command: DevCommands, json: bool) -> Result<()> {
         DevCommands::AdmitLocalPrograms => up::admission_worker(),
         DevCommands::Up(args) => up(args, json),
         DevCommands::Down(args) => down(args, json),
+        DevCommands::Run(args) => run::run(args),
         DevCommands::Status(args) => block_on(status(args, json)),
         DevCommands::List => env::list(json),
         DevCommands::Use(args) => env::use_env(args.project, args.env, json),

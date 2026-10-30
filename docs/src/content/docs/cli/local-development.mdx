@@ -196,6 +196,52 @@ loopback host, and a browser's `Origin` must be a loopback origin, so a page
 on another site, or a rebound DNS name, can't use your environment. Local
 pages get CORS headers for their origin.
 
+### The edge: installed SDKs in dev mode
+
+The same port is also the **edge**: the environment's routes in the shape
+the installed SDKs call in production. With `ARETE_ENVIRONMENT=dev` and
+`ARETE_DEV_URL` set to it, the SDKs you installed with `a4 install` read
+and send through the environment without being regenerated, and without an
+Arete key or token in the app:
+
+| Route on the edge                                                                   | Serves                                                                                    |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `/chain/…`, `/transactions/v1/…`                                                    | chain reads and transactions against the environment                                      |
+| `/v1/releases/<release>/…`                                                          | program account reads (Program Read) against the environment                              |
+| `/stacks/<liveAlias>?stackManifestHash=…`                                           | the environment's copy of an installed stack (WebSocket, and queries under the same path) |
+| `/api/protocol-deployments/<id>/…`                                                  | your protocol's deployment in the environment                                             |
+| `/api/protocol-instances/…`, `/api/execution-intents/…`, `/api/protocol-receipts/…` | instance reads, step submits and receipts of those deployments                            |
+| `GET /.well-known/arete-dev-edge`                                                   | `{"edge": 1}`: the SDKs check it before opening a socket                                  |
+
+The edge holds your key, resolves each installed identity to the
+environment's copy and attaches the right token itself. It never returns a
+key or a token, and it refuses what the environment can't serve with a code
+and a fix (`devenv-stack-not-loaded`, `devenv-protocol-not-deployed`, …)
+instead of reading production. It answers only on loopback, with the same
+`Host` and `Origin` rules as the RPC endpoint.
+
+`a4 dev up` loads every registry stack in `arete.lock` into the environment
+when it starts, and prints each with its state.
+
+Run your app against it with `a4 dev run`:
+
+```sh
+a4 dev run -- npm run dev
+```
+
+The command gets `ARETE_ENVIRONMENT=dev` and `ARETE_DEV_URL`, plus copies for
+browser frameworks, which only expose prefixed variables to the page
+(`VITE_ARETE_ENVIRONMENT`, `NEXT_PUBLIC_ARETE_DEV_URL`, `EXPO_PUBLIC_…`). Set
+the prefixes your framework uses in `arete.toml`:
+
+```toml
+[dev]
+public-env-prefixes = ["VITE_"]
+```
+
+Unset `ARETE_ENVIRONMENT` (or run without `a4 dev run`) and the same app
+uses production.
+
 ## One project per environment
 
 An environment serves one project at a time. `a4 dev up` holds the
@@ -308,6 +354,7 @@ contain a stack session token in `stackSession.token` and in the
   "sessionEndpoint": "https://api.arete.run/ws/sessions",
   "rpcUrl": "http://127.0.0.1:48700",
   "rpcWsUrl": "ws://127.0.0.1:48701",
+  "edgeUrl": "http://127.0.0.1:48700",
   "environmentRpcUrl": "https://…/rpc/v1/devenv/denv_01k…",
   "protocolSlug": "tip-jar",
   "deploymentId": "…",

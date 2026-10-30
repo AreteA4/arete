@@ -97,6 +97,12 @@ pub struct DevSession {
     /// up` is not running.
     #[serde(default)]
     pub rpc_ws_url: String,
+    /// The edge: the environment's chain, transaction, Program Read, stack
+    /// and protocol routes in their production shape, on loopback, for SDKs
+    /// in dev mode (`ARETE_ENVIRONMENT=dev`). The same origin as `rpcUrl`.
+    /// Empty when `a4 dev up` is not running.
+    #[serde(default)]
+    pub edge_url: String,
     /// The environment's own RPC URL. It needs an environment token as a
     /// bearer credential (`a4 dev token` mints one).
     #[serde(default)]
@@ -240,6 +246,7 @@ impl DevSession {
             api_url,
             rpc_url: String::new(),
             rpc_ws_url: String::new(),
+            edge_url: String::new(),
             environment_rpc_url: String::new(),
             protocol_id: None,
             protocol_slug: None,
@@ -259,7 +266,11 @@ impl DevSession {
     /// else, and these URLs decide where a signer's simulation and the dev
     /// tools' calls go.
     pub fn check(&self) -> Result<()> {
-        for (field, url) in [("rpcUrl", &self.rpc_url), ("rpcWsUrl", &self.rpc_ws_url)] {
+        for (field, url) in [
+            ("rpcUrl", &self.rpc_url),
+            ("rpcWsUrl", &self.rpc_ws_url),
+            ("edgeUrl", &self.edge_url),
+        ] {
             if !url.is_empty() && !is_loopback_url(url) {
                 bail!("{field} `{url}` is not a loopback URL");
             }

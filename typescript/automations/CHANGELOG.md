@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.50.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.49.0...arete-automations-v0.50.0) (2026-10-29)
+
+
+### Features
+
+* **automations:** the Privy signer prefers V1, falls back to v0 ([c24d63f](https://github.com/AreteA4/arete/commit/c24d63f4534f76c206de60787e0fc65f3e44f31a))
+* **automations:** the Privy signer prefers V1, falls back to v0 ([1d91e6a](https://github.com/AreteA4/arete/commit/1d91e6a051347d648aa6720e1d664ec909bcd25a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.49.0 to ^0.50.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.49.0 to ^0.50.0
+
+## [0.49.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.48.1...arete-automations-v0.49.0) (2026-10-29)
+
+
+### Miscellaneous Chores
+
+* **arete-automations:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.48.1 to ^0.49.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.48.1 to ^0.49.0
+
 ## [0.48.1](https://github.com/AreteA4/arete/compare/arete-automations-v0.48.0...arete-automations-v0.48.1) (2026-10-28)
 
 

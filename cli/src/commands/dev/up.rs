@@ -37,7 +37,8 @@ use super::runtime::{pid_alive, LogSink};
 use super::sdk_gen::{self, LocalProtocol};
 use super::ui::{self, DevUi};
 use super::watch;
-use crate::project::manifest::InstallTarget;
+use crate::project::lockfile::ProjectLock;
+use crate::project::manifest::{DependencyKind, InstallTarget};
 
 pub const STATE_SCHEMA: &str = "arete.dev-state/v2";
 const POLL: Duration = Duration::from_millis(400);
@@ -617,6 +618,47 @@ async fn admit_local_programs(
 }
 
 /// Run `a4 dev up` until Ctrl-C or SIGTERM (`a4 dev down`).
+/// The registry stacks `lock` pins: package, StackManifest hash and, for a
+/// stack with several live specs, each alias.
+fn lock_stacks(lock: &ProjectLock) -> Vec<(String, String, Option<String>)> {
+    let mut stacks = Vec::new();
+    let mut add =
+        |package: &str, hash: &str, lives: &[crate::project::lockfile::LockedLiveSpec]| {
+            if lives.len() > 1 {
+                for live in lives {
+                    stacks.push((
+                        package.to_string(),
+                        hash.to_string(),
+                        Some(live.alias.clone()),
+                    ));
+                }
+            } else {
+                stacks.push((package.to_string(), hash.to_string(), None));
+            }
+        };
+    for dependency in &lock.dependencies {
+        // The stacks an installed protocol hoists are registry stacks too.
+        for stack in &dependency.stacks {
+            add(
+                &stack.package,
+                &stack.stack_manifest_hash,
+                &stack.live_specs,
+            );
+        }
+        let (DependencyKind::Stack, Some(package), Some(hash)) = (
+            dependency.kind,
+            dependency.source.strip_prefix("registry:"),
+            dependency.stack_manifest_hash.as_ref(),
+        ) else {
+            continue;
+        };
+        add(package, hash, &dependency.live_specs);
+    }
+    stacks.sort();
+    stacks.dedup();
+    stacks
+}
+
 pub async fn run(config: UpConfig) -> Result<()> {
     let project = DevProject::new(&config.project_root);
     std::fs::create_dir_all(project.dev_dir())?;
@@ -860,6 +902,7 @@ impl Session<'_> {
             api_url,
             rpc_url: self.rpc_url(),
             rpc_ws_url: self.rpc_ws_url(),
+            edge_url: self.rpc_url(),
             environment_rpc_url: self.environment_rpc_url.clone(),
             protocol_id: state.protocol_id.clone(),
             protocol_slug: state.slug.clone(),
@@ -931,6 +974,7 @@ impl Session<'_> {
         }
 
         if config.deploy {
+            self.load_lock_stacks().await;
             self.deploy_project_stacks().await?;
         } else {
             self.find_stack().await;
@@ -1351,6 +1395,63 @@ impl Session<'_> {
         self.after_deploy(&outcome).await
     }
 
+    /// Load every registry stack `arete.lock` pins into the environment,
+    /// so installed stack SDKs in dev mode find it, and say how each went.
+    /// A stack that fails to load is reported and skipped: its SDK gets
+    /// `devenv-stack-not-loaded` with the fix.
+    async fn load_lock_stacks(&mut self) {
+        let lock = match ProjectLock::load_optional(self.project.root.join("arete.lock")) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => return,
+            Err(error) => {
+                self.events.emit(
+                    "stack-load-failed",
+                    &format!("Could not read arete.lock to load its stacks: {error:#}"),
+                    json!({ "error": format!("{error:#}") }),
+                );
+                return;
+            }
+        };
+        for (package, hash, alias) in lock_stacks(&lock) {
+            let label = match &alias {
+                Some(alias) => format!("{package} ({alias})"),
+                None => package.clone(),
+            };
+            match self
+                .config
+                .api
+                .load_registry_stack(&self.env.id, &hash, alias.as_deref())
+                .await
+            {
+                Ok(answer) => {
+                    let status = answer["status"].as_str().unwrap_or("loaded");
+                    self.events.emit(
+                        "stack-loaded",
+                        &format!("Stack {label}: {status}"),
+                        json!({
+                            "package": package,
+                            "liveAlias": alias,
+                            "stackManifestHash": hash,
+                            "status": status,
+                            "deploymentId": answer["deploymentId"],
+                        }),
+                    );
+                }
+                Err(error) => self.events.emit(
+                    "stack-load-failed",
+                    &format!("Stack {label} was not loaded: {error:#}"),
+                    json!({
+                        "package": package,
+                        "liveAlias": alias,
+                        "stackManifestHash": hash,
+                        "code": dev_env::api_code(&error),
+                        "error": format!("{error:#}"),
+                    }),
+                ),
+            }
+        }
+    }
+
     async fn deploy_project_stacks(&mut self) -> Result<()> {
         let stacks = super::custom_stacks::deploy(
             &self.project.root,
@@ -1676,6 +1777,68 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn every_registry_stack_in_the_lock_is_loaded_per_live_spec() {
+        use crate::project::lockfile::{LockedDependency, LockedLiveSpec};
+        let stack = |alias: &str, source: &str, lives: &[&str]| LockedDependency {
+            kind: DependencyKind::Stack,
+            alias: alias.into(),
+            source: source.into(),
+            requirement: None,
+            version: None,
+            package_release_hash: None,
+            stack_manifest_hash: Some(format!("hash-{alias}")),
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: lives
+                .iter()
+                .map(|live| LockedLiveSpec {
+                    alias: live.to_string(),
+                    artifact_hash: format!("live-{live}"),
+                })
+                .collect(),
+            programs: Vec::new(),
+            parts: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+            protocol: None,
+            stacks: Vec::new(),
+            targets: Vec::new(),
+            generator_contract: String::new(),
+            local_build: None,
+        };
+        let mut protocol = stack("raise", "registry:raise", &[]);
+        protocol.kind = DependencyKind::Protocol;
+        protocol.stack_manifest_hash = None;
+        protocol.stacks = vec![crate::project::lockfile::LockedProtocolStack {
+            alias: "ledger".into(),
+            package: "raise-ledger".into(),
+            version: "1.0.0".into(),
+            package_release_hash: "release".into(),
+            stack_manifest_hash: "hash-ledger".into(),
+            live_specs: Vec::new(),
+            programs: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+        }];
+        let mut lock = ProjectLock::empty("manifest".into());
+        lock.dependencies = vec![
+            stack("klend", "registry:klend", &["default"]),
+            stack("multi", "registry:multi", &["fast", "slow"]),
+            stack("mine", "path:stacks/mine.stack.yaml", &["default"]),
+            protocol,
+        ];
+        let some = |value: &str| Some(value.to_string());
+        assert_eq!(
+            lock_stacks(&lock),
+            [
+                ("klend".to_string(), "hash-klend".to_string(), None),
+                ("multi".to_string(), "hash-multi".to_string(), some("fast")),
+                ("multi".to_string(), "hash-multi".to_string(), some("slow")),
+                ("raise-ledger".to_string(), "hash-ledger".to_string(), None),
+            ]
+        );
+    }
 
     #[test]
     fn ports_are_fixed_offsets_from_the_base() {
