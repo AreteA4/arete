@@ -207,6 +207,13 @@ pub struct LockedDependency {
     /// has none. `a4 install --check` fails while any entry has one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_build: Option<String>,
+    /// A program or stack SDK generated with a local SDK extension bundle
+    /// (arete.toml `extensions = { path }`), not the published one: the
+    /// bundle's content hash. The registry fields still pin the published
+    /// release (`a4 install --locked` restores its extension). `a4 install
+    /// --check` fails while any entry has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_extension: Option<String>,
 }
 
 /// The protocol release hash prefix a `local_build` carries.
@@ -250,6 +257,12 @@ impl LockedDependency {
         self.local_build.is_some()
     }
 
+    /// Generated with a local SDK extension bundle: `local_extension` is
+    /// set.
+    pub fn is_local_extension(&self) -> bool {
+        self.local_extension.is_some()
+    }
+
     /// Pins a published registry release (a protocol only built locally
     /// pins none).
     pub fn is_published(&self) -> bool {
@@ -279,6 +292,26 @@ impl LockedDependency {
             if !local_build.starts_with(PROTOCOL_RELEASE_HASH_PREFIX) {
                 bail!(
                     "protocol dependency '{}' locks local build '{local_build}', which is not a protocol release hash",
+                    self.alias
+                );
+            }
+        }
+        if let Some(local_extension) = &self.local_extension {
+            if self.kind == DependencyKind::Protocol || !registry {
+                bail!(
+                    "{} dependency '{}' locks a local SDK extension, which only a registry program or stack has",
+                    self.kind,
+                    self.alias
+                );
+            }
+            if local_extension.len() != 64
+                || !local_extension
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            {
+                bail!(
+                    "{} dependency '{}' locks local SDK extension '{local_extension}', which is not a content hash",
+                    self.kind,
                     self.alias
                 );
             }
@@ -557,6 +590,7 @@ mod tests {
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         }
     }
 
@@ -607,6 +641,7 @@ mod tests {
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         }
     }
 
@@ -867,5 +902,20 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("program dependency alias 'shared' is duplicated"));
+    }
+
+    #[test]
+    fn a_local_extension_is_a_content_hash_on_a_registry_program_or_stack() {
+        let mut stack = registry_stack(Vec::new());
+        stack.local_extension = Some("ab".repeat(32));
+        stack.normalize_and_validate().unwrap();
+        assert!(stack.is_local_extension());
+
+        stack.local_extension = Some("not-a-hash".into());
+        assert!(stack.normalize_and_validate().is_err());
+
+        let mut path = local("ore");
+        path.local_extension = Some("ab".repeat(32));
+        assert!(path.normalize_and_validate().is_err());
     }
 }

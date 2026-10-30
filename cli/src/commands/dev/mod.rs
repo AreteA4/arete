@@ -28,6 +28,7 @@ pub mod custom_stacks;
 pub mod deploy;
 pub mod edge;
 pub mod env;
+pub mod local_extensions;
 pub mod promote;
 pub mod proxy;
 pub mod quotas;

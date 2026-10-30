@@ -548,6 +548,17 @@ or open the dev UI to stream the session's selected stack. Streams use the
 stack's environment WebSocket address and renew their session tokens.
 `a4 up` remains the command for production deployments.
 
+### Unpublished SDK extensions
+
+A dependency in `arete.toml` with `extensions = { path = "<dir>" }` uses the
+SDK extension bundle in that directory instead of the published one (see
+[Testing an unpublished SDK extension](/cli/commands/#testing-an-unpublished-sdk-extension)).
+Run `a4 install` once to generate it. After that, `a4 dev up` watches the
+bundle's files (its `extensions.json` and the files it lists, or its entry)
+and regenerates only that dependency's SDK when one changes, recording the new
+bundle as `local_extension` in `arete.lock`. Changes that touch only extension
+files don't redeploy the protocol or your stacks.
+
 ## Agents (MCP)
 
 The MCP server (`a4 mcp`) has the same operations. Each environment tool
@@ -787,11 +798,12 @@ have yet. `a4 dev promote --check` lists each, with the command that
 publishes it, and exits non-zero while any remain, so CI can gate a
 production deploy on it:
 
-| Listed                                                                                                    | Publish it with                                                   |
-| --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| a protocol client generated from a local build                                                            | `a4 protocol deploy` in the protocol's project, then `a4 install` |
-| a program the environment runs at another release than `arete.lock` pins                                  | deploy it to mainnet, `a4 program push <idl>`, then `a4 install`  |
-| a project stack the environment serves under the live alias of a dependency or of a stack a protocol uses | `a4 up`, point the dependency at it, then `a4 install`            |
+| Listed                                                                                                    | Publish it with                                                            |
+| --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| a protocol client generated from a local build                                                            | `a4 protocol deploy` in the protocol's project, then `a4 install`          |
+| a program the environment runs at another release than `arete.lock` pins                                  | deploy it to mainnet, `a4 program push <idl>`, then `a4 install`           |
+| a project stack the environment serves under the live alias of a dependency or of a stack a protocol uses | `a4 up`, point the dependency at it, then `a4 install`                     |
+| an SDK generated with a local extension (`local_extension`)                                               | publish the extension upstream, remove `extensions`, `a4 install --locked` |
 
 ```sh
 a4 dev promote --check          # --json for CI
