@@ -106,7 +106,7 @@ pub mod alpha {
         pub fn header_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::Header>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Header",
-                std::sync::Arc::new(self.builder.account_transport("alpha", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("alpha", Some("2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM"), &read_descriptor())?),
             ))
         }
     }
@@ -215,7 +215,7 @@ pub mod beta {
         pub fn header_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::Header>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Header",
-                std::sync::Arc::new(self.builder.account_transport("beta", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("beta", Some("Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS"), &read_descriptor())?),
             ))
         }
     }

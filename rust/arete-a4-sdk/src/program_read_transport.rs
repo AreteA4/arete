@@ -54,6 +54,37 @@ pub trait BearerTokenSource: Send + Sync {
 
     /// Drop any cached token for the given scopes/target.
     fn invalidate(&self, scopes: &[&str], target: Option<&ReadAuthTarget>);
+
+    /// The dev edge policy requests authenticated by this source follow, if
+    /// they go through the `a4 dev up` edge.
+    fn edge_policy(&self) -> Option<&crate::dev_environment::EdgeRequestPolicy> {
+        None
+    }
+}
+
+/// Where a Program Read goes in dev direct mode: resolved once, on the first
+/// read. The token authenticates the installed release; the path reads the
+/// release the environment serves.
+pub(crate) struct DirectProgramRead {
+    pub(crate) resolver: Arc<crate::dev_environment::DirectResolver>,
+    pub(crate) identity: crate::dev_environment::ProgramReadIdentity,
+}
+
+impl DirectProgramRead {
+    /// `(endpoint, served release hash)`.
+    async fn target(&self) -> Result<(String, String), crate::error::AreteError> {
+        use crate::dev_environment::{surface_target, target_str, ResolveRequest, Surface};
+        let request = ResolveRequest {
+            program_reads: vec![self.identity.clone()],
+            ..ResolveRequest::default()
+        };
+        let answer = self.resolver.resolve(&request).await?;
+        let target = surface_target(&answer, Surface::ProgramRead(0))?;
+        Ok((
+            target_str(target, "endpoint")?.to_string(),
+            target_str(target, "programReleaseHash")?.to_string(),
+        ))
+    }
 }
 
 /// One program read operation (TS `ProgramReadRequest`).
@@ -109,6 +140,7 @@ pub struct ProgramReadTransport {
     auth: Option<Arc<dyn BearerTokenSource>>,
     auth_target: Option<ReadAuthTarget>,
     http: reqwest::Client,
+    direct: Option<Arc<DirectProgramRead>>,
 }
 
 impl ProgramReadTransport {
@@ -125,7 +157,15 @@ impl ProgramReadTransport {
             auth,
             auth_target,
             http,
+            direct: None,
         }
+    }
+
+    /// This transport resolving its endpoint and served release in dev
+    /// direct mode.
+    pub(crate) fn with_direct(mut self, direct: DirectProgramRead) -> Self {
+        self.direct = Some(Arc::new(direct));
+        self
     }
 
     /// Local HTTP transport addressing the connect-time HTTP endpoint
@@ -169,8 +209,12 @@ impl ProgramReadTransport {
     /// `encodeURIComponent`-encoded with `%3A` restored to `:` so typed
     /// hashes (`arete:h1:…`) stay readable.
     pub fn request_path(&self, request: &ProgramReadRequest<'_>) -> String {
-        let release_hash =
-            encode_uri_component(&self.release.program_release_hash).replace("%3A", ":");
+        Self::request_path_at(&self.release.program_release_hash, request)
+    }
+
+    /// [`Self::request_path`] at `release_hash`.
+    pub(crate) fn request_path_at(release_hash: &str, request: &ProgramReadRequest<'_>) -> String {
+        let release_hash = encode_uri_component(release_hash).replace("%3A", ":");
         let root = format!(
             "/v1/releases/{release_hash}/accounts/{}",
             encode_uri_component(request.account())
@@ -223,8 +267,19 @@ impl ProgramReadTransport {
                 .map_err(|message| ReadError::InvalidConfig { message })?,
             _ => {}
         }
-        let path = self.request_path(request);
-        let url = append_url(&self.endpoint, &path);
+        let (path, url) = match &self.direct {
+            Some(direct) => {
+                let (endpoint, served) = direct.target().await?;
+                let path = Self::request_path_at(&served, request);
+                let url = append_url(&endpoint, &path);
+                (path, url)
+            }
+            None => {
+                let path = self.request_path(request);
+                let url = append_url(&self.endpoint, &path);
+                (path, url)
+            }
+        };
 
         let (mut status, mut header_code, mut body) =
             self.attempt(&url, &path, request, false).await?;
@@ -240,6 +295,11 @@ impl ProgramReadTransport {
             }
         }
 
+        if let Some(refusal) =
+            crate::dev_environment::refusal_error(status, header_code.as_deref(), body.as_bytes())
+        {
+            return Err(refusal.into());
+        }
         if !(200..300).contains(&status) {
             let server_error_code = header_code.or_else(|| body_error_code(&body));
             return Err(ReadRequestError {
@@ -288,10 +348,25 @@ impl ProgramReadTransport {
         if let Some(token) = token {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
-        let response = builder.send().await.map_err(|source| ReadError::Network {
-            path: path.to_string(),
-            source,
-        })?;
+        let edge = self.auth.as_ref().and_then(|auth| auth.edge_policy());
+        if let Some(edge) = edge {
+            builder = edge.apply(builder);
+        }
+        let response = match builder.send().await {
+            Ok(response) => response,
+            Err(source) => {
+                return Err(match edge {
+                    Some(edge) => edge.send_error(&source).into(),
+                    None => ReadError::Network {
+                        path: path.to_string(),
+                        source,
+                    },
+                })
+            }
+        };
+        if let Some(edge) = edge {
+            edge.check(response.headers())?;
+        }
         let status = response.status().as_u16();
         let header_code = response
             .headers()

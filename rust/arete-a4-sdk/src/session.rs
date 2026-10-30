@@ -146,6 +146,7 @@ trait SessionMember: Send + Sync {
         options: ExecuteOptions,
     ) -> Result<OperationReceipt, OperationExecutionError>;
     fn state_view_source(&self) -> StateViewSource;
+    fn environment(&self) -> crate::dev_environment::Environment;
     fn as_any(&self) -> &dyn Any;
     fn type_label(&self) -> &'static str;
 }
@@ -188,6 +189,10 @@ impl<S: Stack> SessionMember for Arete<S> {
         Arete::state_view_source(self)
     }
 
+    fn environment(&self) -> crate::dev_environment::Environment {
+        Arete::environment(self)
+    }
+
     fn as_any(&self) -> &dyn Any {
         self
     }
@@ -208,6 +213,7 @@ struct SharedMemberOptions {
     signer_registry: Option<Arc<SignerRegistry>>,
     chain: Option<Arc<dyn ChainClient>>,
     transactions: Option<Arc<dyn TransactionTransport>>,
+    environment: Option<crate::dev_environment::EnvironmentOption>,
 }
 
 type MemberFuture = Pin<
@@ -295,6 +301,9 @@ impl SessionBuilder {
                 if let Some(transactions) = shared.transactions {
                     builder = builder.transactions(transactions);
                 }
+                if let Some(environment) = shared.environment {
+                    builder = builder.environment(environment);
+                }
                 let client = builder.connect().await?;
                 Ok((Arc::new(client) as Arc<dyn SessionMember>, websocket_url))
             })
@@ -333,6 +342,13 @@ impl SessionBuilder {
     /// Default transport for all members (WebSocket unless overridden).
     pub fn transport(mut self, transport: Transport) -> Self {
         self.shared.transport = Some(transport);
+        self
+    }
+
+    /// The dev environment switch for every member and protocol client;
+    /// unset, `ARETE_ENVIRONMENT` decides. See [`crate::dev_environment`].
+    pub fn environment(mut self, environment: crate::dev_environment::EnvironmentOption) -> Self {
+        self.shared.environment = Some(environment);
         self
     }
 
@@ -454,6 +470,7 @@ impl SessionBuilder {
             chain,
             transactions,
             auth: shared.auth,
+            environment_option: shared.environment,
             protocol_key_class: self.protocol_key_class,
             protocols: Vec::with_capacity(self.protocols.len()),
         };
@@ -486,6 +503,7 @@ pub struct Session {
     chain: Arc<dyn ChainClient>,
     transactions: Arc<dyn TransactionTransport>,
     auth: Option<AuthConfig>,
+    environment_option: Option<crate::dev_environment::EnvironmentOption>,
     protocol_key_class: Option<ProtocolKeyClass>,
     protocols: Vec<(String, ProtocolClient)>,
 }
@@ -570,7 +588,19 @@ impl Session {
         if options.live_views.is_none() {
             options.live_views = Some(Arc::new(self.live_views()));
         }
+        if options.environment.is_none() {
+            options.environment = self.environment_option.clone();
+        }
         ProtocolClient::new(definition, options)
+    }
+
+    /// `Production`, or `Dev` when the dev environment switch is on (every
+    /// member decides it the same way).
+    pub fn environment(&self) -> crate::dev_environment::Environment {
+        self.members
+            .first()
+            .map(|(_, member)| member.environment())
+            .unwrap_or_default()
     }
 
     /// The member keys, in definition (connection) order.

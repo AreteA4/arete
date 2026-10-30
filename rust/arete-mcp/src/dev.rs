@@ -58,6 +58,30 @@ pub const REPLAY_SCHEMA: &str = "arete.dev-replay/v1";
 /// Schema of one `.arete/dev/replays.jsonl` line.
 pub const REPLAY_STEP_RECORD_SCHEMA: &str = "arete.dev-replay-step/v1";
 /// What the dev tools say when a project has no environment yet.
+/// The dev environment switch the installed SDKs read
+/// (`docs/internal/dev-environment-switch.md`).
+pub const ENVIRONMENT_ENV: &str = "ARETE_ENVIRONMENT";
+
+/// Whether `ARETE_ENVIRONMENT` turns dev mode on. `dev` makes `a4 stream`,
+/// the protocol commands and the protocol tools act on the `a4 dev` session
+/// as `--dev` does; unset, empty or `production` changes nothing. Any other
+/// value is a configuration error, never a silent production run.
+pub fn environment_is_dev() -> Result<bool> {
+    environment_value_is_dev(std::env::var(ENVIRONMENT_ENV).ok().as_deref())
+}
+
+/// [`environment_is_dev`] for one value of the variable.
+pub fn environment_value_is_dev(value: Option<&str>) -> Result<bool> {
+    match value {
+        None | Some("") | Some("production") => Ok(false),
+        Some("dev") => Ok(true),
+        Some(other) => bail!(
+            "Invalid configuration: {ENVIRONMENT_ENV} is '{other}'; it must be 'production' or \
+             'dev' (exactly, lowercase). Unset it for production."
+        ),
+    }
+}
+
 pub const DEV_UP_HINT: &str = "Run `a4 dev up` in the project (in a terminal: it keeps running) to create or wake its Arete cloud dev environment.";
 
 /// Lamports a new (or empty) dev wallet is funded with (100 SOL; the
@@ -1633,6 +1657,25 @@ impl DevClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_environment_switch_is_production_dev_or_an_error() {
+        for value in [None, Some(""), Some("production")] {
+            assert!(!environment_value_is_dev(value).unwrap(), "{value:?}");
+        }
+        assert!(environment_value_is_dev(Some("dev")).unwrap());
+        for value in [
+            "Production",
+            "prod",
+            "dev ",
+            "development",
+            "staging",
+            "true",
+        ] {
+            let error = environment_value_is_dev(Some(value)).unwrap_err();
+            assert!(error.to_string().contains("ARETE_ENVIRONMENT"), "{value}");
+        }
+    }
 
     #[test]
     fn reports_lose_every_credential() {
