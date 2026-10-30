@@ -427,7 +427,29 @@ mod tests {
         let protocol = entry.protocol.as_mut().unwrap();
         protocol.deployment_id = "11111111-1111-4111-8111-111111111111".into();
         protocol.protocol_release_hash = release.into();
+        let alias = entry.alias.clone();
+        let package_release_hash = entry.package_release_hash.clone();
         published.write_atomic(root.join("arete.lock")).unwrap();
+        // And the provenance it would have written: the published release,
+        // no local build.
+        let manifest = ProjectManifest::load(root.join("arete.toml")).unwrap();
+        for output in InstallPlan::build(&manifest, false)
+            .unwrap()
+            .for_dependency(DependencyKind::Protocol, &alias)
+        {
+            let path = output.path.join("sdk-provenance.json");
+            let Ok(bytes) = std::fs::read(&path) else {
+                continue;
+            };
+            let mut provenance: Value = serde_json::from_slice(&bytes).unwrap();
+            let project = provenance["project"].as_object_mut().unwrap();
+            project.retain(|key, _| !key.starts_with("localBuild"));
+            project.insert(
+                "packageReleaseHash".into(),
+                serde_json::json!(package_release_hash),
+            );
+            std::fs::write(&path, serde_json::to_vec_pretty(&provenance).unwrap()).unwrap();
+        }
     }
 
     /// After a publish the lock names a production deployment: a local

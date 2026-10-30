@@ -23,7 +23,9 @@ that `a4 dev up` runs in development and your backend runs with
 2. **Allow mainnet in the policy.** A policy allows only `dev` unless it lists
    mainnet: `definePolicy({ ...definition.policy, deployments: [client.deploymentId], clusters: ["mainnet"] })`.
    The deployment id changes with the client, so build `deployments` from
-   `client.deploymentId` rather than writing it in.
+   `client.deploymentId` rather than writing it in, after
+   `await client.resolveDeployment()` (in dev mode the client learns the
+   environment's deployment there).
 3. **Point the simulator at your RPC.** `rpcSimulator(process.env.RPC_URL)`,
    a mainnet RPC. In dev mode a simulator is optional: without one the
    automations simulate against the dev environment.

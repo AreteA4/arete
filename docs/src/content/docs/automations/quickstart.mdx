@@ -155,6 +155,7 @@ const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, {
 
 const store = postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL }));
 await store.migrate(); // never automatic: run it from a deploy step
+await client.resolveDeployment(); // in dev mode: the environment's deployment
 
 const automations = createAutomations({
   client,

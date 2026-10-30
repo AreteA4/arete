@@ -173,7 +173,13 @@ export async function loadDefinition(entry: string): Promise<AutomationsDefiniti
  * production.
  */
 export function devStackConnector(): StackConnector {
-  return async (stack) => Arete.connect(stack, { environment: { kind: 'dev' } }) as never;
+  return async (stack) => {
+    const client = await Arete.connect(stack, { environment: { kind: 'dev' } });
+    // A stack the environment refused still returns a client (its other
+    // surfaces work); a source needs the stack itself, so surface the refusal.
+    await client.connect();
+    return client as never;
+  };
 }
 
 function readJson<T>(path: string, fallback: T): T {

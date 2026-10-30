@@ -5471,6 +5471,11 @@ pub fn install_local_protocol_build(
                 && entry.targets == targets
                 && locked
                     .is_some_and(|protocol| protocol.protocol_release_hash == build.release_hash)
+                // Only when that client is on disk, as published: a deleted,
+                // uncommitted or moved output is generated below.
+                && outputs
+                    .iter()
+                    .all(|output| published_output(&output.path, entry))
         })
     {
         return Ok(LocalProtocolInstall {
@@ -5586,6 +5591,15 @@ fn production_provenance(output: &Path, deployment: &str) -> bool {
     read_provenance_project(output).is_some_and(|project| {
         project["localBuildDeploymentId"] == deployment
             && project["localBuildDeployment"] == "production"
+    })
+}
+
+/// Whether `output` holds the client `entry`'s published release generated,
+/// not one from a local build.
+fn published_output(output: &Path, entry: &LockedDependency) -> bool {
+    read_provenance_project(output).is_some_and(|project| {
+        project.get("localBuild").is_none()
+            && project["packageReleaseHash"].as_str() == entry.package_release_hash.as_deref()
     })
 }
 
@@ -11675,6 +11689,43 @@ source = { workspace = "ore-sdk" }
         )
         .unwrap();
         assert!(provenance["project"].get("localBuild").is_none());
+    }
+
+    /// `a4 dev` with the published release's own spec generates nothing
+    /// while the published client is on disk, and generates it again once
+    /// it is gone.
+    #[test]
+    fn the_published_spec_regenerates_a_missing_client() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('6')]))],
+            false,
+        );
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap();
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"typescript\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("published install");
+        let published = token_raise_entry(&manifest);
+        let build = LocalProtocolBuild {
+            release_hash: published
+                .protocol
+                .as_ref()
+                .unwrap()
+                .protocol_release_hash
+                .clone(),
+            ..local_build_of_token_raise('6')
+        };
+
+        let same = install_local_protocol_build(&manifest, "token-raise", &build, true).unwrap();
+        assert!(!same.changed, "the published client is already installed");
+        assert_eq!(token_raise_entry(&manifest), published);
+
+        fs::remove_dir_all(&same.outputs[0]).unwrap();
+        let again = install_local_protocol_build(&manifest, "token-raise", &build, true).unwrap();
+        assert!(again.changed, "a missing client is generated");
+        assert!(again.outputs[0].join("sdk-provenance.json").is_file());
     }
 
     /// A protocol never published installs from the local build `a4 dev`

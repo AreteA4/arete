@@ -12,6 +12,7 @@ use, and which protections still hold if your backend is ever compromised.
 `definePolicy` sets what may be signed for any user:
 
 ```ts
+await client.resolveDeployment(); // in dev mode, the environment's deployment
 const policy = definePolicy({
   deployments: [client.deploymentId], // required
   clusters: ["dev", "mainnet"],        // defaults to ["dev"]; mainnet only when listed
