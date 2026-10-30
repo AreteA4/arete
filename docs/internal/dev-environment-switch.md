@@ -132,6 +132,23 @@ identities (§4) and answers with the production-shaped body, or with a refusal
 (§6). The installed identities (release hash, manifest hash, deployment id)
 stay in the request exactly as generated; the edge rewrites them.
 
+A path does not carry every identity resolve needs (a Program Read path has
+the release but not the binding; a chain path has neither). So every edge
+request except a stack's sends `X-Arete-Dev-Identity`: the resolve request
+(§4.1) for that one surface and that one identity, as compact JSON. It is the
+same object direct mode sends to resolve:
+
+| Surface | `X-Arete-Dev-Identity` |
+|---|---|
+| Chain reads | `{"chain":{"solanaGatewayBindingId":"sgb_…"}}` |
+| Transactions | `{"transactions":{"solanaGatewayBindingId":"sgb_…"}}` |
+| Program Read | `{"programReads":[{"programId":"…","programReadBindingId":"prb_…","programReleaseHash":"<installed>"}]}` |
+| Protocol API | `{"protocols":[{"package":"…","protocolReleaseHash":"…","deploymentId":"…"}]}` (no `deploymentId` before the first publish) |
+| Stack | none: the path and query name the live alias and manifest |
+
+The header carries identities, never a credential. An edge request on one
+of those surfaces without it is refused with `devenv-surface-unavailable`.
+
 A protocol client with no deployment id yet (before the first publish) names
 the protocol by package instead: wherever the protocol API path has the
 deployment id segment (`/api/protocol-deployments/{deploymentId}/…`), it
