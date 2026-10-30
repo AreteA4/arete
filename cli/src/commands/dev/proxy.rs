@@ -228,7 +228,8 @@ async fn answer(
             headers.insert(
                 header::ACCESS_CONTROL_ALLOW_HEADERS,
                 HeaderValue::from_static(
-                    "content-type, solana-client, authorization, x-arete-dev-identity",
+                    "content-type, solana-client, authorization, x-arete-dev-identity, \
+                     last-event-id, if-none-match",
                 ),
             );
             headers.insert(
@@ -732,6 +733,33 @@ mod tests {
 
         let (status, body) = read(get(edge::WELL_KNOWN_PATH, None).await.unwrap()).await;
         assert_eq!((status, body), (200, json!({ "edge": 1 })));
+
+        // A browser may resume an event stream and revalidate a read: the
+        // preflight allows the headers the edge forwards.
+        let preflight = client
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("{edge}/api/protocol-deployments/d/events"),
+            )
+            .header("origin", "http://localhost:5173")
+            .header("access-control-request-method", "GET")
+            .header(
+                "access-control-request-headers",
+                "last-event-id, if-none-match",
+            )
+            .send()
+            .await
+            .unwrap();
+        let allowed = preflight
+            .headers()
+            .get("access-control-allow-headers")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        for name in ["last-event-id", "if-none-match", "x-arete-dev-identity"] {
+            assert!(allowed.contains(name), "{name} is allowed: {allowed}");
+        }
 
         // Chain reads: the environment's gateway prefix, the environment
         // token, never the page's credential.
