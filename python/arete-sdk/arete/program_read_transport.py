@@ -20,7 +20,7 @@ targeted :class:`arete.http.AuthTokenTarget` per request.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as _dc_replace
 from typing import Any, ClassVar, Mapping, Optional, Tuple, Union
 from urllib.parse import quote, urlsplit
 
@@ -343,11 +343,16 @@ class HttpProgramReadTransport:
         release: ProgramReleaseReference,
         http: Any,
         target: Optional[AuthTokenTarget] = None,
+        direct: Optional[Tuple[Any, Mapping[str, Any]]] = None,
     ) -> None:
         self._endpoint = endpoint
         self._release = release
         self._http = http
         self._target = target
+        # Dev direct mode: ``(DirectResolver, Program Read identity)``. The
+        # endpoint and served release are resolved on the first read; the
+        # token still authenticates the installed release.
+        self._direct = direct
 
     @classmethod
     def local_http(
@@ -427,8 +432,19 @@ class HttpProgramReadTransport:
         (or nested/top-level body code) preserved; refresh-replay-once for
         targeted tokens lives inside ``HttpAuthClient``.
         """
-        path = request_path(self._release, request)
-        url = _append_url(self._endpoint, path)
+        endpoint, release = self._endpoint, self._release
+        if self._direct is not None:
+            from .dev_environment import surface_target, target_str
+
+            resolver, identity = self._direct
+            answer = await resolver.resolve({"programReads": [dict(identity)]})
+            target = surface_target(answer, "programReads")
+            endpoint = target_str(target, "endpoint")
+            release = _dc_replace(
+                release, program_release_hash=target_str(target, "programReleaseHash")
+            )
+        path = request_path(release, request)
+        url = _append_url(endpoint, path)
         if request.addresses is not None and len(request.addresses) > 100:
             raise ValueError("addresses exceeds the 100-address limit")
         if request.operation == "native_query":
