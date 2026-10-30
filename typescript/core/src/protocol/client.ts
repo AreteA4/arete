@@ -356,6 +356,13 @@ export interface ProtocolClient<
   readonly deploymentId: string;
   /** `'dev'` when this client calls the project's dev environment. */
   readonly environment: ClientEnvironment;
+  /**
+   * The deployment this client calls. In production it is `deploymentId`.
+   * In dev mode it is the environment's deployment of the protocol, asked
+   * of the edge or of resolve once; `deploymentId` names it afterwards.
+   * Metadata proofs and automations need it in dev mode.
+   */
+  resolveDeployment(options?: { signal?: AbortSignal }): Promise<string>;
   /** The key class this client authenticates with at runtime. */
   readonly keyClass: TKeyClass;
   readonly steps: ProtocolStepsClient<TTypes, TKeyClass>;
@@ -673,22 +680,37 @@ class ProtocolHttp implements ProtocolSender {
 class EdgeProtocolSender implements ProtocolSender {
   private readonly edgeFetch: typeof fetch;
 
-  constructor(edgeUrl: string, identity: Record<string, unknown> | undefined, fetchImpl: typeof fetch | undefined) {
+  constructor(
+    edgeUrl: string,
+    identity: Record<string, unknown> | undefined,
+    fetchImpl: typeof fetch | undefined,
+    private readonly onDeployment: (deploymentId: string) => void
+  ) {
     this.edgeFetch = createEdgeFetch(edgeUrl, resolveFetch(fetchImpl), identity);
   }
 
-  send(url: string, options: SendOptions): Promise<Response> {
+  async send(url: string, options: SendOptions): Promise<Response> {
     const headers = new Headers(options.headers);
     const body = options.body === undefined ? undefined : jsonBody(options.body);
     if (body !== undefined) headers.set('Content-Type', 'application/json');
-    return this.edgeFetch(url, {
+    const response = await this.edgeFetch(url, {
       method: options.method,
       headers,
       body,
       signal: options.signal,
     });
+    // The edge names the environment's deployment on the routes it resolved.
+    const deployment = response.headers.get(DEV_DEPLOYMENT_HEADER)?.trim();
+    if (deployment) this.onDeployment(deployment);
+    return response;
   }
 }
+
+/**
+ * The environment's deployment the edge called, on every protocol answer it
+ * resolved. Metadata proofs and automations name this deployment.
+ */
+const DEV_DEPLOYMENT_HEADER = 'x-arete-dev-deployment';
 
 /** Placeholders a direct-mode client builds URLs with until resolve answers. */
 const DIRECT_API_PLACEHOLDER = 'https://resolving.invalid/api';
@@ -735,6 +757,11 @@ class DirectProtocolSender implements ProtocolSender {
       this.resolved = undefined;
     });
     return this.resolved;
+  }
+
+  /** Resolve (once) and name the environment's deployment. */
+  async resolvedDeployment(): Promise<string | null> {
+    return (await this.target()).target.deploymentId;
   }
 
   async send(url: string, options: SendOptions): Promise<Response> {
@@ -801,17 +828,24 @@ export function createProtocolClientWithMembers(
     options?.environment,
     systemEnvironmentSwitchHost(options?.auth)
   );
-  // A protocol before its first publish has no deployment: only the dev
-  // edge can call it (by package).
+  // A protocol before its first publish has no production deployment: only
+  // dev mode can call it, where the environment names the deployment.
   if (!definition.deployment && environmentSwitch.mode === 'production') {
-    throw new AreteError('createProtocolClient requires a generated protocol definition', 'INVALID_CONFIG');
+    throw new AreteError(
+      `${definition.package} is not deployed to production yet. Publish it with \`a4 protocol deploy\`, `
+        + 'or run against your dev environment with `a4 dev run -- <command>`.',
+      'PROTOCOL_NOT_DEPLOYED'
+    );
   }
   let deploymentId: string;
+  // In dev mode, whether `deploymentId` is the environment's deployment yet.
+  let deploymentKnown = environmentSwitch.mode === 'production';
+  let resolveDeployment: (signal?: AbortSignal) => Promise<string>;
   let apiUrl: string;
   let deploymentPath: () => string;
   let http: ProtocolSender;
   if (environmentSwitch.mode === 'production') {
-    const endpoints = resolveProtocolEndpoints(definition.deployment, options);
+    const endpoints = resolveProtocolEndpoints(definition.deployment!, options);
     deploymentId = endpoints.deploymentId;
     apiUrl = endpoints.apiUrl;
     deploymentPath = () => `${apiUrl}/protocol-deployments/${segment(deploymentId, 'deploymentId')}`;
@@ -823,6 +857,7 @@ export function createProtocolClientWithMembers(
       withTrustedApiUrl(options?.auth, options?.apiUrl),
       options?.fetch
     );
+    resolveDeployment = async () => deploymentId;
   } else {
     if (
       options?.apiUrl !== undefined
@@ -839,7 +874,37 @@ export function createProtocolClientWithMembers(
       deploymentId = target.deploymentId ?? '';
       apiUrl = target.apiUrl;
       deploymentPath = () => `${apiUrl}/protocol-deployments/${pathSegment(target.deploymentSegment)}`;
-      http = new EdgeProtocolSender(environmentSwitch.edgeUrl, target.identity, options?.fetch);
+      const edge = new EdgeProtocolSender(
+        environmentSwitch.edgeUrl,
+        target.identity,
+        options?.fetch,
+        (environmentDeployment) => {
+          deploymentId = environmentDeployment;
+          deploymentKnown = true;
+        }
+      );
+      http = edge;
+      let asked: Promise<string> | undefined;
+      resolveDeployment = (signal) => {
+        if (deploymentKnown) return Promise.resolve(deploymentId);
+        // Any deployment route answers with the environment's deployment.
+        asked ??= edge.send(deploymentPath(), { method: 'GET', scopes: [PROTOCOL_READ_SCOPE], signal })
+          .then(async (response) => {
+            if (!response.ok) throw responseError('Protocol deployment', response, await readJson(response));
+            await response.body?.cancel();
+            if (!deploymentKnown) {
+              throw new AreteError(
+                'The a4 dev edge did not name the environment\'s deployment of this protocol; update a4',
+                'INVALID_CONFIG'
+              );
+            }
+            return deploymentId;
+          })
+          .finally(() => {
+            asked = undefined;
+          });
+        return asked;
+      };
     } else {
       deploymentId = definition.deployment?.deploymentId ?? '';
       apiUrl = DIRECT_API_PLACEHOLDER;
@@ -851,8 +916,11 @@ export function createProtocolClientWithMembers(
         options?.fetch,
         (target) => {
           deploymentId = target.deploymentId ?? deploymentId;
+          deploymentKnown = true;
         }
       );
+      const direct = http as DirectProtocolSender;
+      resolveDeployment = async () => (await direct.resolvedDeployment()) ?? deploymentId;
     }
   }
   const resolvedAuth = resolveAuthConfig(options?.auth);
@@ -1079,6 +1147,15 @@ export function createProtocolClientWithMembers(
       return body as ProtocolMetadataUpdateResult<Record<string, unknown>>;
     },
     proofMessage(patch, proofOptions) {
+      // The API checks the proof against the instance's deployment: in dev
+      // mode the environment's, not the installed one.
+      if (!deploymentKnown) {
+        throw new AreteError(
+          'In dev mode a metadata proof names the dev environment\'s deployment: '
+            + '`await client.resolveDeployment()` before building one',
+          'INVALID_CONFIG'
+        );
+      }
       return protocolMetadataProofMessage({
         deploymentId,
         instanceId,
@@ -1460,6 +1537,9 @@ export function createProtocolClientWithMembers(
       return deploymentId;
     },
     environment: environmentSwitch.mode,
+    resolveDeployment(resolveOptions) {
+      return resolveDeployment(resolveOptions?.signal);
+    },
     keyClass,
     steps: steps as ProtocolClient['steps'],
     instances: {
