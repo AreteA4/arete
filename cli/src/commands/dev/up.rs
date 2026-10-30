@@ -1719,6 +1719,7 @@ mod tests {
             targets: Vec::new(),
             generator_contract: String::new(),
             local_build: None,
+            local_extension: None,
         };
         let mut protocol = stack("raise", "registry:raise", &[]);
         protocol.kind = DependencyKind::Protocol;
