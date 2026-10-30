@@ -780,6 +780,26 @@ server) are allowed. Dev wallets sign on this machine, and browser-wallet
 steps are prepared and submitted by the server on the browser's behalf: no
 dev wallet key, and not your API key, is ever sent to the browser.
 
+## Before you deploy: `a4 dev promote --check`
+
+An app developed against the environment may use things production doesn't
+have yet. `a4 dev promote --check` lists each, with the command that
+publishes it, and exits non-zero while any remain, so CI can gate a
+production deploy on it:
+
+| Listed                                                                                                    | Publish it with                                                   |
+| --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| a protocol client generated from a local build                                                            | `a4 protocol deploy` in the protocol's project, then `a4 install` |
+| a program the environment runs at another release than `arete.lock` pins                                  | deploy it to mainnet, `a4 program push <idl>`, then `a4 install`  |
+| a project stack the environment serves under the live alias of a dependency or of a stack a protocol uses | `a4 up`, point the dependency at it, then `a4 install`            |
+
+```sh
+a4 dev promote --check          # --json for CI
+```
+
+When the check is clean, run `a4 install --locked` and deploy the app with
+`ARETE_ENVIRONMENT` unset.
+
 ## Captures
 
 `a4 dev capture` records a window of raw updates for some programs from a

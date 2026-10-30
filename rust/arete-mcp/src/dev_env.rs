@@ -632,6 +632,25 @@ impl EnvApi {
         self.call_at(reqwest::Method::POST, "/ws/sessions", Some(body))
             .await
     }
+
+    /// The environment's overrides (`{kind, key, target, ...}`): program
+    /// releases and stack aliases the environment serves in place of the
+    /// installed ones.
+    pub async fn overrides(&self, env: &str) -> Result<Vec<Value>> {
+        overrides_of(self.get(&Self::env_path(env, "/overrides")?).await?)
+    }
+}
+
+/// The `overrides` array of an overrides answer. Any other shape is an
+/// error, never an empty list: the deploy check would read it as clean.
+fn overrides_of(answer: Value) -> Result<Vec<Value>> {
+    match answer {
+        Value::Object(mut answer) => match answer.remove("overrides") {
+            Some(Value::Array(overrides)) => Ok(overrides),
+            _ => bail!("The environment's overrides answer has no `overrides` list"),
+        },
+        _ => bail!("The environment's overrides answer is not a JSON object"),
+    }
 }
 
 /// Whether `error` is the API's "not found".
@@ -1177,6 +1196,21 @@ pub fn public_view(env: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_overrides_answer_without_the_list_is_an_error() {
+        let overrides = json!([{ "kind": "program_release", "key": "P", "target": "r" }]);
+        assert_eq!(
+            overrides_of(json!({ "overrides": overrides.clone() })).unwrap(),
+            overrides.as_array().unwrap().clone()
+        );
+        assert!(overrides_of(json!({ "overrides": [] })).unwrap().is_empty());
+        assert!(overrides_of(json!({})).is_err());
+        assert!(overrides_of(json!({ "overrides": null })).is_err());
+        assert!(overrides_of(json!({ "items": [] })).is_err());
+        assert!(overrides_of(json!("<html>")).is_err());
+        assert!(overrides_of(Value::Null).is_err());
+    }
 
     #[test]
     fn env_ids_and_names() {
