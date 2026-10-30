@@ -346,6 +346,7 @@ every other detail field in the error details.
 | `devenv-protocol-not-deployed` | resolve, edge | 409 | The environment has no active deployment of this protocol. | Run `a4 dev up` in the protocol's project. |
 | `devenv-protocol-not-owned` | resolve, edge | 403 | The protocol belongs to another account; only your own protocols run in an environment. | Call it in production (unset `ARETE_ENVIRONMENT`). |
 | `devenv-surface-unavailable` | resolve, edge, SDK | 503 | The environment can't serve this surface (not enabled for the account, or the installed SDK has no binding for it). | Named per case; never "use production". |
+| `devenv-wallet-send-unsupported` | SDK | — | Dev mode, and the wallet adapter would send the transaction itself (its own RPC is mainnet) instead of signing only. | Use a sign-only wallet adapter, which submits through the client's transaction transport. |
 | `environment-token-required` | dev services | 401 | A dev service received a token without an `env` claim. | Mint with `environment` (direct mode) or use the edge. |
 | `environment-token-refused` | production services; dev services | 403 | A production service received an environment token, or a dev service received a token for another environment. | Use the token's own environment, or unset the switch for production. |
 | `INVALID_CONFIG` | SDK | — | The switch, an edge URL or an environment reference is malformed. | Named per case. |

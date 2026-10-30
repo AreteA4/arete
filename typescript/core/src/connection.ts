@@ -453,6 +453,9 @@ export class ConnectionManager {
   private requestedScopes = new Set<string>();
   private readonly hostedAreteUrl: boolean;
   private readonly release?: StackRelease;
+  private readonly sessionEnvironment?: string;
+  private readonly sessionWebsocketUrl?: string;
+  private readonly beforeConnect?: () => Promise<void>;
   private reconnectForTokenRefresh = false;
   /** Most recent reason the socket was lost, reported while reconnecting. */
   private lastDisconnectReason?: string;
@@ -463,12 +466,20 @@ export class ConnectionManager {
         ? config.websocketUrl
         : null;
     this.websocketUrl = websocketUrl;
-    this.hostedAreteUrl = websocketUrl !== null && isHostedAreteEndpoint(websocketUrl);
+    this.hostedAreteUrl = config.hostedSession
+      ?? (websocketUrl !== null && isHostedAreteEndpoint(websocketUrl));
+    this.sessionEnvironment = config.sessionEnvironment;
+    this.sessionWebsocketUrl = config.sessionWebsocketUrl;
+    this.beforeConnect = config.beforeConnect;
     this.autoReconnect = config.autoReconnect ?? DEFAULT_CONFIG.autoReconnect;
     this.reconnectIntervals = config.reconnectIntervals ?? DEFAULT_CONFIG.reconnectIntervals;
     this.maxReconnectAttempts =
       config.maxReconnectAttempts ?? DEFAULT_CONFIG.maxReconnectAttempts;
-    this.authConfig = resolveAuthConfig(config.auth);
+    // Through the dev edge nothing is minted or sent: only a socket factory
+    // the app passed is kept.
+    this.authConfig = config.noCredentials
+      ? (config.auth?.websocketFactory ? { websocketFactory: config.auth.websocketFactory } : undefined)
+      : resolveAuthConfig(config.auth);
     this.release = normalizeStackRelease(config.release);
     this.authFetch = config.fetch ?? ((input, init) => {
       if (typeof globalThis.fetch !== 'function') {
@@ -667,7 +678,11 @@ export class ConnectionManager {
       }
       case 'token-provider':
         try {
-          const result = await strategy.getToken(request);
+          const result = await strategy.getToken(
+            this.sessionEnvironment === undefined
+              ? request
+              : { ...request, environment: this.sessionEnvironment }
+          );
           requireCurrent();
           return result;
         } catch (error) {
@@ -809,6 +824,17 @@ export class ConnectionManager {
   private createTokenEndpointRequestBody(
     request: AuthTokenRequest
   ): Record<string, string | readonly string[]> {
+    const body = this.createInstalledTokenRequestBody(request);
+    // Dev mode direct: the session endpoint resolves the installed target to
+    // the environment's. Absent otherwise, so production bodies are unchanged.
+    return this.sessionEnvironment === undefined
+      ? body
+      : { ...body, environment: this.sessionEnvironment };
+  }
+
+  private createInstalledTokenRequestBody(
+    request: AuthTokenRequest
+  ): Record<string, string | readonly string[]> {
     if (hasAuthTokenTarget(request)) {
       const target = {
         targetKind: request.targetKind,
@@ -823,7 +849,7 @@ export class ConnectionManager {
     // Session requests from a stack definition without a release stay
     // byte-for-byte what older clients send.
     return {
-      websocket_url: this.websocketUrl ?? '',
+      websocket_url: this.websocketUrl ?? this.sessionWebsocketUrl ?? '',
       scopes: request.scopes,
       ...(request.stackManifestHash !== undefined && request.liveAlias !== undefined
         ? { stackManifestHash: request.stackManifestHash, liveAlias: request.liveAlias }
@@ -1339,7 +1365,9 @@ export class ConnectionManager {
     let token: string | undefined;
     try {
       token = await Promise.race([
-        this.getOrRefreshToken(false, ['read']),
+        this.beforeConnect
+          ? this.beforeConnect().then(() => this.getOrRefreshToken(false, ['read']))
+          : this.getOrRefreshToken(false, ['read']),
         cancellation,
       ]);
     } catch (error) {
