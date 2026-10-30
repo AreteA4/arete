@@ -155,6 +155,7 @@ const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, {
 
 const store = postgresStore(new pg.Pool({ connectionString: process.env.DATABASE_URL }));
 await store.migrate(); // never automatic: run it from a deploy step
+await client.resolveDeployment(); // in dev mode: the environment's deployment
 
 const automations = createAutomations({
   client,
@@ -177,8 +178,10 @@ export const POST = automations.webhookHandler({ secret: process.env.ARETE_WEBHO
 automations.start();
 ```
 
-- **The client** uses a secret key, so it runs only on your server. With the
-  published client (`a4 install --locked`) the automations target mainnet.
+- **The client** uses a secret key, so it runs only on your server. With
+  `ARETE_ENVIRONMENT` unset it calls production and the automations target
+  mainnet; under `a4 dev run` (or `ARETE_ENVIRONMENT=dev`) the same build
+  targets your dev environment.
 - **The policy** adds the deployment and mainnet to the definition's limits.
 - **The webhook handler** checks each delivery's signature, records it once
   and answers straight away; set up the endpoint's subscription as described

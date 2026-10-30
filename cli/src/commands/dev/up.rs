@@ -15,10 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use arete_mcp::dev::{
-    mint_stack_session, unix_now, write_private, DevProject, DevSession, EnvRef, StackSession,
-    SESSION_SCHEMA,
-};
+use arete_mcp::dev::{unix_now, write_private, DevProject, DevSession, EnvRef, SESSION_SCHEMA};
 use arete_mcp::dev_env::{
     self, api_code, describe_env, env_name_from, is_env_id, is_not_found, valid_env_name,
     ws_url_of, EnvApi, EnvRpc, EnvSelection,
@@ -36,16 +33,14 @@ use super::runtime::{pid_alive, LogSink};
 use super::sdk_gen::{self, LocalProtocol};
 use super::ui::{self, DevUi};
 use super::watch;
-use crate::project::manifest::InstallTarget;
+use crate::project::lockfile::ProjectLock;
+use crate::project::manifest::{DependencyKind, InstallTarget};
 
 pub const STATE_SCHEMA: &str = "arete.dev-state/v2";
 const POLL: Duration = Duration::from_millis(400);
 const DEBOUNCE: Duration = Duration::from_millis(350);
 /// How long a new environment may take to start.
 const START_TIMEOUT: Duration = Duration::from_secs(180);
-/// Renew the stack session when it has less than this left (seconds).
-/// The API issues five-minute sessions, so the threshold must be shorter.
-const STACK_SESSION_RENEW_BEFORE: u64 = 60;
 /// How often a deployment without a stack looks for it again.
 const STACK_LOOKUP_EVERY: Duration = Duration::from_secs(10);
 
@@ -398,9 +393,6 @@ struct Session<'a> {
     deployer: Option<Deployer>,
     deploy_state: DeployState,
     stack: Option<(String, String)>,
-    stack_session: Option<StackSession>,
-    /// No stack session mint before this (Unix seconds) after a failure.
-    stack_session_retry_at: u64,
     stack_looked_up: Option<std::time::Instant>,
     /// The deployment and release the installed client was last generated
     /// for.
@@ -612,6 +604,47 @@ async fn admit_local_programs(
 }
 
 /// Run `a4 dev up` until Ctrl-C or SIGTERM (`a4 dev down`).
+/// The registry stacks `lock` pins: package, StackManifest hash and, for a
+/// stack with several live specs, each alias.
+fn lock_stacks(lock: &ProjectLock) -> Vec<(String, String, Option<String>)> {
+    let mut stacks = Vec::new();
+    let mut add =
+        |package: &str, hash: &str, lives: &[crate::project::lockfile::LockedLiveSpec]| {
+            if lives.len() > 1 {
+                for live in lives {
+                    stacks.push((
+                        package.to_string(),
+                        hash.to_string(),
+                        Some(live.alias.clone()),
+                    ));
+                }
+            } else {
+                stacks.push((package.to_string(), hash.to_string(), None));
+            }
+        };
+    for dependency in &lock.dependencies {
+        // The stacks an installed protocol hoists are registry stacks too.
+        for stack in &dependency.stacks {
+            add(
+                &stack.package,
+                &stack.stack_manifest_hash,
+                &stack.live_specs,
+            );
+        }
+        let (DependencyKind::Stack, Some(package), Some(hash)) = (
+            dependency.kind,
+            dependency.source.strip_prefix("registry:"),
+            dependency.stack_manifest_hash.as_ref(),
+        ) else {
+            continue;
+        };
+        add(package, hash, &dependency.live_specs);
+    }
+    stacks.sort();
+    stacks.dedup();
+    stacks
+}
+
 pub async fn run(config: UpConfig) -> Result<()> {
     let project = DevProject::new(&config.project_root);
     std::fs::create_dir_all(project.dev_dir())?;
@@ -684,6 +717,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
 
     let deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
     let automation_events = events.clone();
+    let edge_url = proxy.rpc_url();
     let mut session = Session {
         config: &config,
         project: project.clone(),
@@ -699,8 +733,6 @@ pub async fn run(config: UpConfig) -> Result<()> {
         deployer: None,
         deploy_state,
         stack: None,
-        stack_session: None,
-        stack_session_retry_at: 0,
         stack_looked_up: None,
         sdk_generated_for: None,
         automations: automations_config.map(|automations_config| {
@@ -709,6 +741,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
                 automations_config,
                 &config.project_root,
                 config.api.key(),
+                &edge_url,
                 Arc::new(move |event: &str, human: &str, fields: Value| {
                     events.emit(event, human, fields)
                 }),
@@ -808,6 +841,7 @@ impl Session<'_> {
             api_url,
             rpc_url: self.rpc_url(),
             rpc_ws_url: self.rpc_ws_url(),
+            edge_url: self.rpc_url(),
             environment_rpc_url: self.environment_rpc_url.clone(),
             protocol_id: state.protocol_id.clone(),
             protocol_slug: state.slug.clone(),
@@ -816,7 +850,6 @@ impl Session<'_> {
             short_id: state.short_id.clone(),
             stack: self.stack.as_ref().map(|(name, _)| name.clone()),
             stack_ws_url: self.stack.as_ref().map(|(_, url)| url.clone()),
-            stack_session: self.stack_session.clone(),
             ui_url: self.ui.url.clone(),
             updated_at: unix_now(),
         }
@@ -835,6 +868,24 @@ impl Session<'_> {
         let config = self.config;
         self.write_state()?;
         self.write_session()?;
+        if config.deploy {
+            // Before any stack loads: a project the environment's stack
+            // slots can't hold is refused with every stack named.
+            let lock = ProjectLock::load_optional(self.project.root.join("arete.lock"))
+                .ok()
+                .flatten()
+                .map(|lock| lock_stacks(&lock))
+                .unwrap_or_default();
+            super::quotas::preflight(
+                &config.api,
+                &self.env.id,
+                &config.project_root,
+                &lock,
+                config.protocol,
+                self.deploy_state.slug.as_deref(),
+            )
+            .await?;
+        }
 
         if config.protocol && config.deploy {
             self.build(&[]).await?;
@@ -872,16 +923,15 @@ impl Session<'_> {
                     false,
                 );
                 self.find_stack().await;
-                self.refresh_stack_session(true).await;
                 self.write_session()?;
             }
         }
 
         if config.deploy {
+            self.load_lock_stacks().await;
             self.deploy_project_stacks().await?;
         } else {
             self.find_stack().await;
-            self.refresh_stack_session(true).await;
             self.write_session()?;
         }
         self.ui.start_stack_rows();
@@ -1093,65 +1143,13 @@ impl Session<'_> {
         }
     }
 
-    /// Mint (or renew) the stack session when there is a stack and the
-    /// current one is missing or about to expire. Returns whether it
-    /// changed.
-    async fn refresh_stack_session(&mut self, force: bool) -> bool {
-        let Some((_, ws_url)) = self.stack.clone() else {
-            let changed = self.stack_session.is_some();
-            self.stack_session = None;
-            return changed;
-        };
-        if !force {
-            if unix_now() < self.stack_session_retry_at {
-                return false;
-            }
-            if let Some(current) = &self.stack_session {
-                if current.expires_at > unix_now() + STACK_SESSION_RENEW_BEFORE {
-                    return false;
-                }
-            }
-        }
-        let endpoint = format!("{}/ws/sessions", self.config.api.origin());
-        match mint_stack_session(
-            self.config.api.http(),
-            &endpoint,
-            self.config.api.key(),
-            &ws_url,
-            self.deploy_state.deployment_id.as_deref(),
-        )
-        .await
-        {
-            Ok(session) => {
-                self.events.log.line(&format!(
-                    "stack session minted, expires at {}",
-                    session.expires_at
-                ));
-                self.stack_session = Some(session);
-                true
-            }
-            Err(error) => {
-                self.stack_session_retry_at = unix_now() + 30;
-                self.events.emit(
-                    "stack-warning",
-                    &format!("Could not mint a stack session: {error:#}"),
-                    json!({ "error": format!("{error:#}") }),
-                );
-                false
-            }
-        }
-    }
-
     async fn after_deploy(&mut self, outcome: &DeployOutcome) -> Result<()> {
         if outcome.changed {
             // A new deployment gets a new stack.
             self.stack = None;
-            self.stack_session = None;
             self.stack_looked_up = None;
         }
         self.find_stack().await;
-        self.refresh_stack_session(outcome.changed || self.stack_session.is_none())
-            .await;
         self.write_session()?;
         let generated_for = (outcome.deployment_id.clone(), outcome.release_hash.clone());
         if self.config.sync_sdk && self.sdk_generated_for.as_ref() != Some(&generated_for) {
@@ -1216,7 +1214,6 @@ impl Session<'_> {
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("the protocol has no slug yet"))?,
                 release_hash: outcome.release_hash.clone(),
-                deployment_id: outcome.deployment_id.clone(),
             };
             sdk_gen::sync_installed_client(
                 &self.project.root,
@@ -1298,6 +1295,63 @@ impl Session<'_> {
         self.after_deploy(&outcome).await
     }
 
+    /// Load every registry stack `arete.lock` pins into the environment,
+    /// so installed stack SDKs in dev mode find it, and say how each went.
+    /// A stack that fails to load is reported and skipped: its SDK gets
+    /// `devenv-stack-not-loaded` with the fix.
+    async fn load_lock_stacks(&mut self) {
+        let lock = match ProjectLock::load_optional(self.project.root.join("arete.lock")) {
+            Ok(Some(lock)) => lock,
+            Ok(None) => return,
+            Err(error) => {
+                self.events.emit(
+                    "stack-load-failed",
+                    &format!("Could not read arete.lock to load its stacks: {error:#}"),
+                    json!({ "error": format!("{error:#}") }),
+                );
+                return;
+            }
+        };
+        for (package, hash, alias) in lock_stacks(&lock) {
+            let label = match &alias {
+                Some(alias) => format!("{package} ({alias})"),
+                None => package.clone(),
+            };
+            match self
+                .config
+                .api
+                .load_registry_stack(&self.env.id, &hash, alias.as_deref())
+                .await
+            {
+                Ok(answer) => {
+                    let status = answer["status"].as_str().unwrap_or("loaded");
+                    self.events.emit(
+                        "stack-loaded",
+                        &format!("Stack {label}: {status}"),
+                        json!({
+                            "package": package,
+                            "liveAlias": alias,
+                            "stackManifestHash": hash,
+                            "status": status,
+                            "deploymentId": answer["deploymentId"],
+                        }),
+                    );
+                }
+                Err(error) => self.events.emit(
+                    "stack-load-failed",
+                    &format!("Stack {label} was not loaded: {error:#}"),
+                    json!({
+                        "package": package,
+                        "liveAlias": alias,
+                        "stackManifestHash": hash,
+                        "code": dev_env::api_code(&error),
+                        "error": format!("{error:#}"),
+                    }),
+                ),
+            }
+        }
+    }
+
     async fn deploy_project_stacks(&mut self) -> Result<()> {
         let stacks = super::custom_stacks::deploy(
             &self.project.root,
@@ -1315,7 +1369,6 @@ impl Session<'_> {
             self.stack = stacks
                 .first()
                 .map(|stack| (stack.name.clone(), stack.ws_url.clone()));
-            self.refresh_stack_session(true).await;
         }
         self.write_session()?;
         Ok(())
@@ -1367,8 +1420,7 @@ impl Session<'_> {
                     .await;
                 runner.poll(watching).await;
             }
-            let found = self.find_stack().await;
-            if self.refresh_stack_session(found).await || found {
+            if self.find_stack().await {
                 self.write_session()?;
             }
             if !watching {
@@ -1637,6 +1689,68 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn every_registry_stack_in_the_lock_is_loaded_per_live_spec() {
+        use crate::project::lockfile::{LockedDependency, LockedLiveSpec};
+        let stack = |alias: &str, source: &str, lives: &[&str]| LockedDependency {
+            kind: DependencyKind::Stack,
+            alias: alias.into(),
+            source: source.into(),
+            requirement: None,
+            version: None,
+            package_release_hash: None,
+            stack_manifest_hash: Some(format!("hash-{alias}")),
+            program_id: None,
+            program_spec_hash: None,
+            program_release_hash: None,
+            live_specs: lives
+                .iter()
+                .map(|live| LockedLiveSpec {
+                    alias: live.to_string(),
+                    artifact_hash: format!("live-{live}"),
+                })
+                .collect(),
+            programs: Vec::new(),
+            parts: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+            protocol: None,
+            stacks: Vec::new(),
+            targets: Vec::new(),
+            generator_contract: String::new(),
+            local_build: None,
+        };
+        let mut protocol = stack("raise", "registry:raise", &[]);
+        protocol.kind = DependencyKind::Protocol;
+        protocol.stack_manifest_hash = None;
+        protocol.stacks = vec![crate::project::lockfile::LockedProtocolStack {
+            alias: "ledger".into(),
+            package: "raise-ledger".into(),
+            version: "1.0.0".into(),
+            package_release_hash: "release".into(),
+            stack_manifest_hash: "hash-ledger".into(),
+            live_specs: Vec::new(),
+            programs: Vec::new(),
+            sdk_extension_hashes: Vec::new(),
+        }];
+        let mut lock = ProjectLock::empty("manifest".into());
+        lock.dependencies = vec![
+            stack("klend", "registry:klend", &["default"]),
+            stack("multi", "registry:multi", &["fast", "slow"]),
+            stack("mine", "path:stacks/mine.stack.yaml", &["default"]),
+            protocol,
+        ];
+        let some = |value: &str| Some(value.to_string());
+        assert_eq!(
+            lock_stacks(&lock),
+            [
+                ("klend".to_string(), "hash-klend".to_string(), None),
+                ("multi".to_string(), "hash-multi".to_string(), some("fast")),
+                ("multi".to_string(), "hash-multi".to_string(), some("slow")),
+                ("raise-ledger".to_string(), "hash-ledger".to_string(), None),
+            ]
+        );
+    }
 
     #[test]
     fn ports_are_fixed_offsets_from_the_base() {

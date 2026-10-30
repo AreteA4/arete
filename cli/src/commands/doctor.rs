@@ -800,8 +800,8 @@ fn surface_label(surface: &str) -> String {
     }
 }
 
-/// `dev tier free: 1 environment allowed, 0 in use`, from the quotas the
-/// server attached to `dev_environments`.
+/// `dev tier free: 1 environment allowed, 0 in use, 5 stacks per
+/// environment`, from the quotas the server attached to `dev_environments`.
 fn dev_tier_detail(
     entitlements: &AccountEntitlements,
     quotas: Option<&serde_json::Value>,
@@ -817,17 +817,28 @@ fn dev_tier_detail(
     let used = quotas
         .and_then(|quotas| quotas.pointer("/usage/environments"))
         .and_then(serde_json::Value::as_u64);
-    Some(match (max, used) {
-        (Some(max), Some(used)) => format!(
-            "dev tier {tier}: {max} environment{} allowed, {used} in use",
-            if max == 1 { "" } else { "s" }
-        ),
-        (Some(max), None) => format!(
-            "dev tier {tier}: {max} environment{} allowed",
-            if max == 1 { "" } else { "s" }
-        ),
-        _ => format!("dev tier {tier}"),
-    })
+    Some(
+        match (max, used) {
+            (Some(max), Some(used)) => format!(
+                "dev tier {tier}: {max} environment{} allowed, {used} in use",
+                if max == 1 { "" } else { "s" }
+            ),
+            (Some(max), None) => format!(
+                "dev tier {tier}: {max} environment{} allowed",
+                if max == 1 { "" } else { "s" }
+            ),
+            _ => format!("dev tier {tier}"),
+        } + &quotas
+            .and_then(|quotas| quotas.pointer("/limits/maxStacksPerEnvironment"))
+            .and_then(serde_json::Value::as_u64)
+            .map(|stacks| {
+                format!(
+                    ", {stacks} stack{} per environment",
+                    if stacks == 1 { "" } else { "s" }
+                )
+            })
+            .unwrap_or_default(),
+    )
 }
 
 /// `account.create-protocol` with the plan's cap on active protocol
@@ -2047,6 +2058,23 @@ mod tests {
         assert_eq!(dev.status, Status::Ok);
         assert_eq!(dev.detail, "dev tier free: 1 environment allowed, 0 in use");
         assert_eq!(aggregate(&checks), Status::Ok);
+
+        // An API that reports stack slots shows them too.
+        let slots = entitlements(
+            "pro",
+            serde_json::json!([
+                {"surface": "dev_environments", "allowed": true, "quotas": {
+                    "tier": "free",
+                    "limits": {"maxEnvironments": 1, "maxStacksPerEnvironment": 5},
+                    "usage": {"environments": 1}
+                }},
+            ]),
+        );
+        let checks = entitlement_checks(&slots, &ProjectUsage::default());
+        assert_eq!(
+            check(&checks, "account.dev-environments").detail,
+            "dev tier free: 1 environment allowed, 1 in use, 5 stacks per environment"
+        );
     }
 
     #[test]

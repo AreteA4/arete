@@ -202,20 +202,27 @@ describe('dev wallets', () => {
 });
 
 describe('the dev stack connector', () => {
-  it('waits for the environment’s stack instead of reading published data', async () => {
-    let session: Record<string, unknown> | null = { deploymentId: 'dep' };
-    const lines: string[] = [];
-    const connect = devStackConnector(() => session as never, 'key', (line) => lines.push(line), 2000);
-    const stack = { name: 'vault', endpoints: {} } as never;
-    setTimeout(() => {
-      session = { deploymentId: 'dep', stack: 'other', stackWsUrl: 'ws://127.0.0.1:1', sessionEndpoint: 'http://127.0.0.1:1' };
-    }, 600);
-    // The environment's stack is another one: published data, said once.
-    await connect(stack).catch(() => undefined);
-    expect(lines).toEqual([
-      "waiting for the dev environment's stack before connecting vault",
-      "stack vault is not in the dev environment; its sources read the published stack's data",
-    ]);
+  it('connects in dev mode and never reads published data', async () => {
+    const previous = process.env.ARETE_DEV_URL;
+    const key = process.env.ARETE_API_KEY;
+    process.env.ARETE_DEV_URL = 'http://127.0.0.1:1';
+    // Keep the machine's a4 login out of it.
+    process.env.ARETE_API_KEY = 'a4_sk_connectortest000000000000000000000';
+    try {
+      // A stack without a release has no identity the environment can load:
+      // refused, not read from production.
+      const stack = {
+        name: 'vault',
+        endpoints: { ws: 'wss://vault.stack.arete.run', http: 'https://vault.stack.arete.run' },
+        views: {},
+      } as never;
+      await expect(devStackConnector()(stack)).rejects.toMatchObject({ code: 'devenv-stack-not-loaded' });
+    } finally {
+      if (previous === undefined) delete process.env.ARETE_DEV_URL;
+      else process.env.ARETE_DEV_URL = previous;
+      if (key === undefined) delete process.env.ARETE_API_KEY;
+      else process.env.ARETE_API_KEY = key;
+    }
   });
 });
 
@@ -265,7 +272,7 @@ describe('runDev', () => {
       join(root, 'automations.mjs'),
       `export default {
         kind: 'automations',
-        protocol: { name: 'vault', deployment: { deploymentId: '${deploymentId}', environment: 'dev' } },
+        protocol: { name: 'vault', deployment: { deploymentId: 'dep-production' } },
         setup(automations) {
           automations.on('vault.rebalanceDue', (event) => { globalThis.__devSeen.push(event.id); return []; });
         },
@@ -280,11 +287,23 @@ describe('runDev', () => {
     const seen: string[] = [];
     (globalThis as unknown as { __devSeen: string[] }).__devSeen = seen;
     const lines: string[] = [];
+    // The installed client names production's deployment; in dev mode it
+    // resolves the environment's.
+    let current = 'dep-production';
     const client = {
       ...fake.client,
-      definition: { name: 'vault', deployment: { deploymentId, environment: 'dev' } },
+      environment: 'dev',
+      get deploymentId() {
+        return current;
+      },
+      async resolveDeployment() {
+        current = deploymentId;
+        return current;
+      },
+      definition: { name: 'vault', deployment: { deploymentId: 'dep-production' } },
       instances: { list: async () => ({ instances: [{ id: 'inst-1' }], nextCursor: null }) },
     };
+    process.env.ARETE_DEV_URL = 'http://127.0.0.1:1';
     const started = runDev(
       { root, entry: 'automations.mjs', apiKey: 'a4_sk_test', webhookSecret: SECRET, port: 0 },
       (line) => lines.push(line),
@@ -342,29 +361,70 @@ describe('runDev', () => {
     const saved = deserialize(readFileSync(join(devDir, 'automations', 'store.bin'))) as { grants: { wallet: string }[] };
     expect(saved.grants.map((grant) => grant.wallet)).toEqual([alice]);
     expect(JSON.parse(readFileSync(join(devDir, 'automations', 'cursors.json'), 'utf8'))).toEqual({ 'inst-1': 'cursor-41' });
+    expect((deserialize(readFileSync(join(devDir, 'automations', 'store.bin'))) as { deployment: string }).deployment).toBe(deploymentId);
+    delete process.env.ARETE_DEV_URL;
   });
 
-  it('refuses a client generated for another deployment than the session’s', async () => {
+  it('waits for the edge to name the deployment a4 dev up just made', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dev-project-'));
     mkdirSync(join(root, '.arete', 'dev'), { recursive: true });
     writeFileSync(join(root, '.arete', 'dev', 'session.json'), JSON.stringify({ rpcUrl: 'http://127.0.0.1:1', deploymentId: 'dep-new' }));
-    writeFileSync(join(root, 'a.mjs'), "export default { kind: 'automations', protocol: { name: 'p', deployment: {} }, setup() {} };\n");
-    await expect(
-      runDev({ root, entry: 'a.mjs', apiKey: 'k', webhookSecret: SECRET, port: 0 }, () => undefined, {
-        createClient: () => ({ deploymentId: 'dep-old', definition: { name: 'p', deployment: { deploymentId: 'dep-old', environment: 'dev' } } }),
-      }),
-    ).rejects.toThrow(/names deployment dep-old, but the dev environment runs dep-new; run `a4 dev sdk`/);
+    writeFileSync(join(root, 'a.mjs'), "export default { kind: 'automations', protocol: { name: 'p', deployment: null }, setup() {} };\n");
+    process.env.ARETE_DEV_URL = 'http://127.0.0.1:1';
+    // The edge names the previous deployment, then the new one.
+    const answers = ['dep-old', 'dep-new'];
+    let created = 0;
+    const started = runDev({ root, entry: 'a.mjs', apiKey: 'k', webhookSecret: SECRET, port: 0 }, () => undefined, {
+      createClient: () => {
+        created += 1;
+        const answer = answers.shift() ?? 'dep-new';
+        return { deploymentId: answer, environment: 'dev', resolveDeployment: async () => answer, definition: { name: 'p' } };
+      },
+    });
+    // It goes on past the check, to the policy (no programs in this module).
+    await expect(started).rejects.toThrow(/programs/);
+    expect(created).toBe(2);
+    delete process.env.ARETE_DEV_URL;
   });
 
-  it('refuses the published client: a4 dev never targets mainnet', async () => {
+  it('refuses a production client: a4 dev never targets mainnet', async () => {
     const root = mkdtempSync(join(tmpdir(), 'dev-project-'));
     mkdirSync(join(root, '.arete', 'dev'), { recursive: true });
     writeFileSync(join(root, '.arete', 'dev', 'session.json'), JSON.stringify({ rpcUrl: 'http://127.0.0.1:1', deploymentId: 'dep' }));
     writeFileSync(join(root, 'a.mjs'), "export default { kind: 'automations', protocol: { name: 'p', deployment: {} }, setup() {} };\n");
     await expect(
       runDev({ root, entry: 'a.mjs', apiKey: 'k', webhookSecret: SECRET, port: 0 }, () => undefined, {
-        createClient: () => ({ deploymentId: 'dep', definition: { name: 'p', deployment: { deploymentId: 'dep' } } }),
+        createClient: () => ({ deploymentId: 'dep', environment: 'production', definition: { name: 'p', deployment: { deploymentId: 'dep' } } }),
       }),
-    ).rejects.toThrow(/targets mainnet/);
+    ).rejects.toThrow(/runs in production .*would target mainnet/);
+  });
+
+  it('builds the protocol client in dev mode from the switch a4 dev up sets', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dev-project-'));
+    mkdirSync(join(root, '.arete', 'dev'), { recursive: true });
+    writeFileSync(join(root, '.arete', 'dev', 'session.json'), JSON.stringify({ rpcUrl: 'http://127.0.0.1:1', deploymentId: 'dep' }));
+    writeFileSync(
+      join(root, 'a.mjs'),
+      "export default { kind: 'automations', protocol: { kind: 'protocol', name: 'p', package: 'p', protocolReleaseHash: 'r', deployment: null, steps: {}, events: {} }, setup() {} };\n",
+    );
+    const previous = { ...process.env };
+    process.env.ARETE_ENVIRONMENT = 'dev';
+    process.env.ARETE_DEV_URL = 'http://127.0.0.1:1';
+    try {
+      // The real client: dev mode, the edge asked for the deployment (and
+      // unreachable here).
+      await expect(runDev({ root, entry: 'a.mjs', apiKey: 'k', webhookSecret: SECRET, port: 0 }, () => undefined)).rejects.toMatchObject({
+        code: 'devenv-edge-unreachable',
+      });
+      process.env.ARETE_ENVIRONMENT = 'production';
+      await expect(runDev({ root, entry: 'a.mjs', apiKey: 'k', webhookSecret: SECRET, port: 0 }, () => undefined)).rejects.toThrow(
+        /not deployed to production yet/,
+      );
+    } finally {
+      for (const name of ['ARETE_ENVIRONMENT', 'ARETE_DEV_URL']) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
   });
 });

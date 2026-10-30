@@ -72,6 +72,9 @@ async function main() {
   // one (`a4 install --locked`) targets mainnet, which the policy allows only
   // with ALLOW_MAINNET=1.
   const dev = clientCluster(client) === 'dev';
+  // In dev mode the client learns the environment's deployment first; the
+  // policy names the deployment the jobs will target.
+  await client.resolveDeployment();
   const automations = createAutomations({
     client,
     signer: await signerFromEnv(),

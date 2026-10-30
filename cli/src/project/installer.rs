@@ -4906,6 +4906,9 @@ fn attach_project_provenance(
             if let ResolvedRegistryDependency::Protocol { protocol, .. } = resolved.as_ref() {
                 value["project"]["localBuildDeploymentId"] =
                     serde_json::json!(protocol.deployment.deployment_id);
+                if protocol.production_deployment {
+                    value["project"]["localBuildDeployment"] = serde_json::json!("production");
+                }
             }
         }
     }
@@ -5244,13 +5247,18 @@ fn remove_path(path: &Path) -> Result<()> {
 // Protocol clients generated from a local build (`a4 dev`)
 // ---------------------------------------------------------------------------
 
-/// The deployment a client generated from a local build calls.
+/// The deployment a client generated from a local build names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalBuildDeployment {
-    /// `a4 dev` (the deployment in the project's dev environment), or
-    /// `a4 protocol deploy` before the release is published (the deployment
-    /// just activated).
+    /// `a4 protocol deploy` before the release is published: the production
+    /// deployment just activated.
     Deployed { id: String, access: String },
+    /// `a4 dev`: the production deployment of the published release
+    /// arete.lock pins, or none. The dev environment's deployment is never
+    /// written into the client: SDKs in dev mode find it by resolving the
+    /// installed identity. A never-published entry's locked deployment is
+    /// not kept, since an older `a4` wrote dev deployments there.
+    Locked,
 }
 
 /// One local build of this project's protocol.
@@ -5271,8 +5279,9 @@ pub struct LocalProtocolBuild {
 #[serde(rename_all = "camelCase")]
 pub struct LocalProtocolInstall {
     pub alias: String,
-    /// The deployment the generated descriptor carries.
-    pub deployment_id: String,
+    /// The production deployment the generated descriptor carries; `None`
+    /// before the first deploy.
+    pub deployment_id: Option<String>,
     /// Whether arete.lock pins a published release (`a4 install --locked`
     /// restores it).
     pub published: bool,
@@ -5567,6 +5576,7 @@ fn local_build_resolution(
     spec_json: &serde_json::Value,
     release_hash: &str,
     deployment: super::resolver::ResolvedProtocolDeployment,
+    production_deployment: bool,
 ) -> Result<ResolvedRegistryDependency> {
     let spec = arete_hash::protocol::validate_protocol_spec_value(spec_json)
         .map_err(|error| anyhow::anyhow!("protocol-spec.json is invalid: {error}"))?;
@@ -5587,6 +5597,7 @@ fn local_build_resolution(
             deployment,
             live_stack: None,
             local_dev: true,
+            production_deployment,
         }),
         stacks: Vec::new(),
         programs: Vec::new(),
@@ -5655,6 +5666,10 @@ fn resolve_unpublished_local_build(
             &protocol.deployment_id,
             &protocol.deployment_access,
         ),
+        // Not known from the lock alone: the next `a4 dev` then names no
+        // deployment rather than trusting one an older `a4` may have
+        // written for the dev environment.
+        false,
     )?;
     Ok(ResolvedProjectDependency::Registry {
         kind: DependencyKind::Protocol,
@@ -5704,11 +5719,51 @@ pub fn install_local_protocol_build(
             .filter(|entry| entry.source == source)
     });
     let locked = previous.and_then(|entry| entry.protocol.as_ref());
-    let LocalBuildDeployment::Deployed {
-        id: deployment_id,
-        access,
-    } = build.deployment.clone();
+    let (deployment_id, access) = match &build.deployment {
+        LocalBuildDeployment::Deployed { id, access } => (id.clone(), access.clone()),
+        LocalBuildDeployment::Locked => locked
+            .filter(|protocol| {
+                !protocol.deployment_id.is_empty()
+                    && (previous.is_some_and(LockedDependency::is_published)
+                        || outputs.iter().all(|output| {
+                            production_provenance(&output.path, &protocol.deployment_id)
+                        }))
+            })
+            .map(|protocol| {
+                (
+                    protocol.deployment_id.clone(),
+                    protocol.deployment_access.clone(),
+                )
+            })
+            .unwrap_or_else(|| (String::new(), "private".into())),
+    };
     let published = previous.is_some_and(LockedDependency::is_published);
+    let reported_deployment = (!deployment_id.is_empty()).then(|| deployment_id.clone());
+
+    // `a4 dev` with the published release's own spec: the installed client
+    // already is the published one, byte for byte. Nothing to generate.
+    if matches!(build.deployment, LocalBuildDeployment::Locked)
+        && previous.is_some_and(|entry| {
+            entry.is_published()
+                && entry.local_build.is_none()
+                && entry.targets == targets
+                && locked
+                    .is_some_and(|protocol| protocol.protocol_release_hash == build.release_hash)
+                // Only when that client is on disk, as published: a deleted,
+                // uncommitted or moved output is generated below.
+                && outputs
+                    .iter()
+                    .all(|output| published_output(&output.path, entry))
+        })
+    {
+        return Ok(LocalProtocolInstall {
+            alias: alias.into(),
+            deployment_id: reported_deployment,
+            published,
+            outputs: outputs.iter().map(|output| output.path.clone()).collect(),
+            changed: false,
+        });
+    }
     let output_paths: Vec<PathBuf> = outputs.iter().map(|output| output.path.clone()).collect();
 
     let current = previous.is_some_and(|entry| {
@@ -5724,7 +5779,7 @@ pub fn install_local_protocol_build(
     if current {
         return Ok(LocalProtocolInstall {
             alias: alias.into(),
-            deployment_id,
+            deployment_id: reported_deployment,
             published,
             outputs: output_paths,
             changed: false,
@@ -5737,6 +5792,7 @@ pub fn install_local_protocol_build(
         &build.spec_json,
         &build.release_hash,
         deployment_urls(&build.api_base, &deployment_id, &access),
+        !deployment_id.is_empty(),
     )?;
     let entry = match previous.filter(|entry| entry.is_published()) {
         Some(published) => LockedDependency {
@@ -5804,10 +5860,30 @@ pub fn install_local_protocol_build(
     )?;
     Ok(LocalProtocolInstall {
         alias: alias.into(),
-        deployment_id,
+        deployment_id: reported_deployment,
         published,
         outputs: output_paths,
         changed: true,
+    })
+}
+
+/// Whether the client in `output` was generated for production deployment
+/// `deployment` (`a4 protocol deploy` before the release was published).
+/// An older `a4` wrote dev deployments into a never-published entry the
+/// same way, without this mark.
+fn production_provenance(output: &Path, deployment: &str) -> bool {
+    read_provenance_project(output).is_some_and(|project| {
+        project["localBuildDeploymentId"] == deployment
+            && project["localBuildDeployment"] == "production"
+    })
+}
+
+/// Whether `output` holds the client `entry`'s published release generated,
+/// not one from a local build.
+fn published_output(output: &Path, entry: &LockedDependency) -> bool {
+    read_provenance_project(output).is_some_and(|project| {
+        project.get("localBuild").is_none()
+            && project["packageReleaseHash"].as_str() == entry.package_release_hash.as_deref()
     })
 }
 
@@ -11854,10 +11930,8 @@ source = { workspace = "ore-sdk" }
                 "arete:h1:protocol-release:sha256:{}",
                 release_marker.to_string().repeat(64)
             ),
-            deployment: LocalBuildDeployment::Deployed {
-                id: "local-1".into(),
-                access: "private".into(),
-            },
+            // What `a4 dev` passes after deploying into the environment.
+            deployment: LocalBuildDeployment::Locked,
             api_base: "https://api.example.test".into(),
         }
     }
@@ -11871,8 +11945,8 @@ source = { workspace = "ore-sdk" }
             .unwrap()
     }
 
-    /// `a4 dev` over a published install keeps the published pins, calls
-    /// the dev deployment, marks `local_build`, and `a4 install --locked`
+    /// `a4 dev` over a published install keeps the published pins and the
+    /// production deployment, marks `local_build`, and `a4 install --locked`
     /// restores the published client; `a4 install --check` tells them apart.
     #[test]
     fn a_local_build_over_a_published_protocol_is_restored_by_locked() {
@@ -11902,7 +11976,10 @@ source = { workspace = "ore-sdk" }
         )
         .unwrap();
         assert!(install.published && install.changed);
-        assert_eq!(install.deployment_id, "local-1");
+        assert_eq!(
+            install.deployment_id.as_deref(),
+            Some(published.protocol.as_ref().unwrap().deployment_id.as_str())
+        );
         let local = token_raise_entry(&manifest);
         assert_eq!(
             LockedDependency {
@@ -11931,6 +12008,43 @@ source = { workspace = "ore-sdk" }
         )
         .unwrap();
         assert!(provenance["project"].get("localBuild").is_none());
+    }
+
+    /// `a4 dev` with the published release's own spec generates nothing
+    /// while the published client is on disk, and generates it again once
+    /// it is gone.
+    #[test]
+    fn the_published_spec_regenerates_a_missing_client() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('6')]))],
+            false,
+        );
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap();
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"typescript\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("published install");
+        let published = token_raise_entry(&manifest);
+        let build = LocalProtocolBuild {
+            release_hash: published
+                .protocol
+                .as_ref()
+                .unwrap()
+                .protocol_release_hash
+                .clone(),
+            ..local_build_of_token_raise('6')
+        };
+
+        let same = install_local_protocol_build(&manifest, "token-raise", &build, true).unwrap();
+        assert!(!same.changed, "the published client is already installed");
+        assert_eq!(token_raise_entry(&manifest), published);
+
+        fs::remove_dir_all(&same.outputs[0]).unwrap();
+        let again = install_local_protocol_build(&manifest, "token-raise", &build, true).unwrap();
+        assert!(again.changed, "a missing client is generated");
+        assert!(again.outputs[0].join("sdk-provenance.json").is_file());
     }
 
     /// A protocol never published installs from the local build `a4 dev`

@@ -89,10 +89,9 @@ a4 stream --dev --tui                            # browse protocols, views, rows
   it can change the chain state underlying the rows; inspect the environment
   before interpreting data after such an operation.
 - The usual filters (`--where`, `--select`, `--ops`, `--take`, `--first`,
-  `--no-snapshot`, `--duration`) apply. For another WebSocket client,
-  `a4 dev up` keeps a stack URL with a valid token in
-  `.arete/dev/session.json` (`stackSession.streamUrl`) for
-  `a4 stream --url` or your own code.
+  `--no-snapshot`, `--duration`) apply. Another WebSocket client mints its
+  own stack session (`POST <apiUrl>/ws/sessions` with your key); an installed
+  stack SDK in dev mode needs none, since the `a4 dev up` edge adds it.
 
 ## Install and Inspect Generated Code
 

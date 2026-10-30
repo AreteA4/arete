@@ -65,7 +65,8 @@ from typing import (
 
 import httpx
 
-from arete.auth import AuthConfig
+from arete.auth import AuthConfig, resolve_auth_config
+from arete.dev_environment import resolve_switch_from_process
 from arete.chain import ChainClient, HttpChainClient
 from arete.client import Arete
 from arete.errors import AreteError, ProgramKeyConflictError
@@ -314,7 +315,9 @@ class Session:
         auth: Optional[AuthConfig] = None,
         http_client: Any = None,
         protocol_key_class: Optional[str] = None,
+        environment: Any = None,
     ) -> None:
+        self._environment = environment
         self._stack_clients = dict(stacks)
         self._program_map = dict(programs)
         self._members: Tuple[Arete, ...] = tuple(member_clients)
@@ -330,6 +333,12 @@ class Session:
         self._protocol_key_class = protocol_key_class
         self._protocol_clients: Dict[str, ProtocolClient] = {}
         self.protocols = AttrNamespace("session.protocols", self._protocol_clients)
+
+    @property
+    def environment(self) -> str:
+        """``"production"``, or ``"dev"`` when the dev environment switch is
+        on (every member decides it the same way)."""
+        return self._members[0].environment if self._members else "production"
 
     def protocol_client_options(self, definition: ProtocolDefinition) -> Dict[str, Any]:
         """Keyword arguments that build a client of ``definition`` sharing
@@ -348,6 +357,8 @@ class Session:
             if key in self._program_map
         }
         options: Dict[str, Any] = {"auth": self._auth, "stacks": stacks, "programs": programs}
+        if self._environment is not None:
+            options["environment"] = self._environment
         if isinstance(self._http_client, httpx.AsyncClient):
             options["http_client"] = self._http_client
         if self._protocol_key_class is not None:
@@ -513,6 +524,32 @@ class Session:
         )
 
 
+async def _dev_session_transports(
+    gateway: Any, switch: Any, auth: Optional[AuthConfig], http_client: Any
+) -> Any:
+    """A composition session's shared chain and transaction transports in
+    dev mode: through the edge, or at the environment's gateway targets."""
+    from arete.dev_environment import DevMode, gateway_identity
+    from arete.gateway import dev_gateway_transports
+
+    owned = not isinstance(http_client, httpx.AsyncClient)
+    client = httpx.AsyncClient() if owned else http_client
+    try:
+        mode = DevMode.of(switch, resolve_auth_config(auth), client)
+        answer = None
+        if mode.resolver is not None:
+            answer = await mode.resolver.resolve(
+                {
+                    "chain": gateway_identity(gateway.chain),
+                    "transactions": gateway_identity(gateway.transactions),
+                }
+            )
+        return dev_gateway_transports(gateway, mode, answer, http_client=http_client)
+    finally:
+        if owned:
+            await client.aclose()
+
+
 async def create_session(
     *,
     stacks: Optional[Mapping[str, StackDef]] = None,
@@ -536,6 +573,7 @@ async def create_session(
     protocols: Optional[Mapping[str, ProtocolDefinition]] = None,
     protocol_options: Optional[Mapping[str, Mapping[str, Any]]] = None,
     protocol_key_class: Optional[str] = None,
+    environment: Any = None,
 ) -> Session:
     """Compose multiple stack and standalone-program clients behind one
     wallet.
@@ -551,7 +589,9 @@ async def create_session(
     ``chain`` + ``transactions`` and forbids ``endpoints`` fallback.
     ``protocols`` hoist their stacks and programs and become
     ``session.protocols.<key>`` (see the module docs); ``protocol_key_class``
-    names their key class when ``auth`` cannot tell.
+    names their key class when ``auth`` cannot tell. ``environment`` is the
+    dev environment switch for every member and protocol client (see
+    :mod:`arete.dev_environment`); unset, ``ARETE_ENVIRONMENT`` decides.
     """
     stack_entries = list((stacks or {}).items())
     program_entries = list((programs or {}).items())
@@ -602,11 +642,18 @@ async def create_session(
                 "composition sessions require one consistent generated gateway "
                 "or explicit chain and transaction transports"
             )
-        generated_transports = create_hosted_solana_gateway_transports(
-            generated_gateway,
-            auth=auth,
-            http_client=http_client,
-        )
+        switch = resolve_switch_from_process(environment, lambda: resolve_auth_config(auth))
+        if switch.is_dev:
+            # The shared transports go to the dev environment too.
+            generated_transports = await _dev_session_transports(
+                generated_gateway, switch, auth, http_client
+            )
+        else:
+            generated_transports = create_hosted_solana_gateway_transports(
+                generated_gateway,
+                auth=auth,
+                http_client=http_client,
+            )
         chain = chain or generated_transports.chain
         transactions = transactions or generated_transports.transactions
     if program_reads:
@@ -758,6 +805,7 @@ async def create_session(
             auto_reconnect=member.get("auto_reconnect", True),
             http_client=http_client,
             connect_factory=connect_factory,
+            environment=environment,
         )
 
     connected_stacks: List[Tuple[str, Arete]] = []
@@ -859,6 +907,7 @@ async def create_session(
         auth=auth,
         http_client=http_client,
         protocol_key_class=protocol_key_class,
+        environment=environment,
     )
     try:
         for key, protocol in protocol_entries:

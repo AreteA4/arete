@@ -12,6 +12,7 @@ use, and which protections still hold if your backend is ever compromised.
 `definePolicy` sets what may be signed for any user:
 
 ```ts
+await client.resolveDeployment(); // in dev mode, the environment's deployment
 const policy = definePolicy({
   deployments: [client.deploymentId], // required
   clusters: ["dev", "mainnet"],        // defaults to ["dev"]; mainnet only when listed
@@ -80,8 +81,9 @@ const signer = privySigner({
 const { policy: privyPolicy, unenforced } = privyPolicyFor(policy, grant);
 ```
 
-The signer asks Privy to sign each transaction (never to send it) and signs
-`v0` transactions. When Privy's policy denies a transaction, the step ends
+The signer asks Privy to sign each transaction (never to send it). It
+prefers Transaction V1 and falls back to `v0`; pass
+`transactionFormats: ['v0']` to sign only `v0`. When Privy's policy denies a transaction, the step ends
 `refused` with the rule `provider_policy`.
 
 `privyPolicyFor` builds the policy Privy enforces in its own secure

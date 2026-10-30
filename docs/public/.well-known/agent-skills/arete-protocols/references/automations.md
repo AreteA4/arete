@@ -93,7 +93,7 @@ const automations = createAutomations({
     deployments: [client.deploymentId],    // required
     clusters: ["mainnet"],                 // mainnet only when listed
   }),
-  simulator: rpcSimulator(process.env.RPC_URL!),
+  simulator: rpcSimulator(process.env.RPC_URL!), // optional in dev mode: the dev environment
   store: postgresStore(pool),
   consent: { domain: "app.example" },
   onOutcome: (outcome) => notifyUser(outcome),
@@ -101,8 +101,9 @@ const automations = createAutomations({
 await automations.use(definition);
 ```
 
-The target comes from the client: `dev` for the client `a4 dev` generated,
-`mainnet` after `a4 install --locked` restores the published one. The policy
+The target comes from the client's environment switch: `dev` when
+`ARETE_ENVIRONMENT=dev` (as `a4 dev up` and `a4 dev run` set), else
+`mainnet`. The generated client is the same file in both. The policy
 allows `dev` by default and mainnet only when listed. It is a library in the
 app's backend, next to the app's own database. It needs a secret-key client,
 so it never runs in a browser.
@@ -230,8 +231,9 @@ against the same shared cases.
 - `keypairSigner(secretKey)` from `/keypair`: dev wallets and tests only.
 - `privySigner({ privy, walletIdFor, authorizationPrivateKey })` from
   `/privy`: Privy server wallets where the user added the app's authorization
-  key. It signs (never sends) `v0` transactions; a Privy denial ends the step
-  `refused` with rule `provider_policy`.
+  key. It signs (never sends) transactions, preferring V1 and falling back to
+  `v0` (`transactionFormats: ['v0']` limits it to `v0`); a Privy denial ends
+  the step `refused` with rule `provider_policy`.
 - `privyPolicyFor(policy, grant)` builds the provider-side policy to attach to
   the user's wallet. Privy sees only top-level instructions, so for a
   protocol step it can bound programs and expiry, not amounts; show its
@@ -297,9 +299,9 @@ a4 protocol webhook test <id>                 # a signed test delivery; ids from
   variables reach only new deployments, so deploy again after adding the
   webhook secret. Node runs workers, live sources (append sources included)
   and its own tick; no cron needed.
-- Set `ARETE_CLUSTER=mainnet` in the host: a build whose client still
-  targets the dev environment then fails every request and says to run
-  `a4 install --locked`.
+- Set `ARETE_CLUSTER=mainnet` in the host: a host that still sets
+  `ARETE_ENVIRONMENT=dev` then fails every request and says the two
+  disagree.
 - `npx @usearete/automations manifest` prints the definition's events,
   schedules and sources; `a4 protocol webhook add` subscribes to the
   build's events by default (`--events` narrows it).

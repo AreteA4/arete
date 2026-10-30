@@ -182,6 +182,11 @@ pub struct ResolvedProtocol {
     /// client carries the protocol module only. Never deserialized.
     #[serde(skip)]
     pub local_dev: bool,
+    /// A local build's deployment is a production one (`a4 protocol
+    /// deploy` before the release is published), which `a4 dev` keeps.
+    /// Recorded in the client's provenance. Never deserialized.
+    #[serde(skip)]
+    pub production_deployment: bool,
 }
 
 /// The deployment a protocol client calls: the publisher's shared

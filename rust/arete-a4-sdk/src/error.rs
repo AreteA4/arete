@@ -547,6 +547,14 @@ pub enum AreteError {
         credential: &'static str,
         message: String,
     },
+
+    /// The dev environment switch refused a surface
+    /// (`docs/internal/dev-environment-switch.md` §6): `devenv-*` and
+    /// `environment-token-*` codes, with the message, the fix and every
+    /// other detail of the answer. Never followed by a request to the other
+    /// world.
+    #[error("{0}")]
+    DevEnvironment(Box<crate::dev_environment::DevEnvironmentError>),
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -608,6 +616,24 @@ impl AreteError {
                 stack_version: Some(refusal),
                 ..
             } => Some(refusal),
+            _ => None,
+        }
+    }
+
+    /// The dev environment refusal, if this is one.
+    pub fn dev_environment_error(&self) -> Option<&crate::dev_environment::DevEnvironmentError> {
+        match self {
+            Self::DevEnvironment(error) => Some(error),
+            _ => None,
+        }
+    }
+
+    /// The stable code of a dev environment refusal or a configuration
+    /// error (`INVALID_CONFIG`), if this is one.
+    pub fn dev_code(&self) -> Option<&str> {
+        match self {
+            Self::DevEnvironment(error) => Some(&error.code),
+            Self::InvalidConfig(_) => Some(crate::dev_environment::codes::INVALID_CONFIG),
             _ => None,
         }
     }
@@ -682,7 +708,8 @@ impl AreteError {
             | Self::InvalidInput(_)
             | Self::WebSocketDisabled
             | Self::TransactionFailed(_)
-            | Self::UntrustedCredentialDestination { .. } => false,
+            | Self::UntrustedCredentialDestination { .. }
+            | Self::DevEnvironment(_) => false,
         }
     }
 

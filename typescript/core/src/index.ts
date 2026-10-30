@@ -189,6 +189,21 @@ export type {
 } from './credential-destination';
 
 export {
+  ARETE_DEV_ENV_ENV,
+  ARETE_DEV_URL_ENV,
+  ARETE_ENVIRONMENT_ENV,
+  DEV_ENVIRONMENT_CODES,
+  DevEnvironmentError,
+  resolveEnvironmentSwitch,
+} from './dev-environment';
+export type {
+  ClientEnvironment,
+  EnvironmentOption,
+  EnvironmentSwitch,
+  EnvironmentSwitchHost,
+} from './dev-environment';
+
+export {
   ConnectionManager,
   hostedWebsocketSuffixes,
   isHostedAreteEndpoint,
