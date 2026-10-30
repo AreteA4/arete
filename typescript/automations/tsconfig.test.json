@@ -8,6 +8,9 @@
       "@usearete/automations": [
         "./src/index.ts"
       ],
+      "@usearete/automations/dev": [
+        "./src/dev.ts"
+      ],
       "@usearete/automations/keypair": [
         "./src/keypair.ts"
       ],

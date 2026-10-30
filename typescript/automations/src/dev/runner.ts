@@ -23,12 +23,11 @@
  */
 
 import { randomBytes, timingSafeEqual } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { deserialize, serialize } from 'node:v8';
 
 import { Arete, createProtocolClient } from '@usearete/sdk';
 import type { EnvironmentOption, ProtocolDefinition } from '@usearete/sdk';
@@ -39,10 +38,10 @@ import { definePolicy } from '../policy/policy';
 import { rpcSimulator } from '../policy/simulator';
 import { type Automations, type AutomationOutcome, createAutomations } from '../runtime/automations';
 import { type AutomationsDefinition, isAutomationsDefinition, type StackConnector } from '../runtime/define';
-import { type MemoryStoreState, memoryStore, memoryStoreState } from '../store/memory';
+import { devWalletsSigner, fileMemoryStore } from '../dev';
 import { type EventPump, type PumpClient, startEventPump } from './events';
 import { chainNow, type ScheduleTicker, startScheduleTicker } from './schedules';
-import { devWalletsSigner, readDevWallets } from './signer';
+import { readDevWallets } from './signer';
 
 /** What `a4 dev up` passes in the environment. */
 export interface DevRunnerConfig {
@@ -291,35 +290,18 @@ export async function runDev(
 
     // One store per deployment: a redeploy to a new deployment starts afresh
     // and keeps the previous state beside it.
-    const storePath = join(stateDir, 'store.bin');
-    let state: MemoryStoreState | undefined;
-    if (existsSync(storePath)) {
-      // It may predate the owner-only mode; it keeps consent and jobs.
-      chmodSync(storePath, 0o600);
-      state = deserialize(readFileSync(storePath)) as MemoryStoreState;
-      if (state.deployment !== null && state.deployment !== client.deploymentId) {
-        renameSync(storePath, join(stateDir, `store-${state.deployment}.bin`));
-        log(`the deployment changed; earlier consent and jobs are kept in store-${state.deployment}.bin`);
-        state = undefined;
-      }
-    }
-    const store = memoryStore(state ? { state } : {});
-    let saved = state ? serialize(state) : Buffer.alloc(0);
-    saveStore = () => {
-      const next = serialize(memoryStoreState(store));
-      if (!next.equals(saved)) {
-        writeFileSync(`${storePath}.tmp`, next, { mode: 0o600 });
-        chmodSync(`${storePath}.tmp`, 0o600);
-        renameSync(`${storePath}.tmp`, storePath);
-        saved = next;
-      }
-    };
+    const store = fileMemoryStore(client, join(stateDir, 'store.bin'), {
+      saveIntervalMs: 0,
+      onArchive: (archived) =>
+        log(`the deployment changed; earlier consent and jobs are kept in ${basename(archived)}`),
+    });
+    saveStore = () => store.save();
 
     const walletsDir = join(devDir, 'wallets');
     const rpc = rpcSimulator(undefined, { environment: { kind: 'dev' } });
     const running = createAutomations({
       client,
-      signer: devWalletsSigner(walletsDir),
+      signer: devWalletsSigner(client, walletsDir),
       policy: definePolicy({
         maxSolPerTransaction: '1',
         ...definition.policy,
