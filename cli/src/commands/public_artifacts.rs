@@ -17,6 +17,9 @@ use crate::project::registry_cache;
 #[derive(Debug, Clone)]
 pub(crate) struct LocalArtifactStack {
     pub manifest_path: PathBuf,
+    /// `a4 sdk create --read-endpoint`: a self-hosted Arete server serving
+    /// the programs' account reads. Without it they are unavailable.
+    pub read_endpoint: Option<String>,
     pub manifest_hash: String,
     pub program_specs: Vec<ProgramSpecArtifact>,
     pub live_specs: Vec<(String, LiveSpecArtifactV2)>,
@@ -101,6 +104,7 @@ fn assemble_v2_stack(
     .map_err(anyhow::Error::msg)?;
     Ok(LocalArtifactStack {
         manifest_path: manifest_path.to_path_buf(),
+        read_endpoint: None,
         manifest_hash: stack_manifest.artifact_hash.to_string(),
         program_specs,
         live_specs,
@@ -344,6 +348,7 @@ fn load_and_normalize_local_v1_stack(
     let live_specs = vec![(DEFAULT_LIVE_ALIAS.to_string(), live_spec.clone())];
     Ok(LocalArtifactStack {
         manifest_path: manifest_path.to_path_buf(),
+        read_endpoint: None,
         manifest_hash: v1_manifest.artifact_hash.to_string(),
         program_specs,
         live_specs,

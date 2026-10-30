@@ -24,12 +24,7 @@ pub mod ore {
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
-        arete_sdk::ProgramReadDescriptor::LocalHttp {
-            release: arete_sdk::ProgramReleaseReference {
-                program_release_hash: PROGRAM_RELEASE_HASH.to_string(),
-                program_spec_hash: PROGRAM_SPEC_HASH.to_string(),
-            },
-        }
+        serde_json::from_str("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:4742d9f7be960b2c35571cdaae6fb5de9874836037e13c9f13697800c18d39b5\",\"programSpecHash\":\"arete:h1:program-spec:sha256:41a3e99a926050fd86b09761b829570a0a2086c10766e1b6e328b901dd856f72\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'ore' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}").expect("generated program read descriptor must be valid")
     }
 
     /// Typed params for `automate`: instruction args plus overridable accounts.
@@ -1549,12 +1544,7 @@ pub mod entropy {
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
-        arete_sdk::ProgramReadDescriptor::LocalHttp {
-            release: arete_sdk::ProgramReleaseReference {
-                program_release_hash: PROGRAM_RELEASE_HASH.to_string(),
-                program_spec_hash: PROGRAM_SPEC_HASH.to_string(),
-            },
-        }
+        serde_json::from_str("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:9e7d6811735b35f9fd144c1eaa21ac1a48720b706d81bd0d0cd9ad6ec7f32b6c\",\"programSpecHash\":\"arete:h1:program-spec:sha256:b0d48e673ec705cbb6ee41714e660aab9c6398c746b243973fcacd7bc29b7d7b\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'entropy' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}").expect("generated program read descriptor must be valid")
     }
 
     /// Typed params for `open`: instruction args plus overridable accounts.

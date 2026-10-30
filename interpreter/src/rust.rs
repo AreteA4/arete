@@ -3091,7 +3091,11 @@ mod tests {
             "pub const PROGRAM_RELEASE_HASH: &str = \"{expected_release_hash}\";"
         )));
         assert!(programs.contains("pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor"));
-        assert!(programs.contains("arete_sdk::ProgramReadDescriptor::LocalHttp"));
+        // Generated offline: reads are unavailable with the install-and-dev fix.
+        assert!(!programs.contains("arete_sdk::ProgramReadDescriptor::LocalHttp"));
+        assert!(programs.contains(r#"\"kind\":\"unavailable\""#));
+        assert!(programs.contains("a4 install program"));
+        assert!(programs.contains("--read-endpoint"));
         assert!(!programs.contains("Program read layer omitted"));
 
         // Typed account reader for the emitted `Counter` struct.
@@ -6500,7 +6504,19 @@ fn resolve_program_read_layer(
     let release_hash = spec
         .oss_release_hash()
         .map_err(|error| format!("failed to compute the release hash ({error})"))?;
-    Ok((spec_hash.to_string(), release_hash.to_string(), None))
+    // Generated offline: account reads need an installed program or an
+    // endpoint named at generation (`program_reads`).
+    let descriptor = crate::program_sdk::offline_program_read_descriptor(
+        &spec.idl_snapshot.snapshot.name,
+        &release_hash.to_string(),
+        &spec_hash.to_string(),
+        None,
+    );
+    Ok((
+        spec_hash.to_string(),
+        release_hash.to_string(),
+        Some(descriptor),
+    ))
 }
 
 /// Generate `programs.rs`: one module per program with typed instruction
@@ -6726,8 +6742,13 @@ fn generate_stack_programs_rs(
                 Some(descriptor) => {
                     let json = serde_json::to_string(descriptor)
                         .expect("program read descriptor must serialize");
+                    let what = if descriptor["transport"]["kind"] == "hosted-binding" {
+                        "hosted program read descriptor"
+                    } else {
+                        "program read descriptor"
+                    };
                     format!(
-                        "        serde_json::from_str({}).expect(\"generated hosted program read descriptor must be valid\")",
+                        "        serde_json::from_str({}).expect(\"generated {what} must be valid\")",
                         rust_string_literal(&json),
                     )
                 }

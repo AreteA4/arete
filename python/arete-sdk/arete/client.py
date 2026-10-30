@@ -55,6 +55,7 @@ from arete.operations import (
 from arete.program_read_transport import (
     HOSTED_BINDING,
     LOCAL_HTTP,
+    UNAVAILABLE,
     HttpProgramReadTransport,
     ProgramReadDescriptor,
     UnavailableProgramReadTransport,
@@ -168,6 +169,11 @@ def _effective_program_read(
     return overrides.get(name) or stack.program_reads.get(name)
 
 
+def _names_endpoint(descriptor: ProgramReadDescriptor) -> bool:
+    """Whether a ``local-http`` descriptor names its own endpoint."""
+    return getattr(descriptor.transport, "endpoint_source", None) == "explicit"
+
+
 def _has_program_account_reads(definition: ProgramDef) -> bool:
     return bool(definition.accounts)
 
@@ -186,9 +192,13 @@ def _has_complete_independent_program_reads(
         descriptor = _effective_program_read(stack, name, overrides)
         if descriptor is None:
             return False
-        if descriptor.transport_kind == HOSTED_BINDING:
+        # An unavailable read never needs a stack endpoint: it fails at read
+        # time with its own fix.
+        if descriptor.transport_kind in (HOSTED_BINDING, UNAVAILABLE):
             continue
-        if descriptor.transport_kind == LOCAL_HTTP and connect_http_url:
+        if descriptor.transport_kind == LOCAL_HTTP and (
+            connect_http_url or _names_endpoint(descriptor)
+        ):
             continue
         return False
     return True
@@ -206,6 +216,7 @@ def _validate_local_program_read_endpoints(
         if (
             descriptor is not None
             and descriptor.transport_kind == LOCAL_HTTP
+            and not _names_endpoint(descriptor)
             and not connect_http_url
         ):
             raise AreteError(
@@ -653,9 +664,16 @@ class Arete:
             return UnavailableProgramReadTransport(
                 f"Program '{name}' has no release-aware read descriptor"
             )
+        if descriptor.transport_kind == UNAVAILABLE:
+            return UnavailableProgramReadTransport(descriptor.transport.message)
         if descriptor.transport_kind == LOCAL_HTTP:
+            endpoint = (
+                descriptor.transport.endpoint
+                if _names_endpoint(descriptor)
+                else self._connect_http_url or ""
+            )
             return HttpProgramReadTransport.local_http(
-                self._connect_http_url or "", descriptor.release, self._http
+                endpoint, descriptor.release, self._http
             )
         binding = descriptor.binding
         assert binding is not None

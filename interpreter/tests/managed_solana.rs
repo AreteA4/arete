@@ -23,7 +23,19 @@ fn managed_solana_generated_program_models_compile_and_preserve_payloads() {
         &parsed,
         "ManagedSolana",
     );
-    let config = rust::RustStackConfig::default();
+    // The program reads the client's HTTP endpoint (the mock server below),
+    // as a self-hosted server's SDK does; an offline default has no endpoint.
+    let program_spec = &spec.program_specs[0];
+    let config = rust::RustStackConfig {
+        program_reads: vec![rust::RustProgramReadConfig {
+            program_id: program_spec.program_id.clone(),
+            program_spec_hash: program_spec.hash().unwrap().to_string(),
+            program_release_hash: program_spec.oss_release_hash().unwrap().to_string(),
+            descriptor: None,
+            package_release_hash: None,
+        }],
+        ..Default::default()
+    };
     let output = rust::compile_program_modules(spec.clone(), Some(config.clone())).unwrap();
     assert!(output.types_rs.contains("pub enum DynamicTick"));
     assert!(output.types_rs.contains("Initialized(DynamicTickData)"));

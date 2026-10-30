@@ -24,6 +24,7 @@ from arete.program_read_transport import (
     ProgramReadDescriptor,
     ProgramReleaseReference,
     UnavailableProgramReadTransport,
+    UnavailableTransportDef,
     program_read_descriptor_from_wire,
     program_read_descriptor_to_wire,
     request_path,
@@ -487,7 +488,8 @@ def test_validation_error_messages_match_typescript() -> None:
             ),
         )
     assert excinfo.value.message == (
-        "Program 'alpha' local HTTP transport must use endpointSource 'connect-http-url'"
+        "Program 'alpha' local HTTP transport must use endpointSource 'explicit' or "
+        "'connect-http-url'"
     )
 
 
@@ -591,6 +593,60 @@ async def test_from_descriptor_builds_a_local_transport() -> None:
         "http://127.0.0.1:8879/local/api/v1/releases/release-alpha/accounts/State/address"
     )
     assert http.calls[0]["target"] is None
+
+
+@pytest.mark.asyncio
+async def test_from_descriptor_reads_an_explicit_endpoint_without_connect_http_url() -> None:
+    http = FakeHttpClient({"value": "self-hosted"})
+    descriptor = program_read_descriptor_from_wire(
+        {
+            "release": {"programReleaseHash": "release-alpha", "programSpecHash": "spec-alpha"},
+            "transport": {
+                "kind": "local-http",
+                "endpointSource": "explicit",
+                "endpoint": "http://reads.internal:8879/api",
+            },
+        }
+    )
+    transport = HttpProgramReadTransport.from_descriptor("alpha", descriptor, http)
+    await transport.read(ProgramReadRequest.fetch("State", "address"))
+    assert http.calls[0]["url"] == (
+        "http://reads.internal:8879/api/v1/releases/release-alpha/accounts/State/address"
+    )
+    assert program_read_descriptor_to_wire(descriptor)["transport"] == {
+        "kind": "local-http",
+        "endpointSource": "explicit",
+        "endpoint": "http://reads.internal:8879/api",
+    }
+
+
+def test_unavailable_descriptor_fails_with_its_fix() -> None:
+    wire = {
+        "release": {"programReleaseHash": "release-alpha", "programSpecHash": "spec-alpha"},
+        "transport": {"kind": "unavailable", "message": "install it with `a4 install program alpha`"},
+    }
+    descriptor = program_read_descriptor_from_wire(wire)
+    assert isinstance(descriptor.transport, UnavailableTransportDef)
+    assert program_read_descriptor_to_wire(descriptor) == wire
+    with pytest.raises(AreteError) as excinfo:
+        HttpProgramReadTransport.from_descriptor("alpha", descriptor, FakeHttpClient())
+    assert excinfo.value.code == "INVALID_CONFIG"
+    assert excinfo.value.message == "install it with `a4 install program alpha`"
+    with pytest.raises(AreteError):
+        validate_program_read_descriptor(
+            "alpha",
+            ProgramReadDescriptor(
+                release=descriptor.release, transport=UnavailableTransportDef(message=" ")
+            ),
+        )
+    with pytest.raises(AreteError):
+        validate_program_read_descriptor(
+            "alpha",
+            ProgramReadDescriptor(
+                release=descriptor.release,
+                transport=LocalHttpTransportDef(endpoint_source="explicit", endpoint="ftp://x"),
+            ),
+        )
 
 
 def test_from_descriptor_requires_connect_http_url_for_local() -> None:

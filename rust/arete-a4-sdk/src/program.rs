@@ -165,6 +165,9 @@ impl ProgramBuilder {
     /// Validates `descriptor` ([`validate_program_read_descriptor`]) and
     /// constructs:
     ///
+    /// - `local-http` naming an endpoint: a transport over that endpoint.
+    /// - `unavailable`: errors with [`AreteError::InvalidConfig`] carrying the
+    ///   descriptor's message (how to get a read endpoint).
     /// - `local-http`: a transport over the client's HTTP base URL. Errors
     ///   with [`AreteError::InvalidConfig`] naming the program when the client
     ///   has no HTTP endpoint (mirror of the TS `INVALID_CONFIG` "requires
@@ -210,6 +213,12 @@ impl ProgramBuilder {
                     release.clone(),
                     self.http(),
                 ))
+            }
+            ProgramReadDescriptor::LocalHttpEndpoint { release, endpoint } => Ok(
+                ProgramReadTransport::local_http(endpoint, release.clone(), self.http()),
+            ),
+            ProgramReadDescriptor::Unavailable { message, .. } => {
+                Err(AreteError::InvalidConfig(message.clone()))
             }
             ProgramReadDescriptor::HostedBinding { release, binding } => {
                 let auth = self.hosted_auth(binding.auth.required, &binding.auth.session_endpoint);
@@ -638,6 +647,37 @@ mod tests {
         let transport = builder.account_transport("ore", &descriptor).unwrap();
         assert_eq!(transport.endpoint(), "http://127.0.0.1:4000");
         assert_eq!(transport.release(), &release());
+    }
+
+    #[test]
+    fn explicit_local_endpoint_needs_no_client_base_url() {
+        let builder = ProgramBuilder::new();
+        let descriptor = ProgramReadDescriptor::LocalHttpEndpoint {
+            release: release(),
+            endpoint: "http://reads.internal:8879".to_string(),
+        };
+        let transport = builder.account_transport("ore", &descriptor).unwrap();
+        assert_eq!(transport.endpoint(), "http://reads.internal:8879");
+    }
+
+    #[test]
+    fn unavailable_reads_fail_with_their_fix() {
+        let builder = ProgramBuilder::for_client(
+            reqwest::Client::new(),
+            Some("http://127.0.0.1:4000".to_string()),
+            None,
+            None,
+        );
+        let descriptor = ProgramReadDescriptor::Unavailable {
+            release: release(),
+            message: "install it with `a4 install program ore`".to_string(),
+        };
+        match builder.account_transport("ore", &descriptor).err().unwrap() {
+            AreteError::InvalidConfig(message) => {
+                assert_eq!(message, "install it with `a4 install program ore`");
+            }
+            other => panic!("expected InvalidConfig, got {other:?}"),
+        }
     }
 
     #[test]

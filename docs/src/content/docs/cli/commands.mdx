@@ -93,7 +93,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                      |
 | `a4 stack compose`                                                            | Compose live views and program SDKs                               |
 | `a4 sdk describe <alias>`                                                     | Print an installed SDK's reference (views, fields, reads)         |
-| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK from a StackManifest                    |
+| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK offline from a StackManifest            |
 | `a4 sdk create --manifest ... --rust`                                         | Generate a Rust SDK from a StackManifest                          |
 | `a4 sdk create --program-spec ... --rust`                                     | Generate a Rust (or `--python`) program SDK from a ProgramSpec    |
 | `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK  |
@@ -1824,7 +1824,22 @@ a4 sdk create --python --program-spec ./.arete/ore.program-spec.json \
   --extensions ./sdks/programs/ore/python --output ./generated/ore-program-py
 ```
 
-A standalone program SDK reads every account its ProgramSpec declares: Rust
+An SDK generated offline has no account read endpoint. It builds
+instructions and derives PDAs, but each account read fails with how to get
+one: install the program from the registry (`a4 install program <package>`)
+and use `a4 dev` for a dev environment. To read a self-hosted Arete server
+instead, name it with `--read-endpoint <url>`; the SDK reads that URL and needs
+no connect-time `httpUrl`.
+
+```bash
+a4 sdk create --ts --program-only --idl ./idl/ore.json \
+  --read-endpoint https://arete.example.com
+```
+
+SDKs generated before `--read-endpoint` existed keep reading the connect-time
+`httpUrl`.
+
+With a read endpoint, a standalone program SDK reads every account its ProgramSpec declares: Rust
 `<account>_accounts()` on the program accessor and Python
 `accounts.<account>` return a typed reader (`fetch`, `fetch_many`, `exists`)
 over the account's generated model, and `pdas` derives every ProgramSpec PDA.

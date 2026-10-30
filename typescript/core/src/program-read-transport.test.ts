@@ -522,6 +522,69 @@ describe('program read transports', () => {
     );
   });
 
+  it('reads a generated explicit endpoint without ConnectOptions.httpUrl', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ value: 'self-hosted' })));
+    const stack = {
+      name: 'explicit-read-endpoint',
+      endpoints: { ws: '' },
+      views: {},
+      programs: { alpha: alphaProgram },
+      programReads: {
+        alpha: {
+          release: { programReleaseHash: 'release-alpha', programSpecHash: 'spec-alpha' },
+          transport: {
+            kind: 'local-http',
+            endpointSource: 'explicit',
+            endpoint: 'http://reads.internal:8879/api',
+          },
+        },
+      },
+    } as const;
+    const client = await Arete.connect(stack, {
+      transport: 'http',
+      httpUrl: 'http://127.0.0.1:9999/ignored',
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await client.programs.alpha.accounts.State.fetch('address');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe(
+      'http://reads.internal:8879/api/v1/releases/release-alpha/accounts/State/address'
+    );
+  });
+
+  it('fails an unavailable read with its generated fix, not a missing httpUrl', async () => {
+    const fetchMock = vi.fn();
+    const message = "Program 'alpha' account reads need a read endpoint: install it with `a4 install program alpha`";
+    const stack = {
+      name: 'offline-generated',
+      endpoints: { ws: '' },
+      views: {},
+      programs: { alpha: alphaProgram },
+      programReads: {
+        alpha: {
+          release: { programReleaseHash: 'release-alpha', programSpecHash: 'spec-alpha' },
+          transport: { kind: 'unavailable', message },
+        },
+      },
+    } as const;
+    const client = await Arete.connect(stack, {
+      autoConnect: false,
+      fetch: fetchMock as typeof fetch,
+    });
+
+    await expect(client.programs.alpha.accounts.State.fetch('address'))
+      .rejects.toMatchObject({ code: 'INVALID_CONFIG', message });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(() => validateProgramReadDescriptor('alpha', {
+      release: { programReleaseHash: 'release-alpha', programSpecHash: 'spec-alpha' },
+      transport: { kind: 'unavailable', message: ' ' },
+    })).toThrow(/requires a message/);
+    expect(() => validateProgramReadDescriptor('alpha', {
+      release: { programReleaseHash: 'release-alpha', programSpecHash: 'spec-alpha' },
+      transport: { kind: 'local-http', endpointSource: 'explicit', endpoint: 'ftp://x' },
+    })).toThrow(/http\(s\) endpoint/);
+  });
+
   it('uses a hosted binding endpoint even when httpUrl and stack HTTP are present', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ value: 'hosted' })));
     const stack = {

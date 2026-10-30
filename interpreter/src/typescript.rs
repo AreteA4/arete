@@ -3598,8 +3598,14 @@ pub struct TypeScriptProgramReadBinding {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TypeScriptProgramReadTransport {
+    /// A self-hosted Arete server at `ConnectOptions.httpUrl`.
     LocalHttp,
+    /// A self-hosted Arete server at this URL (`a4 sdk create
+    /// --read-endpoint`).
+    LocalHttpEndpoint(String),
     HostedBinding(TypeScriptProgramReadBinding),
+    /// No read endpoint: account reads fail with this message.
+    Unavailable(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3626,9 +3632,29 @@ impl From<&arete_hash::OssProgramIdentityV1> for TypeScriptProgramConfig {
                 program_release_hash: identity.release_hash.to_string(),
                 program_spec_hash: identity.program_spec_hash.to_string(),
             },
-            transport: TypeScriptProgramReadTransport::LocalHttp,
+            // Generated offline: reads need an endpoint named at
+            // generation (`with_read_endpoint`) or an installed program.
+            transport: TypeScriptProgramReadTransport::Unavailable(
+                crate::program_sdk::offline_program_read_message(
+                    &identity.program_spec.idl_snapshot.snapshot.name,
+                ),
+            ),
             gateway: None,
         }
+    }
+}
+
+impl TypeScriptProgramConfig {
+    /// An offline program's reads go to a self-hosted Arete server at
+    /// `endpoint`. Programs that already have an endpoint are unchanged.
+    pub fn with_read_endpoint(mut self, endpoint: Option<&str>) -> Self {
+        if let (Some(endpoint), TypeScriptProgramReadTransport::Unavailable(_)) =
+            (endpoint, &self.transport)
+        {
+            self.transport =
+                TypeScriptProgramReadTransport::LocalHttpEndpoint(endpoint.to_string());
+        }
+        self
     }
 }
 
@@ -5716,6 +5742,14 @@ fn generate_program_read_sections(metadata: &TypeScriptProgramConfig, indent: &s
         TypeScriptProgramReadTransport::LocalHttp => format!(
             "{indent}transport: {{ kind: 'local-http', endpointSource: 'connect-http-url' }},"
         ),
+        TypeScriptProgramReadTransport::LocalHttpEndpoint(endpoint) => format!(
+            "{indent}transport: {{ kind: 'local-http', endpointSource: 'explicit', endpoint: {endpoint} }},",
+            endpoint = serde_json::to_string(endpoint).expect("read endpoint must serialize"),
+        ),
+        TypeScriptProgramReadTransport::Unavailable(message) => format!(
+            "{indent}transport: {{ kind: 'unavailable', message: {message} }},",
+            message = serde_json::to_string(message).expect("read message must serialize"),
+        ),
         TypeScriptProgramReadTransport::HostedBinding(binding) => format!(
             "{indent}transport: {{ kind: 'hosted-binding', binding: {{ endpoint: {endpoint}, programReadBindingId: {binding_id}, auth: {auth} }} }},",
             endpoint = serde_json::to_string(&binding.endpoint)
@@ -6924,10 +6958,30 @@ mod tests {
             "programReleaseHash: \"{}\"",
             identity.release_hash
         )));
+        // Generated offline: reads are unavailable with the install-and-dev fix.
         assert!(output
             .stack_definition
-            .contains("transport: { kind: 'local-http', endpointSource: 'connect-http-url' }"));
+            .contains("transport: { kind: 'unavailable', message: \"Program 'presale' has no account read endpoint"));
+        assert!(output.stack_definition.contains("a4 install program"));
+        assert!(!output.stack_definition.contains("local-http"));
         assert!(!output.stack_definition.contains("path:"));
+
+        // A read endpoint named at generation is emitted as it is.
+        let program = TypeScriptProgramConfig::from(&identity)
+            .with_read_endpoint(Some("http://reads.internal:8879"));
+        let stack_spec =
+            crate::program_sdk::build_program_only_stack_spec_from_identity(&identity, "Presale");
+        let output = compile_program_modules(
+            stack_spec,
+            Some(TypeScriptStackConfig {
+                programs: Some(vec![program]),
+                ..TypeScriptStackConfig::default()
+            }),
+        )
+        .expect("program SDK generation");
+        assert!(output.stack_definition.contains(
+            "transport: { kind: 'local-http', endpointSource: 'explicit', endpoint: \"http://reads.internal:8879\" }"
+        ));
     }
 
     #[test]

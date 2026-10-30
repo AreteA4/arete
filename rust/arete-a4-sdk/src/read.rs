@@ -93,6 +93,7 @@ pub struct ProgramReadBinding {
 pub enum ProgramReadTransportKind {
     LocalHttp,
     HostedBinding,
+    Unavailable,
 }
 
 /// Generated release identity with one explicit, non-inheriting read
@@ -100,41 +101,60 @@ pub enum ProgramReadTransportKind {
 ///
 /// Serializes to the exact TS-generated JSON shape:
 /// `{"release": …, "transport": {"kind": "local-http", "endpointSource":
-/// "connect-http-url"}}` or `{"release": …, "transport": {"kind":
-/// "hosted-binding", "binding": …}}`.
+/// "connect-http-url"}}`, `{"release": …, "transport": {"kind":
+/// "local-http", "endpointSource": "explicit", "endpoint": …}}`,
+/// `{"release": …, "transport": {"kind": "hosted-binding", "binding": …}}`
+/// or `{"release": …, "transport": {"kind": "unavailable", "message": …}}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 // Descriptors are configuration values created once per program; the size
 // difference between variants is irrelevant and boxing would obscure the
 // TS-mirrored shape.
 #[allow(clippy::large_enum_variant)]
 pub enum ProgramReadDescriptor {
-    LocalHttp {
+    /// A self-hosted Arete server at the client's HTTP endpoint (SDKs
+    /// generated before the endpoint was named at generation time).
+    LocalHttp { release: ProgramReleaseReference },
+    /// A self-hosted Arete server at `endpoint`, named at generation time.
+    LocalHttpEndpoint {
         release: ProgramReleaseReference,
+        endpoint: String,
     },
     HostedBinding {
         release: ProgramReleaseReference,
         binding: ProgramReadBinding,
+    },
+    /// No read endpoint: every account read fails with `message`, which says
+    /// how to get one.
+    Unavailable {
+        release: ProgramReleaseReference,
+        message: String,
     },
 }
 
 impl ProgramReadDescriptor {
     pub fn release(&self) -> &ProgramReleaseReference {
         match self {
-            Self::LocalHttp { release } | Self::HostedBinding { release, .. } => release,
+            Self::LocalHttp { release }
+            | Self::LocalHttpEndpoint { release, .. }
+            | Self::HostedBinding { release, .. }
+            | Self::Unavailable { release, .. } => release,
         }
     }
 
     pub fn transport_kind(&self) -> ProgramReadTransportKind {
         match self {
-            Self::LocalHttp { .. } => ProgramReadTransportKind::LocalHttp,
+            Self::LocalHttp { .. } | Self::LocalHttpEndpoint { .. } => {
+                ProgramReadTransportKind::LocalHttp
+            }
             Self::HostedBinding { .. } => ProgramReadTransportKind::HostedBinding,
+            Self::Unavailable { .. } => ProgramReadTransportKind::Unavailable,
         }
     }
 
     pub fn binding(&self) -> Option<&ProgramReadBinding> {
         match self {
-            Self::LocalHttp { .. } => None,
             Self::HostedBinding { binding, .. } => Some(binding),
+            _ => None,
         }
     }
 }
@@ -151,16 +171,24 @@ struct DescriptorWire {
 #[allow(clippy::large_enum_variant)]
 enum TransportWire {
     #[serde(rename = "local-http", rename_all = "camelCase")]
-    LocalHttp { endpoint_source: EndpointSource },
+    LocalHttp {
+        endpoint_source: EndpointSource,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        endpoint: Option<String>,
+    },
     #[serde(rename = "hosted-binding")]
     HostedBinding { binding: ProgramReadBinding },
+    #[serde(rename = "unavailable")]
+    Unavailable { message: String },
 }
 
-/// Local HTTP descriptors must use the connect-time HTTP endpoint; any other
-/// `endpointSource` is rejected during deserialization (mirrors the TS
-/// `endpointSource !== 'connect-http-url'` validation rule).
+/// Where a local HTTP descriptor reads: the endpoint it names (`explicit`)
+/// or the connect-time HTTP endpoint. Any other `endpointSource` is rejected
+/// during deserialization (mirrors the TS validation rule).
 #[derive(Serialize, Deserialize)]
 enum EndpointSource {
+    #[serde(rename = "explicit")]
+    Explicit,
     #[serde(rename = "connect-http-url")]
     ConnectHttpUrl,
 }
@@ -172,6 +200,20 @@ impl Serialize for ProgramReadDescriptor {
                 release: release.clone(),
                 transport: TransportWire::LocalHttp {
                     endpoint_source: EndpointSource::ConnectHttpUrl,
+                    endpoint: None,
+                },
+            },
+            Self::LocalHttpEndpoint { release, endpoint } => DescriptorWire {
+                release: release.clone(),
+                transport: TransportWire::LocalHttp {
+                    endpoint_source: EndpointSource::Explicit,
+                    endpoint: Some(endpoint.clone()),
+                },
+            },
+            Self::Unavailable { release, message } => DescriptorWire {
+                release: release.clone(),
+                transport: TransportWire::Unavailable {
+                    message: message.clone(),
                 },
             },
             Self::HostedBinding { release, binding } => DescriptorWire {
@@ -189,8 +231,24 @@ impl<'de> Deserialize<'de> for ProgramReadDescriptor {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let wire = DescriptorWire::deserialize(deserializer)?;
         Ok(match wire.transport {
-            TransportWire::LocalHttp { .. } => Self::LocalHttp {
+            TransportWire::LocalHttp {
+                endpoint_source: EndpointSource::ConnectHttpUrl,
+                ..
+            } => Self::LocalHttp {
                 release: wire.release,
+            },
+            TransportWire::LocalHttp {
+                endpoint_source: EndpointSource::Explicit,
+                endpoint,
+            } => Self::LocalHttpEndpoint {
+                release: wire.release,
+                endpoint: endpoint.ok_or_else(|| {
+                    serde::de::Error::custom("an explicit local HTTP transport requires endpoint")
+                })?,
+            },
+            TransportWire::Unavailable { message } => Self::Unavailable {
+                release: wire.release,
+                message,
             },
             TransportWire::HostedBinding { binding } => Self::HostedBinding {
                 release: wire.release,
@@ -206,6 +264,10 @@ impl<'de> Deserialize<'de> for ProgramReadDescriptor {
 
 fn is_non_empty(value: &str) -> bool {
     !value.trim().is_empty()
+}
+
+fn is_http_url(value: &str) -> bool {
+    url::Url::parse(value).is_ok_and(|url| matches!(url.scheme(), "http" | "https"))
 }
 
 fn is_secure_or_loopback_http_url(value: &str) -> bool {
@@ -253,6 +315,28 @@ pub fn validate_program_read_descriptor(
     }
     match descriptor {
         ProgramReadDescriptor::LocalHttp { .. } => Ok(()),
+        ProgramReadDescriptor::LocalHttpEndpoint { endpoint, .. } => {
+            if is_http_url(endpoint) {
+                Ok(())
+            } else {
+                Err(ReadError::InvalidConfig {
+                    message: format!(
+                        "Program '{program_name}' local HTTP transport requires an http(s) endpoint"
+                    ),
+                })
+            }
+        }
+        ProgramReadDescriptor::Unavailable { message, .. } => {
+            if is_non_empty(message) {
+                Ok(())
+            } else {
+                Err(ReadError::InvalidConfig {
+                    message: format!(
+                        "Program '{program_name}' unavailable transport requires a message"
+                    ),
+                })
+            }
+        }
         ProgramReadDescriptor::HostedBinding { binding, .. } => {
             let auth = &binding.auth;
             let valid = is_secure_or_loopback_http_url(&binding.endpoint)
@@ -979,6 +1063,48 @@ mod tests {
             }
         });
         assert!(serde_json::from_value::<ProgramReadDescriptor>(bad).is_err());
+    }
+
+    #[test]
+    fn explicit_and_unavailable_descriptors_round_trip_the_ts_wire_shape() {
+        let release =
+            json!({"programReleaseHash": "release-alpha", "programSpecHash": "spec-alpha"});
+        let explicit_json = json!({
+            "release": release,
+            "transport": {"kind": "local-http", "endpointSource": "explicit", "endpoint": "http://reads.internal:8879"}
+        });
+        let explicit: ProgramReadDescriptor =
+            serde_json::from_value(explicit_json.clone()).unwrap();
+        assert!(matches!(
+            &explicit,
+            ProgramReadDescriptor::LocalHttpEndpoint { endpoint, .. } if endpoint == "http://reads.internal:8879"
+        ));
+        assert_eq!(serde_json::to_value(&explicit).unwrap(), explicit_json);
+        validate_program_read_descriptor("alpha", &explicit).unwrap();
+
+        let unavailable_json = json!({
+            "release": release,
+            "transport": {"kind": "unavailable", "message": "install it"}
+        });
+        let unavailable: ProgramReadDescriptor =
+            serde_json::from_value(unavailable_json.clone()).unwrap();
+        assert_eq!(
+            unavailable.transport_kind(),
+            ProgramReadTransportKind::Unavailable
+        );
+        assert_eq!(
+            serde_json::to_value(&unavailable).unwrap(),
+            unavailable_json
+        );
+
+        // An explicit endpoint must be named and be http(s).
+        let missing = json!({"release": release, "transport": {"kind": "local-http", "endpointSource": "explicit"}});
+        assert!(serde_json::from_value::<ProgramReadDescriptor>(missing).is_err());
+        let ftp = ProgramReadDescriptor::LocalHttpEndpoint {
+            release: test_release(),
+            endpoint: "ftp://reads".to_string(),
+        };
+        assert!(validate_program_read_descriptor("alpha", &ftp).is_err());
     }
 
     // -- descriptor validation table --------------------------------------

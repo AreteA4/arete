@@ -2630,7 +2630,7 @@ export const SUBSCRIPTIONS_STREAM_STACK_CORE = {
   programReads: {
     subscriptions: {
       release: { programReleaseHash: "arete:h1:program-release:sha256:73c10c463d6d8f3734e2869959e20a5e27986bf68c7a16d415eb5f6aabe2a6de", programSpecHash: "arete:h1:program-spec:sha256:a10a30f17be97429474e990fdc24b87edf51e4c5fe0021b0651d434d11f3e698" },
-      transport: { kind: 'local-http', endpointSource: 'connect-http-url' },
+      transport: { kind: 'unavailable', message: "Program 'subscriptions' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server" },
     },
   },
   addresses: {
