@@ -5355,9 +5355,27 @@ fn with_local_extensions(
     Ok(lock)
 }
 
-/// Fail while arete.lock in `dir` records a local SDK extension: what is
-/// deployed must use only published extensions. No lock passes.
+/// Fail while `dir`'s project uses a local SDK extension: arete.toml
+/// declares one (`extensions`), or arete.lock records one the SDKs were
+/// generated with. What is deployed must use only published extensions.
+/// Adding `extensions` leaves the lock fresh, so the manifest is checked
+/// too: a deploy that installs (a newly admitted program release) would
+/// otherwise apply it. No manifest and no lock pass.
 pub fn refuse_local_extensions(dir: &Path) -> Result<()> {
+    let manifest_path = dir.join("arete.toml");
+    if manifest_path.is_file() {
+        let manifest = ProjectManifest::load(&manifest_path)?;
+        let declared = manifest
+            .dependencies()
+            .find(|(_, _, dependency)| dependency.extensions.is_some())
+            .map(|(kind, alias, _)| (kind, alias.clone()));
+        if let Some((kind, alias)) = declared {
+            bail!(
+                "{kind} '{alias}' uses a local SDK extension (`extensions` in arete.toml). Publish the extension, remove `extensions` from [dependencies.{}.{alias}] in arete.toml and run `a4 install --locked`, then deploy",
+                kind.namespace()
+            );
+        }
+    }
     let Some(lock) = ProjectLock::load_optional(dir.join("arete.lock"))? else {
         return Ok(());
     };
@@ -12331,5 +12349,19 @@ source = { workspace = "ore-sdk" }
         assert_eq!(lock_of(&manifest).dependencies[0], published);
         assert!(check_project(&manifest).unwrap().is_empty());
         refuse_local_extensions(&root).unwrap();
+
+        // The override declared again but not installed: the lock is still
+        // the published one, and a deploy refuses it anyway.
+        fs::write(
+            &manifest,
+            format!("{published_manifest}extensions = {{ path = \"ore-extension\" }}\n"),
+        )
+        .unwrap();
+        assert_eq!(lock_of(&manifest).dependencies[0], published);
+        let error = refuse_local_extensions(&root).expect_err("arete.toml declares it");
+        assert!(
+            format!("{error:#}").contains("`extensions` in arete.toml"),
+            "{error:#}"
+        );
     }
 }
