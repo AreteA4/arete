@@ -5372,7 +5372,13 @@ fn with_local_extensions(
 /// otherwise apply it. No manifest and no lock pass.
 pub fn refuse_local_extensions(dir: &Path) -> Result<()> {
     let manifest_path = dir.join("arete.toml");
-    if manifest_path.is_file() {
+    // An arete.toml with only `[protocol]` declares no dependencies, so no
+    // extensions either.
+    let declares_dependencies = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|source| toml::from_str::<toml::Value>(&source).ok())
+        .is_some_and(|value| value.get("manifest_version").is_some());
+    if declares_dependencies {
         let manifest = ProjectManifest::load(&manifest_path)?;
         let declared = manifest
             .dependencies()
