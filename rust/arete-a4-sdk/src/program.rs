@@ -14,9 +14,13 @@ use std::sync::{Arc, RwLock};
 
 use crate::auth::AuthConfig;
 use crate::chain::ChainClient;
+use crate::dev_environment::{
+    self, DevMode, EdgeRequestPolicy, EdgeTokens, ProgramReadIdentity, RefusedTokens,
+    ResolveRequest,
+};
 use crate::error::AreteError;
 use crate::http::HttpAuthClient;
-use crate::program_read_transport::{BearerTokenSource, ProgramReadTransport};
+use crate::program_read_transport::{BearerTokenSource, DirectProgramRead, ProgramReadTransport};
 use crate::read::{
     validate_program_read_descriptor, ProgramReadDescriptor, QueryExecutor, ReadError,
 };
@@ -61,6 +65,10 @@ pub struct ProgramBuilder {
     auth_config: Option<AuthConfig>,
     chain: Option<Arc<dyn ChainClient>>,
     wallet: Option<WalletSlot>,
+    /// The client's dev mode; `None` in production.
+    dev: Option<DevMode>,
+    /// Stack queries in dev mode, built by the client.
+    dev_queries: Option<QueryExecutor>,
 }
 
 impl ProgramBuilder {
@@ -84,7 +92,16 @@ impl ProgramBuilder {
             auth_config,
             chain: None,
             wallet: None,
+            dev: None,
+            dev_queries: None,
         }
+    }
+
+    /// The client's dev mode, and where its stack queries go in it.
+    pub(crate) fn with_dev(mut self, dev: Option<DevMode>, queries: Option<QueryExecutor>) -> Self {
+        self.dev = dev;
+        self.dev_queries = queries;
+        self
     }
 
     /// The connected client's chain reader and its (settable) default
@@ -166,7 +183,23 @@ impl ProgramBuilder {
         program_name: &str,
         descriptor: &ProgramReadDescriptor,
     ) -> Result<ProgramReadTransport, AreteError> {
+        self.account_transport_of(program_name, None, descriptor)
+    }
+
+    /// [`Self::account_transport`] for the program at `program_id`. In dev
+    /// mode the program's address is part of the identity the environment
+    /// resolves; [`Self::account_transport`] leaves it out and the binding
+    /// names the program.
+    pub fn account_transport_of(
+        &self,
+        program_name: &str,
+        program_id: Option<&str>,
+        descriptor: &ProgramReadDescriptor,
+    ) -> Result<ProgramReadTransport, AreteError> {
         validate_program_read_descriptor(program_name, descriptor).map_err(invalid_config)?;
+        if let Some(dev) = &self.dev {
+            return Ok(self.dev_account_transport(dev, program_name, program_id, descriptor));
+        }
         match descriptor {
             ProgramReadDescriptor::LocalHttp { release } => {
                 let Some(base) = self.http_base_url.as_deref() else {
@@ -199,10 +232,85 @@ impl ProgramBuilder {
         }
     }
 
+    /// The read transport of one program in dev mode: through the edge,
+    /// naming the installed identity, or at the environment's target resolved
+    /// on the first read. A program without a hosted binding has nothing to
+    /// resolve, so its reads fail with `devenv-surface-unavailable`.
+    fn dev_account_transport(
+        &self,
+        dev: &DevMode,
+        program_name: &str,
+        program_id: Option<&str>,
+        descriptor: &ProgramReadDescriptor,
+    ) -> ProgramReadTransport {
+        let ProgramReadDescriptor::HostedBinding { release, binding } = descriptor else {
+            let refused = RefusedTokens {
+                error: dev_environment::surface_unavailable(
+                    format!(
+                        "Program '{program_name}' reads from a local HTTP endpoint, which a dev \
+                         environment does not serve"
+                    ),
+                    "Install the program from the registry (`a4 install program`) to read it \
+                     in a dev environment.",
+                ),
+            };
+            return ProgramReadTransport::new(
+                dev_environment::REFUSED_ENDPOINT,
+                descriptor.release().clone(),
+                Some(Arc::new(refused) as Arc<dyn BearerTokenSource>),
+                None,
+                self.http(),
+            );
+        };
+        let identity = ProgramReadIdentity {
+            program_id: program_id.map(str::to_string),
+            program_read_binding_id: binding.program_read_binding_id.clone(),
+            program_release_hash: release.program_release_hash.clone(),
+        };
+        match dev {
+            DevMode::Edge { edge_url } => {
+                let request = ResolveRequest {
+                    program_reads: vec![identity],
+                    ..ResolveRequest::default()
+                };
+                let tokens = EdgeTokens {
+                    policy: EdgeRequestPolicy::new(edge_url, Some(&request)),
+                };
+                ProgramReadTransport::new(
+                    edge_url.clone(),
+                    release.clone(),
+                    Some(Arc::new(tokens) as Arc<dyn BearerTokenSource>),
+                    None,
+                    self.http(),
+                )
+            }
+            DevMode::Direct(resolver) => {
+                let auth = HttpAuthClient::new(
+                    Some(resolver.token_auth(&binding.auth.session_endpoint)),
+                    None,
+                    self.http(),
+                );
+                ProgramReadTransport::hosted(
+                    binding,
+                    release.clone(),
+                    Some(Arc::new(auth) as Arc<dyn BearerTokenSource>),
+                    self.http(),
+                )
+                .with_direct(DirectProgramRead {
+                    resolver: resolver.clone(),
+                    identity,
+                })
+            }
+        }
+    }
+
     /// Query executor over the client's HTTP base URL (stack- and
     /// program-scoped queries). Errors with [`AreteError::InvalidConfig`]
     /// when the client has no HTTP endpoint.
     pub fn query_executor(&self) -> Result<QueryExecutor, AreteError> {
+        if let Some(queries) = &self.dev_queries {
+            return Ok(queries.clone());
+        }
         let Some(base) = self.http_base_url.as_deref() else {
             return Err(AreteError::InvalidConfig(
                 "Stack queries require an HTTP endpoint (provide AreteBuilder::http_url or \

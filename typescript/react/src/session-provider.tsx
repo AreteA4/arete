@@ -85,8 +85,8 @@ export interface OwnedAreteSessionProviderProps<TDef extends SessionDefinition>
   /** What to open, as for `createSession(definition, options)`. */
   definition: TDef;
   /**
-   * `createSession` options. `auth` and `fetch` default to the enclosing
-   * `AreteProvider`'s. A change reopens the session (see the README).
+   * `createSession` options. `auth`, `fetch` and `environment` default to
+   * the enclosing `AreteProvider`'s. A change reopens the session (see the README).
    */
   options?: AreteSessionOptions<TDef>;
   session?: never;
@@ -258,10 +258,14 @@ export function AreteSessionProvider<TDef extends SessionDefinition>(
   const given = (props.options ?? {}) as Record<string, unknown>;
   const inheritedAuth = arete?.config.auth;
   const inheritedFetch = arete?.config.fetch;
+  const inheritedEnvironment = arete?.config.environment;
   const options = useSameShape<Record<string, unknown>>({
     ...given,
     ...(given.auth === undefined && inheritedAuth ? { auth: inheritedAuth } : {}),
     ...(given.fetch === undefined && inheritedFetch ? { fetch: inheritedFetch } : {}),
+    ...(given.environment === undefined && inheritedEnvironment !== undefined
+      ? { environment: inheritedEnvironment }
+      : {}),
   });
   const [attempt, setAttempt] = useState(0);
 

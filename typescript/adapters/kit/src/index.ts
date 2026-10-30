@@ -209,6 +209,12 @@ export interface KitTransactionInspectionResult extends TransactionInspectionRes
 }
 
 export interface KitWalletAdapter extends WalletAdapter {
+  /**
+   * `'context'` unless a `transport` other than `'auto'` was configured: the
+   * adapter signs and submits through the client's transaction transport,
+   * which dev mode requires.
+   */
+  readonly submitsThrough: 'context' | 'adapter';
   readonly signerAddresses: readonly string[];
   readonly supportedTransactionVersions: readonly ['legacy', 0, 1];
   signAndSend(
@@ -873,6 +879,11 @@ async function resolveV1Budgets(
   return { ...resources, computeUnitLimit, loadedAccountsDataSizeLimit };
 }
 
+/** Where `signAndSend` submits: the client's transport unless one was chosen. */
+function submitsThrough(selection: AdapterTransportSelection | undefined): 'context' | 'adapter' {
+  return selection === undefined || selection === 'auto' ? 'context' : 'adapter';
+}
+
 /**
  * Create a {@link WalletAdapter} from a kit RPC pair and a signer.
  */
@@ -895,6 +906,7 @@ export function createWalletAdapter(config: KitAdapterConfig): KitWalletAdapter 
 
   return {
     publicKey: signer.address,
+    submitsThrough: submitsThrough(config.transport),
     onActivity(listener: KitWalletActivityListener) {
       activityListeners.add(listener);
       return () => {

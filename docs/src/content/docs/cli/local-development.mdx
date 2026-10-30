@@ -195,6 +195,63 @@ loopback host, and a browser's `Origin` must be a loopback origin, so a page
 on another site, or a rebound DNS name, can't use your environment. Local
 pages get CORS headers for their origin.
 
+### The edge: installed SDKs in dev mode
+
+The same port is also the **edge**: the environment's routes in the shape
+the installed SDKs call in production. With `ARETE_ENVIRONMENT=dev` and
+`ARETE_DEV_URL` set to it, the SDKs you installed with `a4 install` read
+and send through the environment without being regenerated, and without an
+Arete key or token in the app:
+
+| Route on the edge                                                                   | Serves                                                                                    |
+| ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `/chain/…`, `/transactions/v1/…`                                                    | chain reads and transactions against the environment                                      |
+| `/v1/releases/<release>/…`                                                          | program account reads (Program Read) against the environment                              |
+| `/stacks/<liveAlias>?stackManifestHash=…`                                           | the environment's copy of an installed stack (WebSocket, and queries under the same path) |
+| `/api/protocol-deployments/<id>/…`                                                  | your protocol's deployment in the environment                                             |
+| `/api/protocol-instances/…`, `/api/execution-intents/…`, `/api/protocol-receipts/…` | instance reads, step submits and receipts of those deployments                            |
+| `GET /.well-known/arete-dev-edge`                                                   | `{"edge": 1}`: the SDKs check it before opening a socket                                  |
+
+The edge holds your key, resolves each installed identity to the
+environment's copy and attaches the right token itself. It never returns a
+key or a token, and it refuses what the environment can't serve with a code
+and a fix (`devenv-stack-not-loaded`, `devenv-protocol-not-deployed`, …)
+instead of reading production. It answers only on loopback, with the same
+`Host` and `Origin` rules as the RPC endpoint.
+
+`a4 dev up` loads every registry stack in `arete.lock` into the environment
+when it starts, and prints each with its state.
+
+Run your app against it with `a4 dev run`:
+
+```sh
+a4 dev run -- npm run dev
+```
+
+The command gets `ARETE_ENVIRONMENT=dev` and `ARETE_DEV_URL`, plus copies for
+browser frameworks, which only expose prefixed variables to the page
+(`VITE_ARETE_ENVIRONMENT`, `NEXT_PUBLIC_ARETE_DEV_URL`, `EXPO_PUBLIC_…`). Set
+the prefixes your framework uses in `arete.toml`:
+
+```toml
+[dev]
+public-env-prefixes = ["VITE_"]
+```
+
+Unset `ARETE_ENVIRONMENT` (or run without `a4 dev run`) and the same app
+uses production.
+
+Servers, CI and agents with a secret key can skip the edge: set
+`ARETE_ENVIRONMENT=dev` and `ARETE_DEV_ENV=<name|id>` and the SDKs resolve
+the environment's copies themselves. In code, pass the switch to the client
+instead of using the variables (Rust: `.environment(EnvironmentOption::dev())`
+on the builder). `client.environment` (Rust: `client.environment()`) tells
+dev from production.
+
+`a4 stream`, `a4 protocol actions`, `a4 protocol squads` and the MCP protocol
+tools follow `ARETE_ENVIRONMENT` too: `dev` acts on the `a4 dev` session as
+`--dev` does. A value other than `production` or `dev` is an error.
+
 ## Working with the environment
 
 Every command takes `--env <name|id>` (default `ARETE_DEV_ENV`, else the
@@ -271,9 +328,8 @@ snake or camel case; 128-bit values are decimal strings.
 ### The session file
 
 While `a4 dev up` runs, `.arete/dev/session.json` (mode 0600) is what apps,
-tests and agents read. It holds no API key or environment token, but it does
-contain a stack session token in `stackSession.token` and in the
-`stackSession.streamUrl` query string. Keep the file and those URLs private:
+tests and agents read. It holds no key and no token: SDKs in dev mode reach
+the environment through the edge (`edgeUrl`), which adds tokens itself.
 
 ```json
 {
@@ -283,13 +339,13 @@ contain a stack session token in `stackSession.token` and in the
   "sessionEndpoint": "https://api.arete.run/ws/sessions",
   "rpcUrl": "http://127.0.0.1:48700",
   "rpcWsUrl": "ws://127.0.0.1:48701",
+  "edgeUrl": "http://127.0.0.1:48700",
   "environmentRpcUrl": "https://…/rpc/v1/devenv/denv_01k…",
   "protocolSlug": "tip-jar",
   "deploymentId": "…",
   "shortId": "…",
   "stack": "tip-jar",
   "stackWsUrl": "wss://…",
-  "stackSession": { "token": "…", "expiresAt": 1791927550, "streamUrl": "wss://…?hs_token=…" },
   "uiUrl": "http://127.0.0.1:48702/"
 }
 ```
@@ -325,9 +381,8 @@ dev status` shows it once it does.
 
 Other WebSocket clients need a stack session token (`?hs_token=<token>` or
 `Authorization: Bearer <token>`). `a4 dev status` prints the stack URL with
-the token redacted (`stack.streamUrl` in `--json`); `a4 dev up` keeps a
-valid one in `.arete/dev/session.json` (`stackSession`). To mint one
-yourself, send
+the token redacted (`stack.streamUrl` in `--json`). To mint one yourself,
+send
 `POST <apiUrl>/ws/sessions` with your key and:
 
 ```json
@@ -340,8 +395,12 @@ There is one client, in the place `a4 install protocol` puts it:
 `generated/<lang>/protocols/<alias>/`. After every deploy that changes the
 release, `a4 dev up` generates it from the local build
 (`.arete/protocol/protocol-spec.json`), with the same generators as `a4
-install protocol`, so the app's types follow the local spec, and it **calls
-the deployment in your dev environment**:
+install protocol`, so the app's types follow the local spec. It still names
+the **production** deployment (none before the first deploy): run the app in
+dev mode (`a4 dev run -- <command>`, or `ARETE_ENVIRONMENT=dev`) and the SDK
+calls your dev environment's deployment of the protocol instead. For the
+published release's own spec nothing is generated: the client stays the
+published one, byte for byte.
 
 - **Before the first publish**, `arete.toml` doesn't install the protocol,
   so `a4 dev up` adds the dependency `a4 install protocol <slug>` would
@@ -357,12 +416,11 @@ the deployment in your dev environment**:
   The targets are `[dev] sdk` (below), else TypeScript.
 
 - **Once the protocol is published**, `arete.lock` keeps the published
-  release's pins, and the generated client calls the dev deployment until
-  you restore the published one.
+  release's pins, and the generated client keeps the production deployment.
 
-The app runs with your own key (`ARETE_API_KEY`) against Arete's API; the
-dev deployment is private to your account. `arete.lock` marks a client
-generated this way:
+With the switch unset the same app calls production; before the first
+deploy a client with no deployment fails with "not deployed to production
+yet". `arete.lock` marks a client generated this way:
 
 ```toml
 [[dependency]]
@@ -372,9 +430,8 @@ alias = "tip-jar"
 local_build = "arete:h1:protocol-release:sha256:…"
 ```
 
-- `a4 install --locked` restores the published client (and drops
-  `local_build`), calling the production deployment again. It fails for a
-  protocol that was never published.
+- `a4 install --locked` restores the published client's types (and drops
+  `local_build`). It fails for a protocol that was never published.
 - `a4 install --check` fails while any protocol client is a local build. Run
   it in CI.
 - `a4 protocol deploy` deploys to mainnet and updates the client to the new
@@ -491,6 +548,17 @@ or open the dev UI to stream the session's selected stack. Streams use the
 stack's environment WebSocket address and renew their session tokens.
 `a4 up` remains the command for production deployments.
 
+### Unpublished SDK extensions
+
+A dependency in `arete.toml` with `extensions = { path = "<dir>" }` uses the
+SDK extension bundle in that directory instead of the published one (see
+[Testing an unpublished SDK extension](/cli/commands/#testing-an-unpublished-sdk-extension)).
+Run `a4 install` once to generate it. After that, `a4 dev up` watches the
+bundle's files (its `extensions.json` and the files it lists, or its entry)
+and regenerates only that dependency's SDK when one changes, recording the new
+bundle as `local_extension` in `arete.lock`. Changes that touch only extension
+files don't redeploy the protocol or your stacks.
+
 ## Agents (MCP)
 
 The MCP server (`a4 mcp`) has the same operations. Each environment tool
@@ -563,6 +631,29 @@ contents of `.arete/dev/automations/webhook-secret`:
 [dev.automations]
 forward = "http://localhost:3000/api/arete-webhook"
 ```
+
+Your server can run on what `a4 dev up` itself uses, from
+`@usearete/automations/dev` (Node.js only):
+
+```ts
+import { devSimulator, devWalletsSigner, fileMemoryStore, grantDevConsent, routingSigner } from "@usearete/automations/dev";
+
+const devWallets = devWalletsSigner(client);              // signs for .arete/dev/wallets/*, messages too
+const automations = createAutomations({
+  client,
+  signer: routingSigner(client, [devWallets, privy]),    // dev wallets first, then Privy for other wallets
+  simulator: devSimulator(client),                        // the fork, through a4 dev up's local RPC
+  store: fileMemoryStore(client, ".arete/dev/app-store.bin"),
+  policy,
+});
+await grantDevConsent(automations, devWallets, { wallet: "alice", deploymentId: client.deploymentId, steps: ["refund"], limits, expiresAt });
+```
+
+Each helper throws when the client targets production, so keep the
+production signer, simulator and store beside them and pick by
+`clientCluster(client) === "dev"`. (That reads the environment from the
+client's deployment; it is temporary, until the SDK exposes the environment
+on the client.)
 
 `a4 dev consent` opts a dev wallet in, signing the consent message with the
 wallet's key as a user's wallet would in your app (entry mode only):
@@ -722,6 +813,27 @@ Local programs that send none of these headers (curl, agents, the MCP
 server) are allowed. Dev wallets sign on this machine, and browser-wallet
 steps are prepared and submitted by the server on the browser's behalf: no
 dev wallet key, and not your API key, is ever sent to the browser.
+
+## Before you deploy: `a4 dev promote --check`
+
+An app developed against the environment may use things production doesn't
+have yet. `a4 dev promote --check` lists each, with the command that
+publishes it, and exits non-zero while any remain, so CI can gate a
+production deploy on it:
+
+| Listed                                                                                                    | Publish it with                                                            |
+| --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| a protocol client generated from a local build                                                            | `a4 protocol deploy` in the protocol's project, then `a4 install`          |
+| a program the environment runs at another release than `arete.lock` pins                                  | deploy it to mainnet, `a4 program push <idl>`, then `a4 install`           |
+| a project stack the environment serves under the live alias of a dependency or of a stack a protocol uses | `a4 up`, point the dependency at it, then `a4 install`                     |
+| an SDK generated with a local extension (`local_extension`)                                               | publish the extension upstream, remove `extensions`, `a4 install --locked` |
+
+```sh
+a4 dev promote --check          # --json for CI
+```
+
+When the check is clean, run `a4 install --locked` and deploy the app with
+`ARETE_ENVIRONMENT` unset.
 
 ## Captures
 

@@ -145,17 +145,19 @@ npx @usearete/a4 create
 # With project name
 npx @usearete/a4 create my-app
 
-# With specific template
-npx @usearete/a4 create my-app --template react-ore
+# A protocol with a React app and an automations server
+npx @usearete/a4 create my-app --template protocol-app
 ```
 
 **Available templates:**
 
-| Template         | Aliases                              | Description                               |
-| ---------------- | ------------------------------------ | ----------------------------------------- |
-| `react-ore`      | `ore-react`                          | ORE mining rounds viewer (React + Vite)   |
-| `rust-ore`       | `ore-rust`                           | ORE mining rounds client (Rust + Tokio)   |
-| `typescript-ore` | `ore-typescript`, `ts-ore`, `ore-ts` | ORE mining rounds client (TypeScript CLI) |
+| Template         | Aliases                              | Description                                                                                                                              |
+| ---------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol`       |                                      | A protocol: the `a4 protocol init` tip jar and its automations                                                                           |
+| `protocol-app`   |                                      | The protocol, plus a React app on its client (dev-only tools gated on the dev environment) and an automations server with a Privy signer |
+| `react-ore`      | `ore-react`                          | ORE mining rounds viewer (React + Vite)                                                                                                  |
+| `rust-ore`       | `ore-rust`                           | ORE mining rounds client (Rust + Tokio)                                                                                                  |
+| `typescript-ore` | `ore-typescript`, `ts-ore`, `ore-ts` | ORE mining rounds client (TypeScript CLI)                                                                                                |
 
 **Options:**
 
@@ -166,7 +168,9 @@ npx @usearete/a4 create my-app --template react-ore
 | `--force-refresh`   | Clear template cache and re-download  |
 | `--skip-install`    | Don't run `npm install` automatically |
 
-Templates are downloaded from GitHub releases and cached in `~/.arete/templates/`.
+The protocol templates are built into the CLI; they install the System
+Program from the registry, so they need your login. The ORE templates are
+downloaded from GitHub releases and cached in `~/.arete/templates/`.
 
 ---
 
@@ -2136,6 +2140,50 @@ Without `extensionApi`, the older `sdkRange` field is compared with the
 installed SDK version and a mismatch is only a warning, since published
 ranges are often older than the SDK releases they work with.
 
+### Testing an unpublished SDK extension
+
+A registry program or stack dependency can generate its SDK with an extension
+bundle from a local directory instead of the published one, so you can try an
+extension in your app before publishing it:
+
+```toml
+[dependencies.programs.ore]
+source = { registry = "ore" }
+version = "^1.0.0"
+extensions = { path = "./extensions/ore" }
+```
+
+The directory holds an `extensions.json` manifest naming the entry and its
+files, or a single `index.ts`, `extensions.rs` or `extensions.py` entry. It
+is staged exactly as `a4 sdk create --extensions <dir>` stages it. The bundle
+extends one target: its `language` (TypeScript when it declares none), which
+the dependency must generate. Other targets keep the published extension.
+
+`a4 install` generates the SDK with the local bundle and records its content
+hash on the dependency's `arete.lock` entry. The entry's other pins stay those
+of the published release:
+
+```toml
+[[dependency]]
+kind = "program"
+alias = "ore"
+# … the published release's pins …
+local_extension = "3f1c…"
+```
+
+While a dependency uses a local extension:
+
+- `a4 install --check`, `a4 protocol deploy` and `a4 dev promote --check`
+  fail.
+- `a4 install --locked` refuses to run until `extensions` is removed.
+- `a4 dev up` watches the bundle's files and regenerates the SDK when one changes.
+
+The override is not part of the lock's resolution, so adding or removing it
+leaves `arete.lock` fresh. To go back to the published extension, publish
+yours upstream with a new package release, remove `extensions` from
+`arete.toml`, and run `a4 install --locked`. That restores the published
+extension and clears `local_extension`.
+
 ### Program SDKs in stacks
 
 A stack is a group of live views and program SDKs. When a stack references a
@@ -2400,6 +2448,9 @@ source = { registry = "ore" }
 version = "^1.4.0"
 # Optional: read the stack from your own deployment (`a4 up ore` writes this)
 # endpoints = { live = { websocket = "wss://...", query = "https://..." } }
+# Optional: generate with a local SDK extension instead of the published one
+# (see Testing an unpublished SDK extension)
+# extensions = { path = "./extensions/ore" }
 
 [authoring.stacks.local]
 manifest = "./.arete/MyStack.stack-manifest.json"

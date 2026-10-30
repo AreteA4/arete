@@ -132,6 +132,23 @@ identities (§4) and answers with the production-shaped body, or with a refusal
 (§6). The installed identities (release hash, manifest hash, deployment id)
 stay in the request exactly as generated; the edge rewrites them.
 
+A path does not carry every identity resolve needs (a Program Read path has
+the release but not the binding; a chain path has neither). So every edge
+request except a stack's sends `X-Arete-Dev-Identity`: the resolve request
+(§4.1) for that one surface and that one identity, as compact JSON. It is the
+same object direct mode sends to resolve:
+
+| Surface | `X-Arete-Dev-Identity` |
+|---|---|
+| Chain reads | `{"chain":{"solanaGatewayBindingId":"sgb_…"}}` |
+| Transactions | `{"transactions":{"solanaGatewayBindingId":"sgb_…"}}` |
+| Program Read | `{"programReads":[{"programId":"…","programReadBindingId":"prb_…","programReleaseHash":"<installed>"}]}` |
+| Protocol API | `{"protocols":[{"package":"…","protocolReleaseHash":"…","deploymentId":"…"}]}` (no `deploymentId` before the first publish) |
+| Stack | none: the path and query name the live alias and manifest |
+
+The header carries identities, never a credential. An edge request on one
+of those surfaces without it is refused with `devenv-surface-unavailable`.
+
 A protocol client with no deployment id yet (before the first publish) names
 the protocol by package instead: wherever the protocol API path has the
 deployment id segment (`/api/protocol-deployments/{deploymentId}/…`), it
@@ -141,9 +158,20 @@ to the environment's deployment of that package, so two unpublished
 protocols behind one edge stay apart. Only the edge accepts this form; in
 direct mode resolve returns a deployment id (§4).
 
+Every answer the edge forwards on a `/api/protocol-deployments/…` route names
+the environment's deployment it called in `X-Arete-Dev-Deployment`. The
+installed descriptor never carries it (it names the production deployment, or
+none before the first publish), yet two things need it: a metadata wallet
+proof signs the deployment id, and the API checks it against the instance's
+own deployment; automations bind their store and match webhook deliveries by
+it. A protocol client takes it from that header (a `GET` of the deployment
+route when it has made no call yet), in direct mode from resolve, and only
+then builds a proof. In production the generated deployment is used; a
+descriptor without one fails with "not deployed to production yet".
+
 Every edge HTTP response carries `X-Arete-Dev-Edge: 1` and, for loopback
-origins, `Access-Control-Expose-Headers: X-Arete-Dev-Edge`, so browser
-`fetch` can read it. WebSocket clients can't read upgrade response headers,
+origins, `Access-Control-Expose-Headers` naming it and
+`X-Arete-Dev-Deployment`, so browser `fetch` can read them. WebSocket clients can't read upgrade response headers,
 so before a client opens its first socket (stack streams, JSON-RPC
 subscriptions) it checks the edge once with
 `GET <edge>/.well-known/arete-dev-edge`. The edge answers `200` with
@@ -329,6 +357,7 @@ every other detail field in the error details.
 | `devenv-protocol-not-deployed` | resolve, edge | 409 | The environment has no active deployment of this protocol. | Run `a4 dev up` in the protocol's project. |
 | `devenv-protocol-not-owned` | resolve, edge | 403 | The protocol belongs to another account; only your own protocols run in an environment. | Call it in production (unset `ARETE_ENVIRONMENT`). |
 | `devenv-surface-unavailable` | resolve, edge, SDK | 503 | The environment can't serve this surface (not enabled for the account, or the installed SDK has no binding for it). | Named per case; never "use production". |
+| `devenv-wallet-send-unsupported` | SDK | — | Dev mode, and the wallet adapter would send the transaction itself (its own RPC is mainnet) instead of signing only. | Use a sign-only wallet adapter, which submits through the client's transaction transport. |
 | `environment-token-required` | dev services | 401 | A dev service received a token without an `env` claim. | Mint with `environment` (direct mode) or use the edge. |
 | `environment-token-refused` | production services; dev services | 403 | A production service received an environment token, or a dev service received a token for another environment. | Use the token's own environment, or unset the switch for production. |
 | `INVALID_CONFIG` | SDK | — | The switch, an edge URL or an environment reference is malformed. | Named per case. |

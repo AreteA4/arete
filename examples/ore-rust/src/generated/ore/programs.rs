@@ -1477,7 +1477,7 @@ pub mod ore {
         pub fn automation_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreAutomation>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Automation",
-                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("ore", Some("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"), &read_descriptor())?),
             ))
         }
 
@@ -1485,7 +1485,7 @@ pub mod ore {
         pub fn board_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Board>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Board",
-                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("ore", Some("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"), &read_descriptor())?),
             ))
         }
 
@@ -1493,7 +1493,7 @@ pub mod ore {
         pub fn config_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Config>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Config",
-                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("ore", Some("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"), &read_descriptor())?),
             ))
         }
 
@@ -1501,7 +1501,7 @@ pub mod ore {
         pub fn miner_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreMinerAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Miner",
-                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("ore", Some("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"), &read_descriptor())?),
             ))
         }
 
@@ -1509,7 +1509,7 @@ pub mod ore {
         pub fn round_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Round>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Round",
-                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("ore", Some("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"), &read_descriptor())?),
             ))
         }
 
@@ -1517,7 +1517,7 @@ pub mod ore {
         pub fn treasury_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::OreTreasuryAccount>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Treasury",
-                std::sync::Arc::new(self.builder.account_transport("ore", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("ore", Some("oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv"), &read_descriptor())?),
             ))
         }
     }
@@ -1893,7 +1893,7 @@ pub mod entropy {
         pub fn var_accounts(&self) -> Result<arete_sdk::AccountReader<super::super::types::Var>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Var",
-                std::sync::Arc::new(self.builder.account_transport("entropy", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("entropy", Some("3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X"), &read_descriptor())?),
             ))
         }
     }

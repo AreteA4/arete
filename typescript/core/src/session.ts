@@ -22,7 +22,18 @@ import {
   warnUnprovenSessionProgram,
   warnUnprovenStackPrograms,
 } from './program-identity';
-import { createHostedSolanaGatewayTransports } from './solana-gateway';
+import {
+  createDevSolanaGatewayTransports,
+  createHostedSolanaGatewayTransports,
+} from './solana-gateway';
+import {
+  environmentOptionOf,
+  resolveEnvironmentSwitch,
+  systemEnvironmentSwitchHost,
+  type ClientEnvironment,
+  type EnvironmentOption,
+} from './dev-environment';
+import { resolveDevTargets } from './dev-targets';
 import { isSameStackSdk, sessionStackKeyConflict } from './stack-identity';
 import {
   createProtocolClientWithMembers,
@@ -99,7 +110,7 @@ export interface SessionDefinition<
 }
 
 /** Per-protocol client options inside a session; auth and fetch are the session's. */
-export type SessionProtocolOptions = Omit<ProtocolClientOptions, 'auth' | 'fetch' | 'keyClass'>;
+export type SessionProtocolOptions = Omit<ProtocolClientOptions, 'auth' | 'fetch' | 'keyClass' | 'environment'>;
 
 type SessionStackPrograms<TDef extends SessionDefinition> = Partial<{
   [K in keyof NonNullable<TDef['stacks']>]: Record<string, ProgramSdkDefinition> | undefined;
@@ -178,6 +189,12 @@ export interface SessionOptions<
   execution?: OperationExecutionOptions<any>;
   /** Signers available to every transaction executed through this session. */
   signerRegistry?: SignerRegistry<any>;
+  /**
+   * Production (the default) or the project's dev environment, for every
+   * member and protocol (see {@link ConnectOptions.environment}). Decided
+   * once for the whole session.
+   */
+  environment?: EnvironmentOption;
   /** Per-member overrides, keyed by the member's key in the definition. */
   stacks?: {
     [K in keyof NonNullable<TDef['stacks']>]?: SessionMemberOptions<
@@ -396,6 +413,8 @@ export interface Session<
   readonly protocols: SessionProtocols<TDef, TStackPrograms, TProtocolKeyClass>;
   readonly wallet: WalletAdapter | undefined;
   readonly signerRegistry: SignerRegistry<any>;
+  /** `'dev'` when the session talks to the project's dev environment. */
+  readonly environment: ClientEnvironment;
   readonly chain: ChainClient;
   readonly transactions: TransactionTransport;
   /**
@@ -442,6 +461,7 @@ type SessionConnectionOptions = Pick<
   | 'programReads'
   | 'chain'
   | 'transactions'
+  | 'environment'
 >;
 
 function mergeProgramReadOverrides(
@@ -519,9 +539,13 @@ function resolveMemberConnectOptions(
   const transport = member?.transport ?? options?.transport ?? (forceHttpOnly ? 'http' : 'ws');
   // Stack endpoints remain on the stack definition. Only explicit session/member
   // HTTP options are forwarded as ConnectOptions.httpUrl for local Program Reads.
-  const url = member?.url ?? (stack.endpoints.ws || options?.endpoints?.ws);
+  // In dev mode the environment decides where a stack is served: only
+  // explicit endpoints are passed, and the client refuses them.
+  const dev = typeof options?.environment === 'object';
+  const url = member?.url ?? (dev ? options?.endpoints?.ws : (stack.endpoints.ws || options?.endpoints?.ws));
   const httpUrl = member?.httpUrl ?? options?.endpoints?.http;
   return {
+    ...(options?.environment !== undefined ? { environment: options.environment } : {}),
     url,
     httpUrl,
     transport,
@@ -687,12 +711,44 @@ export async function createSession<
     }
   }
   const programEntries = [...explicitProgramEntries, ...promotedProgramEntries];
-  const generatedGateway = definition.gateway && (!options?.chain || !options?.transactions)
-    ? createHostedSolanaGatewayTransports(definition.gateway, {
+  // The session decides the switch once; members and protocols get the
+  // decision as an option, so they read nothing again.
+  const environmentSwitch = resolveEnvironmentSwitch(
+    options?.environment,
+    systemEnvironmentSwitchHost(options?.auth)
+  );
+  const memberEnvironment = environmentSwitch.mode === 'dev'
+    ? environmentOptionOf(environmentSwitch)
+    : options?.environment;
+  let generatedGateway: ReturnType<typeof createHostedSolanaGatewayTransports> | undefined;
+  if (definition.gateway && (!options?.chain || !options?.transactions)) {
+    if (environmentSwitch.mode === 'production') {
+      generatedGateway = createHostedSolanaGatewayTransports(definition.gateway, {
         auth: options?.auth,
         fetch: options?.fetch,
-      })
-    : undefined;
+      });
+    } else {
+      generatedGateway = createDevSolanaGatewayTransports(definition.gateway, {
+        auth: options?.auth,
+        fetch: options?.fetch,
+        dev: environmentSwitch,
+        answer: environmentSwitch.via === 'direct'
+          ? await resolveDevTargets({
+              environment: environmentSwitch.environment,
+              request: {
+                chain: { solanaGatewayBindingId: definition.gateway.chain.solanaGatewayBindingId },
+                transactions: {
+                  solanaGatewayBindingId: definition.gateway.transactions.solanaGatewayBindingId,
+                },
+              },
+              auth: options?.auth,
+              apiUrl: options?.apiUrl,
+              fetch: options?.fetch ?? globalThis.fetch.bind(globalThis),
+            })
+          : undefined,
+      });
+    }
+  }
   const sharedChain = options?.chain ?? generatedGateway?.chain;
   const sharedTransactions = options?.transactions ?? generatedGateway?.transactions;
   if (definition.mode === 'composition' && (!sharedChain || !sharedTransactions)) {
@@ -827,6 +883,7 @@ export async function createSession<
         memberOptions,
         {
           ...options,
+          environment: memberEnvironment,
           chain: sharedChain,
           transactions: sharedTransactions,
         },
@@ -849,6 +906,7 @@ export async function createSession<
         options?.programs?.[key],
         {
           ...options,
+          environment: memberEnvironment,
           chain: sharedChain,
           transactions: sharedTransactions,
         },
@@ -951,6 +1009,7 @@ export async function createSession<
         auth: options?.auth,
         fetch: options?.fetch,
         keyClass: options?.protocolKeyClass,
+        ...(memberEnvironment !== undefined ? { environment: memberEnvironment } : {}),
       },
       { stacks: memberStacks, programs: memberPrograms }
     );
@@ -970,6 +1029,7 @@ export async function createSession<
       return wallet;
     },
     signerRegistry,
+    environment: environmentSwitch.mode,
     chain,
     transactions,
     platform: options?.platform,

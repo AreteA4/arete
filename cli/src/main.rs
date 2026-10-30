@@ -94,7 +94,7 @@ enum Commands {
         /// Project name (creates directory)
         name: Option<String>,
 
-        /// Template: react-ore, rust-ore, typescript-ore, python-ore
+        /// Template: protocol, protocol-app, react-ore, rust-ore, typescript-ore, python-ore
         #[arg(short, long)]
         template: Option<String>,
 
@@ -1236,7 +1236,7 @@ fn parse_dependency_kind(value: &str) -> anyhow::Result<project::manifest::Depen
 }
 
 /// `a4 install --check`: fail when a generated protocol client is not the
-/// published release arete.lock pins.
+/// published release arete.lock pins, or an SDK uses a local extension.
 fn check_install(manifest: impl AsRef<std::path::Path>, json: bool) -> anyhow::Result<()> {
     let problems = project::installer::check_project(manifest)?;
     if json {
@@ -1249,7 +1249,7 @@ fn check_install(manifest: impl AsRef<std::path::Path>, json: bool) -> anyhow::R
         );
     } else if problems.is_empty() {
         println!(
-            "{} arete.lock is fresh and every protocol client is a published release",
+            "{} arete.lock is fresh and every protocol client and SDK extension is published",
             "ok".green()
         );
     } else {

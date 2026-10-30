@@ -867,6 +867,11 @@ impl QueryExecutor {
             }
         }
         let (status, header_code, body) = outcome;
+        if let Some(refusal) =
+            crate::dev_environment::refusal_error(status, header_code.as_deref(), body.as_bytes())
+        {
+            return Err(refusal.into());
+        }
         if !(200..300).contains(&status) {
             let server_error_code = header_code.or_else(|| top_level_error_code(&body));
             return Err(ReadRequestError {
@@ -909,10 +914,25 @@ impl QueryExecutor {
         if let Some(token) = token {
             builder = builder.header("authorization", format!("Bearer {token}"));
         }
-        let response = builder.send().await.map_err(|source| ReadError::Network {
-            path: path.to_string(),
-            source,
-        })?;
+        let edge = self.auth.as_ref().and_then(|auth| auth.edge_policy());
+        if let Some(edge) = edge {
+            builder = edge.apply(builder);
+        }
+        let response = match builder.send().await {
+            Ok(response) => response,
+            Err(source) => {
+                return Err(match edge {
+                    Some(edge) => edge.send_error(&source).into(),
+                    None => ReadError::Network {
+                        path: path.to_string(),
+                        source,
+                    },
+                })
+            }
+        };
+        if let Some(edge) = edge {
+            edge.check(response.headers())?;
+        }
         let status = response.status().as_u16();
         let header_code = response
             .headers()
