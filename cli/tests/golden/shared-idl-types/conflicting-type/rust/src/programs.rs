@@ -24,12 +24,7 @@ pub mod alpha {
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
-        arete_sdk::ProgramReadDescriptor::LocalHttp {
-            release: arete_sdk::ProgramReleaseReference {
-                program_release_hash: PROGRAM_RELEASE_HASH.to_string(),
-                program_spec_hash: PROGRAM_SPEC_HASH.to_string(),
-            },
-        }
+        serde_json::from_str("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:ebac0e8bac3bd650c596de51e0bb2c7a355cf6169724de958b31ceed4eb3dda3\",\"programSpecHash\":\"arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'alpha' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}").expect("generated program read descriptor must be valid")
     }
 
     /// Typed params for `configure`: instruction args plus overridable accounts.
@@ -106,7 +101,7 @@ pub mod alpha {
         pub fn header_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::Header>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Header",
-                std::sync::Arc::new(self.builder.account_transport("alpha", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("alpha", Some("2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM"), &read_descriptor())?),
             ))
         }
     }
@@ -133,12 +128,7 @@ pub mod beta {
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
-        arete_sdk::ProgramReadDescriptor::LocalHttp {
-            release: arete_sdk::ProgramReleaseReference {
-                program_release_hash: PROGRAM_RELEASE_HASH.to_string(),
-                program_spec_hash: PROGRAM_SPEC_HASH.to_string(),
-            },
-        }
+        serde_json::from_str("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:dd00373868c8b427c3207815a4ee5e0d66b8f9df5d034cf84a1a3b904fda554b\",\"programSpecHash\":\"arete:h1:program-spec:sha256:7d8147800015e11cbcff4976c7a05ab11c4a21a0b0c48f530930e20fcf6c3834\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'beta' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}").expect("generated program read descriptor must be valid")
     }
 
     /// Typed params for `configure`: instruction args plus overridable accounts.
@@ -215,7 +205,7 @@ pub mod beta {
         pub fn header_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::BetaHeader>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Header",
-                std::sync::Arc::new(self.builder.account_transport("beta", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("beta", Some("Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS"), &read_descriptor())?),
             ))
         }
     }

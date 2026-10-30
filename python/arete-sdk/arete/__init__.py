@@ -212,9 +212,11 @@ from arete.extensions import (  # noqa: E402
     with_program_identity,
 )
 from arete.client import Arete  # noqa: E402
+from arete.dev_environment import DevEnvironmentError  # noqa: E402
 from arete.session import Session, SessionError, create_session  # noqa: E402
 
 __all__ = [
+    "DevEnvironmentError",
     "UNSET",
     "__version__",
     # client & session

@@ -3855,7 +3855,19 @@ fn resolve_program_read_layer(
     let release_hash = spec
         .oss_release_hash()
         .map_err(|error| format!("failed to compute the release hash ({error})"))?;
-    Ok((spec_hash.to_string(), release_hash.to_string(), None))
+    // Generated offline: account reads need an installed program or an
+    // endpoint named at generation (`program_reads`).
+    let descriptor = crate::program_sdk::offline_program_read_descriptor(
+        &spec.idl_snapshot.snapshot.name,
+        &release_hash.to_string(),
+        &spec_hash.to_string(),
+        None,
+    );
+    Ok((
+        spec_hash.to_string(),
+        release_hash.to_string(),
+        Some(descriptor),
+    ))
 }
 
 /// Generate `programs.py`: one section per program with typed instruction
@@ -5928,7 +5940,13 @@ assert models.operator_from_wire(payload).permission == 2**128 - 1
             "DEMO_PROGRAM_RELEASE_HASH = \"{expected_release_hash}\""
         )));
         assert!(programs.contains("def demo_read_descriptor() -> ProgramReadDescriptor:"));
-        assert!(programs.contains("transport=LocalHttpTransportDef(),"));
+        // Generated offline: reads are unavailable with the install-and-dev fix.
+        assert!(!programs.contains("transport=LocalHttpTransportDef(),"));
+        assert!(
+            programs.contains(r#"\"kind\": \"unavailable\""#)
+                || programs.contains(r#"\"kind\":\"unavailable\""#)
+        );
+        assert!(programs.contains("a4 install program"));
         assert!(!programs.contains("Program read layer omitted"));
 
         // Typed account read def for the emitted `Counter` dataclass.

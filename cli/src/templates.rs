@@ -13,6 +13,10 @@ use tar::Archive;
 /// Available project templates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Template {
+    /// `a4 protocol init`'s scaffold: a tip jar and its automations.
+    Protocol,
+    /// The protocol scaffold plus a React app and an automations server.
+    ProtocolApp,
     React,
     Rust,
     Typescript,
@@ -22,6 +26,8 @@ pub enum Template {
 impl Template {
     /// All available templates.
     pub const ALL: &'static [Template] = &[
+        Template::Protocol,
+        Template::ProtocolApp,
         Template::React,
         Template::Rust,
         Template::Typescript,
@@ -31,6 +37,8 @@ impl Template {
     /// Template directory name (as stored in tarball).
     pub fn dir_name(&self) -> &'static str {
         match self {
+            Template::Protocol => "protocol",
+            Template::ProtocolApp => "protocol-app",
             Template::React => "ore-react",
             Template::Rust => "ore-rust",
             Template::Typescript => "ore-typescript",
@@ -41,6 +49,8 @@ impl Template {
     /// Human-readable display name.
     pub fn display_name(&self) -> &'static str {
         match self {
+            Template::Protocol => "protocol",
+            Template::ProtocolApp => "protocol-app",
             Template::React => "react-ore",
             Template::Rust => "rust-ore",
             Template::Typescript => "typescript-ore",
@@ -51,6 +61,10 @@ impl Template {
     /// Description for interactive selection.
     pub fn description(&self) -> &'static str {
         match self {
+            Template::Protocol => "A protocol: a tip jar with automations (a4 protocol init)",
+            Template::ProtocolApp => {
+                "A protocol with a React app and an automations server (Privy, dev-only tools)"
+            }
             Template::React => "ORE mining rounds viewer (React + Vite)",
             Template::Rust => "ORE mining rounds client (Rust + Tokio)",
             Template::Typescript => "ORE mining rounds client (TypeScript CLI)",
@@ -61,12 +75,19 @@ impl Template {
     /// Parse from string (CLI argument).
     pub fn from_str(s: &str) -> Option<Template> {
         match s.to_lowercase().as_str() {
+            "protocol" => Some(Template::Protocol),
+            "protocol-app" => Some(Template::ProtocolApp),
             "react-ore" | "ore-react" => Some(Template::React),
             "rust-ore" | "ore-rust" => Some(Template::Rust),
             "typescript-ore" | "ore-typescript" | "ts-ore" | "ore-ts" => Some(Template::Typescript),
             "python-ore" | "ore-python" | "py-ore" | "ore-py" => Some(Template::Python),
             _ => None,
         }
+    }
+
+    /// Built into the CLI, not fetched with the example templates.
+    pub fn is_protocol(&self) -> bool {
+        matches!(self, Template::Protocol | Template::ProtocolApp)
     }
 
     pub fn is_rust(&self) -> bool {
@@ -166,6 +187,7 @@ impl TemplateManager {
             let path_str = path.to_string_lossy();
             let is_template = Template::ALL
                 .iter()
+                .filter(|t| !t.is_protocol())
                 .any(|t| path_str.starts_with(t.dir_name()));
 
             if !is_template {

@@ -47,7 +47,8 @@ export function readDevWallets(dir: string): { byAddress: Map<string, Keypair>; 
   return { byAddress, byName };
 }
 
-export function devWalletsSigner(dir: string): ProtocolSigner {
+/** The signer over the dev wallets in `dir`; `@usearete/automations/dev` wraps it. */
+export function walletsSigner(dir: string): ProtocolSigner {
   const lookup = (wallet: string) => readDevWallets(dir).byAddress.get(wallet);
   return {
     kind: 'dev-wallets',

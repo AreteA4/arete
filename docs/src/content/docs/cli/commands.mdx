@@ -93,7 +93,7 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 | `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                      |
 | `a4 stack compose`                                                            | Compose live views and program SDKs                               |
 | `a4 sdk describe <alias>`                                                     | Print an installed SDK's reference (views, fields, reads)         |
-| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK from a StackManifest                    |
+| `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK offline from a StackManifest            |
 | `a4 sdk create --manifest ... --rust`                                         | Generate a Rust SDK from a StackManifest                          |
 | `a4 sdk create --program-spec ... --rust`                                     | Generate a Rust (or `--python`) program SDK from a ProgramSpec    |
 | `a4 sdk create --manifest ... --rust --program-extensions <program>=<bundle>` | Embed a program's own bundle in a Rust (or `--python`) stack SDK  |
@@ -145,17 +145,19 @@ npx @usearete/a4 create
 # With project name
 npx @usearete/a4 create my-app
 
-# With specific template
-npx @usearete/a4 create my-app --template react-ore
+# A protocol with a React app and an automations server
+npx @usearete/a4 create my-app --template protocol-app
 ```
 
 **Available templates:**
 
-| Template         | Aliases                              | Description                               |
-| ---------------- | ------------------------------------ | ----------------------------------------- |
-| `react-ore`      | `ore-react`                          | ORE mining rounds viewer (React + Vite)   |
-| `rust-ore`       | `ore-rust`                           | ORE mining rounds client (Rust + Tokio)   |
-| `typescript-ore` | `ore-typescript`, `ts-ore`, `ore-ts` | ORE mining rounds client (TypeScript CLI) |
+| Template         | Aliases                              | Description                                                                                                                              |
+| ---------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol`       |                                      | A protocol: the `a4 protocol init` tip jar and its automations                                                                           |
+| `protocol-app`   |                                      | The protocol, plus a React app on its client (dev-only tools gated on the dev environment) and an automations server with a Privy signer |
+| `react-ore`      | `ore-react`                          | ORE mining rounds viewer (React + Vite)                                                                                                  |
+| `rust-ore`       | `ore-rust`                           | ORE mining rounds client (Rust + Tokio)                                                                                                  |
+| `typescript-ore` | `ore-typescript`, `ts-ore`, `ore-ts` | ORE mining rounds client (TypeScript CLI)                                                                                                |
 
 **Options:**
 
@@ -166,7 +168,9 @@ npx @usearete/a4 create my-app --template react-ore
 | `--force-refresh`   | Clear template cache and re-download  |
 | `--skip-install`    | Don't run `npm install` automatically |
 
-Templates are downloaded from GitHub releases and cached in `~/.arete/templates/`.
+The protocol templates are built into the CLI; they install the System
+Program from the registry, so they need your login. The ORE templates are
+downloaded from GitHub releases and cached in `~/.arete/templates/`.
 
 ---
 
@@ -1820,7 +1824,22 @@ a4 sdk create --python --program-spec ./.arete/ore.program-spec.json \
   --extensions ./sdks/programs/ore/python --output ./generated/ore-program-py
 ```
 
-A standalone program SDK reads every account its ProgramSpec declares: Rust
+An SDK generated offline has no account read endpoint. It builds
+instructions and derives PDAs, but each account read fails with how to get
+one: install the program from the registry (`a4 install program <package>`)
+and use `a4 dev` for a dev environment. To read a self-hosted Arete server
+instead, name it with `--read-endpoint <url>`; the SDK reads that URL and needs
+no connect-time `httpUrl`.
+
+```bash
+a4 sdk create --ts --program-only --idl ./idl/ore.json \
+  --read-endpoint https://arete.example.com
+```
+
+SDKs generated before `--read-endpoint` existed keep reading the connect-time
+`httpUrl`.
+
+With a read endpoint, a standalone program SDK reads every account its ProgramSpec declares: Rust
 `<account>_accounts()` on the program accessor and Python
 `accounts.<account>` return a typed reader (`fetch`, `fetch_many`, `exists`)
 over the account's generated model, and `pdas` derives every ProgramSpec PDA.
@@ -2121,6 +2140,50 @@ Without `extensionApi`, the older `sdkRange` field is compared with the
 installed SDK version and a mismatch is only a warning, since published
 ranges are often older than the SDK releases they work with.
 
+### Testing an unpublished SDK extension
+
+A registry program or stack dependency can generate its SDK with an extension
+bundle from a local directory instead of the published one, so you can try an
+extension in your app before publishing it:
+
+```toml
+[dependencies.programs.ore]
+source = { registry = "ore" }
+version = "^1.0.0"
+extensions = { path = "./extensions/ore" }
+```
+
+The directory holds an `extensions.json` manifest naming the entry and its
+files, or a single `index.ts`, `extensions.rs` or `extensions.py` entry. It
+is staged exactly as `a4 sdk create --extensions <dir>` stages it. The bundle
+extends one target: its `language` (TypeScript when it declares none), which
+the dependency must generate. Other targets keep the published extension.
+
+`a4 install` generates the SDK with the local bundle and records its content
+hash on the dependency's `arete.lock` entry. The entry's other pins stay those
+of the published release:
+
+```toml
+[[dependency]]
+kind = "program"
+alias = "ore"
+# … the published release's pins …
+local_extension = "3f1c…"
+```
+
+While a dependency uses a local extension:
+
+- `a4 install --check`, `a4 protocol deploy` and `a4 dev promote --check`
+  fail.
+- `a4 install --locked` refuses to run until `extensions` is removed.
+- `a4 dev up` watches the bundle's files and regenerates the SDK when one changes.
+
+The override is not part of the lock's resolution, so adding or removing it
+leaves `arete.lock` fresh. To go back to the published extension, publish
+yours upstream with a new package release, remove `extensions` from
+`arete.toml`, and run `a4 install --locked`. That restores the published
+extension and clears `local_extension`.
+
 ### Program SDKs in stacks
 
 A stack is a group of live views and program SDKs. When a stack references a
@@ -2385,6 +2448,9 @@ source = { registry = "ore" }
 version = "^1.4.0"
 # Optional: read the stack from your own deployment (`a4 up ore` writes this)
 # endpoints = { live = { websocket = "wss://...", query = "https://..." } }
+# Optional: generate with a local SDK extension instead of the published one
+# (see Testing an unpublished SDK extension)
+# extensions = { path = "./extensions/ore" }
 
 [authoring.stacks.local]
 manifest = "./.arete/MyStack.stack-manifest.json"

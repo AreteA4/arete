@@ -126,6 +126,7 @@ pub(crate) fn generate_project_protocol(
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .with_context(|| format!("Failed to generate stack '{key}' of protocol '{alias}'"))?;
@@ -201,6 +202,7 @@ pub(crate) fn generate_project_protocol(
                         stack_endpoints: None,
                         reference: None,
                         program_install: None,
+                        extensions: None,
                     },
                 )
                 .with_context(|| {
@@ -550,25 +552,21 @@ fn render_protocol_module(context: &ProtocolModuleContext<'_>) -> Result<String>
         "  protocolReleaseHash: {},",
         ts_string(&context.protocol.protocol_release_hash)
     )?;
-    // A client `a4 dev` generates calls the deployment in the project's dev
-    // environment, a fork of mainnet, not a published deployment. The
-    // assertion keeps an app on an SDK without the field compiling.
-    let (environment, assertion) = if context.protocol.local_dev {
-        (
-            ", environment: 'dev'",
-            " as ProtocolDefinition['deployment']",
-        )
+    // The production deployment, or none before the protocol's first
+    // deploy. In dev mode the SDK finds the dev environment's deployment
+    // itself, so a client `a4 dev` generates names no dev deployment.
+    if deployment.deployment_id.is_empty() {
+        out.push_str("  deployment: null,\n");
     } else {
-        ("", "")
-    };
-    writeln!(
-        out,
-        "  deployment: {{ deploymentId: {}, access: '{}', apiUrl: {}, sessionEndpoint: {}{environment} }}{assertion},",
-        ts_string(&deployment.deployment_id),
-        deployment.access.as_str(),
-        ts_string(&deployment.api_url),
-        ts_string(&deployment.session_endpoint),
-    )?;
+        writeln!(
+            out,
+            "  deployment: {{ deploymentId: {}, access: '{}', apiUrl: {}, sessionEndpoint: {} }},",
+            ts_string(&deployment.deployment_id),
+            deployment.access.as_str(),
+            ts_string(&deployment.api_url),
+            ts_string(&deployment.session_endpoint),
+        )?;
+    }
     writeln!(
         out,
         "  instanceVisibility: '{}',",
@@ -715,12 +713,19 @@ fn render_protocol_readme(context: &ProtocolModuleContext<'_>) -> String {
         typescript_property_key(&spec.name)
     );
     let _ = writeln!(out, "## Deployment\n");
-    let _ = writeln!(
-        out,
-        "Calls the {} deployment `{}`. A protocol session is minted from your own key through the session endpoint; this folder holds no credential.\n",
-        deployment.access.as_str(),
-        deployment.deployment_id
-    );
+    if deployment.deployment_id.is_empty() {
+        let _ = writeln!(
+            out,
+            "Not deployed to production yet: run the app in dev mode (`a4 dev run -- <command>`), which calls your dev environment's deployment, until `a4 protocol deploy` deploys it. This folder holds no credential.\n"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "Calls the {} deployment `{}`. A protocol session is minted from your own key through the session endpoint; this folder holds no credential.\n",
+            deployment.access.as_str(),
+            deployment.deployment_id
+        );
+    }
     let _ = writeln!(out, "## Steps\n");
     let _ = writeln!(
         out,

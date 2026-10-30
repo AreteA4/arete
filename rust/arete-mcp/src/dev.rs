@@ -58,6 +58,30 @@ pub const REPLAY_SCHEMA: &str = "arete.dev-replay/v1";
 /// Schema of one `.arete/dev/replays.jsonl` line.
 pub const REPLAY_STEP_RECORD_SCHEMA: &str = "arete.dev-replay-step/v1";
 /// What the dev tools say when a project has no environment yet.
+/// The dev environment switch the installed SDKs read
+/// (`docs/internal/dev-environment-switch.md`).
+pub const ENVIRONMENT_ENV: &str = "ARETE_ENVIRONMENT";
+
+/// Whether `ARETE_ENVIRONMENT` turns dev mode on. `dev` makes `a4 stream`,
+/// the protocol commands and the protocol tools act on the `a4 dev` session
+/// as `--dev` does; unset, empty or `production` changes nothing. Any other
+/// value is a configuration error, never a silent production run.
+pub fn environment_is_dev() -> Result<bool> {
+    environment_value_is_dev(std::env::var(ENVIRONMENT_ENV).ok().as_deref())
+}
+
+/// [`environment_is_dev`] for one value of the variable.
+pub fn environment_value_is_dev(value: Option<&str>) -> Result<bool> {
+    match value {
+        None | Some("") | Some("production") => Ok(false),
+        Some("dev") => Ok(true),
+        Some(other) => bail!(
+            "Invalid configuration: {ENVIRONMENT_ENV} is '{other}'; it must be 'production' or \
+             'dev' (exactly, lowercase). Unset it for production."
+        ),
+    }
+}
+
 pub const DEV_UP_HINT: &str = "Run `a4 dev up` in the project (in a terminal: it keeps running) to create or wake its Arete cloud dev environment.";
 
 /// Lamports a new (or empty) dev wallet is funded with (100 SOL; the
@@ -76,9 +100,9 @@ pub struct EnvRef {
 }
 
 /// `.arete/dev/session.json`: what an app, a test or an agent needs while
-/// `a4 dev up` runs. It holds no API key and no environment token, but it
-/// does hold a short-lived stack read session (`stackSession`: a token and
-/// a stream URL carrying it), so keep it out of version control and logs.
+/// `a4 dev up` runs. It holds no key and no token: SDKs in dev mode reach
+/// the environment through the edge (`edgeUrl`), which attaches tokens
+/// itself.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DevSession {
@@ -122,13 +146,9 @@ pub struct DevSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack: Option<String>,
     /// The protocol stack's WebSocket URL. Connecting needs a stack session
-    /// token (`stackSession`).
+    /// token minted with the account's key; `a4 stream --dev` mints its own.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stack_ws_url: Option<String>,
-    /// A read session for the stack's WebSocket, which `a4 dev up` renews
-    /// before it expires.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stack_session: Option<StackSession>,
     /// The dev UI and its event feed (`GET <uiUrl>/dev/v1/events`), served
     /// by `a4 dev up` on loopback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -233,7 +253,6 @@ impl DevSession {
             short_id: None,
             stack: None,
             stack_ws_url: None,
-            stack_session: None,
             ui_url: None,
             updated_at: 0,
         }
@@ -286,15 +305,11 @@ impl DevSession {
         format!("{}/api", self.api_url.trim_end_matches('/'))
     }
 
-    /// The session with the stack session's token replaced by where to
-    /// find it.
+    /// The session as reports show it, with any token scrubbed (it holds
+    /// none; a file an older `a4` wrote is parsed without one).
     pub fn redacted(&self) -> Value {
         let mut value = serde_json::to_value(self).unwrap_or(Value::Null);
-        if let Some(stack) = value.get_mut("stackSession").and_then(Value::as_object_mut) {
-            for field in ["token", "streamUrl"] {
-                stack.insert(field.into(), json!(format!("<in {DEV_DIR}/session.json>")));
-            }
-        }
+        redact_secrets(&mut value);
         value
     }
 }
@@ -1196,17 +1211,12 @@ impl DevClient {
         self.require_deployment()
     }
 
-    /// A stack session with at least `min_ttl` seconds left: the one in
-    /// the session file, or a freshly minted one. `None` without a stack.
-    pub async fn stack_session(&self, min_ttl: u64) -> Result<Option<StackSession>> {
+    /// A freshly minted stack session, minted with the account's key.
+    /// `None` without a stack.
+    pub async fn stack_session(&self) -> Result<Option<StackSession>> {
         let Some(ws_url) = self.session.stack_ws_url.as_deref() else {
             return Ok(None);
         };
-        if let Some(current) = &self.session.stack_session {
-            if current.expires_at > unix_now() + min_ttl {
-                return Ok(Some(current.clone()));
-            }
-        }
         mint_stack_session(
             &self.http,
             &self.session.session_endpoint,
@@ -1241,7 +1251,7 @@ impl DevClient {
         } else {
             json!({ "healthy": false, "note": "The environment is not running; any RPC call (or `a4 dev up`) wakes it" })
         };
-        let stack = match self.stack_session(60).await {
+        let stack = match self.stack_session().await {
             Ok(Some(session)) => json!({
                 "wsUrl": self.session.stack_ws_url,
                 "streamUrl": redact_hs_tokens(&session.stream_url),
@@ -1647,6 +1657,25 @@ impl DevClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_environment_switch_is_production_dev_or_an_error() {
+        for value in [None, Some(""), Some("production")] {
+            assert!(!environment_value_is_dev(value).unwrap(), "{value:?}");
+        }
+        assert!(environment_value_is_dev(Some("dev")).unwrap());
+        for value in [
+            "Production",
+            "prod",
+            "dev ",
+            "development",
+            "staging",
+            "true",
+        ] {
+            let error = environment_value_is_dev(Some(value)).unwrap_err();
+            assert!(error.to_string().contains("ARETE_ENVIRONMENT"), "{value}");
+        }
+    }
 
     #[test]
     fn reports_lose_every_credential() {
@@ -2355,7 +2384,7 @@ mod tests {
     }
 
     #[test]
-    fn stack_sessions_build_stream_urls_and_stay_out_of_redacted_output() {
+    fn stack_sessions_build_stream_urls_and_the_session_file_holds_no_token() {
         assert_eq!(
             stack_stream_url("ws://127.0.0.1:61321", "a.b-c_d").unwrap(),
             "ws://127.0.0.1:61321/?hs_token=a.b-c_d"
@@ -2364,17 +2393,15 @@ mod tests {
         let mut session = test_session("http://127.0.0.1:1");
         session.stack = Some("tip-jar".into());
         session.stack_ws_url = Some("ws://127.0.0.1:5".into());
-        session.stack_session = Some(StackSession {
-            token: "tok".into(),
-            expires_at: 10,
-            stream_url: "ws://127.0.0.1:5/?hs_token=tok".into(),
-        });
-        let redacted = session.redacted().to_string();
-        assert!(!redacted.contains("tok\""), "{redacted}");
-        assert!(redacted.contains("\"expiresAt\":10"), "{redacted}");
-        let round: DevSession =
-            serde_json::from_value(serde_json::to_value(&session).unwrap()).unwrap();
+        let written = serde_json::to_value(&session).unwrap();
+        assert!(written.get("stackSession").is_none(), "{written}");
+        let round: DevSession = serde_json::from_value(written).unwrap();
         assert_eq!(round, session);
+        // A file an older a4 wrote still parses; its token is not kept.
+        let mut old = serde_json::to_value(&session).unwrap();
+        old["stackSession"] = json!({ "token": "tok", "expiresAt": 10, "streamUrl": "ws://127.0.0.1:5/?hs_token=tok" });
+        let parsed: DevSession = serde_json::from_value(old).unwrap();
+        assert!(!serde_json::to_string(&parsed).unwrap().contains("tok\""));
     }
 
     #[tokio::test]

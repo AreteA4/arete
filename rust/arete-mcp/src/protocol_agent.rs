@@ -147,7 +147,9 @@ impl ProtocolAgent {
     }
 
     fn target(&self, args: &TargetArgs, remembered: Option<&Remembered>) -> Result<Target> {
-        let dev_project = match (&args.project, args.dev) {
+        // ARETE_ENVIRONMENT=dev targets the `a4 dev` session, as `dev` does.
+        let dev = args.dev || crate::dev::environment_is_dev()?;
+        let dev_project = match (&args.project, dev) {
             (Some(project), _) => Some(Some(PathBuf::from(project))),
             (None, true) => Some(None),
             (None, false) => remembered.and_then(|r| r.dev_project.clone()).map(Some),

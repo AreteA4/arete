@@ -158,9 +158,20 @@ to the environment's deployment of that package, so two unpublished
 protocols behind one edge stay apart. Only the edge accepts this form; in
 direct mode resolve returns a deployment id (§4).
 
+Every answer the edge forwards on a `/api/protocol-deployments/…` route names
+the environment's deployment it called in `X-Arete-Dev-Deployment`. The
+installed descriptor never carries it (it names the production deployment, or
+none before the first publish), yet two things need it: a metadata wallet
+proof signs the deployment id, and the API checks it against the instance's
+own deployment; automations bind their store and match webhook deliveries by
+it. A protocol client takes it from that header (a `GET` of the deployment
+route when it has made no call yet), in direct mode from resolve, and only
+then builds a proof. In production the generated deployment is used; a
+descriptor without one fails with "not deployed to production yet".
+
 Every edge HTTP response carries `X-Arete-Dev-Edge: 1` and, for loopback
-origins, `Access-Control-Expose-Headers: X-Arete-Dev-Edge`, so browser
-`fetch` can read it. WebSocket clients can't read upgrade response headers,
+origins, `Access-Control-Expose-Headers` naming it and
+`X-Arete-Dev-Deployment`, so browser `fetch` can read them. WebSocket clients can't read upgrade response headers,
 so before a client opens its first socket (stack streams, JSON-RPC
 subscriptions) it checks the edge once with
 `GET <edge>/.well-known/arete-dev-edge`. The edge answers `200` with
@@ -346,6 +357,7 @@ every other detail field in the error details.
 | `devenv-protocol-not-deployed` | resolve, edge | 409 | The environment has no active deployment of this protocol. | Run `a4 dev up` in the protocol's project. |
 | `devenv-protocol-not-owned` | resolve, edge | 403 | The protocol belongs to another account; only your own protocols run in an environment. | Call it in production (unset `ARETE_ENVIRONMENT`). |
 | `devenv-surface-unavailable` | resolve, edge, SDK | 503 | The environment can't serve this surface (not enabled for the account, or the installed SDK has no binding for it). | Named per case; never "use production". |
+| `devenv-wallet-send-unsupported` | SDK | — | Dev mode, and the wallet adapter would send the transaction itself (its own RPC is mainnet) instead of signing only. | Use a sign-only wallet adapter, which submits through the client's transaction transport. |
 | `environment-token-required` | dev services | 401 | A dev service received a token without an `env` claim. | Mint with `environment` (direct mode) or use the edge. |
 | `environment-token-refused` | production services; dev services | 403 | A production service received an environment token, or a dev service received a token for another environment. | Use the token's own environment, or unset the switch for production. |
 | `INVALID_CONFIG` | SDK | — | The switch, an edge URL or an environment reference is malformed. | Named per case. |

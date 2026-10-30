@@ -1,9 +1,15 @@
-// Automatic refunds for a token raise, in production: the definition in
-// automations.ts, with a real signer, Postgres, the webhook route and the
-// consent routes your app calls. `a4 dev up` runs automations.ts on its own
-// against the dev environment, or forwards events to this server.
+// Automatic refunds for a token raise: the definition in automations.ts, with
+// a signer, a store, the webhook route and the consent routes your app calls.
 //
-//   SIGNER=keypair DEV_WALLET=~/.config/solana/dev.json ...   (a dev environment)
+// In dev mode (started with `a4 dev run -- npx tsx server.ts`, and
+// `[dev.automations] forward = "http://localhost:8787/arete/webhook"` in
+// arete.toml), it runs on the helpers of `@usearete/automations/dev`: dev
+// wallets sign (Privy too, for other wallets, with SIGNER=privy), the store
+// is a file under .arete/dev/, transactions simulate on the fork, and
+// POST /dev/consent signs a consent with a dev wallet.
+//
+// In production (`ARETE_ENVIRONMENT` unset, after `a4 install --locked`):
+//   SIGNER=keypair DEV_WALLET=~/.config/solana/dev.json ...
 //   SIGNER=privy PRIVY_APP_ID=... PRIVY_APP_SECRET=... PRIVY_AUTHORIZATION_KEY=... PRIVY_WALLETS='{"<address>":"<wallet id>"}'
 //
 // See README.md for the whole setup.
@@ -17,6 +23,7 @@ import pg from 'pg';
 
 import {
   type AutomationOutcome,
+  type AutomationStore,
   clientCluster,
   createAutomations,
   definePolicy,
@@ -24,6 +31,7 @@ import {
   rpcSimulator,
   SOL,
 } from '@usearete/automations';
+import { devSimulator, devWalletsSigner, fileMemoryStore, grantDevConsent, routingSigner } from '@usearete/automations/dev';
 import { keypairSigner } from '@usearete/automations/keypair';
 import { postgresStore } from '@usearete/automations/postgres';
 import { type PrivyClientLike, privySigner } from '@usearete/automations/privy';
@@ -55,33 +63,53 @@ async function signerFromEnv(): Promise<ProtocolSigner> {
   });
 }
 
+async function privyConfigured(): Promise<ProtocolSigner[]> {
+  return process.env.SIGNER === 'privy' ? [await signerFromEnv()] : [];
+}
+
 async function main() {
   const client = createProtocolClient(TOKEN_RAISE_PROTOCOL, { auth: { secretKey: env('ARETE_SECRET_KEY') } });
-  const pool = new pg.Pool({ connectionString: env('DATABASE_URL') });
-  const store = postgresStore(pool);
-  if (process.argv.includes('--migrate')) {
-    console.log(await store.migrate());
-    await pool.end();
-    return;
+  // In dev mode the client learns the environment's deployment first; the
+  // dev helpers and the policy name the deployment the jobs will target.
+  await client.resolveDeployment();
+  // In dev mode (`ARETE_ENVIRONMENT=dev`, which `a4 dev up` and `a4 dev run`
+  // set) the client targets the dev environment; otherwise mainnet, which the
+  // policy allows only with ALLOW_MAINNET=1.
+  const dev = clientCluster(client) === 'dev';
+
+  // Dev: the project's dev wallets first, then Privy for any other wallet;
+  // a file store; simulation on the fork. Each dev helper refuses a client
+  // that targets production.
+  const devWallets = dev ? devWalletsSigner(client) : null;
+  let store: AutomationStore;
+  let closeStore = () => {};
+  if (dev) {
+    const file = fileMemoryStore(client, '.arete/dev/token-raise-store.bin');
+    closeStore = () => file.close();
+    store = file;
+  } else {
+    const pool = new pg.Pool({ connectionString: env('DATABASE_URL') });
+    const postgres = postgresStore(pool);
+    store = postgres;
+    if (process.argv.includes('--migrate')) {
+      console.log(await postgres.migrate());
+      await pool.end();
+      return;
+    }
   }
 
   const notify = (outcome: AutomationOutcome) =>
     console.log(`[${outcome.state}] ${outcome.step} for ${outcome.wallet}: ${outcome.code}${outcome.reason ? ` (${outcome.reason})` : ''}`);
 
-  // A client `a4 dev` generated targets the dev environment; the published
-  // one (`a4 install --locked`) targets mainnet, which the policy allows only
-  // with ALLOW_MAINNET=1.
-  const dev = clientCluster(client) === 'dev';
   const automations = createAutomations({
     client,
-    signer: await signerFromEnv(),
+    signer: devWallets ? routingSigner(client, [devWallets, ...(await privyConfigured())]) : await signerFromEnv(),
     policy: definePolicy({
       ...definition.policy!,
       deployments: [client.deploymentId],
       clusters: env('ALLOW_MAINNET', '') === '1' ? ['dev', 'mainnet'] : ['dev'],
     }),
-    // In a dev environment, simulate on the fork through `a4 dev up`'s local RPC.
-    simulator: rpcSimulator(env('RPC_URL', dev ? 'http://127.0.0.1:48700' : undefined)),
+    simulator: dev ? devSimulator(client) : rpcSimulator(env('RPC_URL')),
     store,
     consent: { domain: env('APP_DOMAIN', 'localhost') },
     onOutcome: notify,
@@ -131,7 +159,16 @@ async function main() {
         });
         return json(res, result.status, result.body);
       }
-      if (url.pathname.startsWith('/consent/') && !fromApp(req)) return json(res, 401, { error: 'unauthorized' });
+      if ((url.pathname.startsWith('/consent/') || url.pathname.startsWith('/dev/')) && !fromApp(req)) {
+        return json(res, 401, { error: 'unauthorized' });
+      }
+      // Dev only: a dev wallet (by name or address) signs its own consent,
+      // as `a4 dev consent` does when `a4 dev up` runs the automations.
+      if (devWallets && req.method === 'POST' && url.pathname === '/dev/consent') {
+        const { wallet, expiresAt } = JSON.parse(String(await readBody(req))) as { wallet: string; expiresAt?: number };
+        const address = devWallets.resolve(wallet) ?? wallet;
+        return json(res, 200, await grantDevConsent(automations, devWallets, consentFields(address, expiresAt ?? Date.now() + 30 * 86_400_000)));
+      }
       // 1. The app asks for the message its user signs to opt in.
       if (req.method === 'POST' && url.pathname === '/consent/message') {
         const { wallet, expiresAt } = JSON.parse(String(await readBody(req))) as { wallet: string; expiresAt: number };
@@ -168,6 +205,15 @@ async function main() {
   });
 
   automations.start({ concurrency: 2 });
+  // Let running jobs finish and, in dev, write the file store before exiting.
+  const shutdown = async () => {
+    server.close();
+    await automations.stop();
+    closeStore();
+    process.exit(0);
+  };
+  process.once('SIGINT', () => void shutdown());
+  process.once('SIGTERM', () => void shutdown());
   server.listen(Number(env('PORT', '8787')), () => console.log(`listening on :${env('PORT', '8787')}`));
 }
 

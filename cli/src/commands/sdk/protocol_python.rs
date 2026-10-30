@@ -118,6 +118,7 @@ pub(crate) fn generate_project_protocol_python(
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .with_context(|| format!("Failed to generate stack '{key}' of protocol '{alias}'"))?;
@@ -200,6 +201,7 @@ pub(crate) fn generate_project_protocol_python(
                         stack_endpoints: None,
                         reference: None,
                         program_install: None,
+                        extensions: None,
                     },
                 )
                 .with_context(|| {
@@ -891,12 +893,19 @@ fn render_python_protocol_readme(
         "`{screaming}_PROTOCOL.stacks` and `.programs` are the protocol's stacks and programs, ready for `arete.create_session(stacks=..., programs=...)`.\n"
     );
     let _ = writeln!(out, "## Deployment\n");
-    let _ = writeln!(
-        out,
-        "Calls the {} deployment `{}`. A protocol session is minted from your own key through the session endpoint; this folder holds no credential.\n",
-        deployment.access.as_str(),
-        deployment.deployment_id
-    );
+    if deployment.deployment_id.is_empty() {
+        let _ = writeln!(
+            out,
+            "Not deployed to production yet: run the app in dev mode (`a4 dev run -- <command>`), which calls your dev environment's deployment, until `a4 protocol deploy` deploys it. This folder holds no credential.\n"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "Calls the {} deployment `{}`. A protocol session is minted from your own key through the session endpoint; this folder holds no credential.\n",
+            deployment.access.as_str(),
+            deployment.deployment_id
+        );
+    }
     let _ = writeln!(out, "## Steps\n");
     let _ = writeln!(out, "| Step | Method | Scope | Access | Rejection codes |");
     let _ = writeln!(out, "|---|---|---|---|---|");

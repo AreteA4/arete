@@ -128,6 +128,7 @@ export function AreteProvider({
       validateFrames: config.validateFrames,
       onFrameValidationError: config.onFrameValidationError,
       auth: config.auth,
+      ...(config.environment !== undefined ? { environment: config.environment } : {}),
       wallet: latestWalletRef.current,
     }).then((client) => {
       const ownsAttempt = lifecycleRef.current.active
@@ -168,7 +169,7 @@ export function AreteProvider({
     );
     notifyClientChange({ cacheKey, status: 'connecting' });
     return connectionPromise as unknown as Promise<ConnectedArete<ResolvedStack<TStack, TPrograms>>>;
-  }, [config.autoConnect, config.autoReconnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.fetch, config.validateFrames, config.onFrameValidationError, config.auth, notifyClientChange]);
+  }, [config.autoConnect, config.autoReconnect, config.reconnectIntervals, config.maxReconnectAttempts, config.maxEntriesPerView, config.flushIntervalMs, config.fetch, config.validateFrames, config.onFrameValidationError, config.auth, config.environment, notifyClientChange]);
 
   const getClient = useCallback(<
     TStack extends StackDefinition,

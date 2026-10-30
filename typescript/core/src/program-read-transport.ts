@@ -50,6 +50,29 @@ type ProgramReadTransportConfig =
       readonly binding: ProgramReadBinding;
       readonly auth?: AuthConfig;
       readonly fetch: typeof fetch;
+      /**
+       * @internal Dev mode direct: the environment's endpoint and served
+       * release (in the path) and the environment named in token requests.
+       * The session still names the installed release.
+       */
+      readonly dev?: {
+        readonly endpoint: string;
+        readonly pathRelease: ProgramReleaseReference;
+        readonly environment: string;
+      };
+    }
+  | {
+      /** Dev mode through the edge: no credential, the identity in a header. */
+      readonly kind: 'dev-edge';
+      readonly endpoint: string;
+      readonly release: ProgramReleaseReference;
+      /** A fetch made with `createEdgeFetch` for this program's identity. */
+      readonly fetch: typeof fetch;
+    }
+  | {
+      /** A surface that fails every read with `error`. */
+      readonly kind: 'refused';
+      readonly error: Error;
     }
   | {
       readonly kind: 'unavailable';
@@ -139,7 +162,12 @@ function hostedAuth(
   }
 
   return {
-    manager: new ConnectionManager({ websocketUrl: null, auth, fetch: config.fetch }),
+    manager: new ConnectionManager({
+      websocketUrl: null,
+      auth,
+      fetch: config.fetch,
+      ...(config.dev ? { sessionEnvironment: config.dev.environment } : {}),
+    }),
     target: {
       targetKind: 'program-read-binding',
       targetId: bindingId,
@@ -172,11 +200,21 @@ export function createProgramReadTransport(
       },
     };
   }
+  if (config.kind === 'refused') {
+    return {
+      async read<T>(): Promise<T> {
+        throw config.error;
+      },
+    };
+  }
 
   const auth = config.kind === 'hosted-binding' ? hostedAuth(config) : undefined;
   const endpoint = config.kind === 'hosted-binding'
-    ? config.binding.endpoint
+    ? config.dev?.endpoint ?? config.binding.endpoint
     : config.endpoint;
+  const pathRelease = config.kind === 'hosted-binding'
+    ? config.dev?.pathRelease ?? config.release
+    : config.release;
 
   return {
     async read<T>(request: ProgramReadRequest): Promise<T> {
@@ -191,7 +229,7 @@ export function createProgramReadTransport(
         : request.operation === 'fetchWithContext' ? { options: managedReadOptions(request.options) }
         : request.operation === 'fetchManyWithContext' ? { addresses: [...request.addresses], options: managedReadOptions(request.options) }
         : request.operation === 'nativeQuery' ? { ...request.query, limit: request.query.limit ?? 100 } : undefined;
-      const path = requestPath(config.release, request);
+      const path = requestPath(pathRelease, request);
       const input = appendUrl(endpoint, path);
       const attempt = async (forceRefresh: boolean): Promise<Response> => {
         const token = auth?.staticToken

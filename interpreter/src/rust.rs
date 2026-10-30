@@ -3091,7 +3091,11 @@ mod tests {
             "pub const PROGRAM_RELEASE_HASH: &str = \"{expected_release_hash}\";"
         )));
         assert!(programs.contains("pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor"));
-        assert!(programs.contains("arete_sdk::ProgramReadDescriptor::LocalHttp"));
+        // Generated offline: reads are unavailable with the install-and-dev fix.
+        assert!(!programs.contains("arete_sdk::ProgramReadDescriptor::LocalHttp"));
+        assert!(programs.contains(r#"\"kind\":\"unavailable\""#));
+        assert!(programs.contains("a4 install program"));
+        assert!(programs.contains("--read-endpoint"));
         assert!(!programs.contains("Program read layer omitted"));
 
         // Typed account reader for the emitted `Counter` struct.
@@ -3099,7 +3103,9 @@ mod tests {
         assert!(programs.contains(
             "pub fn counter_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::Counter>, arete_sdk::AreteError>"
         ));
-        assert!(programs.contains("self.builder.account_transport(\"demo\", &read_descriptor())?"));
+        assert!(programs.contains(&format!(
+            "self.builder.account_transport_of(\"demo\", Some(\"{TEST_PROGRAM_ID}\"), &read_descriptor())?"
+        )));
         assert!(programs.contains("arete_sdk::AccountReader::new(\n                \"Counter\","));
     }
 
@@ -6498,7 +6504,19 @@ fn resolve_program_read_layer(
     let release_hash = spec
         .oss_release_hash()
         .map_err(|error| format!("failed to compute the release hash ({error})"))?;
-    Ok((spec_hash.to_string(), release_hash.to_string(), None))
+    // Generated offline: account reads need an installed program or an
+    // endpoint named at generation (`program_reads`).
+    let descriptor = crate::program_sdk::offline_program_read_descriptor(
+        &spec.idl_snapshot.snapshot.name,
+        &release_hash.to_string(),
+        &spec_hash.to_string(),
+        None,
+    );
+    Ok((
+        spec_hash.to_string(),
+        release_hash.to_string(),
+        Some(descriptor),
+    ))
 }
 
 /// Generate `programs.rs`: one module per program with typed instruction
@@ -6678,9 +6696,12 @@ fn generate_stack_programs_rs(
                     ),
                 };
                 reader_methods.push(format!(
-                    "        /// {doc}\n        pub fn {method_name}(&self) -> Result<arete_sdk::AccountReader<{value_type}>, arete_sdk::AreteError> {{\n            Ok(arete_sdk::AccountReader::new(\n                {account_literal},\n                std::sync::Arc::new(self.builder.account_transport({program_literal}, &read_descriptor())?),\n            ))\n        }}",
+                    "        /// {doc}\n        pub fn {method_name}(&self) -> Result<arete_sdk::AccountReader<{value_type}>, arete_sdk::AreteError> {{\n            Ok(arete_sdk::AccountReader::new(\n                {account_literal},\n                std::sync::Arc::new(self.builder.account_transport_of({program_literal}, Some({program_id_literal}), &read_descriptor())?),\n            ))\n        }}",
                     account_literal = rust_string_literal(&account.account),
                     program_literal = rust_string_literal(&raw_name),
+                    // The program's address is part of the identity a dev
+                    // environment resolves its Program Read by.
+                    program_id_literal = rust_string_literal(program_id),
                 ));
             }
         }
@@ -6721,8 +6742,13 @@ fn generate_stack_programs_rs(
                 Some(descriptor) => {
                     let json = serde_json::to_string(descriptor)
                         .expect("program read descriptor must serialize");
+                    let what = if descriptor["transport"]["kind"] == "hosted-binding" {
+                        "hosted program read descriptor"
+                    } else {
+                        "program read descriptor"
+                    };
                     format!(
-                        "        serde_json::from_str({}).expect(\"generated hosted program read descriptor must be valid\")",
+                        "        serde_json::from_str({}).expect(\"generated {what} must be valid\")",
                         rust_string_literal(&json),
                     )
                 }

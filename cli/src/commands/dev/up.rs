@@ -15,10 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use arete_mcp::dev::{
-    mint_stack_session, unix_now, write_private, DevProject, DevSession, EnvRef, StackSession,
-    SESSION_SCHEMA,
-};
+use arete_mcp::dev::{unix_now, write_private, DevProject, DevSession, EnvRef, SESSION_SCHEMA};
 use arete_mcp::dev_env::{
     self, api_code, describe_env, env_name_from, is_env_id, is_not_found, valid_env_name,
     ws_url_of, EnvApi, EnvRpc, EnvSelection,
@@ -44,9 +41,6 @@ const POLL: Duration = Duration::from_millis(400);
 const DEBOUNCE: Duration = Duration::from_millis(350);
 /// How long a new environment may take to start.
 const START_TIMEOUT: Duration = Duration::from_secs(180);
-/// Renew the stack session when it has less than this left (seconds).
-/// The API issues five-minute sessions, so the threshold must be shorter.
-const STACK_SESSION_RENEW_BEFORE: u64 = 60;
 /// How often a deployment without a stack looks for it again.
 const STACK_LOOKUP_EVERY: Duration = Duration::from_secs(10);
 
@@ -399,9 +393,6 @@ struct Session<'a> {
     deployer: Option<Deployer>,
     deploy_state: DeployState,
     stack: Option<(String, String)>,
-    stack_session: Option<StackSession>,
-    /// No stack session mint before this (Unix seconds) after a failure.
-    stack_session_retry_at: u64,
     stack_looked_up: Option<std::time::Instant>,
     /// The deployment and release the installed client was last generated
     /// for.
@@ -726,6 +717,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
 
     let deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
     let automation_events = events.clone();
+    let edge_url = proxy.rpc_url();
     let mut session = Session {
         config: &config,
         project: project.clone(),
@@ -741,8 +733,6 @@ pub async fn run(config: UpConfig) -> Result<()> {
         deployer: None,
         deploy_state,
         stack: None,
-        stack_session: None,
-        stack_session_retry_at: 0,
         stack_looked_up: None,
         sdk_generated_for: None,
         automations: automations_config.map(|automations_config| {
@@ -751,6 +741,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
                 automations_config,
                 &config.project_root,
                 config.api.key(),
+                &edge_url,
                 Arc::new(move |event: &str, human: &str, fields: Value| {
                     events.emit(event, human, fields)
                 }),
@@ -859,7 +850,6 @@ impl Session<'_> {
             short_id: state.short_id.clone(),
             stack: self.stack.as_ref().map(|(name, _)| name.clone()),
             stack_ws_url: self.stack.as_ref().map(|(_, url)| url.clone()),
-            stack_session: self.stack_session.clone(),
             ui_url: self.ui.url.clone(),
             updated_at: unix_now(),
         }
@@ -878,6 +868,24 @@ impl Session<'_> {
         let config = self.config;
         self.write_state()?;
         self.write_session()?;
+        if config.deploy {
+            // Before any stack loads: a project the environment's stack
+            // slots can't hold is refused with every stack named.
+            let lock = ProjectLock::load_optional(self.project.root.join("arete.lock"))
+                .ok()
+                .flatten()
+                .map(|lock| lock_stacks(&lock))
+                .unwrap_or_default();
+            super::quotas::preflight(
+                &config.api,
+                &self.env.id,
+                &config.project_root,
+                &lock,
+                config.protocol,
+                self.deploy_state.slug.as_deref(),
+            )
+            .await?;
+        }
 
         if config.protocol && config.deploy {
             self.build(&[]).await?;
@@ -915,7 +923,6 @@ impl Session<'_> {
                     false,
                 );
                 self.find_stack().await;
-                self.refresh_stack_session(true).await;
                 self.write_session()?;
             }
         }
@@ -925,7 +932,6 @@ impl Session<'_> {
             self.deploy_project_stacks().await?;
         } else {
             self.find_stack().await;
-            self.refresh_stack_session(true).await;
             self.write_session()?;
         }
         self.ui.start_stack_rows();
@@ -1137,65 +1143,13 @@ impl Session<'_> {
         }
     }
 
-    /// Mint (or renew) the stack session when there is a stack and the
-    /// current one is missing or about to expire. Returns whether it
-    /// changed.
-    async fn refresh_stack_session(&mut self, force: bool) -> bool {
-        let Some((_, ws_url)) = self.stack.clone() else {
-            let changed = self.stack_session.is_some();
-            self.stack_session = None;
-            return changed;
-        };
-        if !force {
-            if unix_now() < self.stack_session_retry_at {
-                return false;
-            }
-            if let Some(current) = &self.stack_session {
-                if current.expires_at > unix_now() + STACK_SESSION_RENEW_BEFORE {
-                    return false;
-                }
-            }
-        }
-        let endpoint = format!("{}/ws/sessions", self.config.api.origin());
-        match mint_stack_session(
-            self.config.api.http(),
-            &endpoint,
-            self.config.api.key(),
-            &ws_url,
-            self.deploy_state.deployment_id.as_deref(),
-        )
-        .await
-        {
-            Ok(session) => {
-                self.events.log.line(&format!(
-                    "stack session minted, expires at {}",
-                    session.expires_at
-                ));
-                self.stack_session = Some(session);
-                true
-            }
-            Err(error) => {
-                self.stack_session_retry_at = unix_now() + 30;
-                self.events.emit(
-                    "stack-warning",
-                    &format!("Could not mint a stack session: {error:#}"),
-                    json!({ "error": format!("{error:#}") }),
-                );
-                false
-            }
-        }
-    }
-
     async fn after_deploy(&mut self, outcome: &DeployOutcome) -> Result<()> {
         if outcome.changed {
             // A new deployment gets a new stack.
             self.stack = None;
-            self.stack_session = None;
             self.stack_looked_up = None;
         }
         self.find_stack().await;
-        self.refresh_stack_session(outcome.changed || self.stack_session.is_none())
-            .await;
         self.write_session()?;
         let generated_for = (outcome.deployment_id.clone(), outcome.release_hash.clone());
         if self.config.sync_sdk && self.sdk_generated_for.as_ref() != Some(&generated_for) {
@@ -1260,7 +1214,6 @@ impl Session<'_> {
                     .clone()
                     .ok_or_else(|| anyhow::anyhow!("the protocol has no slug yet"))?,
                 release_hash: outcome.release_hash.clone(),
-                deployment_id: outcome.deployment_id.clone(),
             };
             sdk_gen::sync_installed_client(
                 &self.project.root,
@@ -1416,7 +1369,6 @@ impl Session<'_> {
             self.stack = stacks
                 .first()
                 .map(|stack| (stack.name.clone(), stack.ws_url.clone()));
-            self.refresh_stack_session(true).await;
         }
         self.write_session()?;
         Ok(())
@@ -1468,8 +1420,7 @@ impl Session<'_> {
                     .await;
                 runner.poll(watching).await;
             }
-            let found = self.find_stack().await;
-            if self.refresh_stack_session(found).await || found {
+            if self.find_stack().await {
                 self.write_session()?;
             }
             if !watching {
@@ -1519,7 +1470,30 @@ impl Session<'_> {
         // This pass reports only its own work, never startup's or the last
         // pass's (a failed build returns before the client is generated).
         self.pass = PassReport::default();
+        let (extensions, only_extensions) =
+            super::local_extensions::changed(&self.project.root, &changed);
         let result = async {
+            // A local SDK extension changed: regenerate only its SDK (which
+            // resolves through the blocking registry client), and deploy
+            // nothing when nothing else changed.
+            let root = self.project.root.clone();
+            let installs = tokio::task::spawn_blocking(move || {
+                super::local_extensions::regenerate(&root, &extensions)
+            })
+            .await??;
+            for install in installs {
+                self.events.emit(
+                    "sdk-regenerated",
+                    &format!(
+                        "Regenerated {} {} with its local SDK extension",
+                        install.kind, install.alias
+                    ),
+                    json!(install),
+                );
+            }
+            if only_extensions {
+                return Ok(());
+            }
             if self.config.protocol {
                 self.redeploy(&names).await?;
             }
@@ -1745,6 +1719,7 @@ mod tests {
             targets: Vec::new(),
             generator_contract: String::new(),
             local_build: None,
+            local_extension: None,
         };
         let mut protocol = stack("raise", "registry:raise", &[]);
         protocol.kind = DependencyKind::Protocol;

@@ -374,6 +374,7 @@ fn generate(dependency: Value, output: &Path, project_dir: &str) {
             stack_endpoints: None,
             reference: Some(&reference),
             program_install: None,
+            extensions: None,
         },
     )
     .unwrap_or_else(|error| panic!("generate {}: {error:#}", output.display()));

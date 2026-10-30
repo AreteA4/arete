@@ -24,14 +24,17 @@ through application wallets; and author and deploy custom live read models
   needs attention, and an `info` check there is optional unless you need
   that capability). If `a4` is missing:
   `curl -fsSL https://arete.run/install.sh | sh`
+- New protocol: `a4 create <dir> --template protocol` (a tip jar with
+  automations), or `--template protocol-app` (plus a React app on the
+  protocol client and an automations server with a Privy signer). Then
+  `cd <dir> && a4 init -y && a4 dev up`; the `arete-protocols` skill has the
+  workflow and its design patterns.
 - Catalog or knowledge: the catalog (`a4 explore catalog --query "..."
   --json`) finds installable programs and stacks; knowledge
   (`a4 know search --query "..." --json`) explains what an on-chain protocol
   does and what its instructions mean. Installs always come from the catalog
   descriptor (`a4 explore stack <ref> --json`,
   `a4 explore program <ref> --json`), never from knowledge results.
-- New protocol: `a4 protocol init <dir> && cd <dir>`, then `a4 init -y`
-  inside it; the `arete-protocols` skill has the workflow.
 - One-off live read, no code: `a4 explore stack <ref> --json` lists the
   views, then `a4 get <Entity>/<view> --stack <ref> --limit 1 --select
   <paths>` (or the MCP `read_view` tool). `<Entity>/latest` is the current
@@ -50,8 +53,8 @@ through application wallets; and author and deploy custom live read models
 - A stack includes the program SDKs for the programs its views index, at
   `arete.programs.<name>`; install a program separately only when no stack
   you use covers it.
-- Starting a new app? `a4 create <dir> --template react-ore` scaffolds a
-  working example in a new directory (also `typescript-ore`, `rust-ore`,
+- Live data without a protocol? `a4 create <dir> --template react-ore`
+  scaffolds the ORE live-data example (also `typescript-ore`, `rust-ore`,
   `python-ore`).
 - Account: `a4 --profile agent auth signup` stores a restricted `a4_ak_*` key
   in the `agent` profile. Never request or use the human `a4_sk_*` key.

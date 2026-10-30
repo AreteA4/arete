@@ -575,10 +575,28 @@ pub fn scaffold(args: &InitArgs) -> Result<InitOutcome> {
     scaffold_with(args, install_from_registry)
 }
 
+/// [`scaffold`], with `extra` writing more files (returned, relative to the
+/// project) once the scaffold's are written and before the System Program
+/// is installed, so a failed install leaves them in place too.
+pub fn scaffold_extended(
+    args: &InitArgs,
+    extra: impl FnOnce(&Path, &str) -> Result<Vec<String>>,
+) -> Result<InitOutcome> {
+    scaffold_inner(args, install_from_registry, extra)
+}
+
 /// [`scaffold`], with the registry install as a seam for tests.
 fn scaffold_with(
     args: &InitArgs,
     registry_install: impl FnOnce(&Path) -> Result<()>,
+) -> Result<InitOutcome> {
+    scaffold_inner(args, registry_install, |_, _| Ok(Vec::new()))
+}
+
+pub(super) fn scaffold_inner(
+    args: &InitArgs,
+    registry_install: impl FnOnce(&Path) -> Result<()>,
+    extra: impl FnOnce(&Path, &str) -> Result<Vec<String>>,
 ) -> Result<InitOutcome> {
     let dir = &args.dir;
     std::fs::create_dir_all(dir).with_context(|| format!("Failed to create {}", dir.display()))?;
@@ -670,6 +688,7 @@ fn scaffold_with(
         &readme(&dir_name, &name, args.local_idl && !args.no_install),
     )?;
     written.push("README.md".into());
+    written.extend(extra(dir, &name)?);
 
     let warnings = Vec::new();
     let system_program = if args.no_install {
