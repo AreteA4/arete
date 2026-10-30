@@ -145,17 +145,19 @@ npx @usearete/a4 create
 # With project name
 npx @usearete/a4 create my-app
 
-# With specific template
-npx @usearete/a4 create my-app --template react-ore
+# A protocol with a React app and an automations server
+npx @usearete/a4 create my-app --template protocol-app
 ```
 
 **Available templates:**
 
-| Template         | Aliases                              | Description                               |
-| ---------------- | ------------------------------------ | ----------------------------------------- |
-| `react-ore`      | `ore-react`                          | ORE mining rounds viewer (React + Vite)   |
-| `rust-ore`       | `ore-rust`                           | ORE mining rounds client (Rust + Tokio)   |
-| `typescript-ore` | `ore-typescript`, `ts-ore`, `ore-ts` | ORE mining rounds client (TypeScript CLI) |
+| Template         | Aliases                              | Description                                                                                                                              |
+| ---------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `protocol`       |                                      | A protocol: the `a4 protocol init` tip jar and its automations                                                                           |
+| `protocol-app`   |                                      | The protocol, plus a React app on its client (dev-only tools gated on the dev environment) and an automations server with a Privy signer |
+| `react-ore`      | `ore-react`                          | ORE mining rounds viewer (React + Vite)                                                                                                  |
+| `rust-ore`       | `ore-rust`                           | ORE mining rounds client (Rust + Tokio)                                                                                                  |
+| `typescript-ore` | `ore-typescript`, `ts-ore`, `ore-ts` | ORE mining rounds client (TypeScript CLI)                                                                                                |
 
 **Options:**
 
@@ -166,7 +168,9 @@ npx @usearete/a4 create my-app --template react-ore
 | `--force-refresh`   | Clear template cache and re-download  |
 | `--skip-install`    | Don't run `npm install` automatically |
 
-Templates are downloaded from GitHub releases and cached in `~/.arete/templates/`.
+The protocol templates are built into the CLI; they install the System
+Program from the registry, so they need your login. The ORE templates are
+downloaded from GitHub releases and cached in `~/.arete/templates/`.
 
 ---
 

@@ -94,7 +94,7 @@ enum Commands {
         /// Project name (creates directory)
         name: Option<String>,
 
-        /// Template: react-ore, rust-ore, typescript-ore, python-ore
+        /// Template: protocol, protocol-app, react-ore, rust-ore, typescript-ore, python-ore
         #[arg(short, long)]
         template: Option<String>,
 
