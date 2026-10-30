@@ -2,8 +2,8 @@
 name: arete-deploy
 description: Publish Solana ProgramSpecs and plan, deploy, inspect, stop, archive, promote, or delete hosted Arete resources. Use for a4 program lifecycle, a4 up, deployment branches/previews, hosted stack operations, and taking an Arete Protocol to a private hosted deployment with a4 protocol deploy (review, activation outcomes, the owner-private registry package). This skill performs external mutations only when the user's request authorizes them; use arete-stack-authoring for local DSL and artifact work and arete-protocols for protocol authoring and a4 dev.
 metadata:
-  version: "1.3.0"
-  min-cli: ">=0.45.0"
+  version: "1.4.0"
+  min-cli: ">=0.49.0"
 ---
 
 # Publish and Operate Hosted Arete Resources
@@ -93,7 +93,7 @@ publishable keys are refused. Preview first:
 
 ```bash
 a4 protocol deploy --dry-run                 # builds; files, expected release hash, slug, create vs reuse, programs to push
-a4 protocol deploy --fee-policy fee-policy.json
+a4 protocol deploy                           # optional: --creator-fee-wallet <pubkey>
 a4 protocol deploy --no-activate --json
 ```
 
@@ -101,8 +101,10 @@ A real run builds the project (`--no-build` uploads the existing build and
 refuses it when sources changed), registers each program installed from a
 local IDL as the user's private program when Arete doesn't have that exact
 ProgramSpec yet (and records it in `arete.lock`), uploads the release,
-creates or reuses a private deployment (a new one needs a fee policy), and
-activates it. All of that is one authorized mutation; a request to build,
+creates or reuses a private deployment, and activates it. Arete sets the
+deployment's fees; never write a fee policy. A wallet named with
+`--creator-fee-wallet` / `[protocol].creator_fee_wallet` receives the
+creator's share of Arete's fee (only when the user gives one). All of that is one authorized mutation; a request to build,
 check or run locally is not authorization to deploy.
 
 | `status` | Meaning |

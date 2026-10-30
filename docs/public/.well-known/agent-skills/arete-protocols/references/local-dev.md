@@ -190,7 +190,7 @@ Deploying is an external mutation: do it only when the user asked for it.
 
 ```bash
 a4 protocol deploy --dry-run             # builds; files, expected release hash, slug, create vs reuse, programs to push
-a4 protocol deploy --fee-policy fee-policy.json --resource launchDefaults=launch-defaults.json
+a4 protocol deploy --resource launchDefaults=launch-defaults.json
 a4 protocol deploy --no-activate --json
 ```
 
@@ -211,10 +211,13 @@ It needs a secret key (publishable keys are refused). It:
 3. Uploads only `protocol-spec.json` (plus `handlers.mjs` when a step has a
    handler); the server derives the release (`npx arete-protocol build
    --server-release` predicts its hash; deploy warns if they differ).
-4. Reuses or creates a private deployment. A new one needs a fee policy
-   (`"schema": "arete.protocol-fee-policy/v1"`) and a value for each declared
-   resource; defaults can live in `[protocol]` of `arete.toml`
-   (`access = "private"` is the only accepted value).
+4. Reuses or creates a private deployment. A new one needs a value for each
+   declared resource (a JSON file path or an inline TOML value under
+   `[protocol.resources]`). Arete sets the fees; there is no fee policy to
+   write. `[protocol].creator_fee_wallet` (or `--creator-fee-wallet`)
+   optionally names the wallet for the creator's share of Arete's fee.
+   Defaults live in `[protocol]` of `arete.toml` (`access = "private"` is
+   the only accepted value).
 5. Activates it, unless `--no-activate`.
 6. Updates the project's own client to the new deployment (below).
 
