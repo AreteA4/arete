@@ -36,7 +36,7 @@ const automations = createAutomations({
   policy: definePolicy({ ... }),
   simulator: rpcSimulator(RPC_URL),
   store: memoryStore(),         // tests and development only
-});                             // targets dev for a client `a4 dev` generated, mainnet for a published one
+});                             // targets dev in dev mode (ARETE_ENVIRONMENT=dev), mainnet otherwise
 
 // A protocol event: read state, return the steps to run. Handlers never prepare.
 automations.on('round.settled', async (event, ctx) => {

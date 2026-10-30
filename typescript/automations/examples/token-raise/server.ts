@@ -1,14 +1,14 @@
 // Automatic refunds for a token raise: the definition in automations.ts, with
 // a signer, a store, the webhook route and the consent routes your app calls.
 //
-// Against a dev environment (a client `a4 dev` generated, and
+// In dev mode (started with `a4 dev run -- npx tsx server.ts`, and
 // `[dev.automations] forward = "http://localhost:8787/arete/webhook"` in
 // arete.toml), it runs on the helpers of `@usearete/automations/dev`: dev
 // wallets sign (Privy too, for other wallets, with SIGNER=privy), the store
 // is a file under .arete/dev/, transactions simulate on the fork, and
 // POST /dev/consent signs a consent with a dev wallet.
 //
-// In production (the published client, after `a4 install --locked`):
+// In production (`ARETE_ENVIRONMENT` unset, after `a4 install --locked`):
 //   SIGNER=keypair DEV_WALLET=~/.config/solana/dev.json ...
 //   SIGNER=privy PRIVY_APP_ID=... PRIVY_APP_SECRET=... PRIVY_AUTHORIZATION_KEY=... PRIVY_WALLETS='{"<address>":"<wallet id>"}'
 //
