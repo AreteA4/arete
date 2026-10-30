@@ -8,8 +8,9 @@
 //!   the fork's values. The read session is minted for the environment with
 //!   the account's key, as `a4 dev` does.
 //!
+//! A program the project depends on decodes at the release arete.lock pins.
 //! Without `--program`, the program is the account's owner, looked up in the
-//! registry. Without `--account`, the account type is the IDL account whose
+//! project and then the registry. Without `--account`, the account type is the IDL account whose
 //! discriminator starts the account's data. An environment that serves another
 //! release of the program answers for its own account types: `--account` goes
 //! to it unchecked, for a type the installed IDL doesn't name.
@@ -26,7 +27,11 @@ use crate::api_client::{
     RegistryProgramInstallTransport,
 };
 use crate::commands::dev::env::EnvArgs;
-use crate::project::manifest::{DependencyKind, DependencySourceV1};
+use crate::project::installer::resolve_registry_batch;
+use crate::project::lockfile::LockedDependency;
+use crate::project::manifest::{DependencyKind, DependencySourceV1, InstallTarget};
+use crate::project::resolver::{RegistryDependencyRequest, ResolvedRegistryDependency};
+use crate::project::{ProjectLock, ProjectManifest};
 
 #[derive(Args, Debug)]
 pub struct DecodeArgs {
@@ -157,7 +162,7 @@ fn decode_production(client: &ApiClient, config_path: &str, args: &DecodeArgs) -
         .ok_or_else(|| anyhow!("No account exists at {}", args.address))?;
     let install = match named {
         Some(install) => install,
-        None => owner_install(client, &raw.owner, &args.address)?,
+        None => owner_install(client, config_path, &raw.owner, &args.address)?,
     };
     let (binding_id, endpoint, session_endpoint) = program_read_binding(&install)?;
     let account = account_type(&install, &raw, args.account.as_deref())?;
@@ -220,7 +225,7 @@ fn decode_dev(
     let config_path = project_config.as_deref().unwrap_or(config_path);
     let install = match args.program.as_deref() {
         Some(program) => install_for(client, config_path, program)?,
-        None => owner_install(client, &raw.owner, &args.address)?,
+        None => owner_install(client, config_path, &raw.owner, &args.address)?,
     };
     check_owner(&install, &raw, &args.address)?;
     let (binding_id, _, session_endpoint) = program_read_binding(&install)?;
@@ -294,47 +299,118 @@ fn dev_program_read_target(resolved: &Value) -> Result<(String, String)> {
     }
 }
 
-/// The install for `program`: an arete.toml program alias's registry
-/// reference, else `program` as a registry reference.
+/// The install for `program`: an arete.toml program alias at the project's
+/// pinned release, else `program` as a registry reference.
 fn install_for(
     client: &ApiClient,
     config_path: &str,
     program: &str,
 ) -> Result<RegistryProgramInstallResponse> {
-    let reference =
-        alias_reference(Path::new(config_path), program).unwrap_or_else(|| program.to_string());
-    client
-        .get_registry_program_install(&reference, None)
-        .with_context(|| format!("Could not resolve program '{program}'"))
-}
-
-/// The registry reference of arete.toml's program dependency `alias`.
-// Bound before returning: the dependency iterator borrows `manifest`.
-#[allow(clippy::let_and_return)]
-fn alias_reference(config_path: &Path, alias: &str) -> Option<String> {
-    if !config_path.exists() {
-        return None;
+    let pinned = project_install(Path::new(config_path), |alias, _| alias == program)
+        .with_context(|| format!("Could not resolve program '{program}'"))?;
+    match pinned {
+        Some(install) => Ok(install),
+        None => client
+            .get_registry_program_install(program, None)
+            .with_context(|| format!("Could not resolve program '{program}'")),
     }
-    let (manifest, _, _) = crate::project::installer::validate_project(config_path, true).ok()?;
-    let reference = manifest
-        .dependencies()
-        .find_map(|(kind, name, dependency)| match &dependency.source {
-            DependencySourceV1::Registry(source)
-                if kind == DependencyKind::Program && name == alias =>
-            {
-                Some(source.registry.clone())
-            }
-            _ => None,
-        });
-    reference
 }
 
-/// The registry program that owns the account.
+/// The project's registry program dependency `selected` picks, at the release
+/// `a4 install` pins it to. No readable arete.toml, or no such dependency, is
+/// no answer: the command also runs outside projects.
+fn project_install(
+    config_path: &Path,
+    selected: impl Fn(&str, Option<&LockedDependency>) -> bool,
+) -> Result<Option<RegistryProgramInstallResponse>> {
+    let Ok(manifest) = ProjectManifest::load(config_path) else {
+        return Ok(None);
+    };
+    let lock = ProjectLock::load_optional(manifest.root.join("arete.lock"))?;
+    let Some((targets, request)) = program_request(&manifest, lock.as_ref(), selected) else {
+        return Ok(None);
+    };
+    let resolved = resolve_registry_batch(
+        manifest.document.manifest_version,
+        &targets,
+        std::slice::from_ref(&request),
+        None,
+    )?;
+    match resolved.into_iter().next() {
+        Some(ResolvedRegistryDependency::Program { install, .. }) => Ok(Some(*install)),
+        _ => bail!(
+            "The registry did not resolve program '{}' to a program",
+            request.package
+        ),
+    }
+}
+
+/// The resolver request for the selected program dependency: its version
+/// requirement, and the locked release while the lock still describes it (as
+/// `a4 install` reuses one).
+fn program_request(
+    manifest: &ProjectManifest,
+    lock: Option<&ProjectLock>,
+    selected: impl Fn(&str, Option<&LockedDependency>) -> bool,
+) -> Option<(Vec<InstallTarget>, RegistryDependencyRequest)> {
+    manifest
+        .dependencies()
+        .find_map(|(kind, alias, dependency)| {
+            let DependencySourceV1::Registry(source) = &dependency.source else {
+                return None;
+            };
+            if kind != DependencyKind::Program {
+                return None;
+            }
+            let requirement = dependency.version.clone()?;
+            let targets = dependency.selected_targets(&manifest.document.sdk).to_vec();
+            let locked = lock
+                .into_iter()
+                .flat_map(|lock| &lock.dependencies)
+                .find(|entry| entry.kind == kind && &entry.alias == alias);
+            if !selected(alias, locked) {
+                return None;
+            }
+            let reusable = locked.filter(|entry| {
+                entry.source == dependency.source.stable_description()
+                    && entry.requirement.as_deref() == Some(requirement.as_str())
+                    && entry.targets == targets
+            });
+            let request_targets = if targets.is_empty() {
+                manifest.document.sdk.targets.clone()
+            } else {
+                targets
+            };
+            Some((
+                request_targets,
+                RegistryDependencyRequest {
+                    kind,
+                    alias: alias.clone(),
+                    package: source.registry.clone(),
+                    requirement,
+                    locked_package_release_hash: reusable
+                        .and_then(|entry| entry.package_release_hash.clone()),
+                    locked_programs: Vec::new(),
+                    locked_stacks: Vec::new(),
+                },
+            ))
+        })
+}
+
+/// The program that owns the account: the project's own dependency on it at
+/// its pinned release, else the registry's.
 fn owner_install(
     client: &ApiClient,
+    config_path: &str,
     owner: &str,
     address: &str,
 ) -> Result<RegistryProgramInstallResponse> {
+    let pinned = project_install(Path::new(config_path), |_, locked| {
+        locked.is_some_and(|entry| entry.program_id.as_deref() == Some(owner))
+    })?;
+    if let Some(install) = pinned {
+        return Ok(install);
+    }
     let program = client
         .list_registry_programs()?
         .into_iter()
@@ -692,6 +768,81 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("--account"), "{error}");
+    }
+
+    const KLEND: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
+
+    fn program_project(version: &str) -> (tempfile::TempDir, ProjectManifest) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut toml = crate::project::manifest::ManifestV1::new("app".into())
+            .to_toml_pretty()
+            .unwrap();
+        toml.push_str(&format!(
+            "\n[dependencies.programs.lending]\nsource = {{ registry = \"klend\" }}\nversion = \"{version}\"\n"
+        ));
+        std::fs::write(dir.path().join("arete.toml"), toml).unwrap();
+        let manifest = ProjectManifest::load(dir.path().join("arete.toml")).unwrap();
+        (dir, manifest)
+    }
+
+    fn locked_project(requirement: &str, targets: &[InstallTarget]) -> ProjectLock {
+        let mut lock = ProjectLock::empty("hash".into());
+        lock.dependencies.push(
+            toml::from_str(&format!(
+                r#"
+                kind = "program"
+                alias = "lending"
+                source = "registry:klend"
+                requirement = "{requirement}"
+                package_release_hash = "pinned"
+                program_id = "{KLEND}"
+                generator_contract = "contract"
+                "#
+            ))
+            .unwrap(),
+        );
+        lock.dependencies[0].targets = targets.to_vec();
+        lock
+    }
+
+    #[test]
+    fn a_project_alias_keeps_its_requirement_and_locked_release() {
+        let (_dir, manifest) = program_project("^1.2.0");
+        let targets = manifest
+            .dependency(DependencyKind::Program, "lending")
+            .unwrap()
+            .selected_targets(&manifest.document.sdk)
+            .to_vec();
+        let lock = locked_project("^1.2.0", &targets);
+
+        let (_, request) =
+            program_request(&manifest, Some(&lock), |alias, _| alias == "lending").unwrap();
+        assert_eq!(request.package, "klend");
+        assert_eq!(request.requirement, "^1.2.0");
+        assert_eq!(
+            request.locked_package_release_hash.as_deref(),
+            Some("pinned")
+        );
+
+        // The owner's program is found through the lock's program id.
+        let by_owner = program_request(&manifest, Some(&lock), |_, locked| {
+            locked.is_some_and(|entry| entry.program_id.as_deref() == Some(KLEND))
+        });
+        assert!(by_owner.is_some());
+
+        // No lock yet: the requirement alone chooses the release.
+        let (_, unlocked) =
+            program_request(&manifest, None, |alias, _| alias == "lending").unwrap();
+        assert_eq!(unlocked.requirement, "^1.2.0");
+        assert_eq!(unlocked.locked_package_release_hash, None);
+
+        // A lock for another requirement no longer describes the dependency.
+        let stale = locked_project("^1.0.0", &targets);
+        let (_, stale) =
+            program_request(&manifest, Some(&stale), |alias, _| alias == "lending").unwrap();
+        assert_eq!(stale.locked_package_release_hash, None);
+
+        assert!(program_request(&manifest, Some(&lock), |alias, _| alias == "other").is_none());
     }
 
     #[test]
