@@ -10,7 +10,9 @@
 //!
 //! Without `--program`, the program is the account's owner, looked up in the
 //! registry. Without `--account`, the account type is the IDL account whose
-//! discriminator starts the account's data.
+//! discriminator starts the account's data. An environment that serves another
+//! release of the program answers for its own account types: `--account` goes
+//! to it unchecked, for a type the installed IDL doesn't name.
 
 use std::path::Path;
 
@@ -222,7 +224,6 @@ fn decode_dev(
     };
     check_owner(&install, &raw, &args.address)?;
     let (binding_id, _, session_endpoint) = program_read_binding(&install)?;
-    let account = account_type(&install, &raw, args.account.as_deref())?;
     let installed_release = install.release.program_release_hash.clone();
     let resolved = runtime
         .block_on(rpc.api().resolve(
@@ -239,6 +240,11 @@ fn decode_dev(
     drop(rpc);
     drop(runtime);
     let (endpoint, release) = dev_program_read_target(&resolved)?;
+    let account = if release == installed_release {
+        account_type(&install, &raw, args.account.as_deref())?
+    } else {
+        served_account_type(&install, &raw, args.account.as_deref())?
+    };
     let token = client.mint_target_session(
         &session_endpoint,
         &json!({
@@ -405,15 +411,7 @@ fn account_type(
                 )
             });
     }
-    let matched: Vec<String> = accounts
-        .iter()
-        .filter(|account| {
-            discriminator(account)
-                .is_some_and(|prefix| !prefix.is_empty() && raw.data.starts_with(&prefix))
-        })
-        .filter_map(|account| name(account))
-        .collect();
-    match matched.as_slice() {
+    match matching_accounts(&accounts, raw).as_slice() {
         [only] => Ok(only.clone()),
         [] if accounts.len() == 1 => name(accounts[0])
             .ok_or_else(|| anyhow!("{}'s IDL account has no name", install.install_name)),
@@ -428,6 +426,43 @@ fn account_type(
             several.join(", ")
         ),
     }
+}
+
+/// The account type when the environment serves another release than the
+/// installed one. Only the installed IDL is at hand, so `--account` is the
+/// environment's to check, and the IDL's only account is no evidence: the
+/// served release may have others.
+fn served_account_type(
+    install: &RegistryProgramInstallResponse,
+    raw: &RawAccount,
+    requested: Option<&str>,
+) -> Result<String> {
+    if let Some(requested) = requested {
+        return Ok(requested.to_string());
+    }
+    let accounts: Vec<&Value> = install.definition.idl_payload["accounts"]
+        .as_array()
+        .map(|accounts| accounts.iter().collect())
+        .unwrap_or_default();
+    if matching_accounts(&accounts, raw).is_empty() {
+        bail!(
+            "The environment serves another release of {}, and the account's data matches no account type of the installed one; pass --account <TYPE> with the type's name in the release you registered",
+            install.install_name
+        );
+    }
+    account_type(install, raw, None)
+}
+
+/// The names of the IDL accounts whose discriminator starts the data.
+fn matching_accounts(accounts: &[&Value], raw: &RawAccount) -> Vec<String> {
+    accounts
+        .iter()
+        .filter(|account| {
+            discriminator(account)
+                .is_some_and(|prefix| !prefix.is_empty() && raw.data.starts_with(&prefix))
+        })
+        .filter_map(|account| account["name"].as_str().map(str::to_string))
+        .collect()
 }
 
 fn discriminator(account: &Value) -> Option<Vec<u8>> {
@@ -634,6 +669,29 @@ mod tests {
         );
         let unknown = account_type(&install, &raw(&[0; 16]), None).unwrap_err();
         assert!(unknown.to_string().contains("--account"), "{unknown}");
+    }
+
+    #[test]
+    fn another_served_release_answers_for_its_own_account_types() {
+        let install = install(json!([
+            {"name": "Reserve", "discriminator": [9, 9, 9, 9, 9, 9, 9, 9]},
+        ]));
+        // A type only the served release has goes to the environment.
+        assert_eq!(
+            served_account_type(&install, &raw(&[7; 16]), Some("Vault")).unwrap(),
+            "Vault"
+        );
+        // Data the installed IDL knows still finds its type.
+        let reserve = raw(&[9, 9, 9, 9, 9, 9, 9, 9, 42]);
+        assert_eq!(
+            served_account_type(&install, &reserve, None).unwrap(),
+            "Reserve"
+        );
+        // The IDL's only account isn't assumed for data it doesn't match.
+        let error = served_account_type(&install, &raw(&[7; 16]), None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--account"), "{error}");
     }
 
     #[test]
