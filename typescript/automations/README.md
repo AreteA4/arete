@@ -260,8 +260,9 @@ const signer = privySigner({
 const { policy, unenforced } = privyPolicyFor(signingPolicy, grant);
 ```
 
-The signer asks Privy to sign (not to send) each prepared transaction, as
-v0 until v1 message signing is verified. A Privy policy refusal ends the job
+The signer asks Privy to sign (not to send) each prepared transaction,
+preferring v1 and falling back to v0 (`transactionFormats: ['v0']` limits it
+to v0). A Privy policy refusal ends the job
 `refused(provider_policy)`. Privy's policy sees top-level instructions only,
 so `unenforced` lists what it cannot bound, notably amounts a protocol
 program moves by CPI; see

@@ -37,9 +37,11 @@ Template-only protocols skip review and deploy privately at trust tier
       the wallet or a constant; no step creates a multisig.
 - [ ] Every vault an admin step's instructions use names the step's
       `vaultIndex` (vault 0 when it has none).
-- [ ] The docs tell the team to add `deployment.squadsProposer` to that
-      multisig with Initiate only (mask `1`). It never has Vote or Execute and
-      is never counted toward the threshold.
+- [ ] The docs tell the team to attach the multisig on the dashboard
+      (https://app.arete.run/dashboard/squads) or add the proposer in the
+      Squads app with Initiate only (mask `1`), and to put its address in the
+      deployment config. The proposer never has Vote or Execute and is never
+      counted toward the threshold.
 - [ ] Platform keys come from `deployment.id`, `deployment.attestation` and
       `deployment.squadsProposer`, never hard-coded pubkeys or ids (they
       change per deployment and per integrator account).

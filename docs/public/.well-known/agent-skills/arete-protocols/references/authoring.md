@@ -73,18 +73,13 @@ Rules the checker enforces:
 
 ## Expressions
 
-Guards, derivations, reaction conditions, read addresses and templates use
-the stack-source expression language. Names in scope depend on where the
-expression is:
-
-| Name | Available |
-|---|---|
-| `now`, `params.*`, `resources.*` | everywhere |
-| `deployment.id/attestation/squadsProposer` | everywhere, including the create step |
-| `args.*`, `wallet`, `ephemeral.<declared>` | step expressions |
-| `instance.id/state/accounts.*/roles.*` | everywhere except the create step |
-| `participant.id/state/wallet` | participant steps and machine |
-| `reads.<declared>.*` | where the read is declared (never inside another read's address) |
+Guards, derivations, reaction conditions, read addresses and templates are
+expressions. The functions, operators, values, names in scope and what is
+not supported are in [expressions.md](expressions.md). Check a spec against
+the server, not only locally: `npx arete-protocol check` with a secret key in
+`ARETE_API_KEY`, or `a4 protocol deploy --dry-run`. Rejections with their
+fixes are in [troubleshooting.md](troubleshooting.md), and builtin programs
+(and why templates can't call them yet) in [builtins.md](builtins.md).
 
 The `deployment` root names the deployment an expression runs under and the
 platform keys it holds:
@@ -246,7 +241,7 @@ create: {
 ### Admin steps and Squads
 
 A `proposeSquads` reaction proposes an admin step to the team's Squads v4
-multisig with the integrator's proposer key. Arete only proposes; the team
+multisig with the deploying account's proposer key. Arete only proposes; the team
 votes and executes in Squads.
 
 The multisig is part of the **deployment config**, never the protocol's
@@ -293,10 +288,12 @@ instructions use must name the same index. Give protocols that share a
 multisig their own `vaultIndex` to keep their funds apart.
 
 The multisig must include `deployment.squadsProposer` as a member with the
-**Initiate** permission only (mask `1`); onboarding it is the user's job (see
-[using.md](using.md)). Never give the proposer Vote or Execute, and never
-make it a threshold signer. Activation refuses a deployment whose multisig
-does not have the proposer. If the proposer is removed later, proposals are
+**Initiate** permission only (mask `1`). Never give the proposer Vote or
+Execute, and never make it a threshold signer. Production deployments are
+refused (`protocol-squads-setup-required`) until the multisig is an active
+attachment of the account; the team sets that up on the dashboard
+(https://app.arete.run/dashboard/squads) or in the Squads app (see
+[using.md](using.md)). If the proposer is removed later, proposals are
 parked and retried, and the instance stream emits
 `arete.squads.proposerMissing`.
 
