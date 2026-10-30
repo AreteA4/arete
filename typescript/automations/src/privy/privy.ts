@@ -21,6 +21,7 @@ import { SOL } from '../consent/consent';
 import { instructionName, NATIVE_MINTS, SYSTEM_PROGRAM, TOKEN_PROGRAMS } from '../policy/authority';
 import { decodeTransaction } from '../policy/decode';
 import { decodeBase64 } from '../policy/encoding';
+import { DEFAULT_TRANSACTION_FORMATS } from '../signer/format';
 import { RUNTIME_PROGRAMS, type SignerPolicy } from '../policy/policy';
 import type { DelegationStatus, ProtocolSigner, SignTransactionsInput } from '../signer/signer';
 import { SignerRefusal } from '../signer/signer';
@@ -49,8 +50,8 @@ export interface PrivySignerOptions {
   /** Your app's authorization private key (the key quorum Privy lets sign for the wallet). */
   readonly authorizationPrivateKey: string;
   /**
-   * Formats to offer. Defaults to v0 only: Privy's documentation covers
-   * legacy and v0 transactions, and v1 message signing is not verified.
+   * Formats to offer, preferred first. Defaults to v1, then v0. Pass `['v0']`
+   * if your Privy policies or wallets cannot handle Transaction V1.
    */
   readonly transactionFormats?: readonly ProtocolTransactionFormat[];
   /**
@@ -108,7 +109,7 @@ export function privySigner(options: PrivySignerOptions): ProtocolSigner {
   };
   return {
     kind: 'privy',
-    supportedTransactionFormats: options.transactionFormats ?? ['v0'],
+    supportedTransactionFormats: options.transactionFormats ?? DEFAULT_TRANSACTION_FORMATS,
     async canSign(wallet) {
       return (await walletIdFor(wallet)) !== null;
     },

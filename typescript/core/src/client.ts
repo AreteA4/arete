@@ -1361,10 +1361,12 @@ export class Arete<TStack extends StackDefinition> {
       }
     }
 
-    if (!httpOnly && !url) {
+    // In dev mode the environment supplies the stack's socket and queries
+    // (`planDevClient`), so the generated production endpoints aren't needed.
+    if (!devMode && !httpOnly && !url) {
       throw new AreteError('WebSocket URL is required (provide url option or define endpoints.ws in stack)', 'INVALID_CONFIG');
     }
-    if (!httpUrl && !independentlyReadable) {
+    if (!devMode && !httpUrl && !independentlyReadable) {
       throw new AreteError(
         'HTTP endpoint is required for transport: "http" (provide httpUrl option or define endpoints.http in stack)',
         'INVALID_CONFIG'
