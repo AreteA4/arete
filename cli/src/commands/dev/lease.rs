@@ -21,6 +21,9 @@ use sha2::Digest as _;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+/// How long stopping waits for the API to release the lease.
+const RELEASE_LIMIT: Duration = Duration::from_secs(5);
+
 /// The environment was taken over: the process must stop.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseLost {
@@ -151,11 +154,17 @@ impl Held {
         LostWatch(self.lost.clone())
     }
 
-    /// Stop renewing and release the lease (unless it was lost).
+    /// Stop renewing and release the lease (unless it was lost), without
+    /// waiting long: an unanswered release just expires with its lease.
     pub async fn release(self) {
+        self.release_within(RELEASE_LIMIT).await;
+    }
+
+    async fn release_within(self, limit: Duration) {
         self.renewal.abort();
         if self.lost.borrow().is_none() {
-            let _ = self.api.release_lease(&self.env, self.generation).await;
+            let release = self.api.release_lease(&self.env, self.generation);
+            let _ = tokio::time::timeout(limit, release).await;
         }
     }
 }
@@ -279,6 +288,28 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         assert_ne!(id, project_id(other.path()));
         assert!(holder_label(dir.path()).ends_with(" (a4 dev up)"));
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_release_does_not_hold_up_stopping() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let api = EnvApi::new(reqwest::Client::new(), &origin, "key").unwrap();
+        let (_sender, lost) = watch::channel(None);
+        let held = Held {
+            api,
+            env: "denv_x".into(),
+            generation: 1,
+            lost,
+            renewal: tokio::spawn(std::future::pending()),
+            replaced: None,
+        };
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            held.release_within(Duration::from_millis(50)),
+        )
+        .await
+        .expect("release gave up");
     }
 
     /// One path on two machines: the same path with another checkout id.

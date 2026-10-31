@@ -632,18 +632,26 @@ impl EnvApi {
 
     /// Load a published registry stack (its StackManifest, at `live_alias`
     /// when it has several) into the environment. `status` in the answer is
-    /// `loaded` or `already-loaded`.
+    /// `loaded` or `already-loaded`. `lease` is the generation of the
+    /// environment lease the caller holds.
     pub async fn load_registry_stack(
         &self,
         env: &str,
         stack_manifest_hash: &str,
         live_alias: Option<&str>,
+        lease: Option<i64>,
     ) -> Result<Value> {
         let mut body = json!({ "stackManifestHash": stack_manifest_hash });
         if let Some(alias) = live_alias {
             body["liveAlias"] = json!(alias);
         }
-        self.post(&Self::env_path(env, "/stacks")?, body).await
+        self.call_leased(
+            reqwest::Method::POST,
+            &Self::env_path(env, "/stacks")?,
+            Some(body),
+            lease,
+        )
+        .await
     }
 
     /// The environment's targets for installed identities: `body` is a

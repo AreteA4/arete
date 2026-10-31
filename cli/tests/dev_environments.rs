@@ -46,6 +46,8 @@ struct Mock {
     lease: Mutex<Option<Value>>,
     /// The lease generation header each environment stack build carried.
     stack_build_leases: Mutex<Vec<Option<String>>>,
+    /// Registry stack loads answer that the environment was taken over.
+    stack_load_lost: Mutex<bool>,
 }
 
 type Shared = State<Arc<Mock>>;
@@ -373,6 +375,16 @@ async fn deploy_environment_stack(
             .and_then(|value| value.to_str().ok())
             .map(str::to_string),
     );
+    if body.get("stackManifestHash").is_some() {
+        if *mock.stack_load_lost.lock().unwrap() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": format!("Dev environment {env} was taken over by savings-app (a4 dev up); nothing was written"), "code": "devenv-lease-lost" })),
+            )
+                .into_response();
+        }
+        return Json(json!({ "status": "loaded", "deploymentId": 181 })).into_response();
+    }
     *mock.stack_build.lock().unwrap() = body.clone();
     *mock.stack_listing.lock().unwrap() = vec![
         json!({ "deploymentId": 181, "specId": 81, "specName": "transfers", "assigned": true, "websocketUrl": STACK_URL, "status": "active", "protocolDeploymentId": null }),
@@ -1222,6 +1234,66 @@ fn up_compiles_and_deploys_project_stacks_to_the_environment() {
     assert!(child.wait().unwrap().success());
     // Released on exit.
     assert_eq!(mock.lease.lock().unwrap().as_ref().unwrap()["live"], false);
+}
+
+/// A project with one registry stack in its arete.lock.
+fn project_with_locked_stack() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("arete.lock"),
+        r#"lock_version = 1
+manifest_hash = "arete-manifest-v1:test"
+resolver_contract = "registry-resolver-v1"
+
+[[dependency]]
+kind = "stack"
+alias = "ledger"
+source = "registry:ledger"
+requirement = "*"
+version = "1.0.0"
+package_release_hash = "release"
+stack_manifest_hash = "hash-ledger"
+generator_contract = "sdk-generator-v1"
+"#,
+    )
+    .unwrap();
+    dir
+}
+
+const UP_ONCE: [&str; 8] = [
+    "dev",
+    "up",
+    "--env",
+    "app",
+    "--no-ui",
+    "--once",
+    "--port-base",
+    "0",
+];
+
+/// Registry stacks load under the lease `a4 dev up` holds.
+#[test]
+fn locked_stacks_load_with_the_lease_generation() {
+    let (mock, origin) = serve();
+    seed(&mock, "running");
+    let dir = project_with_locked_stack();
+    run_json(&origin, dir.path(), &UP_ONCE);
+    assert_eq!(
+        *mock.stack_build_leases.lock().unwrap(),
+        vec![Some("1".to_string())]
+    );
+}
+
+/// A takeover during a registry stack load ends the run: it isn't one more
+/// stack that failed to load.
+#[test]
+fn a_takeover_during_a_locked_stack_load_stops_the_run() {
+    let (mock, origin) = serve();
+    seed(&mock, "running");
+    *mock.stack_load_lost.lock().unwrap() = true;
+    let dir = project_with_locked_stack();
+    let error = run_fails(&origin, dir.path(), &UP_ONCE);
+    assert!(error.contains("taken over by savings-app"), "{error}");
 }
 
 /// One project per environment: a second project is refused with the

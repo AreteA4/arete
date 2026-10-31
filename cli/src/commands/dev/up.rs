@@ -801,9 +801,7 @@ pub async fn run(config: UpConfig) -> Result<()> {
         runner.stop().await;
     }
     let stopped = stop_admission(&mut session.admission).await;
-    if let Some(held) = session.lease.take() {
-        held.release().await;
-    }
+    let held = session.lease.take();
     let result = result.and(stopped);
     let Session {
         events, ui, proxy, ..
@@ -814,6 +812,10 @@ pub async fn run(config: UpConfig) -> Result<()> {
     }
     let _ = std::fs::remove_file(state_path(&project));
     let _ = std::fs::remove_file(project.session_path());
+    // Last, and bounded: nothing local waits on the API to stop.
+    if let Some(held) = held {
+        held.release().await;
+    }
     match &result {
         // With --once, `ready` already ended the run.
         Ok(()) if config.once => {}
@@ -981,7 +983,7 @@ impl Session<'_> {
         }
 
         if config.deploy {
-            self.load_lock_stacks().await;
+            self.load_lock_stacks().await?;
             self.deploy_project_stacks().await?;
         } else {
             self.find_stack().await;
@@ -1352,17 +1354,19 @@ impl Session<'_> {
     /// so installed stack SDKs in dev mode find it, and say how each went.
     /// A stack that fails to load is reported and skipped: its SDK gets
     /// `devenv-stack-not-loaded` with the fix.
-    async fn load_lock_stacks(&mut self) {
+    /// Load the lock's registry stacks. A stack that fails to load is
+    /// reported and the session goes on; a takeover ends it.
+    async fn load_lock_stacks(&mut self) -> Result<()> {
         let lock = match ProjectLock::load_optional(self.project.root.join("arete.lock")) {
             Ok(Some(lock)) => lock,
-            Ok(None) => return,
+            Ok(None) => return Ok(()),
             Err(error) => {
                 self.events.emit(
                     "stack-load-failed",
                     &format!("Could not read arete.lock to load its stacks: {error:#}"),
                     json!({ "error": format!("{error:#}") }),
                 );
-                return;
+                return Ok(());
             }
         };
         for (package, hash, alias) in lock_stacks(&lock) {
@@ -1373,7 +1377,12 @@ impl Session<'_> {
             match self
                 .config
                 .api
-                .load_registry_stack(&self.env.id, &hash, alias.as_deref())
+                .load_registry_stack(
+                    &self.env.id,
+                    &hash,
+                    alias.as_deref(),
+                    self.lease_generation(),
+                )
                 .await
             {
                 Ok(answer) => {
@@ -1390,6 +1399,7 @@ impl Session<'_> {
                         }),
                     );
                 }
+                Err(error) if lease::lease_lost(&error).is_some() => return Err(error),
                 Err(error) => self.events.emit(
                     "stack-load-failed",
                     &format!("Stack {label} was not loaded: {error:#}"),
@@ -1403,6 +1413,7 @@ impl Session<'_> {
                 ),
             }
         }
+        Ok(())
     }
 
     async fn deploy_project_stacks(&mut self) -> Result<()> {
