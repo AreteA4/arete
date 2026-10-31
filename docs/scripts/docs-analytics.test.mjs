@@ -104,6 +104,16 @@ test("copied install and CLI snippets are classified, other code is not", () => 
     classifyCopiedSnippet("npm install @usearete/sdk")?.snippet_kind,
     "package_install",
   );
+  assert.equal(
+    classifyCopiedSnippet("pip install -e ./python/arete-sdk")?.snippet_kind,
+    "package_install",
+  );
+  assert.equal(
+    classifyCopiedSnippet(
+      "curl -s -H 'Accept: application/json' \"http://127.0.0.1:48702/dev/v1/events?after=$CURSOR&wait=10000\"",
+    ),
+    null,
+  );
   assert.equal(classifyCopiedSnippet("fn main() {}"), null);
   assert.equal(
     codePreview("npm install @usearete/sdk\nsecond"),

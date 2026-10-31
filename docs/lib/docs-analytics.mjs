@@ -8,7 +8,9 @@
  * - X posts: `xPostHref`. utm_source=x, utm_medium=social,
  *   utm_campaign=<week-id> (for example 2026-w44),
  *   utm_content=<slug>_<account> (for example quickstart_usearete).
- * - CTAs on this docs site: `docsCtaHref` / `<MarketingLink>`.
+ * - CTAs on this docs site: `docsCtaHref`, written as an ordinary Markdown
+ *   link (not a JSX component). stripMdx drops PascalCase tags, so a
+ *   component would disappear from Copy Markdown and the .md twins.
  *   utm_source=docs, utm_medium=referral, utm_campaign=docs,
  *   utm_content=<page>_<target> (for example about_home).
  */
@@ -119,7 +121,8 @@ export function classifyCopiedSnippet(code) {
     80,
   );
 
-  if (/\b(curl|wget|irm)\b/.test(text) || /install\.(sh|ps1)\b/.test(text)) {
+  // curl/wget/irm count only when they fetch the installer, not any HTTP call.
+  if (/\b(curl|wget|irm)\b[\s\S]{0,400}\binstall\.(sh|ps1)\b/.test(text)) {
     return { snippet_kind: "install_script", code_preview: preview };
   }
   if (/(^|\n)\s*(a4|npx\s+@usearete\/a4)\b/.test(text)) {
@@ -127,6 +130,9 @@ export function classifyCopiedSnippet(code) {
   }
   if (
     /\b(npm|pnpm|yarn|bun)\s+(install|add)\b/.test(text) ||
+    /\b(pip3?|uv\s+pip)\s+install\b/.test(text) ||
+    /\bpython3?\s+-m\s+pip\s+install\b/.test(text) ||
+    /\bpoetry\s+add\b/.test(text) ||
     /\bcargo\s+install\b/.test(text)
   ) {
     return { snippet_kind: "package_install", code_preview: preview };
