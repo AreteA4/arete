@@ -143,6 +143,7 @@ pub(super) fn generate_rust_protocol(
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .with_context(|| format!("Failed to generate stack '{key}' of protocol '{alias}'"))?;
@@ -219,6 +220,7 @@ pub(super) fn generate_rust_protocol(
                         stack_endpoints: None,
                         reference: None,
                         program_install: None,
+                        extensions: None,
                     },
                 )
                 .with_context(|| {
@@ -1294,12 +1296,19 @@ pub(super) fn render_rust_readme(context: &RustProtocolContext<'_>, module_mode:
         "`{name}PublishableClient` takes a publishable key and has only the `public` steps. Both clients dereference to `arete_sdk::protocol::ProtocolClient` for reads (`instance`, `list_instances`, `participant`, `allowed_steps`, and `actions` for what a wallet can do across the deployment), `submit`, `intent`, metadata (`update_metadata`, `sign_metadata_proof`) and `events` (the instance event stream). Never submit again after `submitted_unknown`: read the intent until it settles.\n"
     );
     let _ = writeln!(out, "## Deployment\n");
-    let _ = writeln!(
-        out,
-        "Calls the {} deployment `{}`. A protocol session is minted from your own key through the session endpoint; this folder holds no credential.\n",
-        deployment.access.as_str(),
-        deployment.deployment_id
-    );
+    if deployment.deployment_id.is_empty() {
+        let _ = writeln!(
+            out,
+            "Not deployed to production yet: run the app in dev mode (`a4 dev run -- <command>`), which calls your dev environment's deployment, until `a4 protocol deploy` deploys it. This folder holds no credential.\n"
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "Calls the {} deployment `{}`. A protocol session is minted from your own key through the session endpoint; this folder holds no credential.\n",
+            deployment.access.as_str(),
+            deployment.deployment_id
+        );
+    }
     let _ = writeln!(out, "## Steps\n");
     let _ = writeln!(
         out,
@@ -1417,6 +1426,7 @@ mod tests {
             },
             live_stack: None,
             local_dev: false,
+            production_deployment: false,
         }
     }
 

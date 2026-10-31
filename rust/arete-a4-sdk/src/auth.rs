@@ -191,6 +191,10 @@ pub struct AuthConfig {
     /// Served stack version named in untargeted session requests. Set by the
     /// client from its generated [`crate::Stack`], never by callers.
     pub(crate) stack_release: Option<StackRelease>,
+    /// Dev environment (id or name) every session request names, in dev
+    /// direct mode. Set by the client from the switch, never by callers;
+    /// `None` in production, where request bodies are unchanged.
+    pub(crate) dev_environment: Option<String>,
 }
 
 impl fmt::Debug for AuthConfig {
@@ -212,6 +216,7 @@ impl fmt::Debug for AuthConfig {
             .field("api_url", &self.api_url)
             .field("token_transport", &self.token_transport)
             .field("stack_release", &self.stack_release)
+            .field("dev_environment", &self.dev_environment)
             .finish()
     }
 }
@@ -258,6 +263,16 @@ impl AuthConfig {
             ApiKeyClass::Publishable => self.with_publishable_key(api_key),
             ApiKeyClass::Secret | ApiKeyClass::Unknown => self.with_secret_key(api_key),
         }
+    }
+
+    /// Whether this config holds a secret key: a secret key field, or a
+    /// secret-class key given as the publishable key.
+    pub(crate) fn has_secret_key(&self) -> bool {
+        self.secret_key.is_some()
+            || self
+                .publishable_key
+                .as_deref()
+                .is_some_and(|key| classify_api_key(key) == ApiKeyClass::Secret)
     }
 
     /// The configured key, if any.
@@ -559,6 +574,9 @@ pub(crate) struct TokenEndpointRequest<'a> {
     pub stack_manifest_hash: Option<&'a str>,
     #[serde(rename = "liveAlias", skip_serializing_if = "Option::is_none")]
     pub live_alias: Option<&'a str>,
+    /// The dev environment, in dev direct mode only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environment: Option<&'a str>,
 }
 
 impl<'a> TokenEndpointRequest<'a> {
@@ -567,7 +585,14 @@ impl<'a> TokenEndpointRequest<'a> {
             websocket_url,
             stack_manifest_hash: release.map(|release| release.stack_manifest_hash.as_str()),
             live_alias: release.map(|release| release.live_alias.as_str()),
+            environment: None,
         }
+    }
+
+    /// This request naming the dev environment `environment`, if any.
+    pub fn in_environment(mut self, environment: Option<&'a str>) -> Self {
+        self.environment = environment;
+        self
     }
 }
 

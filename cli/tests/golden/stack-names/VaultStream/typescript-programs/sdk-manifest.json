@@ -4,7 +4,7 @@
     "kind": "stack-manifest",
     "hash": "arete:h1:stack-manifest:sha256:681aa6b5a7988bc97c6db1d0355a8a98c56b851753d1c280b3ae5782824df85c"
   },
-  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:985816489df35756392091660c0df9fce5134466f4c9e564ab74f9bdc539b7e0",
+  "sdkOutputTreeHash": "arete:h1:sdk-output-tree:sha256:22a4224594277eae876a7fc21ea37cb44c13b9c6773d2615474ee60055ef81ef",
   "extensions": null,
   "artifacts": [
     "VaultStream-programs-core.ts",

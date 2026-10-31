@@ -533,6 +533,7 @@ fn generate(dependency: &Value, target: InstallTarget, output: &Path) {
             stack_endpoints: None,
             reference: None,
             program_install: None,
+            extensions: None,
         },
     )
     .unwrap_or_else(|error| panic!("generate {}: {error:#}", output.display()));
@@ -743,6 +744,7 @@ fn create_offline_stack(
         Vec::new(),
         program_extensions,
         false,
+        None,
     )
 }
 
@@ -1179,6 +1181,7 @@ fn a_refused_bundle_leaves_the_output_untouched() {
                             stack_endpoints: None,
                             reference: None,
                             program_install: None,
+                            extensions: None,
                         },
                     )
                 }
@@ -1200,6 +1203,7 @@ fn a_refused_bundle_leaves_the_output_untouched() {
                             .display()
                             .to_string(),
                     ),
+                    None,
                 ),
             }
         };

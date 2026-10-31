@@ -13,6 +13,7 @@ bindings and standalone session members.
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, TypedDict
+import json
 
 from arete.instructions import (
     AccountMeta,
@@ -28,6 +29,7 @@ from arete.program_read_transport import (
     LocalHttpTransportDef,
     ProgramReadDescriptor,
     ProgramReleaseReference,
+    program_read_descriptor_from_wire,
 )
 from arete.read import ProgramAccountReadDef
 from arete.stack import ProgramDef
@@ -73,13 +75,7 @@ ALPHA_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:ebac0e8bac3bd650c5
 
 def alpha_read_descriptor() -> ProgramReadDescriptor:
     """Exact release-addressed read descriptor for program `alpha`."""
-    return ProgramReadDescriptor(
-        release=ProgramReleaseReference(
-            program_release_hash=ALPHA_PROGRAM_RELEASE_HASH,
-            program_spec_hash=ALPHA_PROGRAM_SPEC_HASH,
-        ),
-        transport=LocalHttpTransportDef(),
-    )
+    return program_read_descriptor_from_wire(json.loads("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:ebac0e8bac3bd650c596de51e0bb2c7a355cf6169724de958b31ceed4eb3dda3\",\"programSpecHash\":\"arete:h1:program-spec:sha256:2cfe95cf0c7d0085085dab5d3bbf8faed0a698519e740ceb126751f45fa9a2b4\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'alpha' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}"))
 
 #: IDL error metadata for program `alpha`.
 ALPHA_ERRORS: Tuple[ErrorMetadata, ...] = ()
@@ -186,13 +182,7 @@ BETA_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:dd00373868c8b427c32
 
 def beta_read_descriptor() -> ProgramReadDescriptor:
     """Exact release-addressed read descriptor for program `beta`."""
-    return ProgramReadDescriptor(
-        release=ProgramReleaseReference(
-            program_release_hash=BETA_PROGRAM_RELEASE_HASH,
-            program_spec_hash=BETA_PROGRAM_SPEC_HASH,
-        ),
-        transport=LocalHttpTransportDef(),
-    )
+    return program_read_descriptor_from_wire(json.loads("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:dd00373868c8b427c3207815a4ee5e0d66b8f9df5d034cf84a1a3b904fda554b\",\"programSpecHash\":\"arete:h1:program-spec:sha256:7d8147800015e11cbcff4976c7a05ab11c4a21a0b0c48f530930e20fcf6c3834\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'beta' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}"))
 
 #: IDL error metadata for program `beta`.
 BETA_ERRORS: Tuple[ErrorMetadata, ...] = ()

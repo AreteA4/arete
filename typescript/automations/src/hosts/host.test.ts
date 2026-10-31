@@ -9,7 +9,7 @@ import { memoryStore } from '../store/memory';
 import { DEPLOYMENT, fakeProtocol, feeOnlySimulator, PROGRAM, policy } from '../test-support/fake-protocol';
 import { ALICE, storedGrant, walletsSigner } from '../test-support/harness';
 import { toVercel } from '../vercel';
-import type { RuntimeConfig } from './host';
+import { checkCluster, type RuntimeConfig } from './host';
 
 const SECRET = 'whsec_host';
 const CRON = 'cron-secret';
@@ -128,7 +128,7 @@ describe('the Workers adapter', () => {
     const { ctx } = context();
     const response = await worker.fetch(new Request('https://automations.example/arete/health'), { ...env, ARETE_CLUSTER: 'mainnet' }, ctx);
     expect(response.status).toBe(500);
-    expect((await response.json()).message).toMatch(/targets the dev environment.*a4 install --locked/);
+    expect((await response.json()).message).toMatch(/ARETE_CLUSTER is mainnet, but the runtime is configured for dev/);
     expect(r.counts()).toEqual({ built: 1, disposed: 1 });
   });
 });
@@ -192,11 +192,40 @@ describe('the Node server', () => {
 
       const mainnet = runtime();
       await expect(serve(definition, mainnet.factory, { env: { ...env, ARETE_CLUSTER: 'mainnet' }, port: 0, handleSignals: false })).rejects.toThrow(
-        /a4 install --locked/,
+        /ARETE_CLUSTER is mainnet/,
       );
       expect(mainnet.counts()).toEqual({ built: 1, disposed: 1 });
     } finally {
       await running.close();
     }
+  });
+});
+
+describe('checkCluster', () => {
+  const client = (fields: Record<string, unknown>) => ({ ...fakeProtocol().client, ...fields }) as never;
+
+  it('follows the client\'s environment switch', () => {
+    expect(checkCluster({ ARETE_CLUSTER: 'dev' }, { client: client({ environment: 'dev' }) })).toBe('dev');
+    expect(checkCluster({ ARETE_CLUSTER: 'mainnet' }, { client: client({ environment: 'production' }) })).toBe('mainnet');
+    expect(checkCluster({}, { client: client({ environment: 'production' }) })).toBe('mainnet');
+  });
+
+  it('says the variable and the switch disagree', () => {
+    expect(() => checkCluster({ ARETE_CLUSTER: 'mainnet' }, { client: client({ environment: 'dev' }) })).toThrow(
+      /ARETE_CLUSTER is mainnet, but the protocol client runs in dev mode.*Unset ARETE_ENVIRONMENT/,
+    );
+    expect(() => checkCluster({ ARETE_CLUSTER: 'dev' }, { client: client({ environment: 'production' }) })).toThrow(
+      /ARETE_CLUSTER is dev, but the protocol client runs in production.*ARETE_ENVIRONMENT=dev/,
+    );
+    // Neither message asks to restore the published client: the file is the same.
+    expect(() => checkCluster({ ARETE_CLUSTER: 'mainnet' }, { client: client({ environment: 'dev' }) })).not.toThrow(/install/);
+  });
+
+  it('still names a client an older a4 generated for the dev environment', () => {
+    const legacy = client({
+      environment: 'production',
+      definition: { deployment: { deploymentId: 'dep-dev', environment: 'dev' } },
+    });
+    expect(() => checkCluster({ ARETE_CLUSTER: 'mainnet' }, { client: legacy })).toThrow(/a4 install --locked/);
   });
 });

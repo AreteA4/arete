@@ -30,14 +30,14 @@ import { decodeTransaction } from '../policy/decode';
 import { decodeBase58, decodeBase64, encodeBase58 } from '../policy/encoding';
 import type { Cluster, Refusal, SignerPolicy } from '../policy/policy';
 import { checkPrepared, checkTarget } from '../policy/policy';
-import type { Simulator } from '../policy/simulator';
+import { rpcSimulator, type Simulator } from '../policy/simulator';
 import { summarizePrepared } from '../policy/summary';
 import { DEFAULT_TRANSACTION_FORMATS, negotiateTransactionFormat } from '../signer/format';
 import type { ProtocolSigner } from '../signer/signer';
 import { isSignerRefusal } from '../signer/signer';
 import { checkPreparedAgainstIntent, checkSignedTransactions } from '../signer/verify';
 import { type AppendSource, type AppendTrigger, evaluateSignal, type ListSource, type ViewSource } from '../sources/view';
-import type { AutomationStore, ConsentGrant, NewStepJob } from '../store/store';
+import { type AutomationStore, type ConsentGrant, type NewStepJob, StoreDeploymentError } from '../store/store';
 import { type AutomationsDefinition, type AutomationsSetup, connectStack, type StackConnector } from './define';
 import {
   checkScheduleEvery,
@@ -65,7 +65,20 @@ import {
 
 /** The parts of a protocol client automations use. A secret-key `ProtocolClient` is one. */
 export interface AutomationClient<TTypes extends ProtocolTypeMap = ProtocolTypeMap> {
+  /** The deployment called; in dev mode, the environment's once {@link resolveDeployment} answered. */
   readonly deploymentId: string;
+  /**
+   * `'dev'` when the client calls the project's dev environment (the SDK's
+   * `environment` option or `ARETE_ENVIRONMENT=dev`). Absent on SDKs before
+   * the switch.
+   */
+  readonly environment?: 'production' | 'dev';
+  /**
+   * Names the deployment the client calls: in dev mode the environment's,
+   * which the generated client does not carry. Absent on SDKs before the
+   * switch, whose `deploymentId` already is the one called.
+   */
+  resolveDeployment?(options?: { signal?: AbortSignal }): Promise<string>;
   /** Present on a real client; only used to infer the protocol's types. */
   readonly definition?: ProtocolDefinition<TTypes, any, any>;
   readonly steps: object;
@@ -190,13 +203,16 @@ export interface AutomationsOptions<TTypes extends ProtocolTypeMap = ProtocolTyp
   readonly client: AutomationClient<TTypes>;
   readonly signer: ProtocolSigner;
   readonly policy: SignerPolicy;
-  /** Measures what each transaction moves out of the wallet; the policy refuses what it cannot measure. */
-  readonly simulator: Simulator;
+  /**
+   * Measures what each transaction moves out of the wallet; the policy
+   * refuses what it cannot measure. Required in production. In dev mode it
+   * defaults to {@link rpcSimulator} on the dev environment.
+   */
+  readonly simulator?: Simulator;
   readonly store: AutomationStore;
   /**
    * Where the deployment runs; the policy must list it. Defaults to the
-   * client's: `dev` for a client `a4 dev` generated (the deployment in a dev
-   * environment), else `mainnet`.
+   * client's ({@link clientCluster}): `dev` in dev mode, else `mainnet`.
    */
   readonly cluster?: Cluster;
   /** Transaction formats in the deployment's order of preference. Defaults to v1, then v0. */
@@ -420,7 +436,6 @@ function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Where a client's deployment runs: `dev` when `a4 dev` generated it, else `mainnet`. */
 /**
  * A step job's outcome, from the job as the store keeps it. `null` while the
  * job has not reached a final state.
@@ -445,16 +460,44 @@ export function stepOutcome<TTypes extends ProtocolTypeMap = ProtocolTypeMap>(jo
   } as AutomationOutcome<TTypes>;
 }
 
-export function clientCluster(client: Pick<AutomationClient, 'definition'>): Cluster {
+/**
+ * Where a client's deployment runs: `dev` when the client is in dev mode
+ * (`client.environment`), else `mainnet`.
+ */
+export function clientCluster(client: Pick<AutomationClient, 'definition' | 'environment'>): Cluster {
+  if (client.environment === 'dev') return 'dev';
+  return legacyDevClient(client) ? 'dev' : 'mainnet';
+}
+
+/**
+ * A client older `a4` versions generated for the deployment in a dev
+ * environment: its descriptor names that deployment and says `dev`.
+ * Current clients always name the production deployment.
+ */
+// TODO(next major): remove, with the descriptor's `environment`.
+export function legacyDevClient(client: Pick<AutomationClient, 'definition'>): boolean {
   // Read structurally: SDKs before the field carry it untyped.
-  const deployment = client.definition?.deployment as { readonly environment?: string } | undefined;
-  return deployment?.environment === 'dev' ? 'dev' : 'mainnet';
+  const deployment = client.definition?.deployment as { readonly environment?: string } | null | undefined;
+  return deployment?.environment === 'dev';
+}
+
+/**
+ * The simulator when none is given: in dev mode the dev environment's (its
+ * fork's state); production has no default, since it is the app's RPC.
+ */
+function defaultSimulator(client: Pick<AutomationClient, 'environment'>): Simulator {
+  if (client.environment !== 'dev') {
+    throw new TypeError(
+      'createAutomations: pass a `simulator` (for example `rpcSimulator(<your RPC URL>)`); only dev mode simulates against the dev environment by default',
+    );
+  }
+  return rpcSimulator(undefined, { environment: { kind: 'dev' } });
 }
 
 export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeMap>(
   options: AutomationsOptions<TTypes>,
 ): Automations<TTypes> {
-  const { client, signer, policy, simulator, store } = options;
+  const { client, signer, policy, store } = options;
   // Only SOL and SPL token balances are measured: a program outside the
   // allow-list could move anything else (NFTs, positions it holds), so
   // automations need one.
@@ -464,6 +507,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     );
   }
   const cluster = options.cluster ?? clientCluster(client);
+  const simulator = options.simulator ?? defaultSimulator(client);
   const clock = options.clock ?? systemClock;
   const worker = options.worker ?? randomId();
   const leaseMs = durationMs(options.lease ?? 60_000);
@@ -499,13 +543,26 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
 
   // One store serves one deployment; claims and delivery ids are not scoped
   // by deployment, so the store refuses a second one.
-  let binding: Promise<void> | null = null;
-  const bound = () => {
-    binding ??= store.bindDeployment(client.deploymentId).catch((error: unknown) => {
+  // In dev mode the client learns the environment's deployment first: the
+  // generated one is production's (or none before the first publish).
+  let binding: Promise<string> | null = null;
+  const bound = async () => {
+    binding ??= (async () => {
+      if (client.resolveDeployment) await client.resolveDeployment();
+      const deployment = client.deploymentId;
+      await store.bindDeployment(deployment);
+      return deployment;
+    })().catch((error: unknown) => {
       binding = null;
       throw error;
     });
-    return binding;
+    const deployment = await binding;
+    // A redeploy into the dev environment moves the client to a new
+    // deployment; its work must not land in this deployment's store.
+    if (client.deploymentId !== deployment) {
+      // The store's own error: one store per deployment.
+      throw new StoreDeploymentError(deployment, client.deploymentId);
+    }
   };
 
   const accept = async (delivery: Omit<Delivery, 'receivedAt'>) => {
@@ -540,6 +597,7 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
     ) {
       return { status: 400, body: { error: 'invalid-payload' } };
     }
+    await bound();
     if (payload.deploymentId !== client.deploymentId) {
       return { status: 200, body: { accepted: false, ignored: 'other-deployment' } };
     }
@@ -1710,10 +1768,12 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
       let queue: Promise<void> = Promise.resolve();
       // The stream moves past an event before its handler runs, so an event
       // whose accept fails is retried here, in order, until it is stored.
-      const acceptUntilStored = async (delivery: Omit<Delivery, 'receivedAt'>) => {
+      const acceptUntilStored = async (delivery: () => Omit<Delivery, 'receivedAt'>) => {
         for (let failures = 0; !stopped && !followOptions.signal?.aborted; failures += 1) {
           try {
-            await accept(delivery);
+            // The event names the deployment, known once bound.
+            await bound();
+            await accept(delivery());
             return;
           } catch (error) {
             report(error, { phase: 'stream' });
@@ -1727,21 +1787,23 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         onEvent(streamEvent) {
           if (streamEvent.type !== 'emit' || !handlers.has(streamEvent.event)) return;
           const data = streamEvent.data;
-          const event: AutomationEvent = {
-            id: String(data.id),
-            event: streamEvent.event,
-            deploymentId: client.deploymentId,
-            instanceId: data.instanceId,
-            participantId: data.participantId,
-            state: null,
-            occurredAt: data.at,
-            source: 'stream',
-          };
-          const delivery = {
-            id: `stream:${encodeURIComponent(data.instanceId)}:${data.id}`,
-            name: streamEvent.event,
-            source: 'stream' as const,
-            payload: event,
+          const delivery = () => {
+            const event: AutomationEvent = {
+              id: String(data.id),
+              event: streamEvent.event,
+              deploymentId: client.deploymentId,
+              instanceId: data.instanceId,
+              participantId: data.participantId,
+              state: null,
+              occurredAt: data.at,
+              source: 'stream',
+            };
+            return {
+              id: `stream:${encodeURIComponent(data.instanceId)}:${data.id}`,
+              name: streamEvent.event,
+              source: 'stream' as const,
+              payload: event,
+            };
           };
           queue = queue.then(() => acceptUntilStored(delivery));
         },

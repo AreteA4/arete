@@ -124,6 +124,7 @@ pub(super) fn local_stack(
     .expect("golden StackManifest");
     LocalArtifactStack {
         manifest_path: PathBuf::from(format!("{name}.stack-manifest.json")),
+        read_endpoint: None,
         manifest_hash: stack_manifest.artifact_hash.to_string(),
         program_specs: programs,
         live_specs: lives,

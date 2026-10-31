@@ -253,6 +253,118 @@ pub fn create_hosted_solana_gateway_transports(
     Ok((chain, transactions))
 }
 
+/// The chain and transaction transports of a client in dev mode
+/// (`docs/internal/dev-environment-switch.md` §3): through the edge with
+/// each binding's identity, or at the environment's targets from the
+/// client's resolve answer, minting environment tokens. A surface the
+/// environment refused, or one the installed SDK has no binding for, fails
+/// every call with its refusal and sends nothing.
+pub(crate) fn dev_gateway_transports(
+    bindings: Option<&HostedSolanaGatewayBindings>,
+    dev: &crate::dev_environment::DevMode,
+    answer: Option<&serde_json::Value>,
+    http: &reqwest::Client,
+) -> HostedSolanaGatewayTransports {
+    use crate::dev_environment::{
+        surface_target, surface_unavailable, target_str, DevMode, EdgeRequestPolicy, EdgeTokens,
+        GatewayIdentity, RefusedTokens, ResolveRequest, Surface, REFUSED_ENDPOINT,
+    };
+
+    let refused = |error: AreteError| -> (String, Arc<dyn TokenSource>) {
+        (
+            REFUSED_ENDPOINT.to_string(),
+            Arc::new(RefusedTokens { error }) as Arc<dyn TokenSource>,
+        )
+    };
+    let route = |binding: Option<&HostedSolanaGatewayCapabilityBinding>,
+                 surface: Surface,
+                 what: &str|
+     -> (String, Arc<dyn TokenSource>) {
+        let Some(binding) = binding else {
+            return refused(surface_unavailable(
+                format!(
+                    "{what} are not available in dev mode: the installed SDK has no Solana \
+                     gateway binding"
+                ),
+                "Install the stack or program from the registry (`a4 install`) to use it in a \
+                 dev environment.",
+            ));
+        };
+        let identity = GatewayIdentity {
+            solana_gateway_binding_id: binding.solana_gateway_binding_id.clone(),
+        };
+        match dev {
+            DevMode::Edge { edge_url } => {
+                let request = match surface {
+                    Surface::Chain => ResolveRequest {
+                        chain: Some(identity),
+                        ..ResolveRequest::default()
+                    },
+                    _ => ResolveRequest {
+                        transactions: Some(identity),
+                        ..ResolveRequest::default()
+                    },
+                };
+                (
+                    edge_url.clone(),
+                    Arc::new(EdgeTokens {
+                        policy: EdgeRequestPolicy::new(edge_url, Some(&request)),
+                    }) as Arc<dyn TokenSource>,
+                )
+            }
+            DevMode::Direct(resolver) => {
+                let endpoint = answer
+                    .ok_or_else(|| {
+                        surface_unavailable(format!("{what} were not resolved"), "Update the SDK.")
+                    })
+                    .and_then(|answer| {
+                        surface_target(answer, surface)
+                            .and_then(|target| target_str(target, "endpoint").map(str::to_string))
+                    });
+                match endpoint {
+                    Ok(endpoint) => {
+                        let tokens = HttpAuthClient::new(
+                            Some(resolver.token_auth(&binding.auth.session_endpoint)),
+                            None,
+                            http.clone(),
+                        );
+                        (
+                            endpoint,
+                            Arc::new(TargetedTokenSource {
+                                inner: Arc::new(tokens),
+                                target: AuthTokenTarget::solana_gateway_binding(
+                                    binding.solana_gateway_binding_id.clone(),
+                                ),
+                            }) as Arc<dyn TokenSource>,
+                        )
+                    }
+                    Err(error) => refused(error),
+                }
+            }
+        }
+    };
+
+    let (chain_endpoint, chain_tokens) =
+        route(bindings.map(|b| &b.chain), Surface::Chain, "Chain reads");
+    let (transactions_endpoint, transaction_tokens) = route(
+        bindings.map(|b| &b.transactions),
+        Surface::Transactions,
+        "Transactions",
+    );
+    (
+        Arc::new(HttpChainClient::with_http_client(
+            chain_endpoint,
+            chain_tokens,
+            http.clone(),
+        )),
+        Arc::new(HttpTransactionTransport::with_http_client(
+            transactions_endpoint,
+            transaction_tokens,
+            http.clone(),
+        )),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

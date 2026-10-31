@@ -203,6 +203,8 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
 </style>
 
 <script>
+  import { trackDocsEvent } from "../../../lib/docs-analytics.mjs";
+
   function setupCopyButton() {
     const btn = document.getElementById("copy-markdown") as HTMLButtonElement;
     if (!btn || btn.dataset.copyReady === "true") return;
@@ -218,13 +220,9 @@ const markdownContent = `# ${title}\n\n${processedBody}`;
         const textEl = btn.querySelector(".btn-text");
         if (textEl) textEl.textContent = "Copied!";
 
-        // Track copy event with PostHog
-        if (typeof window !== "undefined" && (window as any).posthog) {
-          (window as any).posthog.capture("docs_copy_markdown", {
-            page: window.location.pathname,
-            title: document.title,
-          });
-        }
+        trackDocsEvent("docs_copy_markdown", {
+          title: document.title,
+        });
 
         setTimeout(() => {
           btn.classList.remove("copied");

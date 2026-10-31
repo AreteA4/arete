@@ -9,6 +9,7 @@ pub mod idl;
 pub mod init;
 pub mod know;
 pub mod mcp;
+pub mod program_decode;
 pub mod programs;
 pub mod protocol;
 pub mod protocol_bin;

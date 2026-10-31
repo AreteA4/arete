@@ -246,7 +246,7 @@ pub const LOCAL_TIP_JAR_PROTOCOL: protocol::ProtocolDefinition = protocol::Proto
     protocol_spec_hash: "arete:h1:protocol-spec:sha256:f1a6580e1d2259ca7da870e33e0a1920ea0704cf2014efccf29116c4abc06032",
     protocol_release_hash: "arete:h1:protocol-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     deployment: protocol::ProtocolDeploymentDescriptor {
-        deployment_id: "dep-local-1",
+        deployment_id: "",
         access: protocol::ProtocolDeploymentAccess::Private,
         api_url: "https://api.example.test/api",
         session_endpoint: "https://api.example.test/ws/sessions",

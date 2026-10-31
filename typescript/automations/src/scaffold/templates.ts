@@ -110,11 +110,14 @@ function need(env: Env, name: string): string {
 
 ${signer.body}
 
-export function runtime(env: Env): RuntimeConfig {
+export async function runtime(env: Env): Promise<RuntimeConfig> {
   // The published client (\`a4 install --locked\`) targets mainnet; the one
   // \`a4 dev up\` generates targets the dev environment. The host refuses to
   // start when ARETE_CLUSTER and the client disagree.
   const client = createProtocolClient(definition.protocol, { auth: { secretKey: need(env, 'ARETE_SECRET_KEY') } });
+  // In dev mode the client learns the environment's deployment here; the
+  // generated id is production's (or none before the first publish).
+  await client.resolveDeployment();
   const hyperdrive = env.HYPERDRIVE as { connectionString?: string } | undefined;
   // Production signs only under the definition's own caps: no default here.
   if (!definition.policy) throw new Error('the automations definition needs a policy (programs and maxSolPerTransaction)');

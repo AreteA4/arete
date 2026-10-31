@@ -13,6 +13,7 @@ bindings and standalone session members.
 from __future__ import annotations
 
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple, TypedDict
+import json
 
 from arete.instructions import (
     AccountMeta,
@@ -29,6 +30,7 @@ from arete.program_read_transport import (
     LocalHttpTransportDef,
     ProgramReadDescriptor,
     ProgramReleaseReference,
+    program_read_descriptor_from_wire,
 )
 from arete.read import ProgramAccountReadDef
 from arete.stack import ProgramDef
@@ -65,13 +67,7 @@ VAULT_PROGRAM_RELEASE_HASH = "arete:h1:program-release:sha256:472ece19e168367b6b
 
 def vault_read_descriptor() -> ProgramReadDescriptor:
     """Exact release-addressed read descriptor for program `vault`."""
-    return ProgramReadDescriptor(
-        release=ProgramReleaseReference(
-            program_release_hash=VAULT_PROGRAM_RELEASE_HASH,
-            program_spec_hash=VAULT_PROGRAM_SPEC_HASH,
-        ),
-        transport=LocalHttpTransportDef(),
-    )
+    return program_read_descriptor_from_wire(json.loads("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:472ece19e168367b6bd0a61a8e5908345db325bd1ac3f7d31febdd6a3fe09777\",\"programSpecHash\":\"arete:h1:program-spec:sha256:82d33b756cb10907d6585bdc2e1e02170b1286819e317bbe5311de01901b22ba\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'vault' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}"))
 
 #: IDL error metadata for program `vault`.
 VAULT_ERRORS: Tuple[ErrorMetadata, ...] = (

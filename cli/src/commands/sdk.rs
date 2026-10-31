@@ -497,7 +497,14 @@ impl ResolvedStackSource {
 
     fn rust_program_reads(&self) -> Result<Vec<arete_interpreter::rust::RustProgramReadConfig>> {
         match self {
-            Self::LocalArtifacts(_) => Ok(Vec::new()),
+            Self::LocalArtifacts(stack) => match stack.read_endpoint.as_deref() {
+                Some(endpoint) => stack
+                    .program_specs
+                    .iter()
+                    .map(|program_spec| offline_program_read(&program_spec.payload, endpoint))
+                    .collect(),
+                None => Ok(Vec::new()),
+            },
             Self::Remote(stack) => stack.programs.iter().map(program_read_override).collect(),
         }
     }
@@ -742,13 +749,14 @@ impl ResolvedStackSource {
     ) -> Result<Option<Vec<arete_interpreter::typescript::TypeScriptProgramConfig>>> {
         let programs = match self {
             Self::LocalArtifacts(_) if stack_spec.program_specs.is_empty() => return Ok(None),
-            Self::LocalArtifacts(_) => stack_spec
+            Self::LocalArtifacts(local) => stack_spec
                 .program_specs
                 .iter()
                 .map(|program_spec| {
                     arete_hash::OssProgramIdentityV1::new(program_spec.clone())
                         .map(|identity| {
                             arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity)
+                                .with_read_endpoint(local.read_endpoint.as_deref())
                         })
                         .map_err(|error| anyhow::anyhow!(error))
                 })
@@ -913,7 +921,11 @@ pub fn create(
     program_module_values: Vec<String>,
     program_extension_values: Vec<String>,
     program_only: bool,
+    read_endpoint: Option<String>,
 ) -> Result<()> {
+    if let Some(endpoint) = read_endpoint.as_deref() {
+        validate_read_endpoint(endpoint)?;
+    }
     if idl_override.is_some() && !program_only {
         return Err(anyhow::anyhow!(
             "--idl is only supported together with --program-only"
@@ -949,6 +961,7 @@ pub fn create(
             live_module_values,
             program_module_values,
             program_only,
+            read_endpoint,
         ),
         SdkTarget::Rust => {
             if !live_module_values.is_empty() || !program_module_values.is_empty() {
@@ -967,6 +980,7 @@ pub fn create(
                     crate_name_override,
                     module_flag,
                     extensions_override,
+                    read_endpoint,
                 );
             }
             if program_only {
@@ -985,6 +999,7 @@ pub fn create(
                 manifest_override,
                 artifact_dirs,
                 &program_extensions,
+                read_endpoint,
             )
         }
         SdkTarget::Python => {
@@ -1004,6 +1019,7 @@ pub fn create(
                     package_name_override,
                     module_flag,
                     extensions_override,
+                    read_endpoint,
                 );
             }
             if program_only {
@@ -1022,6 +1038,7 @@ pub fn create(
                 manifest_override,
                 artifact_dirs,
                 &program_extensions,
+                read_endpoint,
             )
         }
     }
@@ -1083,6 +1100,7 @@ fn create_local_program_sdk(
     name_override: Option<String>,
     module: bool,
     extensions: Option<String>,
+    read_endpoint: Option<String>,
 ) -> Result<()> {
     use crate::project::manifest::InstallTarget;
 
@@ -1113,11 +1131,13 @@ fn create_local_program_sdk(
         stack_endpoints: None,
         reference: None,
         program_install: None,
+        extensions: None,
     };
     let local = LocalProgramSdk {
         extensions: extensions.as_deref().map(Path::new),
         name: name_override.as_deref(),
         reuse_staged_extensions: true,
+        read_endpoint: read_endpoint.as_deref(),
     };
     match target {
         InstallTarget::Rust => {
@@ -1155,6 +1175,7 @@ pub fn create_typescript(
     live_module_values: Vec<String>,
     program_module_values: Vec<String>,
     program_only: bool,
+    read_endpoint: Option<String>,
 ) -> Result<()> {
     let _ = config_path;
     let live_module_imports = parse_live_module_imports(&live_module_values)?;
@@ -1184,6 +1205,7 @@ pub fn create_typescript(
             &package_name,
             extensions_override.as_deref().map(Path::new),
             None,
+            read_endpoint.as_deref(),
         )?;
         println!(
             "{} Successfully generated TypeScript SDK!",
@@ -1223,6 +1245,7 @@ pub fn create_typescript(
             &output_path,
             &package_name,
             extensions_override.as_deref().map(Path::new),
+            read_endpoint.as_deref(),
         )?;
 
         println!(
@@ -1240,10 +1263,10 @@ pub fn create_typescript(
     let (source, output_path, package_name, websocket_url, http_url) = if let Some(manifest_path) =
         manifest_override
     {
-        let source = ResolvedStackSource::LocalArtifacts(Box::new(load_local_stack_with_roots(
-            &manifest_path,
-            &artifact_dirs,
-        )?));
+        let source = ResolvedStackSource::LocalArtifacts(Box::new(LocalArtifactStack {
+            read_endpoint: read_endpoint.clone(),
+            ..load_local_stack_with_roots(&manifest_path, &artifact_dirs)?
+        }));
         let output = output_override
             .map(PathBuf::from)
             .unwrap_or_else(|| default_typescript_output_dir(source.sdk_name()));
@@ -1329,6 +1352,43 @@ pub fn create_typescript(
     Ok(())
 }
 
+/// `--read-endpoint` must be an http(s) URL of a self-hosted Arete server.
+fn validate_read_endpoint(endpoint: &str) -> Result<()> {
+    match url::Url::parse(endpoint) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") && url.host().is_some() => Ok(()),
+        _ => anyhow::bail!(
+            "--read-endpoint must be the http(s) URL of a self-hosted Arete server, got '{endpoint}'"
+        ),
+    }
+}
+
+/// The read layer of a program generated offline with `--read-endpoint`:
+/// its OSS release identity, read from the self-hosted Arete server at
+/// `read_endpoint`.
+fn offline_program_read(
+    program_spec: &arete_hash::ProgramSpecV1,
+    read_endpoint: &str,
+) -> Result<arete_interpreter::rust::RustProgramReadConfig> {
+    let identity =
+        arete_hash::OssProgramIdentityV1::new(program_spec.clone()).map_err(anyhow::Error::msg)?;
+    let program_release_hash = identity.release_hash.to_string();
+    let program_spec_hash = identity.program_spec_hash.to_string();
+    Ok(arete_interpreter::rust::RustProgramReadConfig {
+        program_id: program_spec.program_id.clone(),
+        descriptor: Some(
+            arete_interpreter::program_sdk::offline_program_read_descriptor(
+                &program_spec.idl_snapshot.snapshot.name,
+                &program_release_hash,
+                &program_spec_hash,
+                Some(read_endpoint),
+            ),
+        ),
+        program_spec_hash,
+        program_release_hash,
+        package_release_hash: None,
+    })
+}
+
 fn program_read_override(
     install: &RegistryProgramInstallResponse,
 ) -> Result<arete_interpreter::rust::RustProgramReadConfig> {
@@ -1373,6 +1433,10 @@ pub(crate) struct ProjectGenerationOptions<'a> {
     /// How the project installed a program dependency: a TypeScript program
     /// SDK carries it as `programInstall`.
     pub program_install: Option<&'a ProgramInstallIdentity>,
+    /// A local SDK extension bundle (arete.toml `extensions = { path }`):
+    /// its `extensions.json` or entry file, staged as `a4 sdk create
+    /// --extensions` stages it, in place of the published extension.
+    pub extensions: Option<&'a Path>,
 }
 
 /// How a project installed a program: the identity a protocol reads from the
@@ -1964,7 +2028,7 @@ fn generate_project_stack_source(
                     options.typescript_package,
                     None,
                     None,
-                    None,
+                    options.extensions,
                     &BTreeMap::new(),
                     &BTreeMap::new(),
                 )?;
@@ -1980,7 +2044,7 @@ fn generate_project_stack_source(
                 options.typescript_package,
                 source.default_websocket_url(),
                 source.default_http_url(),
-                None,
+                options.extensions,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
                 false,
@@ -1998,7 +2062,7 @@ fn generate_project_stack_source(
         }
         InstallTarget::Rust => {
             if let Some(composition) = source.composition_artifacts() {
-                if source.hosted_extensions().is_some() {
+                if source.hosted_extensions().is_some() || options.extensions.is_some() {
                     anyhow::bail!(
                         "multi-live Rust package extensions require a composition-wrapper contract"
                     );
@@ -2050,14 +2114,14 @@ fn generate_project_stack_source(
                     &format!("{}-stack", options.alias),
                     options.rust_module,
                     source.default_websocket_url(),
-                    None,
+                    options.extensions,
                     &[],
                 )
             }
         }
         InstallTarget::Python => {
             if let Some(composition) = source.composition_artifacts() {
-                if source.hosted_extensions().is_some() {
+                if source.hosted_extensions().is_some() || options.extensions.is_some() {
                     anyhow::bail!(
                         "multi-live Python package extensions require a composition-wrapper contract"
                     );
@@ -2114,7 +2178,7 @@ fn generate_project_stack_source(
                     &format!("{}-stack", options.alias),
                     options.python_module,
                     source.default_websocket_url(),
-                    None,
+                    options.extensions,
                     &[],
                 )
             }
@@ -2143,7 +2207,7 @@ fn generate_project_program(
                     options.alias,
                     options.output,
                     options.typescript_package,
-                    None,
+                    options.extensions,
                     hosted_artifact.as_ref(),
                     options.program_install,
                 )?;
@@ -2155,6 +2219,7 @@ fn generate_project_program(
                     options.typescript_package,
                     None,
                     options.program_install,
+                    None,
                 )?;
             }
             if let Some(context) = options.reference {
@@ -2169,10 +2234,18 @@ fn generate_project_program(
             Ok(())
         }
         InstallTarget::Rust => {
-            generate_rust_program_sdk(program_spec, install, options, &LocalProgramSdk::default())
+            let local = LocalProgramSdk {
+                extensions: options.extensions,
+                ..LocalProgramSdk::default()
+            };
+            generate_rust_program_sdk(program_spec, install, options, &local)
         }
         InstallTarget::Python => {
-            generate_python_program_sdk(program_spec, install, options, &LocalProgramSdk::default())
+            let local = LocalProgramSdk {
+                extensions: options.extensions,
+                ..LocalProgramSdk::default()
+            };
+            generate_python_program_sdk(program_spec, install, options, &local)
         }
     }
 }
@@ -2188,6 +2261,10 @@ struct LocalProgramSdk<'a> {
     /// Reuse the bundle already staged in the output, as local stack
     /// regeneration does.
     reuse_staged_extensions: bool,
+    /// `--read-endpoint`: a self-hosted Arete server that serves the
+    /// program's account reads. Without it (and without an install) account
+    /// reads are unavailable.
+    read_endpoint: Option<&'a str>,
 }
 
 fn generate_rust_program_sdk(
@@ -2245,11 +2322,11 @@ fn generate_rust_program_sdk(
         extension_modules,
         extension_entry,
         program_extensions: Vec::new(),
-        program_reads: install
-            .map(program_read_override)
-            .transpose()?
-            .into_iter()
-            .collect(),
+        program_reads: match (install, local.read_endpoint) {
+            (Some(install), _) => vec![program_read_override(install)?],
+            (None, Some(endpoint)) => vec![offline_program_read(&program_spec.payload, endpoint)?],
+            (None, None) => Vec::new(),
+        },
         gateway: install
             .map(|install| {
                 optional_gateway_descriptor(
@@ -2353,18 +2430,20 @@ fn generate_python_program_sdk(
         }
         None => (Vec::new(), None),
     };
-    let program_reads = install
-        .map(program_read_override)
-        .transpose()?
-        .into_iter()
-        .map(|read| arete_interpreter::python::PythonProgramReadConfig {
-            program_id: read.program_id,
-            program_spec_hash: read.program_spec_hash,
-            program_release_hash: read.program_release_hash,
-            descriptor: read.descriptor,
-            package_release_hash: read.package_release_hash,
-        })
-        .collect();
+    let program_reads = match (install, local.read_endpoint) {
+        (Some(install), _) => Some(program_read_override(install)?),
+        (None, Some(endpoint)) => Some(offline_program_read(&program_spec.payload, endpoint)?),
+        (None, None) => None,
+    }
+    .into_iter()
+    .map(|read| arete_interpreter::python::PythonProgramReadConfig {
+        program_id: read.program_id,
+        program_spec_hash: read.program_spec_hash,
+        program_release_hash: read.program_release_hash,
+        descriptor: read.descriptor,
+        package_release_hash: read.package_release_hash,
+    })
+    .collect();
     let python_config = arete_interpreter::python::PythonStackConfig {
         package_name,
         sdk_version: arete_interpreter::python::GENERATED_PYTHON_SDK_VERSION.to_string(),
@@ -4268,6 +4347,80 @@ fn staged_extension_content_hash(artifact: &ResolvedExtensionsArtifact) -> Strin
     )
 }
 
+/// A local SDK extension bundle: a dependency's arete.toml `extensions =
+/// { path = "<dir>" }`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LocalExtensionBundle {
+    /// The target the bundle extends: its declared `language`
+    /// (TypeScript when it declares none).
+    pub target: crate::project::manifest::InstallTarget,
+    /// What generation reads: the bundle's `extensions.json`, or its single
+    /// entry file.
+    pub path: PathBuf,
+    /// [`sdk_extension_content_hash`] of the bundle, the hash the registry
+    /// gives it once published.
+    pub content_hash: String,
+}
+
+/// Read the SDK extension bundle in `dir` as `a4 sdk create --extensions`
+/// does: its `extensions.json` manifest or, without one, a single
+/// `index.ts`, `extensions.rs` or `extensions.py` entry.
+pub(crate) fn local_extension_bundle(dir: &Path) -> Result<LocalExtensionBundle> {
+    use crate::project::manifest::InstallTarget;
+
+    if !dir.is_dir() {
+        anyhow::bail!("SDK extension directory {} does not exist", dir.display());
+    }
+    let manifest_path = dir.join("extensions.json");
+    let (path, artifact) = if manifest_path.is_file() {
+        let artifact = build_extensions_artifact_from_manifest(
+            read_extensions_manifest(&manifest_path)?,
+            dir,
+        )?;
+        (manifest_path, artifact)
+    } else {
+        let entries = [
+            ("index.ts", None),
+            ("extensions.rs", Some(EXTENSIONS_LANGUAGE_RUST)),
+            ("extensions.py", Some(EXTENSIONS_LANGUAGE_PYTHON)),
+        ]
+        .into_iter()
+        .filter(|(entry, _)| dir.join(entry).is_file())
+        .collect::<Vec<_>>();
+        let [(entry, language)] = entries.as_slice() else {
+            anyhow::bail!(
+                "{} holds {} SDK extension entry: add an extensions.json naming the entry and its files, or exactly one index.ts, extensions.rs or extensions.py",
+                dir.display(),
+                if entries.is_empty() { "no" } else { "more than one" }
+            );
+        };
+        let path = dir.join(entry);
+        let artifact = infer_extensions_artifact_from_entry_with_language(
+            &path,
+            language.map(str::to_string),
+        )?;
+        (path, artifact)
+    };
+    let target = match artifact
+        .language
+        .as_deref()
+        .unwrap_or(EXTENSIONS_LANGUAGE_TYPESCRIPT)
+    {
+        EXTENSIONS_LANGUAGE_TYPESCRIPT => InstallTarget::TypeScript,
+        EXTENSIONS_LANGUAGE_RUST => InstallTarget::Rust,
+        EXTENSIONS_LANGUAGE_PYTHON => InstallTarget::Python,
+        other => anyhow::bail!(
+            "The SDK extension in {} declares language '{other}'; expected typescript, rust or python",
+            dir.display()
+        ),
+    };
+    Ok(LocalExtensionBundle {
+        target,
+        path,
+        content_hash: staged_extension_content_hash(&artifact),
+    })
+}
+
 /// A hosted Rust or Python bundle must be exactly the content the registry
 /// resolved: its staged bytes re-hash to the served content hash.
 fn verify_hosted_extension_content(artifact: &ResolvedExtensionsArtifact) -> Result<()> {
@@ -5632,6 +5785,7 @@ fn generate_typescript_program_sdk_from_idl(
     output_path: &Path,
     package_name: &str,
     extensions_path: Option<&Path>,
+    read_endpoint: Option<&str>,
 ) -> Result<()> {
     let idl_bytes =
         fs::read(idl_path).with_context(|| format!("Failed to read IDL {}", idl_path.display()))?;
@@ -5650,7 +5804,8 @@ fn generate_typescript_program_sdk_from_idl(
         &identity,
         &stack_name,
     );
-    let program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
+    let program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity)
+        .with_read_endpoint(read_endpoint);
 
     write_typescript_program_sdk(
         &sdk_name,
@@ -5676,6 +5831,7 @@ fn generate_typescript_program_sdk_from_artifact(
     package_name: &str,
     extensions_path: Option<&Path>,
     install: Option<&ProgramInstallIdentity>,
+    read_endpoint: Option<&str>,
 ) -> Result<()> {
     let identity = arete_hash::OssProgramIdentityV1::new(program_spec.payload.clone())
         .map_err(anyhow::Error::msg)?;
@@ -5686,7 +5842,8 @@ fn generate_typescript_program_sdk_from_artifact(
         std::slice::from_ref(program_spec),
     )
     .map_err(anyhow::Error::msg)?;
-    let program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity);
+    let program = arete_interpreter::typescript::TypeScriptProgramConfig::from(&identity)
+        .with_read_endpoint(read_endpoint);
     let input_pin = ResolvedExtensionsInputPin {
         kind: ExtensionsInputKind::ProgramSpec,
         hash: program_spec.artifact_hash.to_string(),
@@ -6497,16 +6654,17 @@ pub fn create_rust(
     manifest_override: Option<String>,
     artifact_dirs: Vec<String>,
     program_extensions: &[LocalProgramExtensionArg],
+    read_endpoint: Option<String>,
 ) -> Result<()> {
     let _ = config_path;
     let client = ApiClient::new()?;
     let as_module = module_flag;
 
     let (source, raw_output_dir, crate_name) = if let Some(manifest_path) = manifest_override {
-        let source = ResolvedStackSource::LocalArtifacts(Box::new(load_local_stack_with_roots(
-            &manifest_path,
-            &artifact_dirs,
-        )?));
+        let source = ResolvedStackSource::LocalArtifacts(Box::new(LocalArtifactStack {
+            read_endpoint: read_endpoint.clone(),
+            ..load_local_stack_with_roots(&manifest_path, &artifact_dirs)?
+        }));
         let crate_name =
             crate_name_override.unwrap_or_else(|| default_rust_crate_name(source.sdk_name()));
         let output = output_override
@@ -6639,7 +6797,9 @@ pub fn create_rust(
         stack_url,
         extensions_override.as_deref().map(Path::new),
         program_extensions,
-    )
+    )?;
+    telemetry::record_sdk_generated("rust");
+    Ok(())
 }
 
 /// Shared single-live Rust generation: compile the stack, wire and stage the
@@ -6856,8 +7016,6 @@ fn generate_rust_stack_sdk(
         );
     }
 
-    telemetry::record_sdk_generated("rust");
-
     Ok(())
 }
 
@@ -6873,16 +7031,17 @@ pub fn create_python(
     manifest_override: Option<String>,
     artifact_dirs: Vec<String>,
     program_extensions: &[LocalProgramExtensionArg],
+    read_endpoint: Option<String>,
 ) -> Result<()> {
     let _ = config_path;
     let client = ApiClient::new()?;
     let as_module = module_flag;
 
     let (source, raw_output_dir, package_name) = if let Some(manifest_path) = manifest_override {
-        let source = ResolvedStackSource::LocalArtifacts(Box::new(load_local_stack_with_roots(
-            &manifest_path,
-            &artifact_dirs,
-        )?));
+        let source = ResolvedStackSource::LocalArtifacts(Box::new(LocalArtifactStack {
+            read_endpoint: read_endpoint.clone(),
+            ..load_local_stack_with_roots(&manifest_path, &artifact_dirs)?
+        }));
         let package_name =
             package_name_override.unwrap_or_else(|| format!("{}-stack", source.sdk_name()));
         let output = output_override
@@ -7016,7 +7175,9 @@ pub fn create_python(
         stack_url,
         extensions_override.as_deref().map(Path::new),
         program_extensions,
-    )
+    )?;
+    telemetry::record_sdk_generated("python");
+    Ok(())
 }
 
 /// Shared single-live Python generation: compile the stack, wire and stage
@@ -7240,8 +7401,6 @@ fn generate_python_stack_sdk(
             output_dir.display().to_string().cyan()
         );
     }
-
-    telemetry::record_sdk_generated("python");
 
     Ok(())
 }
@@ -10535,6 +10694,7 @@ mod tests {
         let manifest_hash = stack_manifest.artifact_hash.to_string();
         let source = ResolvedStackSource::LocalArtifacts(Box::new(LocalArtifactStack {
             manifest_path: directory.join("OreStream.stack-manifest.json"),
+            read_endpoint: None,
             manifest_hash: manifest_hash.clone(),
             program_specs: vec![program],
             live_specs,
@@ -10773,9 +10933,10 @@ mod tests {
             "programReleaseHash: \"{}\"",
             identity.release_hash
         )));
+        // Generated offline: account reads say how to get an endpoint.
         assert!(output
             .stack_definition
-            .contains("transport: { kind: 'local-http', endpointSource: 'connect-http-url' }"));
+            .contains("transport: { kind: 'unavailable', message: "));
         assert!(!output.stack_definition.contains("path:"));
     }
 
@@ -11493,6 +11654,7 @@ mod tests {
         .unwrap();
         let stack = LocalArtifactStack {
             manifest_path: directory.join("Composed.stack-manifest.json"),
+            read_endpoint: None,
             manifest_hash: stack_manifest.artifact_hash.to_string(),
             program_specs: vec![program],
             live_specs,
@@ -11656,6 +11818,7 @@ mod tests {
             None,
             false,
             Some(rust_bundle.to_string_lossy().into_owned()),
+            None,
         )
         .expect("rust program SDK");
         let lib_rs = fs::read_to_string(rust_output.join("src/lib.rs")).unwrap();
@@ -11685,6 +11848,7 @@ mod tests {
             Some("ore-sdk".to_string()),
             false,
             Some(python_bundle.to_string_lossy().into_owned()),
+            None,
         )
         .expect("python program SDK");
         let init = fs::read_to_string(python_output.join("ore_sdk/__init__.py")).unwrap();
@@ -11712,6 +11876,7 @@ mod tests {
             None,
             false,
             Some(broken.to_string_lossy().into_owned()),
+            None,
         )
         .expect_err("a bundle without PROGRAM_EXTENSIONS is refused");
         assert!(
@@ -11740,6 +11905,7 @@ mod tests {
             None,
             false,
             Some(other.to_string_lossy().into_owned()),
+            None,
         )
         .expect_err("a bundle pinned to another program is refused");
         assert!(
@@ -11833,6 +11999,7 @@ mod tests {
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .expect("local program generation should succeed");
@@ -11852,6 +12019,7 @@ mod tests {
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .expect("local stack generation should succeed");
@@ -11870,6 +12038,7 @@ mod tests {
                 stack_endpoints: None,
                 reference: None,
                 program_install: None,
+                extensions: None,
             },
         )
         .expect("local python generation should succeed");

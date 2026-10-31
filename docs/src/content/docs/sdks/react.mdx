@@ -130,8 +130,24 @@ require a publishable key as shown above.
 | `maxReconnectAttempts`   | Reconnect attempt limit                                                                                     |
 | `maxEntriesPerView`      | Per-view store limit, or `null` for unlimited                                                               |
 | `flushIntervalMs`        | Store update batching interval                                                                              |
+| `environment`            | `'production'` (default) or `{ kind: 'dev', url }` for the project's dev environment; see below             |
 
 `autoConnect` and `autoReconnect` control separate lifecycle phases. Setting `autoConnect={false}` does not disable automatic recovery for a connection the app later establishes, but `canRetry` remains false because provider-owned replacement attempts would also stay disconnected; use the client lifecycle directly. Setting `autoReconnect={false}` does not prevent the provider's initial connection.
+
+`environment` points every client the provider creates (and an `AreteSessionProvider` below it) at the project's dev environment through the edge `a4 dev up` serves. A browser reads no process variables, so pass it from your framework's public variables:
+
+```tsx
+<AreteProvider
+  environment={import.meta.env.VITE_ARETE_ENVIRONMENT === 'dev'
+    ? { kind: 'dev', url: import.meta.env.VITE_ARETE_DEV_URL }
+    : 'production'}
+>
+  <AreteEnvironmentBadge /> {/* renders only in dev mode */}
+  <App />
+</AreteProvider>
+```
+
+The page holds no Arete key in dev mode. `useAreteEnvironment()` returns `'dev'` or `'production'`, and `<AreteEnvironmentBadge />` shows a small "Dev environment" badge in dev mode and nothing in production. Sends need a sign-only wallet, such as `useWalletStandardWallet`.
 
 Provider connection settings are captured when a shared client is created.
 Changing them does not mutate an existing client; call `retry()` to replace it
