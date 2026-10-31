@@ -6797,7 +6797,9 @@ pub fn create_rust(
         stack_url,
         extensions_override.as_deref().map(Path::new),
         program_extensions,
-    )
+    )?;
+    telemetry::record_sdk_generated("rust");
+    Ok(())
 }
 
 /// Shared single-live Rust generation: compile the stack, wire and stage the
@@ -7014,8 +7016,6 @@ fn generate_rust_stack_sdk(
         );
     }
 
-    telemetry::record_sdk_generated("rust");
-
     Ok(())
 }
 
@@ -7175,7 +7175,9 @@ pub fn create_python(
         stack_url,
         extensions_override.as_deref().map(Path::new),
         program_extensions,
-    )
+    )?;
+    telemetry::record_sdk_generated("python");
+    Ok(())
 }
 
 /// Shared single-live Python generation: compile the stack, wire and stage
@@ -7399,8 +7401,6 @@ fn generate_python_stack_sdk(
             output_dir.display().to_string().cyan()
         );
     }
-
-    telemetry::record_sdk_generated("python");
 
     Ok(())
 }

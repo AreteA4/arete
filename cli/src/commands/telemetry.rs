@@ -43,6 +43,19 @@ pub fn status() -> Result<()> {
         );
     }
 
+    if telemetry::in_ci() {
+        println!(
+            "  {} {}",
+            ui::symbols::WARNING.yellow(),
+            "CI environment detected; telemetry is not sent".yellow()
+        );
+    }
+
+    println!(
+        "  Install source: {}",
+        telemetry::install_source_label().dimmed()
+    );
+
     println!();
     println!("  Learn more: {}", telemetry::TELEMETRY_DOCS_URL.cyan());
 

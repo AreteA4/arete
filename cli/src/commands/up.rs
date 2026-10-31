@@ -1272,6 +1272,14 @@ pub fn up(
             allow_unverified_programs,
             json,
         )?);
+        telemetry::record_stack_deployed(
+            if stack_name.is_some() {
+                "single"
+            } else {
+                "all"
+            },
+            start.elapsed(),
+        );
         if json {
             if let Some(result) = result {
                 println!("{}", serde_json::to_string(&result)?);
@@ -1290,8 +1298,6 @@ pub fn up(
             println!();
         }
     }
-
-    telemetry::record_stack_deployed(stack_name.unwrap_or(""), start.elapsed());
 
     Ok(())
 }
