@@ -408,7 +408,7 @@ fn owner_install(
     let pinned = project_install(Path::new(config_path), |_, locked| {
         locked.is_some_and(|entry| entry.program_id.as_deref() == Some(owner))
     })?;
-    if let Some(install) = pinned {
+    if let Some(install) = owning(pinned, owner) {
         return Ok(install);
     }
     let program = client
@@ -421,6 +421,15 @@ fn owner_install(
             )
         })?;
     client.get_registry_program_install(&program.install_name, None)
+}
+
+/// The install when its program is `owner`. A lock older than arete.toml can
+/// name an owner the alias no longer resolves to.
+fn owning(
+    install: Option<RegistryProgramInstallResponse>,
+    owner: &str,
+) -> Option<RegistryProgramInstallResponse> {
+    install.filter(|install| install.definition.program_id == owner)
 }
 
 fn check_owner(
@@ -843,6 +852,14 @@ mod tests {
         assert_eq!(stale.locked_package_release_hash, None);
 
         assert!(program_request(&manifest, Some(&lock), |alias, _| alias == "other").is_none());
+    }
+
+    #[test]
+    fn a_pinned_install_answers_only_for_the_program_it_resolved_to() {
+        assert!(owning(Some(install(json!([]))), KLEND).is_some());
+        // The alias moved to another package after the lock was written.
+        assert!(owning(Some(install(json!([]))), "11111111111111111111111111111111").is_none());
+        assert!(owning(None, KLEND).is_none());
     }
 
     #[test]
