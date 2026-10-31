@@ -31,6 +31,9 @@ pub struct MapAttribute {
     pub is_account_source: bool,
     pub source_type_path: Path,
     pub source_field_name: String,
+    /// Explicit `accounts::` / `data::` selector. Only event sources carry one: their payload and
+    /// the emitting instruction's accounts can share a name (PumpSwap's `pool`, `user`).
+    pub source_field_location: Option<FieldLocation>,
     pub target_field_name: String,
     pub is_primary_key: bool,
     pub is_lookup_index: bool,
@@ -437,6 +440,7 @@ pub fn parse_map_attribute(
             is_account_source,
             source_type_path: split.source_type_path,
             source_field_name: split.source_field_name,
+            source_field_location: split.source_field_location,
             target_field_name: target_name.clone(),
             is_primary_key: args.is_primary_key,
             is_lookup_index: args.is_lookup_index,
@@ -502,6 +506,7 @@ pub fn parse_from_instruction_attribute(
             is_account_source: false,
             source_type_path: split.source_type_path,
             source_field_name: split.source_field_name,
+            source_field_location: split.source_field_location,
             target_field_name: target_name.clone(),
             is_primary_key: args.is_primary_key,
             is_lookup_index: args.is_lookup_index,
@@ -533,6 +538,7 @@ struct SplitSourcePath {
     source_type_path: Path,
     source_type_span: Span,
     source_field_name: String,
+    source_field_location: Option<FieldLocation>,
     source_field_span: Span,
 }
 
@@ -551,6 +557,28 @@ fn split_source_path(path: &Path) -> syn::Result<SplitSourcePath> {
     let mut type_path = path.clone();
     type_path.segments.pop();
 
+    // `sdk::events::Event::accounts::name` reads the emitting instruction's account; a bare
+    // `sdk::events::Event::name` stays the event payload field.
+    let source_field_location = if path
+        .segments
+        .iter()
+        .any(|segment| segment.ident == "events")
+    {
+        let location = type_path.segments.last().and_then(|segment| {
+            match segment.ident.to_string().as_str() {
+                "accounts" => Some(FieldLocation::Account),
+                "args" | "data" => Some(FieldLocation::InstructionArg),
+                _ => None,
+            }
+        });
+        if location.is_some() {
+            type_path.segments.pop();
+        }
+        location
+    } else {
+        None
+    };
+
     let type_span = type_path
         .segments
         .last()
@@ -561,6 +589,7 @@ fn split_source_path(path: &Path) -> syn::Result<SplitSourcePath> {
         source_type_path: type_path,
         source_type_span: type_span,
         source_field_name: field_name,
+        source_field_location,
         source_field_span: field_span,
     })
 }

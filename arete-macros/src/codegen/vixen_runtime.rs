@@ -1080,6 +1080,7 @@ pub fn generate_vm_handler(
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
+            cpi_event_accounts: std::sync::Arc<arete::transaction_metadata::CpiEventAccounts>,
         }
 
         impl std::fmt::Debug for VmHandler {
@@ -1114,6 +1115,7 @@ pub fn generate_vm_handler(
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
+                    cpi_event_accounts: Default::default(),
                 }
             }
 
@@ -1440,7 +1442,8 @@ pub fn generate_vm_handler(
                     .set("ix_path", ix_path.as_str())
                     .set("program", #entity_name_lit)
                     .set("accounts", account_keys);
-                let event_value = value.to_value_with_accounts(static_keys_vec);
+                let mut event_value = value.to_value_with_accounts(static_keys_vec);
+                self.cpi_event_accounts.attach(raw_update, event_type.ends_with("CpiEvent"), &mut event_value);
 
                 let bytecode = self.bytecode.clone();
                 let (mutations_result, resolver_requests, scheduled_callbacks) = {
@@ -2190,6 +2193,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
             runtime_resolver: arete::runtime::arete_interpreter::runtime_resolvers::SharedRuntimeResolver,
             slot_scheduler: std::sync::Arc<std::sync::Mutex<arete::runtime::arete_interpreter::scheduler::SlotScheduler>>,
             resolver_apply_semaphore: std::sync::Arc<arete::runtime::tokio::sync::Semaphore>,
+            cpi_event_accounts: std::sync::Arc<arete::transaction_metadata::CpiEventAccounts>,
         }
 
         impl std::fmt::Debug for VmHandler {
@@ -2224,6 +2228,7 @@ pub fn generate_vm_handler_struct() -> TokenStream {
                     runtime_resolver,
                     slot_scheduler,
                     resolver_apply_semaphore,
+                    cpi_event_accounts: Default::default(),
                 }
             }
 
@@ -2559,7 +2564,8 @@ pub fn generate_instruction_handler_impl(
                     .set("ix_path", ix_path.as_str())
                     .set("program", #entity_name_lit)
                     .set("accounts_count", static_keys_vec.len());
-                let event_value = value.to_value_with_accounts(static_keys_vec);
+                let mut event_value = value.to_value_with_accounts(static_keys_vec);
+                self.cpi_event_accounts.attach(raw_update, event_kind == "program_event", &mut event_value);
 
                 let bytecode = self.bytecode.clone();
                 let (mutations_result, resolver_requests, scheduled_callbacks) = {
@@ -2678,8 +2684,7 @@ pub fn generate_instruction_handler_impl(
                         }
 
                         use arete::runtime::base64::Engine as _;
-                        let log_offset = raw_update.log_range.start;
-                        for (log_position, log_line) in raw_update.log_messages().iter().enumerate() {
+                        for (event_index, log_line) in arete::transaction_metadata::direct_log_lines(raw_update) {
                             let Some(encoded) = log_line
                                 .strip_prefix("Program data: ")
                                 .or_else(|| log_line.strip_prefix("Program log: ray_log: "))
@@ -2738,7 +2743,6 @@ pub fn generate_instruction_handler_impl(
                             // Each decoded event is one occurrence: index it by its
                             // absolute log position so several events under one
                             // signature stay distinct across replay.
-                            let event_index = (log_offset + log_position) as u64;
                             let event_context = context
                                 .clone()
                                 .at_log_event(ix_path.clone(), event_index);

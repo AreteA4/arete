@@ -468,6 +468,7 @@ pub fn process_nested_struct(
                                 is_account_source: true,
                                 source_type_path: acct_path,
                                 source_field_name,
+                                source_field_location: None,
                                 target_field_name: snapshot_attr.target_field_name.clone(),
                                 is_primary_key: false,
                                 is_lookup_index: false,
@@ -524,6 +525,10 @@ pub fn process_nested_struct(
                                 is_account_source: false,
                                 source_type_path: instr_path.clone(),
                                 source_field_name,
+                                source_field_location: aggr_attr
+                                    .field
+                                    .as_ref()
+                                    .and_then(|field| field.explicit_location.clone()),
                                 target_field_name: aggr_attr.target_field_name.clone(),
                                 is_primary_key: false,
                                 is_lookup_index: false,
@@ -716,7 +721,7 @@ fn resolve_instruction_type(
     let mut fields = Vec::new();
 
     // Add account fields
-    for account in &instruction.accounts {
+    for account in &instruction.flattened_accounts() {
         fields.push(ResolvedField {
             field_name: account.name.clone(),
             raw_name: Some(account.name.clone()),
