@@ -61,16 +61,48 @@ fn holder_in(text: &str) -> Option<String> {
     (!holder.is_empty()).then(|| holder.to_string())
 }
 
-/// A stable id for the project at `root`: a digest of its canonical path,
-/// so it names the checkout without revealing it.
+/// A stable id for the checkout at `root`: a digest of its canonical path
+/// and [`checkout_id`], so it names the checkout without revealing it, and
+/// checkouts at one path on different machines or containers stay apart.
 pub fn project_id(root: &Path) -> String {
     let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
-    let digest = sha2::Sha256::digest(root.to_string_lossy().as_bytes());
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(root.to_string_lossy().as_bytes());
+    // A read-only checkout has only its path to go by.
+    if let Some(id) = checkout_id(&root) {
+        hasher.update([0]);
+        hasher.update(id.as_bytes());
+    }
+    let digest = hasher.finalize();
     let hex: String = digest[..12]
         .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect();
     format!("proj_{hex}")
+}
+
+/// The random id `.arete/checkout-id` keeps for this checkout. It's created
+/// once, by linking a finished file into place, so two processes starting
+/// together read the same id. It sits outside `.arete/dev`, which
+/// `a4 dev down --purge` deletes.
+fn checkout_id(root: &Path) -> Option<String> {
+    let path = root.join(".arete").join("checkout-id");
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+    };
+    if let Some(id) = read(&path) {
+        return Some(id);
+    }
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let temporary = path.with_file_name(format!(".checkout-id.{id}.tmp"));
+    std::fs::write(&temporary, &id).ok()?;
+    let _ = std::fs::hard_link(&temporary, &path);
+    let _ = std::fs::remove_file(&temporary);
+    read(&path)
 }
 
 /// What other projects see as the holder: the project folder's name.
@@ -247,5 +279,25 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         assert_ne!(id, project_id(other.path()));
         assert!(holder_label(dir.path()).ends_with(" (a4 dev up)"));
+    }
+
+    /// One path on two machines: the same path with another checkout id.
+    #[test]
+    fn checkouts_at_one_path_have_different_project_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = project_id(dir.path());
+        let recorded = dir.path().join(".arete/checkout-id");
+        assert!(!std::fs::read_to_string(&recorded).unwrap().is_empty());
+        std::fs::write(&recorded, "another-machine").unwrap();
+        let second = project_id(dir.path());
+        assert_ne!(first, second);
+        assert_eq!(second, project_id(dir.path()));
+        // Nothing else is left behind.
+        assert_eq!(
+            std::fs::read_dir(dir.path().join(".arete"))
+                .unwrap()
+                .count(),
+            1
+        );
     }
 }

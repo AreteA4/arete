@@ -1468,17 +1468,11 @@ impl Session<'_> {
                 taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
                 _ = tick.tick() => {}
             }
-            if let Some(runner) = &mut self.automations {
-                runner
-                    .follow_target(
-                        self.deploy_state.deployment_id.as_deref(),
-                        self.stack.as_ref().map(|(_, url)| url.as_str()),
-                    )
-                    .await;
-                runner.poll(watching).await;
-            }
-            if self.find_stack().await {
-                self.write_session()?;
+            tokio::select! {
+                _ = &mut ctrl_c => return Ok(()),
+                _ = terminated(&mut terminate) => return Ok(()),
+                taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
+                result = self.refresh(watching) => result?,
             }
             if !watching {
                 continue;
@@ -1490,6 +1484,24 @@ impl Session<'_> {
                 result = self.watch_pass(&mut snapshot) => result?,
             }
         }
+    }
+
+    /// Bring the automations and the stack lookup up to date. Any wait here
+    /// gives way to a lost lease, so a takeover stops the session at once.
+    async fn refresh(&mut self, watching: bool) -> Result<()> {
+        if let Some(runner) = &mut self.automations {
+            runner
+                .follow_target(
+                    self.deploy_state.deployment_id.as_deref(),
+                    self.stack.as_ref().map(|(_, url)| url.as_str()),
+                )
+                .await;
+            runner.poll(watching).await;
+        }
+        if self.find_stack().await {
+            self.write_session()?;
+        }
+        Ok(())
     }
 
     /// Rebuild when the protocol's sources changed since `snapshot`, then

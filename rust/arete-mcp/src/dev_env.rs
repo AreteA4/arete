@@ -729,7 +729,6 @@ impl EnvApi {
     }
 }
 
-
 /// The `overrides` array of an overrides answer. Any other shape is an
 /// error, never an empty list: the deploy check would read it as clean.
 fn overrides_of(answer: Value) -> Result<Vec<Value>> {
@@ -741,7 +740,6 @@ fn overrides_of(answer: Value) -> Result<Vec<Value>> {
         _ => bail!("The environment's overrides answer is not a JSON object"),
     }
 }
-
 
 /// The request header that carries an environment lease generation on the
 /// writes it fences.
