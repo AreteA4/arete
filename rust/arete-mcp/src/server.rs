@@ -1571,10 +1571,13 @@ impl AreteMcp {
                           slot and clock when running and, when the protocol stack is loaded, \
                           `stack.streamUrl` with its read session token redacted. To stream, \
                           use `a4 stream --dev`, or an installed stack SDK in dev mode through \
-                          the `a4 dev up` edge (`edgeUrl`). `lease.holder` names the project \
-                          whose `a4 dev up` holds the environment (one project at a time; \
-                          another one takes over with `a4 dev up --take-over` or uses its own \
-                          copy from `dev_branch`). \
+                          the `a4 dev up` edge (`edgeUrl`). `stacks` lists the stacks loaded \
+                          into the environment: each started empty at `loadedSlot` and holds \
+                          only the accounts the environment touched since (a transaction or a \
+                          scenario override). `lease.holder` names the project whose \
+                          `a4 dev up` holds the environment (one project at a time; another \
+                          one takes over with `a4 dev up --take-over` or uses its own copy \
+                          from `dev_branch`). \
                           Environments sleep when idle and keep their state; any RPC call or \
                           `dev_wake` wakes one. Start `a4 dev up` in a terminal to create one; \
                           these tools never start or stop local processes."
@@ -1596,9 +1599,14 @@ impl AreteMcp {
         } else {
             Value::Null
         };
+        let stacks = match rpc.api().stacks(rpc.env()).await {
+            Ok(listing) => Value::Array(crate::dev::environment_stacks(&listing)),
+            Err(error) => json!({ "error": format!("{error:#}") }),
+        };
         let mut report = json!({
             "environment": crate::dev_env::public_view(&environment),
             "chain": chain,
+            "stacks": stacks,
         });
         if let Ok(Some(lease)) = rpc.api().lease(rpc.env()).await {
             report["lease"] = crate::dev::lease_view(&lease);

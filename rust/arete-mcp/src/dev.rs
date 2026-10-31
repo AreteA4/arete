@@ -1093,6 +1093,39 @@ fn append_line(path: &Path, value: &Value) {
     }
 }
 
+/// What a stack loaded into an environment holds. Nothing seeds it: it
+/// streams only the accounts the fork loads or writes after it loads.
+pub fn stack_holds(loaded_slot: Option<u64>) -> String {
+    match loaded_slot {
+        Some(slot) => format!(
+            "started empty at slot {slot}: it holds only accounts the environment touches from then on"
+        ),
+        None => "started empty when it loaded: it holds only accounts the environment touches from then on".to_string(),
+    }
+}
+
+/// The stacks of a `GET /api/dev/environments/:env/stacks` listing, each
+/// with its load slot and what it holds.
+pub fn environment_stacks(listing: &Value) -> Vec<Value> {
+    listing["stacks"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|stack| {
+            let loaded_slot = stack["loadedSlot"].as_u64();
+            json!({
+                "name": stack["specName"],
+                "deploymentId": stack["deploymentId"],
+                "websocketUrl": stack["websocketUrl"],
+                "serving": stack["assigned"] == true,
+                "protocol": stack["protocolSlug"],
+                "loadedSlot": loaded_slot,
+                "holds": stack_holds(loaded_slot),
+            })
+        })
+        .collect()
+}
+
 /// Mint a read session for a stack's WebSocket with the account's API key.
 /// With `deployment_id`, the session carries that protocol deployment's row
 /// scopes.
@@ -1250,7 +1283,8 @@ impl DevClient {
         .map(Some)
     }
 
-    /// The environment, the session and the chain clock.
+    /// The environment, the session, the chain clock and the stacks loaded
+    /// into the environment, each with the slot it streams from.
     pub async fn status(&self) -> Value {
         let environment = match self.env.api().get_env(self.env.env()).await {
             Ok(view) => crate::dev_env::public_view(&view),
@@ -1284,6 +1318,10 @@ impl DevClient {
                 json!({ "wsUrl": self.session.stack_ws_url, "error": format!("{error:#}") })
             }
         };
+        let stacks = match self.env.api().stacks(self.env.env()).await {
+            Ok(listing) => Value::Array(environment_stacks(&listing)),
+            Err(error) => json!({ "error": format!("{error:#}") }),
+        };
         let mut report = json!({
             "project": self.project.root.display().to_string(),
             "environment": environment,
@@ -1291,6 +1329,7 @@ impl DevClient {
             "session": self.session.redacted(),
             "chain": chain,
             "stack": stack,
+            "stacks": stacks,
         });
         // One project per environment: who holds it (absent when the API
         // has no environment leases).

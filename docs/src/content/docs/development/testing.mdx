@@ -44,6 +44,28 @@ stay yours. Use `a4 dev rebase` to refresh untouched, unpinned accounts,
 `pin` to hold a specific account, or `follow` for an account that should
 refresh each block. Checkpoint or branch before making changes you need to undo.
 
+## Stacks start empty
+
+A stack loaded into a dev environment streams only the accounts the fork
+loads or writes after it loads. Nothing backfills it, so a view of a program
+your test hasn't touched yet is empty, not broken. `a4 dev up` and
+`a4 dev status` name each loaded stack and the slot it started at; a stack
+restarts empty, at a new slot, when it is rebuilt or the environment wakes.
+
+```text
+  stacks
+    registry-klend-0123456789abcdef
+      started empty at slot 312000123: it holds only accounts the environment touches from then on
+```
+
+To put an account into a stack, touch it: send a transaction that writes it,
+or run a scenario override on it (`a4 dev scenario`). Untouched accounts
+appear in no stack.
+
+Use stacks for what changed during the test. For what an account holds now,
+read it through Program Read, which reads the fork directly and is complete:
+an installed program SDK's account readers, in dev mode.
+
 ## Checkpoint, restore, and branch
 
 ```sh

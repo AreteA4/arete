@@ -29,6 +29,21 @@ pub struct EnvStack {
     pub ws_url: String,
     /// The stack deployment's id.
     pub deployment_id: i64,
+    /// The fork slot the stack streams from: it holds only accounts the
+    /// environment touches from then on. `None` when the API doesn't say.
+    pub loaded_slot: Option<u64>,
+}
+
+impl EnvStack {
+    /// `a4 dev up`'s line for a serving stack, with what it holds.
+    pub fn serving_line(&self) -> String {
+        format!(
+            "Stack {} is serving at {} ({})",
+            self.name,
+            self.ws_url,
+            arete_mcp::dev::stack_holds(self.loaded_slot)
+        )
+    }
 }
 
 /// The protocol routes of one Arete API, with the account's secret key.
@@ -371,6 +386,7 @@ pub fn env_stack(stack: &Value) -> Option<EnvStack> {
         name: stack["specName"].as_str()?.to_string(),
         ws_url: stack["websocketUrl"].as_str()?.to_string(),
         deployment_id: stack["deploymentId"].as_i64()?,
+        loaded_slot: stack["loadedSlot"].as_u64(),
     })
 }
 
