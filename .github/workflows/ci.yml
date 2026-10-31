@@ -959,7 +959,9 @@ jobs:
     name: Python ${{ matrix.python-version }} (${{ matrix.extras }})
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.python-matrix != 'false' }}
-    runs-on: ubuntu-latest
+    # The SDK supports Python 3.9, which setup-python does not provide on
+    # Ubuntu 26.04, the image ubuntu-latest is moving to.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: python/arete-sdk
