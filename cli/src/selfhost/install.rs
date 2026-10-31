@@ -109,6 +109,7 @@ pub fn run(args: InstallArgs, json: bool) -> Result<()> {
         install_dir: install_dir.clone(),
         platform: platform.to_string(),
         source: args.source.clone(),
+        install_source: Some(args.source.clone()),
         verified,
         modify_path,
         installed_at: now_rfc3339(),

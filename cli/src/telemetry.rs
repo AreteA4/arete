@@ -124,9 +124,9 @@ pub struct TelemetryConfig {
 
     /// Whether this install has already emitted `first_run`.
     ///
-    /// Absent on configs written before the flag existed. Those installs
-    /// already have an anonymous id, so the backfill does not emit another
-    /// `first_run`.
+    /// Written only when the anonymous id is created. Existing configs are
+    /// not rewritten to set this flag: that save could restore `enabled: true`
+    /// over a concurrent `a4 telemetry disable`.
     #[serde(default)]
     pub first_run_recorded: bool,
 }
@@ -171,7 +171,9 @@ impl TelemetryConfig {
         Ok(())
     }
 
-    /// Get or create the anonymous ID
+    /// Get or create the anonymous ID in memory. Does not write the file.
+    /// Callers persist through [`mutate_config`], which reloads under a lock
+    /// so a concurrent opt-out is not overwritten.
     pub fn get_or_create_anonymous_id(&mut self) -> String {
         if let Some(ref id) = self.anonymous_id {
             return id.clone();
@@ -179,9 +181,50 @@ impl TelemetryConfig {
 
         let id = Uuid::new_v4().to_string();
         self.anonymous_id = Some(id.clone());
-        let _ = self.save(); // Best effort save
         id
     }
+}
+
+/// Exclusive lock around every read-modify-write of `telemetry.json`.
+/// The lock file stays on disk; the kernel releases it if the process exits.
+struct TelemetryConfigLock {
+    file: fs::File,
+}
+
+impl Drop for TelemetryConfigLock {
+    fn drop(&mut self) {
+        let _ = fs2::FileExt::unlock(&self.file);
+    }
+}
+
+fn lock_telemetry_config() -> Result<TelemetryConfigLock> {
+    use fs2::FileExt;
+
+    crate::arete_home::ensure_arete_home()?;
+    let lock_path = config_path().with_file_name(".telemetry.json.lock");
+    let mut options = fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open telemetry lock {}", lock_path.display()))?;
+    file.lock_exclusive()
+        .with_context(|| format!("Failed to lock telemetry config {}", lock_path.display()))?;
+    Ok(TelemetryConfigLock { file })
+}
+
+/// Reload `telemetry.json`, apply `mutate`, and save, while holding the
+/// config lock. `mutate` must not assume a previously loaded copy: `enabled`
+/// and the other fields are whatever is on disk now.
+fn mutate_config(mutate: impl FnOnce(&mut TelemetryConfig)) -> Result<()> {
+    let _lock = lock_telemetry_config()?;
+    let mut config = TelemetryConfig::load();
+    mutate(&mut config);
+    config.save()
 }
 
 /// Get the path to the telemetry config file
@@ -249,16 +292,16 @@ fn env_flag_set(key: &str) -> bool {
 
 /// Enable telemetry collection
 pub fn enable() -> Result<()> {
-    let mut config = TelemetryConfig::load();
-    config.enabled = true;
-    config.save()
+    mutate_config(|config| {
+        config.enabled = true;
+    })
 }
 
 /// Disable telemetry collection
 pub fn disable() -> Result<()> {
-    let mut config = TelemetryConfig::load();
-    config.enabled = false;
-    config.save()
+    mutate_config(|config| {
+        config.enabled = false;
+    })
 }
 
 pub fn status() -> (bool, Option<String>) {
@@ -278,9 +321,11 @@ pub fn flush() {
 /// Coarse install/invoker channel: `curl`, `npm`, `cargo`, `agent`, or `unknown`.
 ///
 /// Agent environment variables win, because that is the noise source to
-/// filter. Otherwise the install receipt (`sh`/`ps1` → curl, `npm`, `cargo`)
-/// wins. A missing receipt falls back to the current executable path
-/// (`node_modules` → npm, `.cargo` → cargo) without sending the path.
+/// filter. Otherwise the install receipt's original channel (`sh`/`ps1` →
+/// curl, `npm`, `cargo`) wins, including after `a4 self update` rewrites
+/// `source` to `self-update`. A missing channel falls back to the current
+/// executable path (`node_modules` → npm, `.cargo` → cargo) without sending
+/// the path.
 pub fn install_source_label() -> &'static str {
     INSTALL_SOURCE
         .get_or_init(|| detect_install_source().to_string())
@@ -293,11 +338,11 @@ fn detect_install_source() -> &'static str {
             .ok()
             .is_some_and(|value| is_truthy(&value))
     });
-    let receipt = crate::selfhost::receipt::Receipt::load()
+    let channel = crate::selfhost::receipt::Receipt::load()
         .ok()
         .flatten()
-        .map(|receipt| receipt.source);
-    classify_install_source(agent, receipt.as_deref(), exe_install_kind())
+        .and_then(|receipt| receipt.install_channel().map(str::to_string));
+    classify_install_source(agent, channel.as_deref(), exe_install_kind())
 }
 
 #[derive(Clone, Copy)]
@@ -350,44 +395,67 @@ fn classify_install_source(
     }
 }
 
+/// `first_run` is only for an install that does not yet have an anonymous id.
+///
+/// Existing configs are not rewritten to set `first_run_recorded`. That
+/// backfill saved the whole file and could put `enabled: true` back after
+/// `a4 telemetry disable` ran between the load and the save.
+fn should_emit_first_run(anonymous_id: Option<&str>) -> bool {
+    anonymous_id.is_none()
+}
+
+/// Assign an id on a config that was just loaded. Leaves `enabled` alone.
+/// Returns whether this call created the id.
+fn assign_anonymous_id(config: &mut TelemetryConfig) -> bool {
+    if config.anonymous_id.is_some() {
+        return false;
+    }
+    let _ = config.get_or_create_anonymous_id();
+    config.first_run_recorded = true;
+    true
+}
+
 struct Identity {
     anonymous_id: String,
     emit_first_run: bool,
-}
-
-/// Decide whether this install should emit `first_run`.
-///
-/// A brand-new config (no anonymous id yet) emits once. An id that already
-/// exists — including configs written before `first_run_recorded` — does
-/// not emit again. The flag is backfilled so the next launch does not rewrite
-/// the file.
-fn plan_identity(anonymous_id: Option<&str>, first_run_recorded: bool) -> (bool, bool) {
-    if anonymous_id.is_none() {
-        (true, true)
-    } else if !first_run_recorded {
-        (false, true)
-    } else {
-        (false, false)
-    }
+    /// A concurrent disable won before the new id was saved.
+    opted_out: bool,
 }
 
 fn prepare_identity() -> Identity {
-    let mut config = TelemetryConfig::load();
-    let (emit_first_run, persist) =
-        plan_identity(config.anonymous_id.as_deref(), config.first_run_recorded);
-    if emit_first_run {
-        config.first_run_recorded = true;
-        let _ = config.get_or_create_anonymous_id();
-    } else if persist {
-        config.first_run_recorded = true;
-        let _ = config.save();
+    let loaded = TelemetryConfig::load();
+    if !should_emit_first_run(loaded.anonymous_id.as_deref()) {
+        return Identity {
+            anonymous_id: loaded
+                .anonymous_id
+                .unwrap_or_else(|| Uuid::new_v4().to_string()),
+            emit_first_run: false,
+            opted_out: false,
+        };
     }
+
+    let mut created_id = None;
+    let mut created = false;
+    let mut opted_out = false;
+    if mutate_config(|config| {
+        created = assign_anonymous_id(config);
+        created_id = config.anonymous_id.clone();
+        opted_out = !config.enabled;
+    })
+    .is_err()
+    {
+        // Could not lock the file. Do not write an unlocked copy.
+        return Identity {
+            anonymous_id: Uuid::new_v4().to_string(),
+            emit_first_run: true,
+            opted_out: false,
+        };
+    }
+
     Identity {
-        anonymous_id: config
-            .anonymous_id
-            .clone()
-            .unwrap_or_else(|| Uuid::new_v4().to_string()),
-        emit_first_run,
+        anonymous_id: created_id.unwrap_or_else(|| Uuid::new_v4().to_string()),
+        emit_first_run: created && !opted_out,
+        opted_out,
     }
 }
 
@@ -416,9 +484,7 @@ pub fn show_consent_banner_if_needed() {
         return;
     }
 
-    let mut config = TelemetryConfig::load();
-
-    if config.consent_shown {
+    if TelemetryConfig::load().consent_shown {
         return;
     }
 
@@ -437,9 +503,12 @@ pub fn show_consent_banner_if_needed() {
 
     let _ = writeln!(std::io::stderr(), "{}", banner);
 
-    config.consent_shown = true;
-    config.consent_shown_at = Some(chrono::Utc::now().to_rfc3339());
-    let _ = config.save();
+    // Reload under the lock so this write cannot put `enabled: true` back
+    // over a disable that landed after the banner was printed.
+    let _ = mutate_config(|config| {
+        config.consent_shown = true;
+        config.consent_shown_at = Some(chrono::Utc::now().to_rfc3339());
+    });
 
     record_first_run();
 }
@@ -538,6 +607,9 @@ fn capture(spec: Capture<'_>) {
     }
 
     let identity = prepare_identity();
+    if identity.opted_out {
+        return;
+    }
     if identity.emit_first_run {
         spawn_send(build_event(
             &identity.anonymous_id,
@@ -1146,17 +1218,24 @@ mod tests {
 
     #[test]
     fn first_run_emits_only_for_a_new_anonymous_id() {
-        let (emit, persist) = plan_identity(None, false);
-        assert!(emit);
-        assert!(persist);
+        assert!(should_emit_first_run(None));
+        assert!(!should_emit_first_run(Some("already")));
+    }
 
-        let (emit, persist) = plan_identity(Some("already"), false);
-        assert!(!emit);
-        assert!(persist);
-
-        let (emit, persist) = plan_identity(Some("already"), true);
-        assert!(!emit);
-        assert!(!persist);
+    #[test]
+    fn assigning_an_id_does_not_turn_telemetry_back_on() {
+        let mut config = TelemetryConfig {
+            enabled: false,
+            ..TelemetryConfig::default()
+        };
+        assert!(assign_anonymous_id(&mut config));
+        assert!(!config.enabled);
+        assert!(config.first_run_recorded);
+        assert!(config.anonymous_id.is_some());
+        let id = config.anonymous_id.clone();
+        assert!(!assign_anonymous_id(&mut config));
+        assert_eq!(config.anonymous_id, id);
+        assert!(!config.enabled);
     }
 
     #[test]
@@ -1166,7 +1245,6 @@ mod tests {
                 .unwrap();
         assert!(!parsed.first_run_recorded);
         assert_eq!(parsed.anonymous_id.as_deref(), Some("abc"));
-        let (emit, _) = plan_identity(parsed.anonymous_id.as_deref(), parsed.first_run_recorded);
-        assert!(!emit);
+        assert!(!should_emit_first_run(parsed.anonymous_id.as_deref()));
     }
 }

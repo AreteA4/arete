@@ -147,13 +147,7 @@ pub fn run(args: UpdateArgs, json: bool) -> Result<()> {
     // Replace, update the receipt, clean up.
     replace_binary(&receipt.binary, &asset_path)?;
     let _ = fs::remove_dir_all(&download_dir);
-    let updated = Receipt {
-        version: target.clone(),
-        source: "self-update".to_string(),
-        verified: true,
-        installed_at: now_rfc3339(),
-        ..receipt.clone()
-    };
+    let updated = receipt.after_self_update(target.clone(), now_rfc3339());
     updated.save()?;
 
     if json {
