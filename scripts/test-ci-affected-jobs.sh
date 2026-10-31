@@ -82,6 +82,22 @@ for job in $all_jobs; do
     fail "$job has the wrong condition: $condition"
 done
 
+# The decision must come from the real merge diff. A wrong source here would
+# pass every other check while skipping required jobs on every pull request.
+compare="$(yq -r '.jobs.changes.steps[] | select(.id == "affected") | .run' "$workflow")"
+case "$compare" in
+  *"changed=\"\$(git diff --name-only --no-renames 'HEAD^1' HEAD)\""*) ;;
+  *) fail "changes must classify the diff between the merge commit and its base" ;;
+esac
+case "$compare" in
+  *"git rev-parse --verify --quiet 'HEAD^2'"*) ;;
+  *) fail "changes must confirm HEAD is a merge commit" ;;
+esac
+[ "$(yq -r '.jobs.changes.steps[0].with.fetch-depth' "$workflow")" = 2 ] ||
+  fail "changes must fetch the merge commit's parents"
+[ "$(yq -r '.jobs.changes.steps[] | select(.id == "affected") | .if' "$workflow")" = "github.event_name == 'pull_request'" ] ||
+  fail "only pull requests may skip jobs"
+
 # A new job has to choose: be decided here, or always run.
 always_on="changes check-crate-files linked-release-versions lockfile-sync npm-cli-wrapper npm-publish-auth python record-verified-tree rust"
 expected="$(printf '%s\n' $all_jobs $always_on | sort | xargs)"
