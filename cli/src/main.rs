@@ -94,7 +94,7 @@ enum Commands {
         /// Project name (creates directory)
         name: Option<String>,
 
-        /// Template: react-ore, rust-ore, typescript-ore, python-ore
+        /// Template: protocol, protocol-app, react-ore, rust-ore, typescript-ore, python-ore
         #[arg(short, long)]
         template: Option<String>,
 
@@ -445,7 +445,9 @@ enum Commands {
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)] // Clap owns this short-lived command value.
 enum SdkCommands {
-    /// Create SDK from a stack
+    /// Generate an SDK offline from a stack, IDL or local artifacts. Apps
+    /// use `a4 install` for registry SDKs and `a4 dev` for a dev
+    /// environment; this is for programs and stacks not in the registry yet
     Create(SdkCreateArgs),
 
     /// Regenerate SDKs for every configured stack
@@ -606,6 +608,14 @@ struct SdkCreateArgs {
     /// stack const). Rust and Python program SDKs need --program-spec or --idl.
     #[arg(long)]
     program_only: bool,
+
+    /// Self-hosted Arete server that serves account reads for the SDK's
+    /// programs (`http(s)://…`). Without it, an SDK generated offline builds
+    /// instructions and PDAs but its account reads fail with how to get one:
+    /// install the program from the registry (`a4 install program`) and use
+    /// `a4 dev` for a dev environment
+    #[arg(long, value_name = "URL")]
+    read_endpoint: Option<String>,
 }
 
 #[derive(Args)]
@@ -881,7 +891,18 @@ enum StackCommands {
 }
 
 #[derive(Subcommand)]
+enum ProgramAccountCommands {
+    /// Decode one account through Program Read: in production, or with
+    /// --dev in the project's cloud dev environment (the fork's values)
+    Decode(commands::program_decode::DecodeArgs),
+}
+
+#[derive(Subcommand)]
 enum ProgramCommands {
+    /// Read program accounts
+    #[command(subcommand)]
+    Account(ProgramAccountCommands),
+
     /// Normalize an IDL into a portable ProgramSpec artifact
     Build {
         /// IDL JSON input
@@ -1073,17 +1094,29 @@ fn main() {
     let start = std::time::Instant::now();
     let result = run(cli);
 
+    let error_code = result
+        .as_ref()
+        .err()
+        .and_then(telemetry::extract_error_code);
     telemetry::record_command(
         cmd_name,
         result.is_ok(),
-        result
-            .as_ref()
-            .err()
-            .and_then(telemetry::extract_error_code)
-            .as_deref(),
+        error_code.as_deref(),
         start.elapsed(),
         None,
     );
+    if let Err(error) = result.as_ref() {
+        let reason = telemetry::failure_reason(error);
+        match cmd_name {
+            "create" => telemetry::record_create_failed(
+                telemetry::selected_template().as_deref(),
+                &reason,
+                start.elapsed(),
+            ),
+            "up" => telemetry::record_up_failed(&reason, start.elapsed()),
+            _ => {}
+        }
+    }
 
     selfhost::maybe_nudge(cmd_name, json);
 
@@ -1226,7 +1259,7 @@ fn parse_dependency_kind(value: &str) -> anyhow::Result<project::manifest::Depen
 }
 
 /// `a4 install --check`: fail when a generated protocol client is not the
-/// published release arete.lock pins.
+/// published release arete.lock pins, or an SDK uses a local extension.
 fn check_install(manifest: impl AsRef<std::path::Path>, json: bool) -> anyhow::Result<()> {
     let problems = project::installer::check_project(manifest)?;
     if json {
@@ -1239,7 +1272,7 @@ fn check_install(manifest: impl AsRef<std::path::Path>, json: bool) -> anyhow::R
         );
     } else if problems.is_empty() {
         println!(
-            "{} arete.lock is fresh and every protocol client is a published release",
+            "{} arete.lock is fresh and every protocol client and SDK extension is published",
             "ok".green()
         );
     } else {
@@ -1735,6 +1768,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                 create_args.program_module,
                 create_args.program_extensions,
                 create_args.program_only,
+                create_args.read_endpoint,
             ),
             SdkCommands::Sync(sync_args) => commands::sdk::sync(
                 &cli.config,
@@ -1860,6 +1894,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => commands::stack::stop(&stack_name, branch.as_deref(), force),
         },
         Commands::Program(program_cmd) => match program_cmd {
+            ProgramCommands::Account(ProgramAccountCommands::Decode(args)) => {
+                commands::program_decode::run(&cli.config, args, cli.json)
+            }
             ProgramCommands::Build {
                 input,
                 output,

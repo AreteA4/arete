@@ -187,7 +187,20 @@ impl ManifestV1 {
     }
 
     pub fn resolution_hash(&self) -> Result<String> {
-        let bytes = serde_json::to_vec(self)?;
+        // A local SDK extension changes what is generated, not what is
+        // resolved: adding or removing one leaves arete.lock fresh, so
+        // `a4 install --locked` can restore the published extension.
+        let mut resolved = self.clone();
+        for kind in [
+            DependencyKind::Stack,
+            DependencyKind::Program,
+            DependencyKind::Protocol,
+        ] {
+            for dependency in resolved.dependencies.of_kind_mut(kind).values_mut() {
+                dependency.extensions = None;
+            }
+        }
+        let bytes = serde_json::to_vec(&resolved)?;
         let digest = Sha256::digest(bytes);
         Ok(format!("arete-manifest-v1:{digest:x}"))
     }
@@ -477,6 +490,21 @@ pub struct DependencyV1 {
     /// deployment, which `a4 up <alias>` records.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub endpoints: BTreeMap<String, StackEndpointsV1>,
+    /// `extensions = { path = "<dir>" }`: generate a registry program or
+    /// stack SDK with the SDK extension bundle in this directory instead of
+    /// the published one, to test an extension before publishing it. Not
+    /// resolution input: arete.lock keeps pinning the published release and
+    /// records the local bundle as the entry's `local_extension`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extensions: Option<LocalExtensionsV1>,
+}
+
+/// A dependency's local SDK extension bundle.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LocalExtensionsV1 {
+    /// The bundle's directory, relative to the manifest.
+    pub path: String,
 }
 
 /// One LiveSpec's stream endpoints in a user's own deployment.
@@ -594,6 +622,19 @@ impl DependencyV1 {
                     &["http", "https"],
                     &format!("dependency '{alias}' endpoints.{live}.query"),
                 )?;
+            }
+        }
+
+        if let Some(extensions) = &self.extensions {
+            if kind == DependencyKind::Protocol
+                || !matches!(self.source, DependencySourceV1::Registry(_))
+            {
+                bail!(
+                    "dependency '{alias}' declares extensions; only a registry program or stack can use a local SDK extension"
+                );
+            }
+            if extensions.path.trim().is_empty() {
+                bail!("dependency '{alias}' extensions.path cannot be empty");
             }
         }
 
@@ -1655,5 +1696,56 @@ targets = []
         let error = ProjectManifest::load(&path).unwrap_err().to_string();
         assert!(error.contains("Failed to decode strict"), "{error}");
         assert!(error.contains("invalid type"), "{error}");
+    }
+
+    #[test]
+    fn a_local_sdk_extension_belongs_to_registry_programs_and_stacks_and_is_not_resolution_input() {
+        let base = "manifest_version = 1\n[project]\nname = \"app\"\n";
+        let registry = format!(
+            "{base}[dependencies.programs.ore]\nsource = {{ registry = \"ore\" }}\nversion = \"^1.0.0\"\n"
+        );
+        let local = parse(&format!(
+            "{registry}extensions = {{ path = \"extensions/ore\" }}\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            local.dependencies.programs["ore"]
+                .extensions
+                .as_ref()
+                .map(|extensions| extensions.path.as_str()),
+            Some("extensions/ore")
+        );
+        assert_eq!(
+            local.resolution_hash().unwrap(),
+            parse(&registry).unwrap().resolution_hash().unwrap()
+        );
+        let rendered = local.to_toml_pretty().unwrap();
+        assert!(rendered.contains("extensions/ore"), "{rendered}");
+
+        for (refused, reason) in [
+            (
+                format!(
+                    "{base}[dependencies.protocols.raise]\nsource = {{ registry = \"raise\" }}\nversion = \"^1.0.0\"\nextensions = {{ path = \"x\" }}\n"
+                ),
+                "only a registry program or stack",
+            ),
+            (
+                format!(
+                    "{base}[dependencies.stacks.ore]\nsource = {{ path = \"ore.stack-manifest.json\" }}\nextensions = {{ path = \"x\" }}\n"
+                ),
+                "only a registry program or stack",
+            ),
+            (
+                format!("{registry}extensions = {{ path = \" \" }}\n"),
+                "cannot be empty",
+            ),
+            (
+                format!("{registry}extensions = {{ path = \"x\", other = 1 }}\n"),
+                "other",
+            ),
+        ] {
+            let error = format!("{:#}", parse(&refused).unwrap_err());
+            assert!(error.contains(reason), "{refused}: {error}");
+        }
     }
 }

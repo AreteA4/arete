@@ -85,8 +85,8 @@ a4 install program spl-token --ts
 
 Update with `a4 self update`. Coding agents can do all of this from one prompt:
 
-> Read https://docs.arete.run/agent.md and follow it to set up Arete in this
-> project. Verify the setup, and simply explain what Arete is capable of.
+> Read https://docs.arete.run/agent.md and follow it to set up Arete in your
+> environment. Verify the setup, and simply explain what Arete is capable of.
 
 See [cli/README.md](cli/README.md) for the full command surface.
 

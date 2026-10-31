@@ -1204,9 +1204,8 @@ fn up_compiles_and_deploys_project_stacks_to_the_environment() {
         .iter()
         .any(|call| call.starts_with(&format!("POST {ENV_A}/stacks"))));
     assert!(!calls.iter().any(|call| call.contains("/builds/artifacts")));
-    assert!(calls.iter().any(|call| call.contains("POST /ws/sessions")
-        && call.contains(STACK_URL)
-        && !call.contains("protocolDeploymentId")));
+    // The session file holds no stack token, so `a4 dev up` mints none.
+    assert!(!calls.iter().any(|call| call.contains("POST /ws/sessions")));
     // The lease came first, and the stack build carried its generation.
     let lease_at = calls
         .iter()
@@ -1341,14 +1340,13 @@ fn existing_protocol_stack_is_selected_by_deployment_id_not_listing_order() {
     assert_eq!(listing["stacks"][0]["deploymentId"], protocol);
     assert_eq!(listing["stacks"][0]["wsUrl"], STACK_URL);
     assert_eq!(listing["stacks"][1]["deploymentId"], "another");
-    assert!(mock
+    assert!(ready["session"].get("stackSession").is_none());
+    assert!(!mock
         .calls
         .lock()
         .unwrap()
         .iter()
-        .any(|call| call.contains("POST /ws/sessions")
-            && call.contains(protocol)
-            && call.contains(STACK_URL)));
+        .any(|call| call.contains("POST /ws/sessions")));
     run_json(&origin, dir.path(), &["dev", "down"]);
     assert!(child.wait().unwrap().success());
 }

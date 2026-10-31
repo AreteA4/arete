@@ -46,6 +46,7 @@ mod config;
 mod connection;
 #[doc(hidden)]
 pub mod credentials;
+pub mod dev_environment;
 pub mod encoding;
 mod entity;
 mod error;
@@ -97,6 +98,10 @@ pub use client::{
 pub use collation::{collation_key, locale_compare, CollationKey};
 pub use config::{AreteConfig, ConnectionConfig};
 pub use connection::{ConnectionManager, ConnectionState, SubscriptionLease, SubscriptionOptions};
+pub use dev_environment::{
+    DevEnvironmentError, Environment, EnvironmentOption, SwitchResult, ARETE_DEV_ENV_ENV,
+    ARETE_DEV_URL_ENV, ARETE_ENVIRONMENT_ENV,
+};
 pub use encoding::{decode_base58, encode_base58, keccak256, sha256, Base58Error};
 pub use entity::Stack;
 pub use error::{

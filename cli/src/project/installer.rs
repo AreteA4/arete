@@ -175,6 +175,7 @@ pub fn install_without_saving(
             targets: Some(vec![target]),
             outputs,
             endpoints: BTreeMap::new(),
+            extensions: None,
         };
         let requested_alias = alias.clone();
         manifest
@@ -581,12 +582,18 @@ fn save_dependency_and_install(
     let endpoints = existing
         .map(|existing| existing.endpoints.clone())
         .unwrap_or_default();
+    // A local SDK extension stays while the dependency stays a registry
+    // package.
+    let extensions = existing
+        .filter(|_| matches!(source, DependencySourceV1::Registry(_)))
+        .and_then(|existing| existing.extensions.clone());
     let dependency = DependencyV1 {
         source,
         version: requirement,
         targets,
         outputs,
         endpoints,
+        extensions,
     };
     manifest
         .dependencies
@@ -812,6 +819,7 @@ pub(crate) fn save_composition(
                 targets: target.map(|target| vec![target]),
                 outputs: DependencyOutputsV1::default(),
                 endpoints: BTreeMap::new(),
+                extensions: None,
             };
             insert_manifest_item(
                 document.as_item_mut(),
@@ -1064,6 +1072,12 @@ fn dependency_manifest_item(dependency: &DependencyV1) -> Item {
     if !dependency.endpoints.is_empty() {
         table.insert("endpoints", endpoints_manifest_item(&dependency.endpoints));
     }
+    if let Some(extensions) = &dependency.extensions {
+        let mut entry = InlineTable::new();
+        entry.insert("path", extensions.path.clone().into());
+        entry.fmt();
+        table.insert("extensions", value(entry));
+    }
     Item::Table(table)
 }
 
@@ -1294,6 +1308,18 @@ fn install_loaded_project(
                 unpublished.alias
             );
         }
+        // `--locked` installs only what is published; a local SDK extension
+        // is not.
+        if let Some((kind, alias)) = manifest
+            .dependencies()
+            .find(|(_, _, dependency)| dependency.extensions.is_some())
+            .map(|(kind, alias, _)| (kind, alias.clone()))
+        {
+            bail!(
+                "{kind} '{alias}' uses a local SDK extension (`extensions` under [dependencies.{}.{alias}] in arete.toml), and --locked installs only published extensions. Remove `extensions` to restore the published one, or run `a4 install`; --locked changed nothing",
+                kind.namespace()
+            );
+        }
     }
     validate_local_closure(&manifest)?;
     if options.dry_run {
@@ -1304,19 +1330,21 @@ fn install_loaded_project(
         validate_update_selection(&manifest, selection)?;
     }
 
+    let extensions = local_extensions(&manifest)?;
     let resolved = resolve_dependencies(&manifest, previous_lock.as_ref(), options.update)?;
     let prospective_lock = build_lock(&manifest, &resolved)?;
     // `--locked` never changes resolution: it installs exactly what the lock
     // pins, which for a lock written before program SDK identities were
     // resolved leaves only the program package releases implied. It only
-    // drops `local_build` markers: the published clients are restored.
+    // drops `local_build` and `local_extension` markers: the published
+    // clients and extensions are restored.
     let prospective_lock = match previous_lock.as_ref() {
         Some(previous) if options.locked => {
             let published = without_local_builds(previous);
             check_locked_resolution(&published, &prospective_lock, &resolved)?;
             published
         }
-        _ => prospective_lock,
+        _ => with_local_extensions(prospective_lock, &extensions)?,
     };
 
     let staging_root = manifest
@@ -1324,7 +1352,7 @@ fn install_loaded_project(
         .join(".arete")
         .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&staging_root)?;
-    let staged = match generate_all(&manifest, &plan, &resolved, &staging_root) {
+    let staged = match generate_all(&manifest, &plan, &resolved, &extensions, &staging_root) {
         Ok(staged) => staged,
         Err(error) => {
             let _ = fs::remove_dir_all(&staging_root);
@@ -3984,6 +4012,7 @@ fn build_lock(
                 targets: targets.clone(),
                 generator_contract: GENERATOR_CONTRACT.into(),
                 local_build: None,
+                local_extension: None,
             },
             ResolvedProjectDependency::LocalProgram {
                 alias,
@@ -4012,6 +4041,7 @@ fn build_lock(
                 targets: targets.clone(),
                 generator_contract: GENERATOR_CONTRACT.into(),
                 local_build: None,
+                local_extension: None,
             },
             ResolvedProjectDependency::Registry {
                 kind,
@@ -4254,6 +4284,7 @@ fn registry_lock(
             targets: targets.to_vec(),
             generator_contract: GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         },
         ResolvedRegistryDependency::Program {
             alias,
@@ -4290,6 +4321,7 @@ fn registry_lock(
             targets: targets.to_vec(),
             generator_contract: GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         },
         ResolvedRegistryDependency::Protocol {
             alias,
@@ -4348,6 +4380,7 @@ fn registry_lock(
             targets: targets.to_vec(),
             generator_contract: GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         },
     }
 }
@@ -4538,16 +4571,26 @@ fn generate_all(
     manifest: &ProjectManifest,
     plan: &InstallPlan,
     resolved: &[ResolvedProjectDependency],
+    extensions: &LocalExtensions,
     staging_root: &Path,
 ) -> Result<Vec<StagedOutput>> {
-    generate_outputs(manifest, plan.outputs.iter(), resolved, staging_root)
+    generate_outputs(
+        manifest,
+        plan.outputs.iter(),
+        resolved,
+        extensions,
+        staging_root,
+    )
 }
 
 /// Generate `outputs` into `staging_root`; [`generate_all`] for a subset.
+/// An output whose dependency has a local SDK extension bundle for its
+/// target stages that bundle in place of the published extension.
 fn generate_outputs<'a>(
     manifest: &ProjectManifest,
     outputs: impl Iterator<Item = &'a super::graph::PlannedOutput>,
     resolved: &[ResolvedProjectDependency],
+    extensions: &LocalExtensions,
     staging_root: &Path,
 ) -> Result<Vec<StagedOutput>> {
     let by_alias = resolved
@@ -4596,6 +4639,10 @@ fn generate_outputs<'a>(
                 .map(|dependency| &dependency.endpoints),
             reference: Some(&reference),
             program_install: program_install.as_ref(),
+            extensions: extensions
+                .get(&(output.kind, output.alias.clone()))
+                .filter(|bundle| bundle.target == output.target)
+                .map(|bundle| bundle.path.as_path()),
         };
         match dependency {
             ResolvedProjectDependency::LocalStack {
@@ -4859,6 +4906,9 @@ fn attach_project_provenance(
             if let ResolvedRegistryDependency::Protocol { protocol, .. } = resolved.as_ref() {
                 value["project"]["localBuildDeploymentId"] =
                     serde_json::json!(protocol.deployment.deployment_id);
+                if protocol.production_deployment {
+                    value["project"]["localBuildDeployment"] = serde_json::json!("production");
+                }
             }
         }
     }
@@ -5197,13 +5247,18 @@ fn remove_path(path: &Path) -> Result<()> {
 // Protocol clients generated from a local build (`a4 dev`)
 // ---------------------------------------------------------------------------
 
-/// The deployment a client generated from a local build calls.
+/// The deployment a client generated from a local build names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalBuildDeployment {
-    /// `a4 dev` (the deployment in the project's dev environment), or
-    /// `a4 protocol deploy` before the release is published (the deployment
-    /// just activated).
+    /// `a4 protocol deploy` before the release is published: the production
+    /// deployment just activated.
     Deployed { id: String, access: String },
+    /// `a4 dev`: the production deployment of the published release
+    /// arete.lock pins, or none. The dev environment's deployment is never
+    /// written into the client: SDKs in dev mode find it by resolving the
+    /// installed identity. A never-published entry's locked deployment is
+    /// not kept, since an older `a4` wrote dev deployments there.
+    Locked,
 }
 
 /// One local build of this project's protocol.
@@ -5224,8 +5279,9 @@ pub struct LocalProtocolBuild {
 #[serde(rename_all = "camelCase")]
 pub struct LocalProtocolInstall {
     pub alias: String,
-    /// The deployment the generated descriptor carries.
-    pub deployment_id: String,
+    /// The production deployment the generated descriptor carries; `None`
+    /// before the first deploy.
+    pub deployment_id: Option<String>,
     /// Whether arete.lock pins a published release (`a4 install --locked`
     /// restores it).
     pub published: bool,
@@ -5234,13 +5290,249 @@ pub struct LocalProtocolInstall {
     pub changed: bool,
 }
 
-/// The lock without `local_build` markers: what `--locked` restores.
+/// The lock without `local_build` or `local_extension` markers: what
+/// `--locked` restores.
 fn without_local_builds(lock: &ProjectLock) -> ProjectLock {
     let mut lock = lock.clone();
     for entry in &mut lock.dependencies {
         entry.local_build = None;
+        entry.local_extension = None;
     }
     lock
+}
+
+/// Each dependency's local SDK extension bundle (arete.toml `extensions =
+/// { path }`), by kind and alias.
+type LocalExtensions =
+    BTreeMap<(DependencyKind, String), crate::commands::sdk::LocalExtensionBundle>;
+
+/// Read every local SDK extension bundle the manifest names. A bundle
+/// extends one target, which the dependency must generate.
+fn local_extensions(manifest: &ProjectManifest) -> Result<LocalExtensions> {
+    local_extensions_of(manifest, |_| true)
+}
+
+/// [`local_extensions`] of the dependencies `selected` accepts; no other
+/// bundle is read.
+fn local_extensions_of(
+    manifest: &ProjectManifest,
+    selected: impl Fn(&(DependencyKind, String)) -> bool,
+) -> Result<LocalExtensions> {
+    let mut bundles = LocalExtensions::new();
+    for (kind, alias, dependency) in manifest.dependencies() {
+        let Some(extensions) = &dependency.extensions else {
+            continue;
+        };
+        if !selected(&(kind, alias.clone())) {
+            continue;
+        }
+        let bundle =
+            crate::commands::sdk::local_extension_bundle(&manifest.root.join(&extensions.path))
+                .with_context(|| {
+                    format!("Failed to read the local SDK extension of {kind} '{alias}'")
+                })?;
+        let targets = dependency.selected_targets(&manifest.document.sdk);
+        if !targets.contains(&bundle.target) {
+            bail!(
+                "The local SDK extension of {kind} '{alias}' ({}) extends the {} SDK, which this dependency does not generate (it generates {})",
+                extensions.path,
+                bundle.target,
+                targets
+                    .iter()
+                    .map(|target| target.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        bundles.insert((kind, alias.clone()), bundle);
+    }
+    Ok(bundles)
+}
+
+/// `lock` with each local SDK extension recorded as its entry's
+/// `local_extension`.
+fn with_local_extensions(
+    mut lock: ProjectLock,
+    extensions: &LocalExtensions,
+) -> Result<ProjectLock> {
+    for entry in &mut lock.dependencies {
+        entry.local_extension = extensions
+            .get(&(entry.kind, entry.alias.clone()))
+            .map(|bundle| bundle.content_hash.clone());
+    }
+    lock.normalize_and_validate()?;
+    Ok(lock)
+}
+
+/// Fail while `dir`'s project uses a local SDK extension: arete.toml
+/// declares one (`extensions`), or arete.lock records one the SDKs were
+/// generated with. What is deployed must use only published extensions.
+/// Adding `extensions` leaves the lock fresh, so the manifest is checked
+/// too: a deploy that installs (a newly admitted program release) would
+/// otherwise apply it. No manifest and no lock pass.
+pub fn refuse_local_extensions(dir: &Path) -> Result<()> {
+    let manifest_path = dir.join("arete.toml");
+    // An arete.toml with only `[protocol]` declares no dependencies, so no
+    // extensions either.
+    let declares_dependencies = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|source| toml::from_str::<toml::Value>(&source).ok())
+        .is_some_and(|value| value.get("manifest_version").is_some());
+    if declares_dependencies {
+        let manifest = ProjectManifest::load(&manifest_path)?;
+        let declared = manifest
+            .dependencies()
+            .find(|(_, _, dependency)| dependency.extensions.is_some())
+            .map(|(kind, alias, _)| (kind, alias.clone()));
+        if let Some((kind, alias)) = declared {
+            bail!(
+                "{kind} '{alias}' uses a local SDK extension (`extensions` in arete.toml). Publish the extension, remove `extensions` from [dependencies.{}.{alias}] in arete.toml and run `a4 install --locked`, then deploy",
+                kind.namespace()
+            );
+        }
+    }
+    let Some(lock) = ProjectLock::load_optional(dir.join("arete.lock"))? else {
+        return Ok(());
+    };
+    if let Some(entry) = lock
+        .dependencies
+        .iter()
+        .find(|entry| entry.is_local_extension())
+    {
+        bail!(
+            "{} '{}' is generated with a local SDK extension (arete.lock `local_extension`). Publish the extension, remove `extensions` from [dependencies.{}.{}] in arete.toml and run `a4 install --locked`, then deploy",
+            entry.kind,
+            entry.alias,
+            entry.kind.namespace(),
+            entry.alias
+        );
+    }
+    Ok(())
+}
+
+/// One dependency `a4 dev up` regenerated with its local SDK extension.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalExtensionInstall {
+    pub kind: DependencyKind,
+    pub alias: String,
+    /// The bundle's content hash, now arete.lock's `local_extension`.
+    pub content_hash: String,
+    pub outputs: Vec<PathBuf>,
+}
+
+/// Regenerate the SDKs of dependencies `selected` with their local SDK
+/// extension bundles as they are now, recording each as `local_extension`
+/// (`a4 dev up` when a bundle changes). Only those dependencies' outputs
+/// and lock entries change, so a protocol client `a4 dev` generated from a
+/// local build stays. arete.lock must be fresh and already install each
+/// dependency.
+pub fn install_local_extensions(
+    manifest_path: &Path,
+    selected: &[(DependencyKind, String)],
+) -> Result<Vec<LocalExtensionInstall>> {
+    let manifest = ProjectManifest::load(manifest_path)?;
+    recover_interrupted_install(&manifest.root)?;
+    let lock_path = manifest.root.join("arete.lock");
+    let lock = ProjectLock::load_optional(&lock_path)?
+        .filter(|lock| lock.is_fresh(&manifest.manifest_hash))
+        .ok_or_else(|| anyhow::anyhow!("arete.lock is missing or stale; run `a4 install`"))?;
+    // Always regenerated: a change the content hash leaves out (such as
+    // `extensionApi`) still changes the generated SDK.
+    let extensions = local_extensions_of(&manifest, |key| selected.contains(key))?;
+    if extensions.is_empty() {
+        return Ok(Vec::new());
+    }
+    // Resolve only these dependencies, at the releases arete.lock pins.
+    let mut subset = manifest.clone();
+    for kind in [
+        DependencyKind::Stack,
+        DependencyKind::Program,
+        DependencyKind::Protocol,
+    ] {
+        subset
+            .document
+            .dependencies
+            .of_kind_mut(kind)
+            .retain(|alias, _| extensions.contains_key(&(kind, alias.clone())));
+    }
+    let resolved = resolve_dependencies(&subset, Some(&lock), None)?;
+    let mut next = lock.clone();
+    for resolved_entry in build_lock(&subset, &resolved)?.dependencies {
+        let entry = next
+            .dependencies
+            .iter_mut()
+            .find(|entry| entry.kind == resolved_entry.kind && entry.alias == resolved_entry.alias)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "arete.lock does not install {} '{}'; run `a4 install`",
+                    resolved_entry.kind,
+                    resolved_entry.alias
+                )
+            })?;
+        let pinned = LockedDependency {
+            local_extension: None,
+            ..entry.clone()
+        };
+        if pinned != resolved_entry {
+            bail!(
+                "arete.lock no longer pins what {} '{}' resolves to; run `a4 install`",
+                resolved_entry.kind,
+                resolved_entry.alias
+            );
+        }
+        entry.local_extension = extensions
+            .get(&(entry.kind, entry.alias.clone()))
+            .map(|bundle| bundle.content_hash.clone());
+    }
+    next.normalize_and_validate()?;
+
+    let plan = InstallPlan::build(&manifest, false)?;
+    let outputs: Vec<_> = plan
+        .outputs
+        .iter()
+        .filter(|output| extensions.contains_key(&(output.kind, output.alias.clone())))
+        .collect();
+    let installs = extensions
+        .iter()
+        .map(|((kind, alias), bundle)| LocalExtensionInstall {
+            kind: *kind,
+            alias: alias.clone(),
+            content_hash: bundle.content_hash.clone(),
+            outputs: outputs
+                .iter()
+                .filter(|output| output.kind == *kind && &output.alias == alias)
+                .map(|output| output.path.clone())
+                .collect(),
+        })
+        .collect();
+    let staging_root = manifest
+        .root
+        .join(".arete")
+        .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&staging_root)?;
+    let staged = match generate_outputs(
+        &manifest,
+        outputs.into_iter(),
+        &resolved,
+        &extensions,
+        &staging_root,
+    ) {
+        Ok(staged) => staged,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
+    };
+    commit_install(
+        &manifest.root,
+        &lock_path,
+        &next,
+        staged,
+        Vec::new(),
+        &staging_root,
+    )?;
+    Ok(installs)
 }
 
 /// The lock entry of a protocol never published: its local build's
@@ -5278,6 +5570,7 @@ fn unpublished_protocol_lock(
         targets: targets.to_vec(),
         generator_contract: GENERATOR_CONTRACT.into(),
         local_build: Some(local_build.into()),
+        local_extension: None,
     }
 }
 
@@ -5289,6 +5582,7 @@ fn local_build_resolution(
     spec_json: &serde_json::Value,
     release_hash: &str,
     deployment: super::resolver::ResolvedProtocolDeployment,
+    production_deployment: bool,
 ) -> Result<ResolvedRegistryDependency> {
     let spec = arete_hash::protocol::validate_protocol_spec_value(spec_json)
         .map_err(|error| anyhow::anyhow!("protocol-spec.json is invalid: {error}"))?;
@@ -5309,6 +5603,7 @@ fn local_build_resolution(
             deployment,
             live_stack: None,
             local_dev: true,
+            production_deployment,
         }),
         stacks: Vec::new(),
         programs: Vec::new(),
@@ -5377,6 +5672,10 @@ fn resolve_unpublished_local_build(
             &protocol.deployment_id,
             &protocol.deployment_access,
         ),
+        // Not known from the lock alone: the next `a4 dev` then names no
+        // deployment rather than trusting one an older `a4` may have
+        // written for the dev environment.
+        false,
     )?;
     Ok(ResolvedProjectDependency::Registry {
         kind: DependencyKind::Protocol,
@@ -5426,11 +5725,51 @@ pub fn install_local_protocol_build(
             .filter(|entry| entry.source == source)
     });
     let locked = previous.and_then(|entry| entry.protocol.as_ref());
-    let LocalBuildDeployment::Deployed {
-        id: deployment_id,
-        access,
-    } = build.deployment.clone();
+    let (deployment_id, access) = match &build.deployment {
+        LocalBuildDeployment::Deployed { id, access } => (id.clone(), access.clone()),
+        LocalBuildDeployment::Locked => locked
+            .filter(|protocol| {
+                !protocol.deployment_id.is_empty()
+                    && (previous.is_some_and(LockedDependency::is_published)
+                        || outputs.iter().all(|output| {
+                            production_provenance(&output.path, &protocol.deployment_id)
+                        }))
+            })
+            .map(|protocol| {
+                (
+                    protocol.deployment_id.clone(),
+                    protocol.deployment_access.clone(),
+                )
+            })
+            .unwrap_or_else(|| (String::new(), "private".into())),
+    };
     let published = previous.is_some_and(LockedDependency::is_published);
+    let reported_deployment = (!deployment_id.is_empty()).then(|| deployment_id.clone());
+
+    // `a4 dev` with the published release's own spec: the installed client
+    // already is the published one, byte for byte. Nothing to generate.
+    if matches!(build.deployment, LocalBuildDeployment::Locked)
+        && previous.is_some_and(|entry| {
+            entry.is_published()
+                && entry.local_build.is_none()
+                && entry.targets == targets
+                && locked
+                    .is_some_and(|protocol| protocol.protocol_release_hash == build.release_hash)
+                // Only when that client is on disk, as published: a deleted,
+                // uncommitted or moved output is generated below.
+                && outputs
+                    .iter()
+                    .all(|output| published_output(&output.path, entry))
+        })
+    {
+        return Ok(LocalProtocolInstall {
+            alias: alias.into(),
+            deployment_id: reported_deployment,
+            published,
+            outputs: outputs.iter().map(|output| output.path.clone()).collect(),
+            changed: false,
+        });
+    }
     let output_paths: Vec<PathBuf> = outputs.iter().map(|output| output.path.clone()).collect();
 
     let current = previous.is_some_and(|entry| {
@@ -5446,7 +5785,7 @@ pub fn install_local_protocol_build(
     if current {
         return Ok(LocalProtocolInstall {
             alias: alias.into(),
-            deployment_id,
+            deployment_id: reported_deployment,
             published,
             outputs: output_paths,
             changed: false,
@@ -5459,6 +5798,7 @@ pub fn install_local_protocol_build(
         &build.spec_json,
         &build.release_hash,
         deployment_urls(&build.api_base, &deployment_id, &access),
+        !deployment_id.is_empty(),
     )?;
     let entry = match previous.filter(|entry| entry.is_published()) {
         Some(published) => LockedDependency {
@@ -5503,7 +5843,13 @@ pub fn install_local_protocol_build(
         .join(".arete")
         .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&staging_root)?;
-    let staged = match generate_outputs(&manifest, outputs.into_iter(), &resolved, &staging_root) {
+    let staged = match generate_outputs(
+        &manifest,
+        outputs.into_iter(),
+        &resolved,
+        &LocalExtensions::new(),
+        &staging_root,
+    ) {
         Ok(staged) => staged,
         Err(error) => {
             let _ = fs::remove_dir_all(&staging_root);
@@ -5520,10 +5866,30 @@ pub fn install_local_protocol_build(
     )?;
     Ok(LocalProtocolInstall {
         alias: alias.into(),
-        deployment_id,
+        deployment_id: reported_deployment,
         published,
         outputs: output_paths,
         changed: true,
+    })
+}
+
+/// Whether the client in `output` was generated for production deployment
+/// `deployment` (`a4 protocol deploy` before the release was published).
+/// An older `a4` wrote dev deployments into a never-published entry the
+/// same way, without this mark.
+fn production_provenance(output: &Path, deployment: &str) -> bool {
+    read_provenance_project(output).is_some_and(|project| {
+        project["localBuildDeploymentId"] == deployment
+            && project["localBuildDeployment"] == "production"
+    })
+}
+
+/// Whether `output` holds the client `entry`'s published release generated,
+/// not one from a local build.
+fn published_output(output: &Path, entry: &LockedDependency) -> bool {
+    read_provenance_project(output).is_some_and(|project| {
+        project.get("localBuild").is_none()
+            && project["packageReleaseHash"].as_str() == entry.package_release_hash.as_deref()
     })
 }
 
@@ -5674,6 +6040,7 @@ pub fn ensure_own_protocol_dependency(
         targets: Some(targets),
         outputs: DependencyOutputsV1::default(),
         endpoints: BTreeMap::new(),
+        extensions: None,
     };
     let mut document = manifest.document.clone();
     document
@@ -5724,7 +6091,37 @@ pub fn check_project(manifest_path: impl AsRef<Path>) -> Result<Vec<CheckProblem
         });
     }
     let plan = InstallPlan::build(&manifest, false)?;
+    for (kind, alias, dependency) in manifest.dependencies() {
+        let locked = lock
+            .dependencies
+            .iter()
+            .find(|entry| entry.kind == kind && &entry.alias == alias)
+            .and_then(|entry| entry.local_extension.as_deref());
+        if let Some(extensions) = &dependency.extensions {
+            problems.push(CheckProblem {
+                alias: alias.clone(),
+                problem: format!(
+                    "generated with the local SDK extension in {}{}; publish the extension, remove `extensions` from [dependencies.{}.{alias}] in arete.toml, then run `a4 install --locked`",
+                    extensions.path,
+                    locked
+                        .map(|hash| format!(" ({hash})"))
+                        .unwrap_or_default(),
+                    kind.namespace()
+                ),
+            });
+        }
+    }
     for entry in &lock.dependencies {
+        if entry.local_extension.is_some()
+            && manifest
+                .dependency(entry.kind, &entry.alias)
+                .is_none_or(|dependency| dependency.extensions.is_none())
+        {
+            problems.push(CheckProblem {
+                alias: entry.alias.clone(),
+                problem: "still generated with a local SDK extension; run `a4 install --locked` to restore the published one".into(),
+            });
+        }
         if entry.kind != DependencyKind::Protocol {
             continue;
         }
@@ -6294,6 +6691,7 @@ version = "^1.0.0"
             targets: Some(vec![InstallTarget::TypeScript]),
             outputs: DependencyOutputsV1::default(),
             endpoints: BTreeMap::new(),
+            extensions: None,
         };
 
         let rendered = render_manifest_addition(
@@ -7572,6 +7970,7 @@ version = "^1.0.0"
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         };
         let lock = |ore: char, plain: char| {
             let mut lock = ProjectLock::empty(manifest.manifest_hash.clone());
@@ -8818,6 +9217,7 @@ version = "^1.0.0"
                 targets: vec![InstallTarget::TypeScript],
                 generator_contract: GENERATOR_CONTRACT.into(),
                 local_build: None,
+                local_extension: None,
             };
         let manifest_hash = format!("arete-manifest-v1:{:064x}", 3);
         let mut previous = ProjectLock::empty(manifest_hash.clone());
@@ -8933,6 +9333,7 @@ version = "^1.0.0"
             targets: vec![InstallTarget::TypeScript],
             generator_contract: GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         };
         assert_eq!(regeneration_reason(None, &base), "newly locked");
         assert_eq!(regeneration_reason(Some(&base), &base), "inputs unchanged");
@@ -11535,10 +11936,8 @@ source = { workspace = "ore-sdk" }
                 "arete:h1:protocol-release:sha256:{}",
                 release_marker.to_string().repeat(64)
             ),
-            deployment: LocalBuildDeployment::Deployed {
-                id: "local-1".into(),
-                access: "private".into(),
-            },
+            // What `a4 dev` passes after deploying into the environment.
+            deployment: LocalBuildDeployment::Locked,
             api_base: "https://api.example.test".into(),
         }
     }
@@ -11552,8 +11951,8 @@ source = { workspace = "ore-sdk" }
             .unwrap()
     }
 
-    /// `a4 dev` over a published install keeps the published pins, calls
-    /// the dev deployment, marks `local_build`, and `a4 install --locked`
+    /// `a4 dev` over a published install keeps the published pins and the
+    /// production deployment, marks `local_build`, and `a4 install --locked`
     /// restores the published client; `a4 install --check` tells them apart.
     #[test]
     fn a_local_build_over_a_published_protocol_is_restored_by_locked() {
@@ -11583,7 +11982,10 @@ source = { workspace = "ore-sdk" }
         )
         .unwrap();
         assert!(install.published && install.changed);
-        assert_eq!(install.deployment_id, "local-1");
+        assert_eq!(
+            install.deployment_id.as_deref(),
+            Some(published.protocol.as_ref().unwrap().deployment_id.as_str())
+        );
         let local = token_raise_entry(&manifest);
         assert_eq!(
             LockedDependency {
@@ -11612,6 +12014,43 @@ source = { workspace = "ore-sdk" }
         )
         .unwrap();
         assert!(provenance["project"].get("localBuild").is_none());
+    }
+
+    /// `a4 dev` with the published release's own spec generates nothing
+    /// while the published client is on disk, and generates it again once
+    /// it is gone.
+    #[test]
+    fn the_published_spec_regenerates_a_missing_client() {
+        let sandbox = RegistrySandbox::new(
+            vec![(200, resolution(vec![token_raise_resolution('6')]))],
+            false,
+        );
+        let manifest = sandbox.project();
+        let mut contents = fs::read_to_string(&manifest).unwrap();
+        contents.push_str(
+            "\n[dependencies.protocols.token-raise]\nsource = { registry = \"token-raise\" }\nversion = \"^1.0.0\"\ntargets = [\"typescript\"]\n",
+        );
+        fs::write(&manifest, contents).unwrap();
+        install_project(&manifest, InstallOptions::default()).expect("published install");
+        let published = token_raise_entry(&manifest);
+        let build = LocalProtocolBuild {
+            release_hash: published
+                .protocol
+                .as_ref()
+                .unwrap()
+                .protocol_release_hash
+                .clone(),
+            ..local_build_of_token_raise('6')
+        };
+
+        let same = install_local_protocol_build(&manifest, "token-raise", &build, true).unwrap();
+        assert!(!same.changed, "the published client is already installed");
+        assert_eq!(token_raise_entry(&manifest), published);
+
+        fs::remove_dir_all(&same.outputs[0]).unwrap();
+        let again = install_local_protocol_build(&manifest, "token-raise", &build, true).unwrap();
+        assert!(again.changed, "a missing client is generated");
+        assert!(again.outputs[0].join("sdk-provenance.json").is_file());
     }
 
     /// A protocol never published installs from the local build `a4 dev`
@@ -11891,6 +12330,158 @@ source = { workspace = "ore-sdk" }
         assert!(
             notes[0].contains("use this project's program vote"),
             "{notes:?}"
+        );
+    }
+
+    /// A local SDK extension (`extensions = { path }`) replaces the published
+    /// one in the installed SDK and is recorded as `local_extension`, keeping
+    /// every published pin; `a4 dev up` regenerates it when it changes; and
+    /// removing it, then `a4 install --locked`, restores the published
+    /// extension and clears the marker.
+    #[test]
+    fn a_local_sdk_extension_is_installed_regenerated_and_restored_by_locked() {
+        let ore = || {
+            (
+                200,
+                resolution(vec![ore_program_dependency(
+                    '7',
+                    "1.0.2",
+                    vec![ore_program_extension("typescript", 'e')],
+                )]),
+            )
+        };
+        let sandbox = RegistrySandbox::new(vec![ore(), ore(), ore(), ore()], false);
+        let manifest = typescript_project(&sandbox, ORE_PROGRAM_DEPENDENCY);
+        let root = manifest.parent().unwrap().to_path_buf();
+        let extension = "programs/ore/ore-extensions.ts";
+        install_project(&manifest, InstallOptions::default()).expect("published install");
+        sandbox.request();
+        assert!(
+            generated_files(&manifest, "typescript")[extension].contains("deployWithCheckpoint")
+        );
+        let published = lock_of(&manifest).dependencies[0].clone();
+        assert_eq!(published.local_extension, None);
+        assert!(check_project(&manifest).unwrap().is_empty());
+
+        let bundle = root.join("ore-extension");
+        fs::create_dir_all(&bundle).unwrap();
+        fs::write(
+            bundle.join("extensions.json"),
+            r#"{"entry":"ore-extensions.ts","files":["ore-extensions.ts"]}"#,
+        )
+        .unwrap();
+        let write_local = |operation: &str| {
+            fs::write(
+                bundle.join("ore-extensions.ts"),
+                ORE_PROGRAM_EXTENSION.replace("deployWithCheckpoint", operation),
+            )
+            .unwrap()
+        };
+        write_local("localCheckpoint");
+        let published_manifest = fs::read_to_string(&manifest).unwrap();
+        fs::write(
+            &manifest,
+            format!("{published_manifest}extensions = {{ path = \"ore-extension\" }}\n"),
+        )
+        .unwrap();
+
+        install_project(&manifest, InstallOptions::default()).expect("local extension install");
+        sandbox.request();
+        let generated = generated_files(&manifest, "typescript");
+        assert!(
+            generated[extension].contains("localCheckpoint"),
+            "{}",
+            generated[extension]
+        );
+        let first = crate::commands::sdk::local_extension_bundle(&bundle)
+            .unwrap()
+            .content_hash;
+        let local = lock_of(&manifest).dependencies[0].clone();
+        assert_eq!(local.local_extension.as_deref(), Some(first.as_str()));
+        assert_eq!(
+            LockedDependency {
+                local_extension: None,
+                ..local
+            },
+            published,
+            "a local extension keeps every published pin"
+        );
+        assert!(
+            lock_of(&manifest).is_fresh(&ProjectManifest::load(&manifest).unwrap().manifest_hash)
+        );
+        let problems = check_project(&manifest).unwrap();
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(
+            problems[0].problem.contains("a4 install --locked"),
+            "{problems:?}"
+        );
+        let error = install_project(
+            &manifest,
+            InstallOptions {
+                locked: true,
+                ..InstallOptions::default()
+            },
+        )
+        .expect_err("--locked refuses a local extension");
+        assert!(
+            format!("{error:#}").contains("--locked installs only published extensions"),
+            "{error:#}"
+        );
+        let error = refuse_local_extensions(&root).expect_err("a deploy refuses it");
+        assert!(
+            format!("{error:#}").contains("a4 install --locked"),
+            "{error:#}"
+        );
+
+        // `a4 dev up`: an edit regenerates this SDK with the bundle as it is.
+        write_local("editedCheckpoint");
+        let selected = [(DependencyKind::Program, "ore".to_string())];
+        let installs = install_local_extensions(&manifest, &selected).unwrap();
+        sandbox.request();
+        let edited = crate::commands::sdk::local_extension_bundle(&bundle)
+            .unwrap()
+            .content_hash;
+        assert_ne!(edited, first);
+        assert_eq!(installs.len(), 1);
+        assert_eq!(installs[0].content_hash, edited);
+        assert!(generated_files(&manifest, "typescript")[extension].contains("editedCheckpoint"));
+        assert_eq!(
+            lock_of(&manifest).dependencies[0]
+                .local_extension
+                .as_deref(),
+            Some(edited.as_str())
+        );
+
+        // Remove the override: `--locked` restores the published extension.
+        fs::write(&manifest, &published_manifest).unwrap();
+        install_project(
+            &manifest,
+            InstallOptions {
+                locked: true,
+                ..InstallOptions::default()
+            },
+        )
+        .expect("--locked restores the published extension");
+        sandbox.request();
+        let restored = &generated_files(&manifest, "typescript")[extension];
+        assert!(restored.contains("deployWithCheckpoint"), "{restored}");
+        assert!(!restored.contains("editedCheckpoint"));
+        assert_eq!(lock_of(&manifest).dependencies[0], published);
+        assert!(check_project(&manifest).unwrap().is_empty());
+        refuse_local_extensions(&root).unwrap();
+
+        // The override declared again but not installed: the lock is still
+        // the published one, and a deploy refuses it anyway.
+        fs::write(
+            &manifest,
+            format!("{published_manifest}extensions = {{ path = \"ore-extension\" }}\n"),
+        )
+        .unwrap();
+        assert_eq!(lock_of(&manifest).dependencies[0], published);
+        let error = refuse_local_extensions(&root).expect_err("arete.toml declares it");
+        assert!(
+            format!("{error:#}").contains("`extensions` in arete.toml"),
+            "{error:#}"
         );
     }
 }

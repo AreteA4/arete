@@ -9,55 +9,117 @@ import PostHog from "./PostHog.astro";
 <PostHog />
 
 <script>
-  // Bundled by Astro, executed once per browser session. Click handlers are
-  // delegated on `document`, so they survive Starlight view-transitions
-  // without needing per-page re-arming on `astro:page-load`.
-  // `window.location.pathname` is read at click time, so events always carry
-  // the current page even after SPA navigations.
+  // Bundled by Astro. Click handlers are delegated on `document`, so they
+  // survive Starlight view transitions. `trackDocsEvent` reads the pathname
+  // at click time and queues until the PostHog stub from posthog-init.js exists.
+  import {
+    classifyCopiedSnippet,
+    codePreview,
+    outboundDestination,
+    sdkLanguageFromPath,
+    sdkLanguageFromTabLabel,
+    trackDocsEvent,
+  } from "../../lib/docs-analytics.mjs";
 
-  function trackEvent(eventName: string, properties: Record<string, unknown>) {
-    if (typeof window !== "undefined" && (window as any).posthog) {
-      (window as any).posthog.capture(eventName, properties);
-    }
+  function linkLabel(link: Element) {
+    return (link.textContent || "").replace(/\s+/g, " ").trim().slice(0, 80);
   }
 
   document.addEventListener("click", (e) => {
-    const tab = (e.target as HTMLElement).closest(
-      'starlight-tabs [role="tab"]',
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+
+    const tab = target.closest('starlight-tabs [role="tab"]');
+    if (tab) {
+      const tabLabel =
+        tab.getAttribute("aria-label") || tab.textContent?.trim() || "unknown";
+      const syncKey = tab
+        .closest("starlight-tabs")
+        ?.getAttribute("data-sync-key");
+      trackDocsEvent("docs_tab_clicked", {
+        tab_name: tabLabel,
+        ...(syncKey ? { sync_key: syncKey } : {}),
+      });
+      const language = sdkLanguageFromTabLabel(tabLabel);
+      if (language) {
+        trackDocsEvent("docs_sdk_lang_tab", {
+          language,
+          tab_name: tabLabel,
+          surface: "tab",
+          ...(syncKey ? { sync_key: syncKey } : {}),
+        });
+      }
+    }
+
+    const copyButton = target.closest<HTMLElement>(
+      ".expressive-code .copy button",
     );
-    if (!tab) return;
+    if (copyButton) {
+      const block = copyButton.closest("figure, .expressive-code");
+      const pre = block?.querySelector("pre");
+      const language =
+        pre?.getAttribute("data-language") ||
+        pre?.querySelector("code")?.className.match(/language-(\w+)/)?.[1] ||
+        "unknown";
+      const copied =
+        copyButton.getAttribute("data-code") ||
+        block?.querySelector("code")?.textContent ||
+        "";
+      trackDocsEvent("docs_code_copied", {
+        language,
+        code_preview: codePreview(copied),
+      });
+      const cli = classifyCopiedSnippet(copied);
+      if (cli) {
+        trackDocsEvent("docs_cli_copy", {
+          language,
+          snippet_kind: cli.snippet_kind,
+          code_preview: cli.code_preview,
+        });
+      }
+    }
 
-    const tabLabel =
-      tab.getAttribute("aria-label") || tab.textContent?.trim() || "unknown";
-
-    trackEvent("docs_tab_clicked", {
-      tab_name: tabLabel,
-      page: window.location.pathname,
-    });
-  });
-
-  document.addEventListener("click", (e) => {
-    const target = e.target as HTMLElement;
-
-    const copyButton = target.closest(
-      '.ec-copy, .expressive-code .copy, button[data-code-copy], [class*="copy"]',
+    const installCta = target.closest<HTMLAnchorElement>(
+      "a[data-docs-cta='install']",
     );
+    if (installCta) {
+      trackDocsEvent("docs_install_cta_click", {
+        cta: installCta.dataset.docsCta || "install",
+        href: installCta.getAttribute("href") || "",
+        label: linkLabel(installCta),
+      });
+    }
 
-    if (!copyButton) return;
+    const link = target.closest<HTMLAnchorElement>("a[href]");
+    if (!link?.href) return;
 
-    const codeBlock = copyButton.closest("figure, pre, .expressive-code");
-    const codeElement = codeBlock?.querySelector("code");
+    let destinationPath = "";
+    try {
+      destinationPath = new URL(link.href).pathname;
+    } catch {
+      return;
+    }
 
-    const languageClass = codeElement?.className || "";
-    const language = languageClass.match(/language-(\w+)/)?.[1] || "unknown";
+    const destination = outboundDestination(link.href);
+    if (destination === "github" || destination === "x") {
+      trackDocsEvent("docs_outbound", {
+        destination,
+        href: link.href,
+        path: destinationPath,
+        label: linkLabel(link),
+      });
+    }
 
-    const codeContent = codeElement?.textContent || "";
-    const codePreview = codeContent.split("\n")[0].slice(0, 50);
-
-    trackEvent("docs_code_copied", {
-      language: language,
-      code_preview: codePreview,
-      page: window.location.pathname,
-    });
+    const toLanguage = sdkLanguageFromPath(destinationPath);
+    const fromLanguage = sdkLanguageFromPath(window.location.pathname);
+    if (toLanguage && toLanguage !== fromLanguage) {
+      trackDocsEvent("docs_sdk_lang_tab", {
+        language: toLanguage,
+        ...(fromLanguage ? { from_language: fromLanguage } : {}),
+        surface: "nav",
+        href: link.getAttribute("href") || "",
+        label: linkLabel(link),
+      });
+    }
   });
 </script>

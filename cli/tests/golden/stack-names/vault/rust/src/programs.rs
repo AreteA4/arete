@@ -24,12 +24,7 @@ pub mod vault {
 
     /// Exact release-addressed read descriptor for this program.
     pub fn read_descriptor() -> arete_sdk::ProgramReadDescriptor {
-        arete_sdk::ProgramReadDescriptor::LocalHttp {
-            release: arete_sdk::ProgramReleaseReference {
-                program_release_hash: PROGRAM_RELEASE_HASH.to_string(),
-                program_spec_hash: PROGRAM_SPEC_HASH.to_string(),
-            },
-        }
+        serde_json::from_str("{\"release\":{\"programReleaseHash\":\"arete:h1:program-release:sha256:472ece19e168367b6bd0a61a8e5908345db325bd1ac3f7d31febdd6a3fe09777\",\"programSpecHash\":\"arete:h1:program-spec:sha256:82d33b756cb10907d6585bdc2e1e02170b1286819e317bbe5311de01901b22ba\"},\"transport\":{\"kind\":\"unavailable\",\"message\":\"Program 'vault' has no account read endpoint: this SDK was generated offline. Install the program from the registry (`a4 install program <package>`) and use `a4 dev` for a dev environment, or regenerate with `a4 sdk create --read-endpoint <url>` to read a self-hosted Arete server\"}}").expect("generated program read descriptor must be valid")
     }
 
     /// Typed params for `deposit`: instruction args plus overridable accounts.
@@ -108,7 +103,7 @@ pub mod vault {
         pub fn vault_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::VaultVault>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
                 "Vault",
-                std::sync::Arc::new(self.builder.account_transport("vault", &read_descriptor())?),
+                std::sync::Arc::new(self.builder.account_transport_of("vault", Some("2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM"), &read_descriptor())?),
             ))
         }
     }

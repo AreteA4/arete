@@ -175,13 +175,37 @@ export interface HostedSolanaGatewayBindings {
   readonly transactions: HostedSolanaGatewayCapabilityBinding;
 }
 
-/** Generated release identity with one explicit, non-inheriting read transport. */
+/**
+ * Generated release identity with one explicit, non-inheriting read transport.
+ *
+ * - `local-http` reads a self-hosted Arete server: the URL generation named
+ *   (`endpointSource: 'explicit'`), or `ConnectOptions.httpUrl` for SDKs
+ *   generated before that (`'connect-http-url'`).
+ * - `hosted-binding` reads hosted Program Read.
+ * - `unavailable` has no read endpoint; every account read fails with
+ *   `message`, which says how to get one.
+ */
 export type ProgramReadDescriptor =
   | {
       readonly release: ProgramReleaseReference;
       readonly transport: {
         readonly kind: 'local-http';
         readonly endpointSource: 'connect-http-url';
+      };
+    }
+  | {
+      readonly release: ProgramReleaseReference;
+      readonly transport: {
+        readonly kind: 'local-http';
+        readonly endpointSource: 'explicit';
+        readonly endpoint: string;
+      };
+    }
+  | {
+      readonly release: ProgramReleaseReference;
+      readonly transport: {
+        readonly kind: 'unavailable';
+        readonly message: string;
       };
     }
   | {
@@ -389,8 +413,22 @@ export type AuthTokenTarget =
   | SolanaGatewayBindingAuthTarget
   | ProtocolDeploymentAuthTarget;
 
+/** Fields every session request may carry. */
+interface AuthTokenRequestCommon {
+  readonly scopes: readonly string[];
+  readonly forceRefresh?: boolean;
+  /**
+   * Dev mode with an environment reached directly: the environment the
+   * session is for (`denv_…` or a name). A custom `getToken` provider
+   * forwards it to the session endpoint as `environment`. Never set in
+   * production.
+   */
+  readonly environment?: string;
+}
+
 export type AuthTokenRequest =
   | {
+      readonly environment?: string;
       readonly scopes: readonly string[];
       readonly targetKind?: never;
       readonly targetId?: never;
@@ -410,9 +448,9 @@ export type AuthTokenRequest =
        */
       readonly forceRefresh?: boolean;
     }
-  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & ProgramReadBindingAuthTarget)
-  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & SolanaGatewayBindingAuthTarget)
-  | ({ readonly scopes: readonly string[]; readonly forceRefresh?: boolean } & ProtocolDeploymentAuthTarget);
+  | (AuthTokenRequestCommon & ProgramReadBindingAuthTarget)
+  | (AuthTokenRequestCommon & SolanaGatewayBindingAuthTarget)
+  | (AuthTokenRequestCommon & ProtocolDeploymentAuthTarget);
 
 export interface WebSocketFactoryInit {
   headers?: Record<string, string>;
@@ -490,6 +528,19 @@ export interface AreteConfig {
    * requests are exactly what older clients send.
    */
   release?: StackRelease;
+  /**
+   * @internal Dev mode through the edge: send no credential and mint no
+   * session (only `auth.websocketFactory` is used).
+   */
+  noCredentials?: boolean;
+  /** @internal Dev mode direct: the environment every session request names. */
+  sessionEnvironment?: string;
+  /** @internal Dev mode direct: the stack socket needs a session. */
+  hostedSession?: boolean;
+  /** @internal The stack socket a session is for when this client opens none. */
+  sessionWebsocketUrl?: string;
+  /** @internal Runs before every socket is opened; a throw opens none. */
+  beforeConnect?: () => Promise<void>;
 }
 
 export interface SocketIssue {

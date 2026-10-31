@@ -214,6 +214,12 @@ pub trait TokenSource: Send + Sync {
 
     /// Drops any cached token matching `request` so the next call re-mints.
     fn invalidate(&self, request: &AuthTokenRequest);
+
+    /// The dev edge policy requests authenticated by this source follow, if
+    /// they go through the `a4 dev up` edge.
+    fn edge_policy(&self) -> Option<&crate::dev_environment::EdgeRequestPolicy> {
+        None
+    }
 }
 
 fn invalid_auth_error(message: &str, code: Option<AuthErrorCode>) -> AreteError {
@@ -422,7 +428,7 @@ impl HttpAuthClient {
         }
     }
 
-    fn token_endpoint_body(
+    pub(crate) fn token_endpoint_body(
         &self,
         target: Option<&AuthTokenTarget>,
         scopes: &[String],
@@ -437,6 +443,7 @@ impl HttpAuthClient {
                 if let Some(hash) = &target.program_release_hash {
                     body["programReleaseHash"] = json!(hash);
                 }
+                self.name_environment(&mut body);
                 body
             }
             None => {
@@ -453,8 +460,21 @@ impl HttpAuthClient {
                     body["stackManifestHash"] = json!(release.stack_manifest_hash);
                     body["liveAlias"] = json!(release.live_alias);
                 }
+                self.name_environment(&mut body);
                 body
             }
+        }
+    }
+
+    /// In dev direct mode every session request names the environment
+    /// (contract §5); in production the body is unchanged.
+    fn name_environment(&self, body: &mut serde_json::Value) {
+        if let Some(environment) = self
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.dev_environment.as_deref())
+        {
+            body["environment"] = json!(environment);
         }
     }
 
@@ -521,6 +541,13 @@ impl HttpAuthClient {
             .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
 
         if !status.is_success() {
+            if let Some(refusal) = crate::dev_environment::refusal_error(
+                status.as_u16(),
+                header_code.as_deref(),
+                &body,
+            ) {
+                return Err(refusal);
+            }
             let mut error = AreteError::from_auth_response(
                 status.as_u16(),
                 header_code.as_deref(),
@@ -893,6 +920,11 @@ impl RawResponse {
             .and_then(parse_wire_error_code)
     }
 
+    /// A dev environment refusal (`devenv-*`, `environment-token-*`).
+    fn dev_refusal(&self) -> Option<AreteError> {
+        crate::dev_environment::refusal_error(self.status, self.header_code.as_deref(), &self.body)
+    }
+
     fn into_authed(self) -> AuthedResponse {
         let error_code = if self.is_success() {
             None
@@ -925,10 +957,17 @@ async fn attempt(
     if let Some(token) = token {
         builder = builder.bearer_auth(token);
     }
-    let response = builder
-        .send()
-        .await
-        .map_err(|error| AreteError::ConnectionFailed(error.to_string()))?;
+    let edge = tokens.edge_policy();
+    if let Some(edge) = edge {
+        builder = edge.apply(builder);
+    }
+    let response = builder.send().await.map_err(|error| match edge {
+        Some(edge) => edge.send_error(&error),
+        None => AreteError::ConnectionFailed(error.to_string()),
+    })?;
+    if let Some(edge) = edge {
+        edge.check(response.headers())?;
+    }
     let status = response.status().as_u16();
     let header_code = response
         .headers()
@@ -975,6 +1014,9 @@ pub async fn fetch_json(
     if first.is_success() {
         return Ok(first.into_authed());
     }
+    if let Some(refusal) = first.dev_refusal() {
+        return Err(refusal);
+    }
 
     let refresh_worthy = first
         .error_code()
@@ -984,6 +1026,9 @@ pub async fn fetch_json(
     if refresh_worthy && (!request.require_predispatch_marker || explicitly_not_dispatched) {
         tokens.invalidate(&token_request);
         let second = attempt(http, tokens, request, &token_request, true).await?;
+        if let Some(refusal) = second.dev_refusal() {
+            return Err(refusal);
+        }
         return Ok(second.into_authed());
     }
 

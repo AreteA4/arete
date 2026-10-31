@@ -1569,13 +1569,12 @@ impl AreteMcp {
                           `environmentRpcUrl`: the environment's own endpoint, which needs a \
                           token; the protocol deployment, stack and dev UI URLs), the chain's \
                           slot and clock when running and, when the protocol stack is loaded, \
-                          `stack.streamUrl` with its read session token redacted. A WebSocket \
-                          client gets a valid URL from `.arete/dev/session.json` \
-                          (`stackSession.streamUrl`, kept fresh while `a4 dev up` runs) or \
-                          uses `a4 stream --dev`. `lease.holder` names the project whose \
-                          `a4 dev up` holds the environment (one project at a time; another \
-                          one takes over with `a4 dev up --take-over` or uses its own copy \
-                          from `dev_branch`). \
+                          `stack.streamUrl` with its read session token redacted. To stream, \
+                          use `a4 stream --dev`, or an installed stack SDK in dev mode through \
+                          the `a4 dev up` edge (`edgeUrl`). `lease.holder` names the project \
+                          whose `a4 dev up` holds the environment (one project at a time; \
+                          another one takes over with `a4 dev up --take-over` or uses its own \
+                          copy from `dev_branch`). \
                           Environments sleep when idle and keep their state; any RPC call or \
                           `dev_wake` wakes one. Start `a4 dev up` in a terminal to create one; \
                           these tools never start or stop local processes."

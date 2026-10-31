@@ -168,6 +168,13 @@ describe('createWalletAdapter', () => {
     expect(sendTransaction).toHaveBeenCalledTimes(1);
   });
 
+  it('says it submits through the client transport unless a transport was chosen', () => {
+    const signer = createPrimarySigner(Keypair.generate());
+    expect(createWalletAdapter({ signer }).submitsThrough).toBe('context');
+    expect(createWalletAdapter({ signer, transport: 'auto' }).submitsThrough).toBe('context');
+    expect(createWalletAdapter({ signer, transport: 'direct' }).submitsThrough).toBe('adapter');
+  });
+
   it('does not fall back to configured direct RPC after an Arete send error', async () => {
     const primary = Keypair.generate();
     const { connection, getSendCalls } = createConnectionStub();

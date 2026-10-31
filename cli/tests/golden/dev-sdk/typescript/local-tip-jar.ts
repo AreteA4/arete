@@ -55,7 +55,7 @@ export const LOCAL_TIP_JAR_PROTOCOL: ProtocolDefinition<LocalTipJarProtocolTypes
   packageReleaseHash: 'arete:h1:protocol-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   protocolSpecHash: 'arete:h1:protocol-spec:sha256:f1a6580e1d2259ca7da870e33e0a1920ea0704cf2014efccf29116c4abc06032',
   protocolReleaseHash: 'arete:h1:protocol-release:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-  deployment: { deploymentId: 'dep-local-1', access: 'private', apiUrl: 'https://api.example.test/api', sessionEndpoint: 'https://api.example.test/ws/sessions', environment: 'dev' } as ProtocolDefinition['deployment'],
+  deployment: null,
   instanceVisibility: 'shared',
   steps: {
     close: { scope: 'instance', access: 'secret', guards: ['not_recipient', 'not_open'], args: ['amount'] },

@@ -145,6 +145,7 @@ impl ComposedStack {
             targets: targets.to_vec(),
             generator_contract: super::GENERATOR_CONTRACT.into(),
             local_build: None,
+            local_extension: None,
         }
     }
 }

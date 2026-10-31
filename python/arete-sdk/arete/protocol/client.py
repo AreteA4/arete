@@ -26,7 +26,7 @@ import json
 import os
 import time
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import (
     Any,
     AsyncIterator,
@@ -51,6 +51,17 @@ from arete.auth import (
     classify_api_key,
     resolve_auth_config,
     should_refresh_token,
+)
+from arete.dev_environment import (
+    DevMode,
+    EdgePolicy,
+    edge_protocol_api_url,
+    edge_protocol_segment,
+    protocol_identity,
+    refusal_of_response,
+    resolve_switch_from_process,
+    surface_target,
+    target_str,
 )
 from arete.errors import AreteError, AuthError, HttpRequestError
 from arete.http import PROTOCOL_DEPLOYMENT_KIND, AuthTokenTarget, HttpAuthClient
@@ -255,6 +266,61 @@ def resolve_protocol_endpoints(
     return chosen_deployment, api, _non_empty(session_endpoint) or sessions
 
 
+@dataclass
+class _DirectTarget:
+    api_url: str
+    deployment_id: str
+    auth: HttpAuthClient
+    token_target: AuthTokenTarget
+
+
+class _DirectProtocol:
+    """A protocol client in dev direct mode. URLs are built for the
+    installed deployment and moved to the environment's deployment when
+    sent; the session names the environment's deployment."""
+
+    def __init__(
+        self, resolver: Any, identity: Mapping[str, Any], installed_prefix: str, installed_api: str
+    ) -> None:
+        self._resolver = resolver
+        self._identity = dict(identity)
+        self._installed_prefix = installed_prefix
+        self._installed_api = installed_api
+        self._target: Optional[_DirectTarget] = None
+
+    async def target(self) -> _DirectTarget:
+        if self._target is None:
+            answer = await self._resolver.resolve({"protocols": [self._identity]})
+            found = surface_target(answer, "protocols")
+            deployment_id = target_str(found, "deploymentId")
+            auth = replace(
+                self._resolver.auth,
+                token=None,
+                get_token=None,
+                token_endpoint=target_str(found, "sessionEndpoint"),
+            )
+            self._target = _DirectTarget(
+                api_url=target_str(found, "apiUrl").rstrip("/"),
+                deployment_id=deployment_id,
+                auth=HttpAuthClient(auth=auth, http_client=self._resolver.http),
+                token_target=AuthTokenTarget(
+                    kind=PROTOCOL_DEPLOYMENT_KIND, target_id=deployment_id
+                ),
+            )
+        return self._target
+
+    def route(self, url: str, target: _DirectTarget) -> str:
+        if url.startswith(self._installed_prefix):
+            rest = url[len(self._installed_prefix) :]
+            return (
+                f"{target.api_url}/protocol-deployments/"
+                f"{_segment(target.deployment_id, 'deployment_id')}{rest}"
+            )
+        if url.startswith(self._installed_api):
+            return target.api_url + url[len(self._installed_api) :]
+        raise AreteError(f"{url} is not a protocol API URL of this client", "INVALID_CONFIG")
+
+
 class ProtocolClient:
     """Untyped client for a generated :class:`ProtocolDefinition`.
 
@@ -291,6 +357,7 @@ class ProtocolClient:
         deployment_id: Optional[str] = None,
         stacks: Optional[Mapping[str, Any]] = None,
         programs: Optional[Mapping[str, Any]] = None,
+        environment: Any = None,
     ) -> None:
         if not isinstance(definition, ProtocolDefinition) or definition.kind != "protocol":
             raise AreteError(
@@ -327,6 +394,13 @@ class ProtocolClient:
         self._http = http_client or httpx.AsyncClient(timeout=30.0)
         self._auth = HttpAuthClient(auth=resolved, http_client=self._http)
         self._target = AuthTokenTarget(kind=PROTOCOL_DEPLOYMENT_KIND, target_id=self.deployment_id)
+        self._deployment_segment: Optional[str] = None
+        self._edge: Optional[EdgePolicy] = None
+        self._direct: Optional[_DirectProtocol] = None
+        self.environment = "production"
+        switch = resolve_switch_from_process(environment, lambda: resolve_auth_config(auth))
+        if switch.is_dev:
+            self._use_dev(switch, resolve_auth_config(auth))
 
         self._read_scopes = (PROTOCOL_READ_SCOPE,)
         if self.key_class == "secret":
@@ -352,6 +426,35 @@ class ProtocolClient:
         self._member_programs: Optional[Mapping[str, Any]] = (
             dict(programs) if programs is not None else None
         )
+
+    def _use_dev(self, switch: Any, auth: Optional[AuthConfig]) -> None:
+        """Dev mode (``docs/internal/dev-environment-switch.md`` §3): through
+        the edge, naming the protocol's installed identity, or at the
+        environment's deployment resolved with the secret key."""
+        self.environment = "dev"
+        mode = DevMode.of(switch, auth, self._http)
+        deployment_id = self.deployment_id or None
+        identity = protocol_identity(
+            self.definition.package, self.definition.protocol_release_hash, deployment_id
+        )
+        self._deployment_segment = edge_protocol_segment(deployment_id, self.definition.package)
+        self._static_token = mode.resolver is None
+        if mode.resolver is None:
+            self._edge = EdgePolicy.for_identity(mode.edge_url, {"protocols": [identity]})
+            self._api_url = edge_protocol_api_url(mode.edge_url)
+            self._auth = HttpAuthClient(auth=None, http_client=self._http, edge=self._edge)
+        else:
+            self._direct = _DirectProtocol(
+                mode.resolver,
+                identity,
+                f"{self._api_url}/protocol-deployments/{self._deployment_segment}",
+                self._api_url,
+            )
+
+    def _deployment_path(self) -> str:
+        if self._deployment_segment is not None:
+            return self._deployment_segment
+        return _segment(self.deployment_id, "deployment_id")
 
     @property
     def stacks(self) -> Mapping[str, Any]:
@@ -388,6 +491,11 @@ class ProtocolClient:
 
     async def session_token(self, scopes: Sequence[str], *, force_refresh: bool = False) -> Optional[str]:
         """Mint (or reuse) a protocol session covering ``scopes``."""
+        if self._direct is not None:
+            routed = await self._direct.target()
+            return await routed.auth.get_token(
+                target=routed.token_target, scopes=list(scopes), force_refresh=force_refresh
+            )
         return await self._auth.get_token(
             target=self._target, scopes=list(scopes), force_refresh=force_refresh
         )
@@ -413,10 +521,17 @@ class ProtocolClient:
         force_refresh: bool = False,
     ) -> httpx.Response:
         content = None if json_body is None else json.dumps(json_body, separators=(",", ":"))
+        auth, target = self._auth, self._target
+        if self._direct is not None:
+            routed = await self._direct.target()
+            url = self._direct.route(url, routed)
+            auth, target = routed.auth, routed.token_target
 
         async def attempt(force: bool) -> httpx.Response:
-            token = await self.session_token(scopes, force_refresh=force)
+            token = await auth.get_token(target=target, scopes=list(scopes), force_refresh=force)
             request_headers: Dict[str, str] = dict(headers or {})
+            if self._edge is not None:
+                request_headers.update(self._edge.headers())
             if token:
                 request_headers["Authorization"] = f"Bearer {token}"
             if content is not None:
@@ -431,18 +546,34 @@ class ProtocolClient:
                 timeout=httpx.Timeout(30.0, read=None) if stream else httpx.USE_CLIENT_DEFAULT,
             )
             try:
-                return await self._http.send(request, stream=stream)
+                response = await self._http.send(request, stream=stream)
             except httpx.HTTPError as error:
+                if self._edge is not None:
+                    raise self._edge.send_error(error) from error
                 raise HttpRequestError(
                     f"HTTP request to '{url}' failed: {error}",
                     code="PROTOCOL_REQUEST_FAILED",
                     status=0,
                 ) from error
+            if self._edge is not None:
+                try:
+                    self._edge.check(response)
+                except AreteError:
+                    await response.aclose()
+                    raise
+            return response
 
         response = await attempt(force_refresh)
         if not response.is_success and not self._static_token and await self._is_refreshable(response):
             await response.aclose()
             response = await attempt(True)
+        if not response.is_success:
+            # A dev environment refusal becomes the error it names.
+            await response.aread()
+            refusal = refusal_of_response(response)
+            if refusal is not None:
+                await response.aclose()
+                raise refusal
         return response
 
     async def _json(self, what: str, method: str, url: str, **kwargs: Any) -> Any:
@@ -487,7 +618,7 @@ class ProtocolClient:
             raise AreteError("transaction_format must be 'v1' or 'v0'", "INVALID_CONFIG")
         if definition.scope == "create":
             url = (
-                f"{self._api_url}/protocol-deployments/{_segment(self.deployment_id, 'deployment_id')}"
+                f"{self._api_url}/protocol-deployments/{self._deployment_path()}"
                 f"/steps/{_segment(step, 'step')}/prepare"
             )
         else:
@@ -595,7 +726,7 @@ class ProtocolClient:
     def _squads_url(self, route: str) -> str:
         return (
             f"{self._api_url}/protocol-deployments/"
-            f"{_segment(self.deployment_id, 'deployment_id')}/squads/{route}"
+            f"{self._deployment_path()}/squads/{route}"
         )
 
     async def get_intent(self, execution_id: str) -> ProtocolIntentState:
@@ -663,7 +794,7 @@ class ProtocolClient:
         return await self._json(
             "Protocol instance list",
             "GET",
-            f"{self._api_url}/protocol-deployments/{_segment(self.deployment_id, 'deployment_id')}/instances",
+            f"{self._api_url}/protocol-deployments/{self._deployment_path()}/instances",
             scopes=self._read_scopes,
             params=params,
         )
@@ -717,7 +848,7 @@ class ProtocolClient:
             params["cursor"] = cursor
         if limit is not None:
             params["limit"] = str(limit)
-        deployment = _segment(self.deployment_id, "deployment_id")
+        deployment = self._deployment_path()
         body = await self._json(
             "Protocol wallet actions read",
             "GET",

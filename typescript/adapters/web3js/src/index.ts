@@ -106,6 +106,12 @@ export interface Web3JsInspectionResult extends TransactionInspectionResult {
 }
 
 export interface Web3JsWalletAdapter extends WalletAdapter {
+  /**
+   * `'context'` unless a `transport` other than `'auto'` was configured: the
+   * adapter signs and submits through the client's transaction transport,
+   * which dev mode requires.
+   */
+  readonly submitsThrough: 'context' | 'adapter';
   readonly supportedTransactionVersions: readonly [0];
   signAndSend(
     instructions: readonly BuiltInstruction[],
@@ -455,6 +461,7 @@ export function createWalletAdapter(config: Web3JsAdapterConfig): Web3JsWalletAd
 
   return {
     publicKey: signer.publicKey.toBase58(),
+    submitsThrough: config.transport === undefined || config.transport === 'auto' ? 'context' : 'adapter',
     signerAddresses: [...new Set(signerAddresses)],
     supportedTransactionVersions: CAPABILITY.supportedTransactionVersions as readonly [0],
 

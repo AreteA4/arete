@@ -153,7 +153,9 @@ fn with_cors(mut response: Response, origin: Option<&HeaderValue>) -> Response {
         headers.insert(header::VARY, HeaderValue::from_static("origin"));
         headers.insert(
             header::ACCESS_CONTROL_EXPOSE_HEADERS,
-            HeaderValue::from_static("x-arete-dev-edge, x-error-code, retry-after"),
+            HeaderValue::from_static(
+                "x-arete-dev-edge, x-arete-dev-deployment, x-error-code, retry-after",
+            ),
         );
     }
     response
@@ -802,18 +804,25 @@ mod tests {
         );
 
         // A protocol named by package before its first publish: the
-        // environment's deployment, its flow routes with a protocol session
-        // minted for that deployment, its owner routes with the account's
-        // key.
-        let (status, body) = read(
-            get(
-                "/api/protocol-deployments/package:token-raise/instances",
-                None,
-            )
-            .await
-            .unwrap(),
+        // environment's deployment, named in the answer (and readable by a
+        // loopback page): its flow routes with a protocol session minted for
+        // that deployment, its owner routes with the account's key.
+        let answer = get(
+            "/api/protocol-deployments/package:token-raise/instances",
+            None,
         )
-        .await;
+        .await
+        .unwrap();
+        assert_eq!(
+            answer.headers().get(edge::DEPLOYMENT_HEADER).unwrap(),
+            "env-dep"
+        );
+        assert!(answer
+            .headers()
+            .get("access-control-expose-headers")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains(edge::DEPLOYMENT_HEADER)));
+        let (status, body) = read(answer).await;
         assert_eq!(status, 200);
         assert_eq!(body["path"], "/api/protocol-deployments/env-dep/instances");
         assert_eq!(body["auth"], "Bearer session:env-dep");

@@ -53,6 +53,7 @@ const SOURCES_SCHEMA: &str = "arete.protocol-build-sources/v1";
 const MAX_NAMED_CHANGES: usize = 10;
 const MAX_SLUG_LEN: usize = 63;
 
+pub mod app;
 pub mod init;
 pub mod listing;
 pub mod local_programs;
@@ -217,7 +218,8 @@ pub fn protocol_target(
     dev: bool,
     project: Option<&str>,
 ) -> Result<arete_mcp::protocol_agent::TargetArgs> {
-    let dev = dev || project.is_some();
+    // ARETE_ENVIRONMENT=dev acts on the `a4 dev` session, as --dev does.
+    let dev = dev || project.is_some() || arete_mcp::dev::environment_is_dev()?;
     let (deployment, protocol) = match target.map(str::trim) {
         Some(target) if !target.is_empty() => {
             if is_deployment_id(target) {
@@ -378,10 +380,14 @@ pub fn render_actions(result: &Value) -> String {
 
 /// `a4 protocol deploy`.
 pub fn deploy(args: &DeployArgs, json: bool) -> Result<()> {
+    let started = std::time::Instant::now();
     let client = ApiClient::new()?;
     let outcome = execute(&client, args, json)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
+    }
+    if !outcome.dry_run {
+        crate::telemetry::record_protocol_deployed(&outcome.status, started.elapsed());
     }
     Ok(())
 }
@@ -1071,6 +1077,7 @@ impl Reporter {
 
 /// Run the deploy flow against `client`. Prints progress unless `json`.
 pub fn execute(client: &ApiClient, args: &DeployArgs, json: bool) -> Result<DeployOutcome> {
+    crate::project::installer::refuse_local_extensions(&args.dir)?;
     if args.no_build {
         check_build_is_current(&args.dir)?;
     } else {

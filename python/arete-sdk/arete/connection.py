@@ -142,6 +142,9 @@ class ConnectionManager:
         served stack version in the session request; without it the request
         is exactly what older clients send."""
         self._websocket_url = websocket_url or None
+        self._refused: Optional[BaseException] = None
+        self._preflight: Optional[Callable[[], Awaitable[None]]] = None
+        self._disconnects = 0
         if auth_state is not None:
             self._auth_state = auth_state
         elif auth is not None:
@@ -208,6 +211,16 @@ class ConnectionManager:
         self._require_websocket_url()
         if self.is_connected():
             return
+        if self._preflight is not None:
+            # The check is part of the attempt: a disconnect while it runs
+            # cancels the attempt, and no socket opens afterwards.
+            epoch = self._disconnects
+            await self._preflight()
+            if self._disconnects != epoch:
+                raise AreteConnectionError(
+                    "WebSocket connection attempt was cancelled", "CONNECTION_CANCELLED"
+                )
+            self._preflight = None
         loop = asyncio.get_running_loop()
         waiter: "asyncio.Future[None]" = loop.create_future()
         self._connect_waiters.append(waiter)
@@ -221,6 +234,7 @@ class ConnectionManager:
                 self._connect_waiters.remove(waiter)
 
     async def disconnect(self) -> None:
+        self._disconnects += 1
         self._closing = True
         self._reject_connect_waiters(AreteConnectionError(
             "WebSocket connection attempt was cancelled", "CONNECTION_CANCELLED"
@@ -669,7 +683,20 @@ class ConnectionManager:
 
     # -- internals: state --------------------------------------------------
 
+    def before_first_connect(self, check: Callable[[], Awaitable[None]]) -> None:
+        """Run ``check`` once before the first socket opens; until it
+        passes, connecting raises its error."""
+        self._preflight = check
+
+    def refuse(self, error: BaseException) -> None:
+        """No socket: a dev environment refused the stack. Connecting and
+        subscribing raise ``error``; the client's other surfaces keep
+        working."""
+        self._refused = error
+
     def _require_websocket_url(self) -> str:
+        if self._refused is not None:
+            raise self._refused
         if self._websocket_url is None:
             raise AreteError(
                 "WebSocket transport is disabled (client was connected with "

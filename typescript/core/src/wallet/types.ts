@@ -521,6 +521,20 @@ export interface WalletAdapter {
   readonly supportedTransactionVersions?: readonly TransactionVersion[];
 
   /**
+   * Where `signAndSend` submits the signed transaction.
+   *
+   * - `'context'`: the adapter only signs (or asks the wallet to sign) and
+   *   submits through `context.transactionTransport`, the client's.
+   * - `'adapter'`: the adapter or its wallet chooses (its own RPC, a
+   *   transport it was given, or the wallet's sign-and-send).
+   *
+   * Omitted means unknown. In dev mode a client sends only through an
+   * adapter that declares `'context'`: a browser wallet's own RPC is mainnet.
+   * Any other adapter is refused with `devenv-wallet-send-unsupported`.
+   */
+  readonly submitsThrough?: 'context' | 'adapter';
+
+  /**
    * Compile, sign, and broadcast one or more built instructions as a single
    * transaction.
    *

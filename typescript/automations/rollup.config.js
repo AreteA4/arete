@@ -38,6 +38,7 @@ export default [
   ...library("src/cloudflare.ts", "cloudflare"),
   ...library("src/vercel.ts", "vercel"),
   ...library("src/node.ts", "node"),
+  ...library("src/dev.ts", "dev"),
   {
     input: "src/cli-bin.ts",
     external,

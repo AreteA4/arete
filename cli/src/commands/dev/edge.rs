@@ -17,7 +17,8 @@
 //! - `/api/protocol-deployments/<id | package:<package>>/*`: the Arete API,
 //!   at the environment's deployment of the protocol: the flow, prepare and
 //!   Squads routes with a protocol session minted for that deployment, the
-//!   others with the account's key.
+//!   others with the account's key. The answer names that deployment in
+//!   `X-Arete-Dev-Deployment`.
 //! - `/api/protocol-instances/*`, `/api/execution-intents/*`: the Arete API,
 //!   with a protocol session for the environment's deployment of the
 //!   protocol the request names. The API serves only that deployment's
@@ -59,6 +60,10 @@ pub const EDGE_HEADER: &str = "x-arete-dev-edge";
 pub const IDENTITY_HEADER: &str = "x-arete-dev-identity";
 /// The check an SDK makes before it opens a socket.
 pub const WELL_KNOWN_PATH: &str = "/.well-known/arete-dev-edge";
+/// The environment's deployment a protocol route was forwarded to. The
+/// protocol client names it in metadata proofs, and automations run on it,
+/// since the installed client carries production's deployment.
+pub const DEPLOYMENT_HEADER: &str = "x-arete-dev-deployment";
 
 /// How long a resolve answer is reused. Short, so a deploy `a4 dev up` makes
 /// is picked up by the next request.
@@ -616,7 +621,7 @@ impl Edge {
         } else {
             None
         };
-        forward(
+        let mut response = forward(
             &self.http,
             Outgoing {
                 method: method.clone(),
@@ -626,7 +631,13 @@ impl Edge {
                 body,
             },
         )
-        .await
+        .await;
+        if let Ok(value) = HeaderValue::from_str(deployment) {
+            response
+                .headers_mut()
+                .insert(header::HeaderName::from_static(DEPLOYMENT_HEADER), value);
+        }
+        response
     }
 
     /// An instance, intent or receipt route. Instances and intents take a
