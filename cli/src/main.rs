@@ -1094,17 +1094,29 @@ fn main() {
     let start = std::time::Instant::now();
     let result = run(cli);
 
+    let error_code = result
+        .as_ref()
+        .err()
+        .and_then(telemetry::extract_error_code);
     telemetry::record_command(
         cmd_name,
         result.is_ok(),
-        result
-            .as_ref()
-            .err()
-            .and_then(telemetry::extract_error_code)
-            .as_deref(),
+        error_code.as_deref(),
         start.elapsed(),
         None,
     );
+    if let Err(error) = result.as_ref() {
+        let reason = telemetry::failure_reason(error);
+        match cmd_name {
+            "create" => telemetry::record_create_failed(
+                telemetry::selected_template().as_deref(),
+                &reason,
+                start.elapsed(),
+            ),
+            "up" => telemetry::record_up_failed(&reason, start.elapsed()),
+            _ => {}
+        }
+    }
 
     selfhost::maybe_nudge(cmd_name, json);
 

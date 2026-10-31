@@ -380,10 +380,14 @@ pub fn render_actions(result: &Value) -> String {
 
 /// `a4 protocol deploy`.
 pub fn deploy(args: &DeployArgs, json: bool) -> Result<()> {
+    let started = std::time::Instant::now();
     let client = ApiClient::new()?;
     let outcome = execute(&client, args, json)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&outcome)?);
+    }
+    if !outcome.dry_run {
+        crate::telemetry::record_protocol_deployed(&outcome.status, started.elapsed());
     }
     Ok(())
 }
