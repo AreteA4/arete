@@ -83,6 +83,103 @@
     window.location.hostname === "127.0.0.1";
   const apiHost = isLocalhost ? "https://eu.i.posthog.com" : "/ingest";
 
+  // Chromium often strips utm_* after the arete.run /x/<slug> hop.
+  // arete_attr on .arete.run is the fallback for docs PostHog.
+  /* arete-attr:start */
+  const ARETE_ATTR_COOKIE = "arete_attr";
+  const ARETE_ATTR_UTM_KEYS = [
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_content",
+    "utm_term",
+  ];
+  // Decoded attribution values are short tokens (week ids, slug_account, "+").
+  const ARETE_ATTR_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._+\-]{0,127}$/;
+
+  function readAreteAttr(cookieHeader) {
+    if (!cookieHeader) return null;
+    const prefix = `${ARETE_ATTR_COOKIE}=`;
+    let raw = null;
+    for (const part of cookieHeader.split(/;\s*/)) {
+      if (part.startsWith(prefix)) {
+        raw = part.slice(prefix.length);
+        break;
+      }
+    }
+    if (!raw) return null;
+
+    // The cookie may be a raw query string or one percent-encoded value.
+    // decodeURIComponent keeps "+", which URLSearchParams would turn into a space.
+    let body = raw;
+    if (!body.includes("&") && body.includes("%")) {
+      try {
+        body = decodeURIComponent(body);
+      } catch {
+        return null;
+      }
+    }
+    if (!body.includes("=")) return null;
+
+    const attr = {};
+    for (const pair of body.split("&")) {
+      const eq = pair.indexOf("=");
+      if (eq <= 0) return null;
+      const key = pair.slice(0, eq);
+      if (!ARETE_ATTR_UTM_KEYS.includes(key)) return null;
+      if (Object.prototype.hasOwnProperty.call(attr, key)) return null;
+      let value = pair.slice(eq + 1);
+      try {
+        value = decodeURIComponent(value.replace(/\+/g, "%2B"));
+      } catch {
+        return null;
+      }
+      if (!ARETE_ATTR_TOKEN.test(value)) return null;
+      attr[key] = value;
+    }
+
+    if (attr.utm_source !== "x" || attr.utm_medium !== "social") {
+      return null;
+    }
+    return attr;
+  }
+
+  function applyAreteAttr(event, cookieHeader) {
+    if (!event || event.event === "$snapshot") return event;
+    const header =
+      cookieHeader == null
+        ? typeof document === "undefined"
+          ? ""
+          : document.cookie
+        : cookieHeader;
+    const attr = readAreteAttr(header);
+    if (!attr) return event;
+
+    const props = event.properties || (event.properties = {});
+    for (const key of ARETE_ATTR_UTM_KEYS) {
+      const value = attr[key];
+      if (!value) continue;
+      // Query-string UTMs already on the event win.
+      if (props[key] == null || props[key] === "") props[key] = value;
+    }
+
+    if (event.event === "$pageview") {
+      const set = props.$set || (props.$set = {});
+      const setOnce = props.$set_once || (props.$set_once = {});
+      for (const key of ARETE_ATTR_UTM_KEYS) {
+        const value = props[key];
+        if (!value) continue;
+        if (set[key] == null || set[key] === "") set[key] = value;
+        const initialKey = `$initial_${key}`;
+        if (setOnce[initialKey] == null || setOnce[initialKey] === "") {
+          setOnce[initialKey] = value;
+        }
+      }
+    }
+    return event;
+  }
+  /* arete-attr:end */
+
   window.posthog.init(posthogKey, {
     api_host: apiHost,
     ui_host: "https://eu.posthog.com",
@@ -94,9 +191,11 @@
       maskAllInputs: false,
       maskInputOptions: { password: true },
     },
+    before_send: applyAreteAttr,
   });
 
-  // Keep campaign params on later docs events (X post → docs → copy/install).
+  // Query UTMs that survived (Firefox) stay on later docs events.
+  // Chromium visits rely on arete_attr via before_send above.
   // `register` is on the stub, so this queues until array.js finishes loading.
   const utm = {};
   const params = new URLSearchParams(window.location.search);
