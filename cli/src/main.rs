@@ -891,7 +891,18 @@ enum StackCommands {
 }
 
 #[derive(Subcommand)]
+enum ProgramAccountCommands {
+    /// Decode one account through Program Read: in production, or with
+    /// --dev in the project's cloud dev environment (the fork's values)
+    Decode(commands::program_decode::DecodeArgs),
+}
+
+#[derive(Subcommand)]
 enum ProgramCommands {
+    /// Read program accounts
+    #[command(subcommand)]
+    Account(ProgramAccountCommands),
+
     /// Normalize an IDL into a portable ProgramSpec artifact
     Build {
         /// IDL JSON input
@@ -1883,6 +1894,9 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             } => commands::stack::stop(&stack_name, branch.as_deref(), force),
         },
         Commands::Program(program_cmd) => match program_cmd {
+            ProgramCommands::Account(ProgramAccountCommands::Decode(args)) => {
+                commands::program_decode::run(&cli.config, args, cli.json)
+            }
             ProgramCommands::Build {
                 input,
                 output,
