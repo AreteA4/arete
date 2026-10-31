@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.51.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.50.0...arete-sdk-v0.51.0) (2026-10-31)
+
+
+### Features
+
+* **rust-sdk:** honour the dev environment switch; ARETE_ENVIRONMENT in a4 ([92d1b7a](https://github.com/AreteA4/arete/commit/92d1b7ae3caab6e42e9a2baa071456d56996d343))
+* **sdk:** offline SDKs name their read endpoint or say how to get one ([574f5f0](https://github.com/AreteA4/arete/commit/574f5f02ee7f42295ccbb627394753a011634e1b))
+
 ## [0.50.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.49.0...arete-sdk-v0.50.0) (2026-10-29)
 
 

@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+## [0.51.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.50.0...a4-cli-v0.51.0) (2026-10-31)
+
+
+### Features
+
+* **automations:** follow the dev environment switch; a4 dev keeps the client's production deployment ([10b8470](https://github.com/AreteA4/arete/commit/10b847026e824653db41c4a9f07d510ea067f485))
+* **cli:** a4 create offers protocol and protocol-app templates ([bedabc6](https://github.com/AreteA4/arete/commit/bedabc625c778fdb1bb14a552b94e05566def584))
+* **cli:** a4 program account decode, in production or a dev environment ([27e8354](https://github.com/AreteA4/arete/commit/27e8354a16d7320c2ffb931daa3615370e59dabd))
+* **dev:** a4 dev promote --check lists what exists only in the environment ([973714d](https://github.com/AreteA4/arete/commit/973714d3a7c8570907752eeb7f2e60f97a8808ee))
+* **dev:** a4 dev up serves the edge; a4 dev run ([47a2c54](https://github.com/AreteA4/arete/commit/47a2c5425ba763822a7385134651d83bad9f9d63))
+* **dev:** one project per cloud dev environment ([a7fa8dd](https://github.com/AreteA4/arete/commit/a7fa8ddf2423da125589a55c1565c633319ee61a))
+* **dev:** refuse a project the environment's stack slots can't hold before loading ([31240d9](https://github.com/AreteA4/arete/commit/31240d95b03b6e2aae4d9538ac18632c9c7577a5))
+* **dev:** show the slot each environment stack started empty at ([5c3bdb7](https://github.com/AreteA4/arete/commit/5c3bdb7e4a0fc18f30f702690a82eed37543a9c0))
+* **install:** test unpublished SDK extensions with extensions = { path } ([1f99401](https://github.com/AreteA4/arete/commit/1f99401ec093f90fa5de06dd7771c2052f0571db))
+* **rust-sdk:** honour the dev environment switch; ARETE_ENVIRONMENT in a4 ([92d1b7a](https://github.com/AreteA4/arete/commit/92d1b7ae3caab6e42e9a2baa071456d56996d343))
+* **sdk:** offline SDKs name their read endpoint or say how to get one ([574f5f0](https://github.com/AreteA4/arete/commit/574f5f02ee7f42295ccbb627394753a011634e1b))
+
+
+### Bug Fixes
+
+* **automations:** resolve the dev deployment before the signing policy; regenerate a missing published client ([1217729](https://github.com/AreteA4/arete/commit/12177291c7f05990ece80bcc7c848d3b23cf32e2))
+* **cli:** a deploy refuses a local SDK extension declared in arete.toml, not only one in the lock ([fb25975](https://github.com/AreteA4/arete/commit/fb259755824a1b64dd8450d25a268c869ceba37d))
+* **cli:** a protocol-only arete.toml declares no local extensions ([2c7d6c6](https://github.com/AreteA4/arete/commit/2c7d6c6da3895b95c8eb9aed74f17de47fd22b2d))
+* **cli:** a stale lock can't send an owner lookup to another program ([33830ae](https://github.com/AreteA4/arete/commit/33830ae4d49962a1f34388b49944341344e7e2fe))
+* **cli:** a takeover mid-build ends a4 dev up without waiting on the build ([db894b4](https://github.com/AreteA4/arete/commit/db894b454ba7f4870a083f5a1cc207ad8e3de0f7))
+* **cli:** a takeover stops the session at once; checkouts at one path stay apart ([6a394fe](https://github.com/AreteA4/arete/commit/6a394fe62f081d74939aed6c76c006486ae30de7))
+* **cli:** decode a project's programs at their pinned release ([c9585a4](https://github.com/AreteA4/arete/commit/c9585a4a4b0ab4b8c94175c16c9403abb6735a44))
+* **cli:** decode accounts a served dev release adds ([65eb6be](https://github.com/AreteA4/arete/commit/65eb6be819bc56dd0a0598408956308bd7ea4463))
+* **cli:** emit PostHog funnel events and label agent traffic ([0d2934d](https://github.com/AreteA4/arete/commit/0d2934dac92337322bee3cd0723bf9f1ffcf93f3))
+* **cli:** emit PostHog funnel events and label agent traffic ([18bd4d0](https://github.com/AreteA4/arete/commit/18bd4d0cc01d60faf10d59e96927918c15665d5d))
+* **cli:** keep telemetry opt-out and install channel ([039e9a3](https://github.com/AreteA4/arete/commit/039e9a3d2c2a088db0feb45fc8a1b96dd6a5a885))
+* **cli:** load locked stacks under the lease; stopping doesn't wait on the API ([1f7539f](https://github.com/AreteA4/arete/commit/1f7539fd0e63e4dbe73915cc04120337227a1df3))
+* **cli:** the edge's preflight allows the headers it forwards ([c3df4b5](https://github.com/AreteA4/arete/commit/c3df4b5bfa413d88540a2d7ecb5749ed09053e01))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.50.0 to 0.51.0
+    * arete-mcp bumped from 0.50.0 to 0.51.0
+
 ## [0.50.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.49.0...a4-cli-v0.50.0) (2026-10-29)
 
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.51.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.50.0...arete-typescript-v0.51.0) (2026-10-31)
+
+
+### Features
+
+* **automations:** follow the dev environment switch; a4 dev keeps the client's production deployment ([10b8470](https://github.com/AreteA4/arete/commit/10b847026e824653db41c4a9f07d510ea067f485))
+* **sdk:** offline SDKs name their read endpoint or say how to get one ([574f5f0](https://github.com/AreteA4/arete/commit/574f5f02ee7f42295ccbb627394753a011634e1b))
+* **sdk:** TypeScript and React SDKs honour the dev environment switch ([0c7b838](https://github.com/AreteA4/arete/commit/0c7b8381d44bf589b9c18c1ef8f078e2078c1c85))
+
+
+### Bug Fixes
+
+* **sdk:** dev clients need no production endpoints ([997490c](https://github.com/AreteA4/arete/commit/997490c21f1a5a33d45135d5816b01a56aaf20e2))
+
 ## [0.50.0](https://github.com/AreteA4/arete/compare/arete-typescript-v0.49.0...arete-typescript-v0.50.0) (2026-10-29)
 
 

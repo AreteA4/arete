@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.51.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.50.0...arete-automations-v0.51.0) (2026-10-31)
+
+
+### Features
+
+* **automations:** export the dev runner's helpers as @usearete/automations/dev ([643e5a4](https://github.com/AreteA4/arete/commit/643e5a4ae2c72ae9e3d28cf0c8a1613acfc7012d))
+* **automations:** follow the dev environment switch; a4 dev keeps the client's production deployment ([10b8470](https://github.com/AreteA4/arete/commit/10b847026e824653db41c4a9f07d510ea067f485))
+
+
+### Bug Fixes
+
+* **automations:** resolve the dev deployment before the signing policy; regenerate a missing published client ([1217729](https://github.com/AreteA4/arete/commit/12177291c7f05990ece80bcc7c848d3b23cf32e2))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.50.0 to ^0.51.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.50.0 to ^0.51.0
+
 ## [0.50.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.49.0...arete-automations-v0.50.0) (2026-10-29)
 
 
