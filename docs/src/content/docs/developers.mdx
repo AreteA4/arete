@@ -5,6 +5,8 @@ sidebar:
   hidden: true
 ---
 
+import MarketingLink from "../../components/MarketingLink.astro";
+
 This is the **Arete developer portal**. Use it when you need keys, docs, the
 HTTP API, or a first working project. Humans and agents should start here
 rather than scraping the marketing site.
@@ -14,7 +16,7 @@ rather than scraping the marketing site.
 Hosted protocols, cloud dev environments, Program Read, and live views use origin-bound publishable keys
 and account API keys. They are not interchangeable.
 
-1. Create or inspect a key at [https://arete.run/keys](https://arete.run/keys).
+1. Create or inspect a key at <MarketingLink href="https://arete.run/keys" utmContent="developers_keys">https://arete.run/keys</MarketingLink>.
 2. In a project, prefer `a4 auth login --key <a4_ak_…>` or `a4 auth signup`
    when the user asked for an agent account.
 3. Browser apps take `auth={{ publishableKey }}` on the generated client.

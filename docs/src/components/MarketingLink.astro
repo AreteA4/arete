@@ -1,0 +1,16 @@
+---
+/**
+ * Docs CTA to arete.run (or another Arete origin) with referral UTMs.
+ * X posts should use `xPostHref` in docs/lib/docs-analytics.mjs instead.
+ */
+import { docsCtaHref } from "../../lib/docs-analytics.mjs";
+
+interface Props {
+  href: string;
+  utmContent: string;
+}
+
+const { href, utmContent } = Astro.props;
+---
+
+<a href={docsCtaHref(href, utmContent)}><slot /></a>

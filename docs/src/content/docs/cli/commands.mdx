@@ -4,6 +4,8 @@ sidebar:
   order: 1
 ---
 
+import MarketingLink from "../../../components/MarketingLink.astro";
+
 Complete reference for the Arete CLI (`a4`).
 
 Your agent runs most of these commands for you. The ones you are most likely to
@@ -417,9 +419,7 @@ a4 config validate
 
 Exploring and installing public SDKs needs no account. Hosted global stacks and
 the knowledge layer do. Agents create or verify their restricted credential with
-`a4 --profile agent auth signup --if-missing`; humans get keys from
-[arete.run/keys](https://arete.run/keys) and use
-`a4 auth login --profile human --key`.
+`a4 --profile agent auth signup --if-missing`; humans get keys from <MarketingLink href="https://arete.run/keys" utmContent="cli_keys">arete.run/keys</MarketingLink> and use `a4 auth login --profile human --key`.
 
 ### a4 auth signup
 

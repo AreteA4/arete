@@ -95,4 +95,22 @@
       maskInputOptions: { password: true },
     },
   });
+
+  // Keep campaign params on later docs events (X post → docs → copy/install).
+  // `register` is on the stub, so this queues until array.js finishes loading.
+  const utm = {};
+  const params = new URLSearchParams(window.location.search);
+  [
+    "utm_source",
+    "utm_medium",
+    "utm_campaign",
+    "utm_content",
+    "utm_term",
+  ].forEach((key) => {
+    const value = params.get(key);
+    if (value) utm[key] = value;
+  });
+  if (Object.keys(utm).length > 0) {
+    window.posthog.register(utm);
+  }
 })();
