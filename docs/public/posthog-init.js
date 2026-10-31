@@ -197,10 +197,6 @@
           : location.search
         : search;
     const fromUrl = queryUtms(queryString);
-    // The query campaign is newer than a cookie from an earlier visit.
-    // Refresh arete_attr so the next docs page, which has no query, keeps it.
-    const fresh = xAttrFromQuery(fromUrl);
-    if (fresh) writeAreteAttr(fresh);
     if (!attr) return event;
 
     const props = event.properties || (event.properties = {});
@@ -225,6 +221,23 @@
     }
     return event;
   }
+
+  // Once per page load. Later events must not write the cookie: another tab
+  // may have stored a newer campaign, and this tab's URL would put the old one back.
+  function syncAreteAttrFromSearch(search) {
+    const queryString =
+      search == null
+        ? typeof location === "undefined"
+          ? ""
+          : location.search
+        : search;
+    const fresh = xAttrFromQuery(queryUtms(queryString));
+    if (fresh) writeAreteAttr(fresh);
+  }
+
+  syncAreteAttrFromSearch(
+    typeof location === "undefined" ? "" : location.search,
+  );
   /* arete-attr:end */
 
   window.posthog.init(posthogKey, {
