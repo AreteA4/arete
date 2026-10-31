@@ -48,6 +48,8 @@ struct Mock {
     stack_build_leases: Mutex<Vec<Option<String>>>,
     /// Registry stack loads answer that the environment was taken over.
     stack_load_lost: Mutex<bool>,
+    /// Environment stack builds never finish.
+    stack_build_stuck: Mutex<bool>,
 }
 
 type Shared = State<Arc<Mock>>;
@@ -467,6 +469,9 @@ async fn stack_build(State(mock): Shared, headers: HeaderMap) -> Response {
         return unauthorized();
     }
     mock.note("GET /builds/281".into());
+    if *mock.stack_build_stuck.lock().unwrap() {
+        return Json(json!({ "build": { "id": 281, "spec_id": 81, "status": "building", "created_at": "now", "phase": "building", "progress": 50 }, "events": [], "related_deployment_id": 181 })).into_response();
+    }
     Json(json!({ "build": { "id": 281, "spec_id": 81, "status": "completed", "created_at": "now", "phase": "completed", "progress": 100 }, "events": [], "related_deployment_id": 181 })).into_response()
 }
 
@@ -1293,6 +1298,62 @@ fn a_takeover_during_a_locked_stack_load_stops_the_run() {
     *mock.stack_load_lost.lock().unwrap() = true;
     let dir = project_with_locked_stack();
     let error = run_fails(&origin, dir.path(), &UP_ONCE);
+    assert!(error.contains("taken over by savings-app"), "{error}");
+}
+
+/// A takeover during a stack build ends the process, though the blocking
+/// work that polls the build could go on for up to 30 minutes.
+#[test]
+fn a_takeover_during_a_stack_build_ends_the_process() {
+    let (mock, origin) = serve();
+    seed(&mock, "running");
+    *mock.stack_artifacts.lock().unwrap() = project_stack_artifacts();
+    *mock.stack_build_stuck.lock().unwrap() = true;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("stacks")).unwrap();
+    std::fs::write(
+        dir.path().join("stacks/transfers.stack.yaml"),
+        "schema: arete.stack-source/v1\nname: transfers\nprograms: {}\nentities: {}\n",
+    )
+    .unwrap();
+    let mut child = a4(&origin, dir.path())
+        .args(UP_ONCE)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let polling = Instant::now();
+    while !mock
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|call| call == "GET /builds/281")
+    {
+        assert!(polling.elapsed() < TIMEOUT, "the build was never polled");
+        thread::sleep(Duration::from_millis(50));
+    }
+    {
+        let mut lease = mock.lease.lock().unwrap();
+        let lease = lease.as_mut().unwrap();
+        lease["leaseGeneration"] = json!(2);
+        lease["holder"] = json!("savings-app");
+    }
+    let taken_over = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if taken_over.elapsed() > TIMEOUT {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("a4 dev up was still running after the takeover");
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!status.success());
+    let mut error = String::new();
+    std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut error).unwrap();
     assert!(error.contains("taken over by savings-app"), "{error}");
 }
 

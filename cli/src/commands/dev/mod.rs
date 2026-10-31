@@ -1328,7 +1328,16 @@ fn up(args: UpArgs, json: bool) -> Result<()> {
         ui_dev_url: args.ui_dev_url.clone(),
         take_over: args.take_over,
     };
-    block_on(up::run(config))
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("Failed to start the async runtime")?;
+    let result = runtime.block_on(up::run(config));
+    // A stop or a takeover can interrupt a pass mid-deploy, and its blocking
+    // work polls a build for up to 30 minutes. Dropping the runtime would wait
+    // for that, keeping this process alive and `a4 dev down` waiting on it.
+    runtime.shutdown_background();
+    result
 }
 
 /// Flags over the `[protocol]` section of `arete.toml`; config paths
