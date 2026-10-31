@@ -178,8 +178,6 @@ pub fn create(
         next
     };
 
-    telemetry::record_create_completed(selected_template.display_name(), start.elapsed());
-
     if json {
         let output = serde_json::json!({
             "schemaVersion": 1,
@@ -190,6 +188,8 @@ pub fn create(
         });
         println!("{}", serde_json::to_string_pretty(&output)?);
     }
+
+    telemetry::record_create_completed(selected_template.display_name(), start.elapsed());
 
     Ok(())
 }
@@ -247,7 +247,6 @@ fn create_protocol(
         next.push(format!("{} app", run_script(pm)));
     }
 
-    telemetry::record_create_completed(template.display_name(), start.elapsed());
     if json {
         let output = serde_json::json!({
             "schemaVersion": 1,
@@ -271,6 +270,7 @@ fn create_protocol(
         println!("  {} {}", "$".dimmed(), next.join(" && ").cyan());
         println!();
     }
+    telemetry::record_create_completed(template.display_name(), start.elapsed());
     Ok(())
 }
 

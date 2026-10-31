@@ -23,6 +23,7 @@ use crate::agents::skills::{self, SkillsOptions};
 use crate::agents::{
     agents_md, display_path, read_optional, upsert_file, Env, ItemResult, Outcome, AGENT_IDS,
 };
+use crate::telemetry;
 use crate::ui;
 
 #[derive(Args, Debug, Clone)]
@@ -318,6 +319,7 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
         }
         if wrote_mcp && !plan.dry_run {
             warnings.push(MCP_RESTART_WARNING.to_string());
+            telemetry::record_mcp_connected(if plan.global { "global" } else { "project" });
         }
     }
 
