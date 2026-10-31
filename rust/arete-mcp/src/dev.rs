@@ -193,6 +193,28 @@ pub fn redact_hs_tokens(text: &str) -> String {
     out
 }
 
+/// The environment's lease as `dev_status` shows it: the holder, whether it
+/// is held now, and until when (`null` when the environment was never
+/// leased). Who holds it tells a second project to run `a4 dev up
+/// --take-over`, or `a4 dev branch` for its own copy.
+pub fn lease_view(lease: &Value) -> Value {
+    if lease.is_null() {
+        return Value::Null;
+    }
+    let mut view = json!({
+        "holder": lease["holder"],
+        "held": lease["live"],
+        "expiresAt": lease["expiresAt"],
+        "leaseGeneration": lease["leaseGeneration"],
+    });
+    if lease["live"] == true {
+        view["note"] = json!(
+            "Another project's `a4 dev up` is refused while this lease is held: it can take the environment over with `a4 dev up --take-over`, or use its own copy (`a4 dev branch`)"
+        );
+    }
+    view
+}
+
 /// Remove credentials from a report before it is printed: every
 /// `hs_token=` value, every `Bearer <token>` and every string field named
 /// `token`, at any depth. `a4 dev token` is the way to get a token.
@@ -1309,6 +1331,13 @@ impl DevClient {
             "stack": stack,
             "stacks": stacks,
         });
+        // One project per environment: who holds it (absent when the API
+        // has no environment leases).
+        match self.env.api().lease(self.env.env()).await {
+            Ok(Some(lease)) => report["lease"] = lease_view(&lease),
+            Ok(None) => {}
+            Err(error) => report["lease"] = json!({ "error": format!("{error:#}") }),
+        }
         redact_secrets(&mut report);
         report
     }

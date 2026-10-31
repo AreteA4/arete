@@ -42,6 +42,14 @@ struct Mock {
     stack_plan: Mutex<Value>,
     stack_build: Mutex<Value>,
     compile_failed: Mutex<bool>,
+    /// The environment lease: `{leaseGeneration, projectId, holder, live}`.
+    lease: Mutex<Option<Value>>,
+    /// The lease generation header each environment stack build carried.
+    stack_build_leases: Mutex<Vec<Option<String>>>,
+    /// Registry stack loads answer that the environment was taken over.
+    stack_load_lost: Mutex<bool>,
+    /// Environment stack builds never finish.
+    stack_build_stuck: Mutex<bool>,
 }
 
 type Shared = State<Arc<Mock>>;
@@ -363,6 +371,22 @@ async fn deploy_environment_stack(
     }
     assert_eq!(env, ENV_A);
     mock.note(format!("POST {env}/stacks {body}"));
+    mock.stack_build_leases.lock().unwrap().push(
+        headers
+            .get("arete-dev-lease-generation")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+    );
+    if body.get("stackManifestHash").is_some() {
+        if *mock.stack_load_lost.lock().unwrap() {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": format!("Dev environment {env} was taken over by savings-app (a4 dev up); nothing was written"), "code": "devenv-lease-lost" })),
+            )
+                .into_response();
+        }
+        return Json(json!({ "status": "loaded", "deploymentId": 181 })).into_response();
+    }
     *mock.stack_build.lock().unwrap() = body.clone();
     *mock.stack_listing.lock().unwrap() = vec![
         json!({ "deploymentId": 181, "specId": 81, "specName": "transfers", "assigned": true, "websocketUrl": STACK_URL, "status": "active", "protocolDeploymentId": null }),
@@ -370,11 +394,84 @@ async fn deploy_environment_stack(
     Json(json!({ "build_id": 281, "message": "queued", "deploymentPlanId": body["deploymentPlanId"], "selectionDigest": body["selectionDigest"], "envId": env, "deploymentId": 181, "websocketUrl": STACK_URL })).into_response()
 }
 
+/// The environment lease routes, as the API answers them.
+async fn lease_take(
+    State(mock): Shared,
+    headers: HeaderMap,
+    AxumPath(env): AxumPath<String>,
+    Json(body): Json<Value>,
+) -> Response {
+    if !authorized(&headers, KEY) {
+        return unauthorized();
+    }
+    mock.note(format!("POST {env}/lease {body}"));
+    let mut lease = mock.lease.lock().unwrap();
+    let current = lease.clone().unwrap_or(Value::Null);
+    if let Some(generation) = body["leaseGeneration"].as_i64() {
+        if current["leaseGeneration"] != generation {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": format!("Dev environment {env} was taken over by {}; nothing was written", current["holder"].as_str().unwrap_or("?")), "code": "devenv-lease-lost", "holder": current["holder"] })),
+            )
+                .into_response();
+        }
+        return Json(json!({ "lease": current, "renewed": true })).into_response();
+    }
+    if current["live"] == true && current["projectId"] != body["projectId"] && body["force"] != true
+    {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({ "error": format!("Dev environment {env} is in use by {} (lease until 2026-10-29T10:00:00Z). Run `a4 dev up --take-over` to move it to this project, or `a4 dev branch` to give this project its own copy", current["holder"].as_str().unwrap_or("?")), "code": "devenv-environment-leased", "holder": current["holder"] })),
+        )
+            .into_response();
+    }
+    let generation = current["leaseGeneration"].as_i64().unwrap_or(0) + 1;
+    let replaced = (current["projectId"] != body["projectId"] && !current.is_null())
+        .then(|| json!({ "holder": current["holder"] }));
+    let taken = json!({ "leaseGeneration": generation, "projectId": body["projectId"], "holder": body["holder"], "live": true, "expiresAt": "2026-10-29T10:00:00Z", "ttlSeconds": 60 });
+    *lease = Some(taken.clone());
+    Json(json!({ "lease": taken, "renewed": false, "replaced": replaced })).into_response()
+}
+
+async fn lease_get(State(mock): Shared, headers: HeaderMap) -> Response {
+    if !authorized(&headers, KEY) {
+        return unauthorized();
+    }
+    Json(json!({ "lease": mock.lease.lock().unwrap().clone() })).into_response()
+}
+
+async fn lease_release(
+    State(mock): Shared,
+    headers: HeaderMap,
+    AxumPath(env): AxumPath<String>,
+) -> Response {
+    if !authorized(&headers, KEY) {
+        return unauthorized();
+    }
+    let generation = headers
+        .get("arete-dev-lease-generation")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<i64>().ok());
+    mock.note(format!("DELETE {env}/lease {generation:?}"));
+    let mut lease = mock.lease.lock().unwrap();
+    let released = match lease.as_mut() {
+        Some(current) if current["leaseGeneration"].as_i64() == generation => {
+            current["live"] = json!(false);
+            true
+        }
+        _ => false,
+    };
+    Json(json!({ "released": released })).into_response()
+}
+
 async fn stack_build(State(mock): Shared, headers: HeaderMap) -> Response {
     if !authorized(&headers, KEY) {
         return unauthorized();
     }
     mock.note("GET /builds/281".into());
+    if *mock.stack_build_stuck.lock().unwrap() {
+        return Json(json!({ "build": { "id": 281, "spec_id": 81, "status": "building", "created_at": "now", "phase": "building", "progress": 50 }, "events": [], "related_deployment_id": 181 })).into_response();
+    }
     Json(json!({ "build": { "id": 281, "spec_id": 81, "status": "completed", "created_at": "now", "phase": "completed", "progress": 100 }, "events": [], "related_deployment_id": 181 })).into_response()
 }
 
@@ -460,6 +557,10 @@ fn serve() -> (Arc<Mock>, String) {
         .route("/api/deployments/compositions", post(stack_composition))
         .route("/ws/sessions", post(stack_session))
         .route("/api/dev/environments/:env/events", get(events))
+        .route(
+            "/api/dev/environments/:env/lease",
+            post(lease_take).get(lease_get).delete(lease_release),
+        )
         .route("/api/dev/environments/:env/:action", post(action))
         .route("/api/dev/quotas", get(quotas))
         .route("/rpc/v1/devenv/:env", post(rpc))
@@ -1122,8 +1223,214 @@ fn up_compiles_and_deploys_project_stacks_to_the_environment() {
     assert!(!calls.iter().any(|call| call.contains("/builds/artifacts")));
     // The session file holds no stack token, so `a4 dev up` mints none.
     assert!(!calls.iter().any(|call| call.contains("POST /ws/sessions")));
+    // The lease came first, and the stack build carried its generation.
+    let lease_at = calls
+        .iter()
+        .position(|call| call.starts_with(&format!("POST {ENV_A}/lease")));
+    let build_at = calls
+        .iter()
+        .position(|call| call.starts_with(&format!("POST {ENV_A}/stacks")));
+    assert!(lease_at.unwrap() < build_at.unwrap(), "{calls:?}");
+    assert_eq!(
+        *mock.stack_build_leases.lock().unwrap(),
+        vec![Some("1".to_string())]
+    );
     run_json(&origin, dir.path(), &["dev", "down"]);
     assert!(child.wait().unwrap().success());
+    // Released on exit.
+    assert_eq!(mock.lease.lock().unwrap().as_ref().unwrap()["live"], false);
+}
+
+/// A project with one registry stack in its arete.lock.
+fn project_with_locked_stack() -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("arete.lock"),
+        r#"lock_version = 1
+manifest_hash = "arete-manifest-v1:test"
+resolver_contract = "registry-resolver-v1"
+
+[[dependency]]
+kind = "stack"
+alias = "ledger"
+source = "registry:ledger"
+requirement = "*"
+version = "1.0.0"
+package_release_hash = "release"
+stack_manifest_hash = "hash-ledger"
+generator_contract = "sdk-generator-v1"
+"#,
+    )
+    .unwrap();
+    dir
+}
+
+const UP_ONCE: [&str; 8] = [
+    "dev",
+    "up",
+    "--env",
+    "app",
+    "--no-ui",
+    "--once",
+    "--port-base",
+    "0",
+];
+
+/// Registry stacks load under the lease `a4 dev up` holds.
+#[test]
+fn locked_stacks_load_with_the_lease_generation() {
+    let (mock, origin) = serve();
+    seed(&mock, "running");
+    let dir = project_with_locked_stack();
+    run_json(&origin, dir.path(), &UP_ONCE);
+    assert_eq!(
+        *mock.stack_build_leases.lock().unwrap(),
+        vec![Some("1".to_string())]
+    );
+}
+
+/// A takeover during a registry stack load ends the run: it isn't one more
+/// stack that failed to load.
+#[test]
+fn a_takeover_during_a_locked_stack_load_stops_the_run() {
+    let (mock, origin) = serve();
+    seed(&mock, "running");
+    *mock.stack_load_lost.lock().unwrap() = true;
+    let dir = project_with_locked_stack();
+    let error = run_fails(&origin, dir.path(), &UP_ONCE);
+    assert!(error.contains("taken over by savings-app"), "{error}");
+}
+
+/// A takeover during a stack build ends the process, though the blocking
+/// work that polls the build could go on for up to 30 minutes.
+#[test]
+fn a_takeover_during_a_stack_build_ends_the_process() {
+    let (mock, origin) = serve();
+    seed(&mock, "running");
+    *mock.stack_artifacts.lock().unwrap() = project_stack_artifacts();
+    *mock.stack_build_stuck.lock().unwrap() = true;
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("stacks")).unwrap();
+    std::fs::write(
+        dir.path().join("stacks/transfers.stack.yaml"),
+        "schema: arete.stack-source/v1\nname: transfers\nprograms: {}\nentities: {}\n",
+    )
+    .unwrap();
+    let mut child = a4(&origin, dir.path())
+        .args(UP_ONCE)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let polling = Instant::now();
+    while !mock
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|call| call == "GET /builds/281")
+    {
+        assert!(polling.elapsed() < TIMEOUT, "the build was never polled");
+        thread::sleep(Duration::from_millis(50));
+    }
+    {
+        let mut lease = mock.lease.lock().unwrap();
+        let lease = lease.as_mut().unwrap();
+        lease["leaseGeneration"] = json!(2);
+        lease["holder"] = json!("savings-app");
+    }
+    let taken_over = Instant::now();
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if taken_over.elapsed() > TIMEOUT {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("a4 dev up was still running after the takeover");
+        }
+        thread::sleep(Duration::from_millis(100));
+    };
+    assert!(!status.success());
+    let mut error = String::new();
+    std::io::Read::read_to_string(child.stderr.as_mut().unwrap(), &mut error).unwrap();
+    assert!(error.contains("taken over by savings-app"), "{error}");
+}
+
+/// One project per environment: a second project is refused with the
+/// holder and the ways out and deploys nothing; `--take-over` moves the
+/// environment to it.
+#[test]
+fn a_leased_environment_refuses_another_project_until_it_takes_over() {
+    let (mock, origin) = serve();
+    seed(&mock, "running");
+    *mock.lease.lock().unwrap() = Some(
+        json!({ "leaseGeneration": 4, "projectId": "proj_somebodyelse00000000", "holder": "savings-app (a4 dev up)", "live": true, "expiresAt": "2026-10-29T10:00:00Z", "ttlSeconds": 60 }),
+    );
+    *mock.stack_artifacts.lock().unwrap() = project_stack_artifacts();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("stacks")).unwrap();
+    std::fs::write(
+        dir.path().join("stacks/transfers.stack.yaml"),
+        "schema: arete.stack-source/v1\nname: transfers\nprograms: {}\nentities: {}\n",
+    )
+    .unwrap();
+    let up = [
+        "dev",
+        "up",
+        "--env",
+        "app",
+        "--no-ui",
+        "--once",
+        "--port-base",
+        "0",
+    ];
+    let error = run_fails(&origin, dir.path(), &up);
+    assert!(error.contains("savings-app (a4 dev up)"), "{error}");
+    assert!(error.contains("a4 dev up --take-over"), "{error}");
+    assert!(error.contains("a4 dev branch"), "{error}");
+    assert!(error.contains("devenv-environment-leased"), "{error}");
+    let calls = mock.calls.lock().unwrap().clone();
+    assert!(
+        !calls
+            .iter()
+            .any(|call| call.contains("/stacks") || call.contains("compile")),
+        "nothing deploys: {calls:?}"
+    );
+    assert!(mock.stack_build_leases.lock().unwrap().is_empty());
+
+    let mut take_over = up.to_vec();
+    take_over.push("--take-over");
+    let output = a4(&origin, dir.path())
+        .arg("--json")
+        .args(&take_over)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "{}\n{stdout}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let lease = stdout
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["event"] == "lease")
+        .unwrap_or_else(|| panic!("no lease event: {stdout}"));
+    assert_eq!(lease["leaseGeneration"], 5);
+    assert_eq!(lease["replaced"], "savings-app (a4 dev up)");
+    assert_eq!(
+        *mock.stack_build_leases.lock().unwrap(),
+        vec![Some("5".to_string())]
+    );
+
+    // Status names the holder (released after the --once run).
+    let status = run_json(&origin, dir.path(), &["dev", "status"]);
+    assert_eq!(status["lease"]["held"], false, "{status}");
+    assert!(status["lease"]["holder"]
+        .as_str()
+        .unwrap()
+        .ends_with("(a4 dev up)"));
 }
 
 #[test]

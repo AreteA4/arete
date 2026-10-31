@@ -1574,7 +1574,10 @@ impl AreteMcp {
                           the `a4 dev up` edge (`edgeUrl`). `stacks` lists the stacks loaded \
                           into the environment: each started empty at `loadedSlot` and holds \
                           only the accounts the environment touched since (a transaction or a \
-                          scenario override). \
+                          scenario override). `lease.holder` names the project whose \
+                          `a4 dev up` holds the environment (one project at a time; another \
+                          one takes over with `a4 dev up --take-over` or uses its own copy \
+                          from `dev_branch`). \
                           Environments sleep when idle and keep their state; any RPC call or \
                           `dev_wake` wakes one. Start `a4 dev up` in a terminal to create one; \
                           these tools never start or stop local processes."
@@ -1600,11 +1603,15 @@ impl AreteMcp {
             Ok(listing) => Value::Array(crate::dev::environment_stacks(&listing)),
             Err(error) => json!({ "error": format!("{error:#}") }),
         };
-        shaped_result(&json!({
+        let mut report = json!({
             "environment": crate::dev_env::public_view(&environment),
             "chain": chain,
             "stacks": stacks,
-        }))
+        });
+        if let Ok(Some(lease)) = rpc.api().lease(rpc.env()).await {
+            report["lease"] = crate::dev::lease_view(&lease);
+        }
+        shaped_result(&report)
     }
 
     #[tool(

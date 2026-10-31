@@ -52,6 +52,10 @@ pub struct DevApi {
     origin: String,
     key: String,
     http: reqwest::Client,
+    /// The environment lease generation every request carries, so the API
+    /// refuses this process's writes once another project takes the
+    /// environment.
+    lease: Option<i64>,
 }
 
 fn string_field(body: &Value, field: &str, what: &str) -> Result<String> {
@@ -90,7 +94,14 @@ impl DevApi {
                 .timeout(Duration::from_secs(120))
                 .build()
                 .unwrap_or_default(),
+            lease: None,
         }
+    }
+
+    /// Send the environment lease generation with every request.
+    pub fn with_lease(mut self, generation: Option<i64>) -> Self {
+        self.lease = generation;
+        self
     }
 
     async fn call(
@@ -104,6 +115,9 @@ impl DevApi {
             .http
             .request(method.clone(), &url)
             .bearer_auth(&self.key);
+        if let Some(generation) = self.lease {
+            request = request.header(arete_mcp::dev_env::LEASE_HEADER, generation.to_string());
+        }
         if let Some(body) = body {
             request = request.json(body);
         }
@@ -309,7 +323,8 @@ impl DevApi {
     }
 
     /// Disable a deployment (the owner route). One that is already disabled
-    /// (`409`) counts as disabled.
+    /// (`409`) counts as disabled; a `409` because the environment was taken
+    /// over is [`super::lease::LeaseLost`].
     pub async fn disable(&self, deployment_id: &str) -> Result<()> {
         let (status, body) = self
             .call(
@@ -318,6 +333,15 @@ impl DevApi {
                 Some(&json!({})),
             )
             .await?;
+        if body["code"] == arete_mcp::dev_env::LEASE_LOST {
+            return Err(super::lease::LeaseLost {
+                holder: body["holder"]
+                    .as_str()
+                    .unwrap_or("another project")
+                    .to_string(),
+            }
+            .into());
+        }
         if status.is_success() || status == reqwest::StatusCode::CONFLICT {
             return Ok(());
         }

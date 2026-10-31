@@ -75,6 +75,7 @@ a4 dev up
 | `--once` (`--no-watch`)    |                                                 | deploy once, report `ready` or `failed`, and exit: 0 after a good deploy, non-zero after a failed one. Nothing keeps running (see below)             |
 | `--no-deploy`              |                                                 | serve the environment and the UI only; don't build or deploy the protocol                                                                            |
 | `--no-sdk`                 |                                                 | don't generate this protocol's client from the local build (see [The app's protocol client](#the-apps-protocol-client))                              |
+| `--take-over`              |                                                 | take the environment from another project's `a4 dev up` (see [One project per environment](#one-project-per-environment))                            |
 | `--json`                   |                                                 | JSON event lines on stdout instead of text                                                                                                           |
 
 `a4 dev up` then:
@@ -252,31 +253,55 @@ dev from production.
 tools follow `ARETE_ENVIRONMENT` too: `dev` acts on the `a4 dev` session as
 `--dev` does. A value other than `production` or `dev` is an error.
 
+## One project per environment
+
+An environment serves one project at a time. `a4 dev up` holds the
+environment while it runs, renews that hold in the background, and lets it
+go when it stops (or about a minute after it was killed).
+
+- A second project's `a4 dev up` on the same environment is refused with
+  `devenv-environment-leased`, naming the project that holds it, and deploys
+  nothing.
+- `a4 dev up --take-over` moves the environment to this project. What the
+  previous project deployed there stops being served at once: its protocol
+  deployments are disabled and its stacks unloaded. This project's
+  `a4 dev up` then deploys what it needs.
+- The previous project's `a4 dev up` exits non-zero with "this environment
+  was taken over by …; nothing more was written", and stops its automations
+  and its file watcher. A deploy it had in flight is refused, never applied.
+- To run two projects side by side, give the second one its own copy:
+  `a4 dev checkpoint`, then `a4 dev branch <checkpoint> <name> --use`.
+
+Fork state (funded wallets, warps, scenarios, resets) is shared by
+everything that uses the environment and is not tied to the project.
+`a4 dev status` (and the `dev_status` MCP tool) shows which project holds
+the environment.
+
 ## Working with the environment
 
 Every command takes `--env <name|id>` (default `ARETE_DEV_ENV`, else the
 project's environment) and `--json`. None needs `a4 dev up` to be running.
 
-| Command                                                      | What it does                                                                                                                                                                                                                |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `a4 dev status`                                              | the environment (state, tier, storage, when it slept), the running `a4 dev up` and its URLs, the deployments, the protocol stack and its stream URL with the token redacted (`stack.streamUrl`), the chain's slot and clock |
-| `a4 dev list`                                                | your environments (`*` marks the project's), your plan's limits and usage                                                                                                                                                   |
-| `a4 dev use <name\|id>`                                      | points the project at another of your environments                                                                                                                                                                          |
-| `a4 dev wake` / `a4 dev sleep`                               | wakes the environment, or puts it to sleep now (its state is kept)                                                                                                                                                          |
-| `a4 dev delete`                                              | deletes it with its state and checkpoints (asks first; `--yes` without a terminal)                                                                                                                                          |
-| `a4 dev checkpoint [name]`                                   | saves a checkpoint; `--list` lists them, `--delete <id\|name>` deletes one. Plans limit how many each environment keeps                                                                                                     |
-| `a4 dev restore <checkpoint>`                                | restores a checkpoint (id or name): everything written since is undone                                                                                                                                                      |
-| `a4 dev branch <checkpoint> <name> [--use]`                  | creates a new environment from a checkpoint; `--use` points the project at it                                                                                                                                               |
-| `a4 dev rebase [--keep <pubkey>]…`                           | refetches every account the environment never wrote (and did not pin) from mainnet and moves the clock to mainnet's. Use it when pools or oracles went stale (swaps failing on slippage)                                    |
-| `a4 dev reset`                                               | a fresh fork: every account you wrote, funded or pinned is dropped (checkpoints stay; asks first). `--account <pubkey> [--include-owned]` drops one account instead, so its next read refetches it                          |
-| `a4 dev fund <account> [sol]`                                | sets an account's SOL balance (default 100; owner and data stay). `<account>` is a public key or a dev wallet name (created on first use)                                                                                   |
-| `a4 dev fund <account> --mint <mint> --amount <base units>`  | sets the account's token balance of a mint (its token account is created if needed); `--token-program` for Token-2022 mints                                                                                                 |
-| `a4 dev pin <pubkey> [--include-owned]` / `--unpin`          | pins an account: never refreshed from mainnet, kept by rebase                                                                                                                                                               |
-| `a4 dev follow <pubkey>` / `--stop`                          | follows an account: refetched from mainnet every block (an oracle or a pool that should stay live while everything else stays put). Plans cap how many, and follows count as mainnet reads                                  |
-| `a4 dev warp <+2h \| unix-seconds \| slot:<n> \| epoch:<n>>` | moves the chain clock forward (`time-travel` is an alias); protocol states that depend on time, such as deadlines, follow real time instead                                                                                 |
-| `a4 dev pause` / `a4 dev resume`                             | pauses or resumes the clock                                                                                                                                                                                                 |
-| `a4 dev events [--after <id>] [-f]`                          | the environment's lifecycle: created, woken, slept (and why), checkpointed, branched, restored, rebased, reset, deleted                                                                                                     |
-| `a4 dev token`                                               | mints an environment token and prints the environment's RPC and WebSocket URLs                                                                                                                                              |
+| Command                                                      | What it does                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 dev status`                                              | the environment (state, tier, storage, when it slept), which project holds it, the running `a4 dev up` and its URLs, the deployments, the protocol stack and its stream URL with the token redacted (`stack.streamUrl`), the chain's slot and clock |
+| `a4 dev list`                                                | your environments (`*` marks the project's), your plan's limits and usage                                                                                                                                                                           |
+| `a4 dev use <name\|id>`                                      | points the project at another of your environments                                                                                                                                                                                                  |
+| `a4 dev wake` / `a4 dev sleep`                               | wakes the environment, or puts it to sleep now (its state is kept)                                                                                                                                                                                  |
+| `a4 dev delete`                                              | deletes it with its state and checkpoints (asks first; `--yes` without a terminal)                                                                                                                                                                  |
+| `a4 dev checkpoint [name]`                                   | saves a checkpoint; `--list` lists them, `--delete <id\|name>` deletes one. Plans limit how many each environment keeps                                                                                                                             |
+| `a4 dev restore <checkpoint>`                                | restores a checkpoint (id or name): everything written since is undone                                                                                                                                                                              |
+| `a4 dev branch <checkpoint> <name> [--use]`                  | creates a new environment from a checkpoint; `--use` points the project at it                                                                                                                                                                       |
+| `a4 dev rebase [--keep <pubkey>]…`                           | refetches every account the environment never wrote (and did not pin) from mainnet and moves the clock to mainnet's. Use it when pools or oracles went stale (swaps failing on slippage)                                                            |
+| `a4 dev reset`                                               | a fresh fork: every account you wrote, funded or pinned is dropped (checkpoints stay; asks first). `--account <pubkey> [--include-owned]` drops one account instead, so its next read refetches it                                                  |
+| `a4 dev fund <account> [sol]`                                | sets an account's SOL balance (default 100; owner and data stay). `<account>` is a public key or a dev wallet name (created on first use)                                                                                                           |
+| `a4 dev fund <account> --mint <mint> --amount <base units>`  | sets the account's token balance of a mint (its token account is created if needed); `--token-program` for Token-2022 mints                                                                                                                         |
+| `a4 dev pin <pubkey> [--include-owned]` / `--unpin`          | pins an account: never refreshed from mainnet, kept by rebase                                                                                                                                                                                       |
+| `a4 dev follow <pubkey>` / `--stop`                          | follows an account: refetched from mainnet every block (an oracle or a pool that should stay live while everything else stays put). Plans cap how many, and follows count as mainnet reads                                                          |
+| `a4 dev warp <+2h \| unix-seconds \| slot:<n> \| epoch:<n>>` | moves the chain clock forward (`time-travel` is an alias); protocol states that depend on time, such as deadlines, follow real time instead                                                                                                         |
+| `a4 dev pause` / `a4 dev resume`                             | pauses or resumes the clock                                                                                                                                                                                                                         |
+| `a4 dev events [--after <id>] [-f]`                          | the environment's lifecycle: created, woken, slept (and why), checkpointed, branched, restored, rebased, reset, deleted                                                                                                                             |
+| `a4 dev token`                                               | mints an environment token and prints the environment's RPC and WebSocket URLs                                                                                                                                                                      |
 
 ### Scenarios, previews and repro exports
 

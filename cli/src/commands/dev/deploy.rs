@@ -100,6 +100,18 @@ impl DeployState {
     /// The state for `environment`: the saved one when it is for that
     /// environment (the protocol id carries over to another one; its
     /// deployments don't).
+    /// This state without its deployments (the protocol is kept): another
+    /// project took the environment over since they were made, which
+    /// disabled them, so the next deploy creates a new one.
+    pub fn without_deployments(self) -> Self {
+        Self {
+            environment: self.environment,
+            protocol_id: self.protocol_id,
+            slug: self.slug,
+            ..Self::default()
+        }
+    }
+
     pub fn load_for(path: &Path, environment: &str) -> Self {
         let state = Self::load(path);
         if state.environment.as_deref() == Some(environment) {
@@ -496,6 +508,8 @@ impl Deployer {
                     state.disabled.push(id.clone());
                     disabled.push(id);
                 }
+                // Never a warning: another project holds the environment.
+                Err(error) if super::lease::lease_lost(&error).is_some() => return Err(error),
                 Err(error) => {
                     self.log
                         .line(&format!("could not disable deployment {id}: {error:#}"));
@@ -550,6 +564,26 @@ mod tests {
 
     const ENV: &str = "denv_01hzx3k8m9q2r4s5t6v7w8x9yz";
 
+    #[test]
+    fn a_taken_over_state_forgets_its_deployments_but_keeps_the_protocol() {
+        let state = DeployState {
+            environment: Some("denv_x".into()),
+            protocol_id: Some("p".into()),
+            slug: Some("tip-jar".into()),
+            release_hash: Some("r".into()),
+            deployment_id: Some("d2".into()),
+            deployments: vec!["d1".into(), "d2".into()],
+            disabled: vec!["d1".into()],
+            ..DeployState::default()
+        }
+        .without_deployments();
+        assert_eq!(state.environment.as_deref(), Some("denv_x"));
+        assert_eq!(state.protocol_id.as_deref(), Some("p"));
+        assert_eq!(state.slug.as_deref(), Some("tip-jar"));
+        assert_eq!(state.release_hash, None);
+        assert_eq!(state.deployment_id, None);
+        assert!(state.deployments.is_empty() && state.disabled.is_empty());
+    }
     #[test]
     fn build_failures_carry_located_findings() {
         let stderr = "warning: something minor\n\

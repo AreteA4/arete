@@ -389,7 +389,20 @@ impl EnvApi {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
-        self.call_at(method, &format!("/api{path}"), body).await
+        self.call_leased(method, path, body, None).await
+    }
+
+    /// [`Self::call`] with the caller's environment lease generation in
+    /// [`LEASE_HEADER`].
+    async fn call_leased(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        lease: Option<i64>,
+    ) -> Result<Value> {
+        self.call_at_leased(method, &format!("/api{path}"), body, lease)
+            .await
     }
 
     /// `call` for a path under the origin itself (`/ws/sessions`).
@@ -399,12 +412,25 @@ impl EnvApi {
         path: &str,
         body: Option<Value>,
     ) -> Result<Value> {
+        self.call_at_leased(method, path, body, None).await
+    }
+
+    async fn call_at_leased(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        lease: Option<i64>,
+    ) -> Result<Value> {
         let url = format!("{}{path}", self.origin);
         let mut request = self
             .http
             .request(method.clone(), &url)
             .bearer_auth(&self.key)
             .timeout(Duration::from_secs(150));
+        if let Some(generation) = lease {
+            request = request.header(LEASE_HEADER, generation.to_string());
+        }
         if let Some(body) = body {
             request = request.json(&body);
         }
@@ -606,18 +632,26 @@ impl EnvApi {
 
     /// Load a published registry stack (its StackManifest, at `live_alias`
     /// when it has several) into the environment. `status` in the answer is
-    /// `loaded` or `already-loaded`.
+    /// `loaded` or `already-loaded`. `lease` is the generation of the
+    /// environment lease the caller holds.
     pub async fn load_registry_stack(
         &self,
         env: &str,
         stack_manifest_hash: &str,
         live_alias: Option<&str>,
+        lease: Option<i64>,
     ) -> Result<Value> {
         let mut body = json!({ "stackManifestHash": stack_manifest_hash });
         if let Some(alias) = live_alias {
             body["liveAlias"] = json!(alias);
         }
-        self.post(&Self::env_path(env, "/stacks")?, body).await
+        self.call_leased(
+            reqwest::Method::POST,
+            &Self::env_path(env, "/stacks")?,
+            Some(body),
+            lease,
+        )
+        .await
     }
 
     /// The environment's targets for installed identities: `body` is a
@@ -631,6 +665,68 @@ impl EnvApi {
     pub async fn session(&self, body: Value) -> Result<Value> {
         self.call_at(reqwest::Method::POST, "/ws/sessions", Some(body))
             .await
+    }
+
+    /// Take the environment's lease for `project_id` (`force` takes it from
+    /// another project). `None` when this API has no environment leases.
+    pub async fn take_lease(
+        &self,
+        env: &str,
+        project_id: &str,
+        holder: &str,
+        force: bool,
+    ) -> Result<Option<Lease>> {
+        let answer = self
+            .post(
+                &Self::env_path(env, "/lease")?,
+                json!({ "projectId": project_id, "holder": holder, "force": force }),
+            )
+            .await;
+        match answer {
+            Ok(answer) => Lease::from_answer(&answer).map(Some),
+            Err(error) if is_unserved(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// Renew lease `generation`; `devenv-lease-lost` once another take
+    /// happened.
+    pub async fn renew_lease(
+        &self,
+        env: &str,
+        project_id: &str,
+        holder: &str,
+        generation: i64,
+    ) -> Result<Lease> {
+        let answer = self
+            .post(
+                &Self::env_path(env, "/lease")?,
+                json!({ "projectId": project_id, "holder": holder, "leaseGeneration": generation }),
+            )
+            .await?;
+        Lease::from_answer(&answer)
+    }
+
+    /// Release lease `generation` (a stale one releases nothing).
+    pub async fn release_lease(&self, env: &str, generation: i64) -> Result<()> {
+        self.call_leased(
+            reqwest::Method::DELETE,
+            &Self::env_path(env, "/lease")?,
+            None,
+            Some(generation),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    /// The environment's lease (`lease: null` when never leased). `None`
+    /// when this API has no environment leases.
+    pub async fn lease(&self, env: &str) -> Result<Option<Value>> {
+        match self.get(&Self::env_path(env, "/lease")?).await {
+            Ok(answer) => Ok(Some(answer["lease"].clone())),
+            Err(error) if is_unserved(&error) => Ok(None),
+            Err(error) => Err(error),
+        }
     }
 
     /// The environment's overrides (`{kind, key, target, ...}`): program
@@ -651,6 +747,46 @@ fn overrides_of(answer: Value) -> Result<Vec<Value>> {
         },
         _ => bail!("The environment's overrides answer is not a JSON object"),
     }
+}
+
+/// The request header that carries an environment lease generation on the
+/// writes it fences.
+pub const LEASE_HEADER: &str = "Arete-Dev-Lease-Generation";
+
+/// `409`: another project holds the environment.
+pub const LEASED: &str = "devenv-environment-leased";
+/// `409`: the environment was taken over; the write was refused.
+pub const LEASE_LOST: &str = "devenv-lease-lost";
+
+/// An environment lease this process holds.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Lease {
+    pub generation: i64,
+    pub holder: String,
+    pub ttl_seconds: u64,
+    /// The holder a take replaced, when it was another project.
+    pub replaced: Option<String>,
+}
+
+impl Lease {
+    fn from_answer(answer: &Value) -> Result<Self> {
+        let lease = &answer["lease"];
+        Ok(Self {
+            generation: lease["leaseGeneration"]
+                .as_i64()
+                .ok_or_else(|| anyhow!("The lease answer has no leaseGeneration: {answer}"))?,
+            holder: lease["holder"].as_str().unwrap_or_default().to_string(),
+            ttl_seconds: lease["ttlSeconds"].as_u64().unwrap_or(60),
+            replaced: answer["replaced"]["holder"].as_str().map(str::to_string),
+        })
+    }
+}
+
+/// The route is not served by this API (an older one): a 404 without a code.
+fn is_unserved(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ApiFailure>()
+        .is_some_and(|failure| failure.status == 404 && failure.code.is_none())
 }
 
 /// Whether `error` is the API's "not found".

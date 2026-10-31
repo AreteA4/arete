@@ -1,0 +1,334 @@
+//! One project per cloud dev environment.
+//!
+//! `a4 dev up` takes the environment's lease before it deploys anything,
+//! renews it while it runs and releases it on exit. Another project's
+//! `a4 dev up` is refused with the holder's name (`--take-over` moves the
+//! lease; `a4 dev branch` gives a project its own copy). Every write that
+//! changes what the environment serves carries the lease generation; once
+//! another project takes the lease, those writes are refused and this
+//! process stops, without retrying under a new lease.
+//!
+//! An Arete API without environment leases answers the lease route with a
+//! plain 404: `a4 dev up` then runs as before, without a lease.
+
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::Result;
+use arete_mcp::dev_env::{api_code, EnvApi, LEASED, LEASE_LOST};
+use sha2::Digest as _;
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+
+/// How long stopping waits for the API to release the lease.
+const RELEASE_LIMIT: Duration = Duration::from_secs(5);
+
+/// The environment was taken over: the process must stop.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseLost {
+    pub holder: String,
+}
+
+impl std::fmt::Display for LeaseLost {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "this environment was taken over by {}; nothing more was written",
+            self.holder
+        )
+    }
+}
+
+impl std::error::Error for LeaseLost {}
+
+/// Whether `error` says the environment's lease moved to another project: a
+/// [`LeaseLost`], or an API answer with `devenv-lease-lost` anywhere in it.
+pub fn lease_lost(error: &anyhow::Error) -> Option<LeaseLost> {
+    if let Some(lost) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<LeaseLost>())
+    {
+        return Some(lost.clone());
+    }
+    let text = format!("{error:#}");
+    text.contains(LEASE_LOST).then(|| LeaseLost {
+        holder: holder_in(&text).unwrap_or_else(|| "another project".to_string()),
+    })
+}
+
+/// The holder an API refusal names ("… taken over by <holder>; …").
+fn holder_in(text: &str) -> Option<String> {
+    let (_, rest) = text.split_once("taken over by ")?;
+    let holder = rest.split(';').next()?.trim();
+    (!holder.is_empty()).then(|| holder.to_string())
+}
+
+/// A stable id for the checkout at `root`: a digest of its canonical path
+/// and [`checkout_id`], so it names the checkout without revealing it, and
+/// checkouts at one path on different machines or containers stay apart.
+pub fn project_id(root: &Path) -> String {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(root.to_string_lossy().as_bytes());
+    // A read-only checkout has only its path to go by.
+    if let Some(id) = checkout_id(&root) {
+        hasher.update([0]);
+        hasher.update(id.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let hex: String = digest[..12]
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    format!("proj_{hex}")
+}
+
+/// The random id `.arete/checkout-id` keeps for this checkout. It's created
+/// once, by linking a finished file into place, so two processes starting
+/// together read the same id. It sits outside `.arete/dev`, which
+/// `a4 dev down --purge` deletes.
+fn checkout_id(root: &Path) -> Option<String> {
+    let path = root.join(".arete").join("checkout-id");
+    let read = |path: &Path| {
+        std::fs::read_to_string(path)
+            .ok()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+    };
+    if let Some(id) = read(&path) {
+        return Some(id);
+    }
+    std::fs::create_dir_all(path.parent()?).ok()?;
+    let id = uuid::Uuid::new_v4().to_string();
+    let temporary = path.with_file_name(format!(".checkout-id.{id}.tmp"));
+    std::fs::write(&temporary, &id).ok()?;
+    let _ = std::fs::hard_link(&temporary, &path);
+    let _ = std::fs::remove_file(&temporary);
+    read(&path)
+}
+
+/// What other projects see as the holder: the project folder's name.
+pub fn holder_label(root: &Path) -> String {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let name = root
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or_else(|| "a project".to_string());
+    let name: String = name.chars().filter(|c| !c.is_control()).take(120).collect();
+    format!("{name} (a4 dev up)")
+}
+
+/// `devenv-environment-leased`, explained: the API's answer (which names
+/// the holder), then what to do.
+fn explain_refusal(error: anyhow::Error) -> anyhow::Error {
+    if api_code(&error) == Some(LEASED) {
+        return anyhow::anyhow!(
+            "{error}\nAnother project is using this dev environment. Run `a4 dev up --take-over` to move it to this project, or give this project its own copy with `a4 dev branch` and `a4 dev up --env <name>`"
+        );
+    }
+    error
+}
+
+/// The lease this process holds, renewed in the background.
+pub struct Held {
+    api: EnvApi,
+    env: String,
+    generation: i64,
+    lost: watch::Receiver<Option<LeaseLost>>,
+    renewal: JoinHandle<()>,
+    /// The other project's holder this take replaced (`--take-over`, or an
+    /// expired lease).
+    pub replaced: Option<String>,
+}
+
+impl Held {
+    pub fn generation(&self) -> i64 {
+        self.generation
+    }
+
+    /// A handle that resolves, through [`wait_lost`], once the lease is
+    /// lost (a renewal was refused).
+    pub fn watch(&self) -> LostWatch {
+        LostWatch(self.lost.clone())
+    }
+
+    /// Stop renewing and release the lease (unless it was lost), without
+    /// waiting long: an unanswered release just expires with its lease.
+    pub async fn release(self) {
+        self.release_within(RELEASE_LIMIT).await;
+    }
+
+    async fn release_within(self, limit: Duration) {
+        self.renewal.abort();
+        if self.lost.borrow().is_none() {
+            let release = self.api.release_lease(&self.env, self.generation);
+            let _ = tokio::time::timeout(limit, release).await;
+        }
+    }
+}
+
+/// See [`Held::watch`].
+#[derive(Clone)]
+pub struct LostWatch(watch::Receiver<Option<LeaseLost>>);
+
+/// Resolves when the lease behind `watch` is lost; never without a lease.
+pub async fn wait_lost(watch: Option<LostWatch>) -> LeaseLost {
+    if let Some(LostWatch(mut lost)) = watch {
+        loop {
+            if let Some(lost) = lost.borrow_and_update().clone() {
+                return lost;
+            }
+            if lost.changed().await.is_err() {
+                break;
+            }
+        }
+    }
+    std::future::pending().await
+}
+
+/// Take `env`'s lease for the project at `root`. `Ok(None)` when the API has
+/// no environment leases.
+pub async fn take(api: &EnvApi, env: &str, root: &Path, take_over: bool) -> Result<Option<Held>> {
+    let project = project_id(root);
+    let holder = holder_label(root);
+    let Some(lease) = api
+        .take_lease(env, &project, &holder, take_over)
+        .await
+        .map_err(explain_refusal)?
+    else {
+        return Ok(None);
+    };
+    let (sender, receiver) = watch::channel(None);
+    let every = Duration::from_secs((lease.ttl_seconds / 3).max(5));
+    let renewal = tokio::spawn(renew(
+        api.clone(),
+        env.to_string(),
+        project,
+        holder,
+        lease.generation,
+        every,
+        Arc::new(sender),
+    ));
+    Ok(Some(Held {
+        api: api.clone(),
+        env: env.to_string(),
+        generation: lease.generation,
+        lost: receiver,
+        renewal,
+        replaced: lease.replaced,
+    }))
+}
+
+/// Renew every `every` until a renewal is refused with `devenv-lease-lost`.
+/// Other failures (the network, the API restarting) are retried: the lease
+/// keeps its generation until another project takes it.
+async fn renew(
+    api: EnvApi,
+    env: String,
+    project: String,
+    holder: String,
+    generation: i64,
+    every: Duration,
+    lost: Arc<watch::Sender<Option<LeaseLost>>>,
+) {
+    let mut tick = tokio::time::interval(every);
+    tick.tick().await;
+    loop {
+        tick.tick().await;
+        match api.renew_lease(&env, &project, &holder, generation).await {
+            Ok(_) => {}
+            Err(error) if api_code(&error) == Some(LEASE_LOST) => {
+                // Stop the session now; the holder comes from the refusal.
+                let holder = holder_in(&format!("{error:#}"))
+                    .unwrap_or_else(|| "another project".to_string());
+                let _ = lost.send(Some(LeaseLost { holder }));
+                return;
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lost_leases_are_recognised_in_api_errors() {
+        let error = anyhow::anyhow!(
+            "Creating the deployment failed (409 Conflict): Dev environment denv_x was taken over by savings-app (a4 dev up); nothing was written (devenv-lease-lost)"
+        );
+        assert_eq!(
+            lease_lost(&error),
+            Some(LeaseLost {
+                holder: "savings-app (a4 dev up)".into()
+            })
+        );
+        let typed = anyhow::Error::new(LeaseLost { holder: "x".into() }).context("Redeploy failed");
+        assert_eq!(lease_lost(&typed).unwrap().holder, "x");
+        assert!(lease_lost(&anyhow::anyhow!("devenv-busy")).is_none());
+        assert_eq!(
+            LeaseLost {
+                holder: "savings-app".into()
+            }
+            .to_string(),
+            "this environment was taken over by savings-app; nothing more was written"
+        );
+    }
+
+    #[test]
+    fn project_ids_are_stable_and_reveal_no_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let id = project_id(dir.path());
+        assert_eq!(id, project_id(dir.path()));
+        assert!(id.starts_with("proj_") && id.len() == 29, "{id}");
+        assert!(!id.contains(&*dir.path().to_string_lossy()));
+        let other = tempfile::tempdir().unwrap();
+        assert_ne!(id, project_id(other.path()));
+        assert!(holder_label(dir.path()).ends_with(" (a4 dev up)"));
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_release_does_not_hold_up_stopping() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let api = EnvApi::new(reqwest::Client::new(), &origin, "key").unwrap();
+        let (_sender, lost) = watch::channel(None);
+        let held = Held {
+            api,
+            env: "denv_x".into(),
+            generation: 1,
+            lost,
+            renewal: tokio::spawn(std::future::pending()),
+            replaced: None,
+        };
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            held.release_within(Duration::from_millis(50)),
+        )
+        .await
+        .expect("release gave up");
+    }
+
+    /// One path on two machines: the same path with another checkout id.
+    #[test]
+    fn checkouts_at_one_path_have_different_project_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = project_id(dir.path());
+        let recorded = dir.path().join(".arete/checkout-id");
+        assert!(!std::fs::read_to_string(&recorded).unwrap().is_empty());
+        std::fs::write(&recorded, "another-machine").unwrap();
+        let second = project_id(dir.path());
+        assert_ne!(first, second);
+        assert_eq!(second, project_id(dir.path()));
+        // Nothing else is left behind.
+        assert_eq!(
+            std::fs::read_dir(dir.path().join(".arete"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
+}

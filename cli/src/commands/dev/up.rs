@@ -28,6 +28,7 @@ use tokio::process::{Child, Command};
 use super::api::DevApi;
 use super::automations::{self, AutomationsConfig};
 use super::deploy::{run_build, DeployOutcome, DeploySettings, DeployState, Deployer, BUILD_DIR};
+use super::lease;
 use super::proxy::{self, RpcProxy};
 use super::runtime::{pid_alive, LogSink};
 use super::sdk_gen::{self, LocalProtocol};
@@ -214,6 +215,8 @@ pub struct UpConfig {
     pub show_token: bool,
     /// A Vite dev server to proxy the UI's files to (UI development).
     pub ui_dev_url: Option<String>,
+    /// `--take-over`: take the environment's lease from another project.
+    pub take_over: bool,
 }
 
 /// Prints `a4 dev up` progress: JSON event lines on stdout with `--json`,
@@ -403,6 +406,8 @@ struct Session<'a> {
     admission: Option<Child>,
     /// What the current watch pass did, for its `pass` event.
     pass: PassReport,
+    /// The environment's lease, when the API has leases.
+    lease: Option<lease::Held>,
 }
 
 /// One watch pass's outcome: the protocol deployment, the project stacks and
@@ -715,7 +720,42 @@ pub async fn run(config: UpConfig) -> Result<()> {
     ui.set_environment(json!({ "id": env.id, "name": env.name }));
     ui.start_feeds(rpc.clone());
 
-    let deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
+    // One project per environment: the lease comes before anything deploys,
+    // and after the fallible local setup, so every exit from here on goes
+    // through the session's shutdown, which releases it.
+    let held = match lease::take(&config.api, &env.id, &config.project_root, config.take_over).await
+    {
+        Ok(held) => held,
+        Err(error) => {
+            ui.shutdown();
+            proxy.stop().await;
+            return Err(error);
+        }
+    };
+    match &held {
+        Some(held) => {
+            let human = match &held.replaced {
+                Some(previous) => format!(
+                    "Took the environment over from {previous}; its deployments there are removed"
+                ),
+                None => "This project holds the environment".to_string(),
+            };
+            events.emit(
+                "lease",
+                &human,
+                json!({ "leaseGeneration": held.generation(), "replaced": held.replaced }),
+            );
+        }
+        None => events.log.line(
+            "This Arete API has no environment leases; another project could use the environment at the same time",
+        ),
+    }
+    let mut deploy_state = DeployState::load_for(&project.deploy_state_path(), &env.id);
+    // Another project held the environment since this one last deployed:
+    // its takeover disabled what this project left there.
+    if held.as_ref().is_some_and(|held| held.replaced.is_some()) {
+        deploy_state = deploy_state.without_deployments();
+    }
     let automation_events = events.clone();
     let edge_url = proxy.rpc_url();
     let mut session = Session {
@@ -750,12 +790,18 @@ pub async fn run(config: UpConfig) -> Result<()> {
         ui,
         admission: None,
         pass: PassReport::default(),
+        lease: held,
     };
     let result = session.supervise(&token).await;
+    // A write refused because the environment was taken over ends the run
+    // as a takeover, whatever else the error says.
+    let result =
+        result.map_err(|error| lease::lease_lost(&error).map_or(error, anyhow::Error::new));
     if let Some(runner) = &mut session.automations {
         runner.stop().await;
     }
     let stopped = stop_admission(&mut session.admission).await;
+    let held = session.lease.take();
     let result = result.and(stopped);
     let Session {
         events, ui, proxy, ..
@@ -766,6 +812,10 @@ pub async fn run(config: UpConfig) -> Result<()> {
     }
     let _ = std::fs::remove_file(state_path(&project));
     let _ = std::fs::remove_file(project.session_path());
+    // Last, and bounded: nothing local waits on the API to stop.
+    if let Some(held) = held {
+        held.release().await;
+    }
     match &result {
         // With --once, `ready` already ended the run.
         Ok(()) if config.once => {}
@@ -809,6 +859,10 @@ fn error_fields(error: &anyhow::Error) -> Value {
 }
 
 impl Session<'_> {
+    fn lease_generation(&self) -> Option<i64> {
+        self.lease.as_ref().map(lease::Held::generation)
+    }
+
     fn write_state(&self) -> Result<()> {
         let state = DevState {
             schema: STATE_SCHEMA.into(),
@@ -891,7 +945,8 @@ impl Session<'_> {
             self.build(&[]).await?;
             self.deployer = Some(Deployer {
                 project_root: config.project_root.clone(),
-                api: DevApi::new(config.api.origin(), config.api.key()),
+                api: DevApi::new(config.api.origin(), config.api.key())
+                    .with_lease(self.lease_generation()),
                 environment: self.env.id.clone(),
                 settings: config.settings.clone(),
                 state_path: self.project.deploy_state_path(),
@@ -928,7 +983,7 @@ impl Session<'_> {
         }
 
         if config.deploy {
-            self.load_lock_stacks().await;
+            self.load_lock_stacks().await?;
             self.deploy_project_stacks().await?;
         } else {
             self.find_stack().await;
@@ -1299,17 +1354,19 @@ impl Session<'_> {
     /// so installed stack SDKs in dev mode find it, and say how each went.
     /// A stack that fails to load is reported and skipped: its SDK gets
     /// `devenv-stack-not-loaded` with the fix.
-    async fn load_lock_stacks(&mut self) {
+    /// Load the lock's registry stacks. A stack that fails to load is
+    /// reported and the session goes on; a takeover ends it.
+    async fn load_lock_stacks(&mut self) -> Result<()> {
         let lock = match ProjectLock::load_optional(self.project.root.join("arete.lock")) {
             Ok(Some(lock)) => lock,
-            Ok(None) => return,
+            Ok(None) => return Ok(()),
             Err(error) => {
                 self.events.emit(
                     "stack-load-failed",
                     &format!("Could not read arete.lock to load its stacks: {error:#}"),
                     json!({ "error": format!("{error:#}") }),
                 );
-                return;
+                return Ok(());
             }
         };
         for (package, hash, alias) in lock_stacks(&lock) {
@@ -1320,7 +1377,12 @@ impl Session<'_> {
             match self
                 .config
                 .api
-                .load_registry_stack(&self.env.id, &hash, alias.as_deref())
+                .load_registry_stack(
+                    &self.env.id,
+                    &hash,
+                    alias.as_deref(),
+                    self.lease_generation(),
+                )
                 .await
             {
                 Ok(answer) => {
@@ -1337,6 +1399,7 @@ impl Session<'_> {
                         }),
                     );
                 }
+                Err(error) if lease::lease_lost(&error).is_some() => return Err(error),
                 Err(error) => self.events.emit(
                     "stack-load-failed",
                     &format!("Stack {label} was not loaded: {error:#}"),
@@ -1350,6 +1413,7 @@ impl Session<'_> {
                 ),
             }
         }
+        Ok(())
     }
 
     async fn deploy_project_stacks(&mut self) -> Result<()> {
@@ -1358,6 +1422,7 @@ impl Session<'_> {
             &self.config.api,
             &self.env.id,
             &self.events.log,
+            self.lease_generation(),
         )
         .await?;
         for stack in &stacks {
@@ -1386,9 +1451,11 @@ impl Session<'_> {
             tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
         #[cfg(not(unix))]
         let mut terminate = ();
+        let lost = self.lease.as_ref().map(lease::Held::watch);
         tokio::select! {
             _ = &mut ctrl_c => return interrupted_start(self.config.once),
             _ = terminated(&mut terminate) => return interrupted_start(self.config.once),
+            taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
             result = self.start(token) => result?,
         }
         if self.config.once {
@@ -1409,19 +1476,14 @@ impl Session<'_> {
             tokio::select! {
                 _ = &mut ctrl_c => return Ok(()),
                 _ = terminated(&mut terminate) => return Ok(()),
+                taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
                 _ = tick.tick() => {}
             }
-            if let Some(runner) = &mut self.automations {
-                runner
-                    .follow_target(
-                        self.deploy_state.deployment_id.as_deref(),
-                        self.stack.as_ref().map(|(_, url)| url.as_str()),
-                    )
-                    .await;
-                runner.poll(watching).await;
-            }
-            if self.find_stack().await {
-                self.write_session()?;
+            tokio::select! {
+                _ = &mut ctrl_c => return Ok(()),
+                _ = terminated(&mut terminate) => return Ok(()),
+                taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
+                result = self.refresh(watching) => result?,
             }
             if !watching {
                 continue;
@@ -1429,9 +1491,28 @@ impl Session<'_> {
             tokio::select! {
                 _ = &mut ctrl_c => return Ok(()),
                 _ = terminated(&mut terminate) => return Ok(()),
+                taken = lease::wait_lost(lost.clone()) => return Err(taken.into()),
                 result = self.watch_pass(&mut snapshot) => result?,
             }
         }
+    }
+
+    /// Bring the automations and the stack lookup up to date. Any wait here
+    /// gives way to a lost lease, so a takeover stops the session at once.
+    async fn refresh(&mut self, watching: bool) -> Result<()> {
+        if let Some(runner) = &mut self.automations {
+            runner
+                .follow_target(
+                    self.deploy_state.deployment_id.as_deref(),
+                    self.stack.as_ref().map(|(_, url)| url.as_str()),
+                )
+                .await;
+            runner.poll(watching).await;
+        }
+        if self.find_stack().await {
+            self.write_session()?;
+        }
+        Ok(())
     }
 
     /// Rebuild when the protocol's sources changed since `snapshot`, then
@@ -1504,6 +1585,10 @@ impl Session<'_> {
         }
         .await;
         if let Err(error) = &result {
+            // Never retried: another project holds the environment now.
+            if let Some(lost) = lease::lease_lost(error) {
+                return Err(lost.into());
+            }
             self.events.emit(
                 "deploy-failed",
                 &format!("Redeploy failed: {error:#}"),

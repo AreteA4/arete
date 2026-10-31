@@ -507,6 +507,7 @@ pub async fn deploy(
     api: &arete_mcp::dev_env::EnvApi,
     environment: &str,
     log: &LogSink,
+    lease: Option<i64>,
 ) -> Result<Vec<super::api::EnvStack>> {
     let detection = detect(root)?;
     for note in &detection.notes {
@@ -639,6 +640,7 @@ pub async fn deploy(
                 &name,
                 artifacts,
                 source_idls,
+                lease,
             )
         })
         .await??;
