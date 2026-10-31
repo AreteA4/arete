@@ -14,6 +14,53 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Decides which jobs a pull request can affect, so the rest can skip. See
+  # scripts/ci-affected-jobs.sh for the rules. Every gated job runs unless this
+  # job positively reports `false`: when it fails, or on a push or manual run
+  # where the step below does not run, the outputs are empty and everything
+  # runs. A skipped job counts as passing for required checks, so skipping on
+  # anything but a positive decision would let an unverified change merge.
+  changes:
+    name: Detect affected jobs
+    runs-on: ubuntu-latest
+    outputs:
+      rust-workspace: ${{ steps.affected.outputs.rust-workspace }}
+      rust-features: ${{ steps.affected.outputs.rust-features }}
+      rust-consumers: ${{ steps.affected.outputs.rust-consumers }}
+      rust-clippy: ${{ steps.affected.outputs.rust-clippy }}
+      rust-solana-adapter: ${{ steps.affected.outputs.rust-solana-adapter }}
+      windows-cli-lifecycle: ${{ steps.affected.outputs.windows-cli-lifecycle }}
+      generated-example-sdks: ${{ steps.affected.outputs.generated-example-sdks }}
+      ore-react: ${{ steps.affected.outputs.ore-react }}
+      typescript-core: ${{ steps.affected.outputs.typescript-core }}
+      typescript-hash: ${{ steps.affected.outputs.typescript-hash }}
+      typescript-dev-ui: ${{ steps.affected.outputs.typescript-dev-ui }}
+      typescript-protocol: ${{ steps.affected.outputs.typescript-protocol }}
+      typescript-automations: ${{ steps.affected.outputs.typescript-automations }}
+      typescript-automations-postgres: ${{ steps.affected.outputs.typescript-automations-postgres }}
+      typescript-adapters: ${{ steps.affected.outputs.typescript-adapters }}
+      typescript-react: ${{ steps.affected.outputs.typescript-react }}
+      python-matrix: ${{ steps.affected.outputs.python-matrix }}
+      docs: ${{ steps.affected.outputs.docs }}
+      benchmarks: ${{ steps.affected.outputs.benchmarks }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 2
+
+      # A pull_request run checks out the merge commit, so comparing it with
+      # its first parent is exactly what this pull request would change, even
+      # if the base branch has moved. --no-renames lists both sides of a rename:
+      # moving a file out of a crate still affects that crate.
+      - name: Compare the merge commit with its base
+        id: affected
+        if: github.event_name == 'pull_request'
+        run: |
+          git rev-parse --verify --quiet 'HEAD^2' >/dev/null
+          changed="$(git diff --name-only --no-renames 'HEAD^1' HEAD)"
+          printf 'Changed paths:\n%s\n\nDecisions:\n' "$changed"
+          printf '%s\n' "$changed" | bash ./scripts/ci-affected-jobs.sh | tee -a "$GITHUB_OUTPUT"
+
   check-crate-files:
     name: Check Rust Crate LICENSE and README
     runs-on: ubuntu-latest
@@ -126,6 +173,9 @@ jobs:
       - name: Test the verified-tree lookup the release gate uses
         run: bash ./scripts/test-find-verified-tree.sh
 
+      - name: Test which jobs a pull request's changes can skip
+        run: bash ./scripts/test-ci-affected-jobs.sh
+
   npm-cli-wrapper:
     name: npm CLI Wrapper
     runs-on: ubuntu-latest
@@ -159,6 +209,8 @@ jobs:
 
   rust-workspace:
     name: Rust workspace tests
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust-workspace != 'false' }}
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: 0
@@ -213,6 +265,8 @@ jobs:
 
   rust-features:
     name: Rust feature variants
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust-features != 'false' }}
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: 0
@@ -248,6 +302,8 @@ jobs:
 
   rust-consumers:
     name: Rust generated consumers
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust-consumers != 'false' }}
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: 0
@@ -295,6 +351,8 @@ jobs:
 
   rust-clippy:
     name: Rust clippy
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust-clippy != 'false' }}
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: 0
@@ -347,23 +405,28 @@ jobs:
 
   # The repository ruleset requires a check named exactly `Rust`. The Rust
   # checks run as four parallel jobs; this one carries the required name
-  # and fails unless all of them succeeded. `if: always()` keeps it
-  # reporting when a job fails or is cancelled instead of being skipped.
+  # and fails unless each of them succeeded, or skipped because `changes`
+  # decided it could. A job skipped for any other reason, such as a cancelled
+  # run, still fails. `if: always()` keeps it reporting in those cases instead
+  # of being skipped itself.
   rust:
     name: Rust
     runs-on: ubuntu-latest
-    needs: [rust-workspace, rust-features, rust-consumers, rust-clippy]
+    needs: [changes, rust-workspace, rust-features, rust-consumers, rust-clippy]
     if: always()
     steps:
-      - name: Require every Rust job to have succeeded
+      - name: Require every Rust job to have succeeded or been ruled out
         env:
-          RESULTS: ${{ join(needs.*.result, ' ') }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "Rust job results: ${RESULTS}"
-          for result in $RESULTS; do [ "$result" = "success" ] || exit 1; done
+          jq '{changes: .changes.outputs} * (del(.changes) | map_values(.result))' <<<"$NEEDS"
+          jq -e '.changes.outputs as $decided | del(.changes) | to_entries
+            | all(.value.result == "success" or (.value.result == "skipped" and $decided[.key] == "false"))' <<<"$NEEDS"
 
   generated-example-sdks:
     name: Generated Example SDKs
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.generated-example-sdks != 'false' }}
     runs-on: ubuntu-latest
     env:
       # The CLI, the standalone ORE stack and the Rust example share one target
@@ -470,7 +533,8 @@ jobs:
 
   ore-react:
     name: ORE React App
-    needs: generated-example-sdks
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.ore-react != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -546,6 +610,8 @@ jobs:
 
   typescript-core:
     name: TypeScript Core
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-core != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -574,6 +640,8 @@ jobs:
 
   typescript-hash:
     name: TypeScript Hash
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-hash != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -605,6 +673,8 @@ jobs:
 
   typescript-dev-ui:
     name: TypeScript Dev UI
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-dev-ui != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -631,6 +701,8 @@ jobs:
 
   typescript-protocol:
     name: TypeScript Protocol
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-protocol != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -682,6 +754,8 @@ jobs:
   # signer; rust-workspace fails when they are stale.
   typescript-automations:
     name: TypeScript Automations
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-automations != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -721,6 +795,8 @@ jobs:
   # The Postgres store, against every supported major version.
   typescript-automations-postgres:
     name: TypeScript Automations (Postgres ${{ matrix.postgres }})
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-automations-postgres != 'false' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -768,6 +844,8 @@ jobs:
 
   typescript-adapters:
     name: TypeScript Adapters
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-adapters != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -828,6 +906,8 @@ jobs:
 
   typescript-react:
     name: TypeScript React
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.typescript-react != 'false' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -877,7 +957,11 @@ jobs:
 
   python-matrix:
     name: Python ${{ matrix.python-version }} (${{ matrix.extras }})
-    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.python-matrix != 'false' }}
+    # The SDK supports Python 3.9, which setup-python does not provide on
+    # Ubuntu 26.04, the image ubuntu-latest is moving to.
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: python/arete-sdk
@@ -927,24 +1011,27 @@ jobs:
   # The repository ruleset requires a check named exactly `Python`. A matrix
   # job cannot produce one — every member is named after its own cell — so
   # this aggregation job carries that name. `needs.<job>.result` for a matrix
-  # is `success` only when every member succeeded, and `if: always()` keeps
-  # this job running (and therefore reporting) when one fails or is
-  # cancelled, instead of being skipped and leaving the check missing.
+  # is `success` only when every member succeeded. Like `Rust`, it also accepts
+  # a skip that `changes` decided, and `if: always()` keeps it reporting when
+  # the matrix fails or is cancelled, instead of leaving the check missing.
   python:
     name: Python
     runs-on: ubuntu-latest
-    needs: python-matrix
+    needs: [changes, python-matrix]
     if: always()
     steps:
-      - name: Require every Python matrix job to have succeeded
+      - name: Require the Python matrix to have succeeded or been ruled out
         env:
-          MATRIX_RESULT: ${{ needs.python-matrix.result }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          echo "Python matrix result: ${MATRIX_RESULT}"
-          [ "${MATRIX_RESULT}" = "success" ]
+          jq '{changes: .changes.outputs} * (del(.changes) | map_values(.result))' <<<"$NEEDS"
+          jq -e '.changes.outputs as $decided | del(.changes) | to_entries
+            | all(.value.result == "success" or (.value.result == "skipped" and $decided[.key] == "false"))' <<<"$NEEDS"
 
   docs:
     name: Docs
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docs != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -976,6 +1063,8 @@ jobs:
 
   rust-solana-adapter:
     name: Rust Solana Adapter
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.rust-solana-adapter != 'false' }}
     runs-on: ubuntu-latest
     env:
       CARGO_INCREMENTAL: 0
@@ -1031,14 +1120,10 @@ jobs:
           cargo clippy --locked -p arete-a4-sdk --features solana-adapter \
             --test solana_adapter --example solana_v1 -- -D warnings
 
-  # Records that this exact tree passed every job above. A pull_request run
-  # checks out the merge commit GitHub would create, so when the base branch
-  # has not moved before the merge, main gets this same tree and the release
-  # workflow can accept this run instead of waiting for main's CI. Main pushes
-  # always run in full. scripts/check-verified-tree-needs.sh keeps `needs`
-  # complete.
   benchmarks:
     name: Benchmarks harness
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.benchmarks != 'false' }}
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -1066,6 +1151,8 @@ jobs:
 
   windows-cli-lifecycle:
     name: Windows CLI lifecycle
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.windows-cli-lifecycle != 'false' }}
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -1103,9 +1190,18 @@ jobs:
       - name: Test relative protocol compiler paths
         run: cargo test --locked -p a4-cli --bin a4 commands::protocol_bin::tests
 
+  # Records that this exact tree passed every job above. A pull_request run
+  # checks out the merge commit GitHub would create, so when the base branch
+  # has not moved before the merge, main gets this same tree and the release
+  # workflow can accept this run instead of waiting for main's CI. Main pushes
+  # always run in full. A run that skipped any job records nothing, because a
+  # job is skipped when one it needs was: the release gate then waits for
+  # main's full run. scripts/check-verified-tree-needs.sh keeps `needs`
+  # complete.
   record-verified-tree:
     name: Record verified tree
     needs:
+      - changes
       - check-crate-files
       - lockfile-sync
       - linked-release-versions
