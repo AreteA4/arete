@@ -105,6 +105,7 @@ if (project.trailingSlash === "never")
 
 <script>
   import { pagefindUserConfig } from "virtual:starlight/pagefind-config";
+  import { trackDocsEvent } from "../../../lib/docs-analytics.mjs";
 
   class SiteSearch extends HTMLElement {
     private searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -177,10 +178,15 @@ if (project.trailingSlash === "never")
         ? stripTrailingSlash
         : (path: string) => path;
 
-      window.addEventListener("DOMContentLoaded", () => {
+      // Deferred modules run while readyState is still "interactive", before
+      // DOMContentLoaded. A later view-transition mount runs at "complete",
+      // when that event has already fired and a listener would never run.
+      const startPagefind = () => {
         if (import.meta.env.DEV) return;
+        if (this.dataset.pagefindReady === "true") return;
+        this.dataset.pagefindReady = "true";
         const onIdle =
-          window.requestIdleCallback || ((cb) => setTimeout(cb, 1));
+          window.requestIdleCallback || ((cb: () => void) => setTimeout(cb, 1));
         onIdle(async () => {
           const { PagefindUI } = await import("@pagefind/default-ui");
           new PagefindUI({
@@ -204,92 +210,98 @@ if (project.trailingSlash === "never")
             },
           });
 
-          // Set up search tracking after PagefindUI is initialized
           this.setupSearchTracking();
         });
-      });
+      };
+      if (document.readyState === "complete") startPagefind();
+      else
+        window.addEventListener("DOMContentLoaded", startPagefind, {
+          once: true,
+        });
     }
 
     /**
      * Track an event with PostHog if available
      */
     private trackEvent(eventName: string, properties: Record<string, unknown>) {
-      if (typeof window !== "undefined" && (window as any).posthog) {
-        (window as any).posthog.capture(eventName, properties);
-      }
+      trackDocsEvent(eventName, properties);
     }
 
     /**
      * Set up search query tracking with debouncing
      */
-    private setupSearchTracking() {
-      // Wait a tick for Pagefind to render its input
-      setTimeout(() => {
-        const searchInput = document.querySelector<HTMLInputElement>(
-          ".pagefind-ui__search-input",
-        );
+    private setupSearchTracking(attempt = 0) {
+      const searchInput = document.querySelector<HTMLInputElement>(
+        ".pagefind-ui__search-input",
+      );
+      const resultsContainer = document.querySelector("#starlight__search");
 
-        if (!searchInput) {
-          console.warn("[PostHog] Could not find Pagefind search input");
+      if (
+        !searchInput ||
+        !resultsContainer ||
+        resultsContainer.getAttribute("data-docs-search-tracked") === "true"
+      ) {
+        if (
+          resultsContainer?.getAttribute("data-docs-search-tracked") === "true"
+        ) {
           return;
         }
+        if (attempt < 20) {
+          setTimeout(() => this.setupSearchTracking(attempt + 1), 200);
+          return;
+        }
+        if (!searchInput) {
+          console.warn("[PostHog] Could not find Pagefind search input");
+        }
+        return;
+      }
+      resultsContainer.setAttribute("data-docs-search-tracked", "true");
 
-        // Track search queries with debouncing
-        searchInput.addEventListener("input", (e) => {
-          const query = (e.target as HTMLInputElement).value.trim();
+      searchInput.addEventListener("input", (e) => {
+        const query = (e.target as HTMLInputElement).value.trim();
 
-          // Clear existing timer
-          if (this.searchDebounceTimer) {
-            clearTimeout(this.searchDebounceTimer);
-          }
+        // Clear existing timer
+        if (this.searchDebounceTimer) {
+          clearTimeout(this.searchDebounceTimer);
+        }
 
-          // Only track if query is meaningful (3+ chars) and different from last tracked
-          if (query.length >= 3 && query !== this.lastTrackedQuery) {
-            this.searchDebounceTimer = setTimeout(() => {
-              this.lastTrackedQuery = query;
+        // Only track if query is meaningful (3+ chars) and different from last tracked
+        if (query.length >= 3 && query !== this.lastTrackedQuery) {
+          this.searchDebounceTimer = setTimeout(() => {
+            this.lastTrackedQuery = query;
 
-              // Check if there are results
-              const resultsContainer = document.querySelector(
-                ".pagefind-ui__results",
-              );
-              const hasResults =
-                resultsContainer &&
-                resultsContainer.children.length > 0 &&
-                !resultsContainer.querySelector(".pagefind-ui__message");
+            const resultsList = document.querySelector(".pagefind-ui__results");
+            const hasResults = !!resultsList?.querySelector(
+              ".pagefind-ui__result",
+            );
 
-              this.trackEvent("docs_search", {
+            this.trackEvent("docs_search", {
+              query: query,
+              has_results: hasResults,
+              page: window.location.pathname,
+            });
+
+            // Track no results separately for easier analysis
+            if (!hasResults) {
+              this.trackEvent("docs_search_no_results", {
                 query: query,
-                has_results: hasResults,
-                page: window.location.pathname,
-              });
-
-              // Track no results separately for easier analysis
-              if (!hasResults) {
-                this.trackEvent("docs_search_no_results", {
-                  query: query,
-                  page: window.location.pathname,
-                });
-              }
-            }, 1000); // 1 second debounce
-          }
-        });
-
-        // Track when a search result is clicked
-        const resultsContainer = document.querySelector("#starlight__search");
-        if (resultsContainer) {
-          resultsContainer.addEventListener("click", (e) => {
-            const link = (e.target as HTMLElement).closest("a");
-            if (link && link.href) {
-              const query = searchInput.value.trim() || this.lastTrackedQuery;
-              this.trackEvent("docs_search_result_click", {
-                query: query,
-                result_url: link.href,
                 page: window.location.pathname,
               });
             }
+          }, 1000); // 1 second debounce
+        }
+      });
+
+      resultsContainer.addEventListener("click", (e) => {
+        const link = (e.target as HTMLElement).closest("a");
+        if (link && link.href) {
+          const query = searchInput.value.trim() || this.lastTrackedQuery;
+          this.trackEvent("docs_search_result_click", {
+            query: query,
+            result_url: link.href,
           });
         }
-      }, 100);
+      });
     }
   }
   customElements.define("site-search", SiteSearch);
