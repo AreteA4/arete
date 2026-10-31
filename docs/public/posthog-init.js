@@ -156,6 +156,27 @@
     return utm;
   }
 
+  // A page URL is a newer X campaign only when it carries the same shape the
+  // cookie reader accepts. Other query UTMs must not replace arete_attr.
+  function xAttrFromQuery(utm) {
+    if (utm.utm_source !== "x" || utm.utm_medium !== "social") return null;
+    const attr = {};
+    for (const key of ARETE_ATTR_UTM_KEYS) {
+      if (!utm[key]) continue;
+      if (!ARETE_ATTR_TOKEN.test(utm[key])) return null;
+      attr[key] = utm[key];
+    }
+    return attr;
+  }
+
+  function writeAreteAttr(attr) {
+    if (typeof document === "undefined") return;
+    const body = ARETE_ATTR_UTM_KEYS.filter((key) => attr[key])
+      .map((key) => `${key}=${encodeURIComponent(attr[key])}`)
+      .join("&");
+    document.cookie = `${ARETE_ATTR_COOKIE}=${body}; Domain=.arete.run; Path=/; Max-Age=1800; SameSite=Lax; Secure`;
+  }
+
   function applyAreteAttr(event, cookieHeader, search) {
     if (!event || event.event === "$snapshot") return event;
     const header =
@@ -165,7 +186,6 @@
           : document.cookie
         : cookieHeader;
     const attr = readAreteAttr(header);
-    if (!attr) return event;
 
     // Only utm_* on this page's URL are current query attribution.
     // posthog.register copies earlier visits onto every event, so a filled
@@ -177,6 +197,11 @@
           : location.search
         : search;
     const fromUrl = queryUtms(queryString);
+    // The query campaign is newer than a cookie from an earlier visit.
+    // Refresh arete_attr so the next docs page, which has no query, keeps it.
+    const fresh = xAttrFromQuery(fromUrl);
+    if (fresh) writeAreteAttr(fresh);
+    if (!attr) return event;
 
     const props = event.properties || (event.properties = {});
     for (const key of ARETE_ATTR_UTM_KEYS) {

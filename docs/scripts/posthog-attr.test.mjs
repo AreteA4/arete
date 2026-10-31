@@ -76,19 +76,78 @@ test("forged cookies are rejected", () => {
 });
 
 test("UTMs on the current URL win over the cookie", () => {
-  const event = applyAreteAttr(
-    {
-      event: "$autocapture",
-      properties: { utm_source: "registered", utm_content: "" },
+  const writes = [];
+  const previous = globalThis.document;
+  globalThis.document = {
+    set cookie(value) {
+      writes.push(value);
     },
-    COOKIE,
-    "?utm_source=docs",
-  );
-  assert.equal(event.properties.utm_source, "docs");
-  assert.equal(event.properties.utm_medium, "social");
-  assert.equal(event.properties.utm_campaign, "2026-w44");
-  assert.equal(event.properties.utm_content, "quickstart_usearete");
-  assert.equal(event.properties.$set, undefined);
+  };
+  try {
+    const event = applyAreteAttr(
+      {
+        event: "$autocapture",
+        properties: { utm_source: "registered", utm_content: "" },
+      },
+      COOKIE,
+      "?utm_source=docs",
+    );
+    assert.equal(event.properties.utm_source, "docs");
+    assert.equal(event.properties.utm_medium, "social");
+    assert.equal(event.properties.utm_campaign, "2026-w44");
+    assert.equal(event.properties.utm_content, "quickstart_usearete");
+    assert.equal(event.properties.$set, undefined);
+    assert.deepEqual(writes, []);
+  } finally {
+    if (previous === undefined) delete globalThis.document;
+    else globalThis.document = previous;
+  }
+});
+
+test("a query campaign replaces a stale arete_attr cookie", () => {
+  const writes = [];
+  const previous = globalThis.document;
+  globalThis.document = {
+    set cookie(value) {
+      writes.push(value);
+    },
+  };
+  try {
+    const event = applyAreteAttr(
+      { event: "$pageview", properties: { utm_campaign: "2026-w44" } },
+      COOKIE,
+      "?utm_source=x&utm_medium=social&utm_campaign=2026-w45&utm_content=savings_usearete",
+    );
+    assert.equal(event.properties.utm_campaign, "2026-w45");
+    assert.equal(event.properties.utm_content, "savings_usearete");
+    assert.equal(event.properties.$set.utm_campaign, "2026-w45");
+    assert.equal(writes.length, 1);
+    const written = writes[0];
+    assert.match(
+      written,
+      /^arete_attr=utm_source=x&utm_medium=social&utm_campaign=2026-w45&utm_content=savings_usearete; Domain=\.arete\.run; Path=\/; Max-Age=1800; SameSite=Lax; Secure$/,
+    );
+
+    const later = applyAreteAttr(
+      {
+        event: "$pageview",
+        properties: {
+          utm_source: "x",
+          utm_medium: "social",
+          utm_campaign: "2026-w45",
+          utm_content: "savings_usearete",
+        },
+      },
+      written.split(";")[0],
+      "",
+    );
+    assert.equal(later.properties.utm_campaign, "2026-w45");
+    assert.equal(later.properties.utm_content, "savings_usearete");
+    assert.equal(writes.length, 1);
+  } finally {
+    if (previous === undefined) delete globalThis.document;
+    else globalThis.document = previous;
+  }
 });
 
 test("pageviews set initial UTMs once and current UTMs", () => {
