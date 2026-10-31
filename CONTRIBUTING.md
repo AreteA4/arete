@@ -373,7 +373,7 @@ linked manifest or package versions diverge.
 
 ### Review Process
 
-- All CI checks must pass
+- All CI checks must pass. Pull requests skip jobs their changes cannot affect (`scripts/ci-affected-jobs.sh`); pushes to `main` run everything
 - At least one maintainer approval required
 - We may request changes — this is collaborative, not adversarial
 - Once approved, a maintainer will merge
