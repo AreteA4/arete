@@ -75,13 +75,14 @@ test("forged cookies are rejected", () => {
   assert.equal(readAreteAttr("theme=dark"), null);
 });
 
-test("before_send fills missing props and leaves query UTMs in place", () => {
+test("UTMs on the current URL win over the cookie", () => {
   const event = applyAreteAttr(
     {
       event: "$autocapture",
-      properties: { utm_source: "docs", utm_content: "" },
+      properties: { utm_source: "registered", utm_content: "" },
     },
     COOKIE,
+    "?utm_source=docs",
   );
   assert.equal(event.properties.utm_source, "docs");
   assert.equal(event.properties.utm_medium, "social");
@@ -94,9 +95,10 @@ test("pageviews set initial UTMs once and current UTMs", () => {
   const event = applyAreteAttr(
     {
       event: "$pageview",
-      properties: { utm_campaign: "from-query" },
+      properties: { utm_campaign: "registered-A" },
     },
     COOKIE,
+    "?utm_campaign=from-query",
   );
   assert.equal(event.properties.utm_campaign, "from-query");
   assert.equal(event.properties.$set.utm_source, "x");
@@ -110,21 +112,45 @@ test("pageviews set initial UTMs once and current UTMs", () => {
   );
 });
 
-test("existing person properties are not overwritten", () => {
+test("a fresh cookie replaces registered UTMs when the URL has none", () => {
+  const cookieB =
+    "arete_attr=utm_source=x&utm_medium=social&utm_campaign=2026-w45&utm_content=savings_usearete";
   const event = applyAreteAttr(
     {
       event: "$pageview",
       properties: {
-        $set: { utm_source: "already" },
-        $set_once: { $initial_utm_source: "first" },
+        utm_source: "x",
+        utm_medium: "social",
+        utm_campaign: "2026-w44",
+        utm_content: "quickstart_usearete",
+        $set: {
+          utm_source: "x",
+          utm_medium: "social",
+          utm_campaign: "2026-w44",
+          utm_content: "quickstart_usearete",
+        },
+        $set_once: {
+          $initial_utm_source: "x",
+          $initial_utm_medium: "social",
+          $initial_utm_campaign: "2026-w44",
+          $initial_utm_content: "quickstart_usearete",
+        },
       },
     },
-    COOKIE,
+    cookieB,
+    "",
   );
-  assert.equal(event.properties.$set.utm_source, "already");
-  assert.equal(event.properties.$set.utm_medium, "social");
-  assert.equal(event.properties.$set_once.$initial_utm_source, "first");
-  assert.equal(event.properties.$set_once.$initial_utm_medium, "social");
+  assert.equal(event.properties.utm_source, "x");
+  assert.equal(event.properties.utm_medium, "social");
+  assert.equal(event.properties.utm_campaign, "2026-w45");
+  assert.equal(event.properties.utm_content, "savings_usearete");
+  assert.equal(event.properties.$set.utm_campaign, "2026-w45");
+  assert.equal(event.properties.$set.utm_content, "savings_usearete");
+  assert.equal(event.properties.$set_once.$initial_utm_campaign, "2026-w45");
+  assert.equal(
+    event.properties.$set_once.$initial_utm_content,
+    "savings_usearete",
+  );
 });
 
 test("snapshot events are left alone", () => {

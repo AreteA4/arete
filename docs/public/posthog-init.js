@@ -144,7 +144,19 @@
     return attr;
   }
 
-  function applyAreteAttr(event, cookieHeader) {
+  function queryUtms(search) {
+    const params = new URLSearchParams(
+      search.charAt(0) === "?" ? search.slice(1) : search,
+    );
+    const utm = {};
+    for (const key of ARETE_ATTR_UTM_KEYS) {
+      const value = params.get(key);
+      if (value) utm[key] = value;
+    }
+    return utm;
+  }
+
+  function applyAreteAttr(event, cookieHeader, search) {
     if (!event || event.event === "$snapshot") return event;
     const header =
       cookieHeader == null
@@ -155,12 +167,24 @@
     const attr = readAreteAttr(header);
     if (!attr) return event;
 
+    // Only utm_* on this page's URL are current query attribution.
+    // posthog.register copies earlier visits onto every event, so a filled
+    // property is not proof the query string is still here.
+    const queryString =
+      search == null
+        ? typeof location === "undefined"
+          ? ""
+          : location.search
+        : search;
+    const fromUrl = queryUtms(queryString);
+
     const props = event.properties || (event.properties = {});
     for (const key of ARETE_ATTR_UTM_KEYS) {
-      const value = attr[key];
-      if (!value) continue;
-      // Query-string UTMs already on the event win.
-      if (props[key] == null || props[key] === "") props[key] = value;
+      if (fromUrl[key]) {
+        props[key] = fromUrl[key];
+        continue;
+      }
+      if (attr[key]) props[key] = attr[key];
     }
 
     if (event.event === "$pageview") {
@@ -169,11 +193,9 @@
       for (const key of ARETE_ATTR_UTM_KEYS) {
         const value = props[key];
         if (!value) continue;
-        if (set[key] == null || set[key] === "") set[key] = value;
-        const initialKey = `$initial_${key}`;
-        if (setOnce[initialKey] == null || setOnce[initialKey] === "") {
-          setOnce[initialKey] = value;
-        }
+        // Cookie-replaced keys and URL keys both follow the winner above.
+        set[key] = value;
+        setOnce[`$initial_${key}`] = value;
       }
     }
     return event;
@@ -195,7 +217,8 @@
   });
 
   // Query UTMs that survived (Firefox) stay on later docs events.
-  // Chromium visits rely on arete_attr via before_send above.
+  // A later arete_attr cookie replaces a saved value when this page's
+  // URL has no utm_* for that key.
   // `register` is on the stub, so this queues until array.js finishes loading.
   const utm = {};
   const params = new URLSearchParams(window.location.search);
