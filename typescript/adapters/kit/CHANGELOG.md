@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.51.0](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.50.0...arete-adapter-kit-v0.51.0) (2026-10-31)
+
+
+### Features
+
+* **sdk:** TypeScript and React SDKs honour the dev environment switch ([0c7b838](https://github.com/AreteA4/arete/commit/0c7b8381d44bf589b9c18c1ef8f078e2078c1c85))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.50.0 to ^0.51.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.50.0 to ^0.51.0
+
 ## [0.50.0](https://github.com/AreteA4/arete/compare/arete-adapter-kit-v0.49.0...arete-adapter-kit-v0.50.0) (2026-10-29)
 
 

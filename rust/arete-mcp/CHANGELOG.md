@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.51.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.50.0...arete-mcp-v0.51.0) (2026-10-31)
+
+
+### Features
+
+* **automations:** follow the dev environment switch; a4 dev keeps the client's production deployment ([10b8470](https://github.com/AreteA4/arete/commit/10b847026e824653db41c4a9f07d510ea067f485))
+* **dev:** a4 dev promote --check lists what exists only in the environment ([973714d](https://github.com/AreteA4/arete/commit/973714d3a7c8570907752eeb7f2e60f97a8808ee))
+* **dev:** a4 dev up serves the edge; a4 dev run ([47a2c54](https://github.com/AreteA4/arete/commit/47a2c5425ba763822a7385134651d83bad9f9d63))
+* **dev:** one project per cloud dev environment ([a7fa8dd](https://github.com/AreteA4/arete/commit/a7fa8ddf2423da125589a55c1565c633319ee61a))
+* **dev:** show the slot each environment stack started empty at ([5c3bdb7](https://github.com/AreteA4/arete/commit/5c3bdb7e4a0fc18f30f702690a82eed37543a9c0))
+* **rust-sdk:** honour the dev environment switch; ARETE_ENVIRONMENT in a4 ([92d1b7a](https://github.com/AreteA4/arete/commit/92d1b7ae3caab6e42e9a2baa071456d56996d343))
+
+
+### Bug Fixes
+
+* **cli:** a takeover stops the session at once; checkouts at one path stay apart ([6a394fe](https://github.com/AreteA4/arete/commit/6a394fe62f081d74939aed6c76c006486ae30de7))
+* **cli:** load locked stacks under the lease; stopping doesn't wait on the API ([1f7539f](https://github.com/AreteA4/arete/commit/1f7539fd0e63e4dbe73915cc04120337227a1df3))
+
 ## [0.50.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.49.0...arete-mcp-v0.50.0) (2026-10-29)
 
 

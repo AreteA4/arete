@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.51.0](https://github.com/AreteA4/arete/compare/arete-python-v0.50.0...arete-python-v0.51.0) (2026-10-31)
+
+
+### Features
+
+* **python-sdk:** honour the dev environment switch ([20f0c26](https://github.com/AreteA4/arete/commit/20f0c26f6f81856bacb6e1367e777cb95178c895))
+* **sdk:** offline SDKs name their read endpoint or say how to get one ([574f5f0](https://github.com/AreteA4/arete/commit/574f5f02ee7f42295ccbb627394753a011634e1b))
+
 ## [0.50.0](https://github.com/AreteA4/arete/compare/arete-python-v0.49.0...arete-python-v0.50.0) (2026-10-29)
 
 
