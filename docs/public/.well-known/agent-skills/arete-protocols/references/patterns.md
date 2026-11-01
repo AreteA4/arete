@@ -184,7 +184,7 @@ the `origin` header set to the dev API's), and never call it from a
 production build.
 
 - Gate on the client, never on `NODE_ENV` or a hostname: a production build
-  can hold a dev client by mistake, and the gate must follow the client.
+  can run in dev mode by mistake, and the gate must follow the client.
 - On a server, the `@usearete/automations/dev` helpers throw for a
   production client, so a build that still calls one fails at startup.
   Keep the production signer, store and simulator beside them and choose by
@@ -198,20 +198,23 @@ production build.
 
 ## Dev and production builds of one app
 
-`a4 dev up` regenerates the protocol client (and the protocol stack's SDK)
-for the dev environment's deployment, under `generated/`.
-`a4 install --locked` restores the published ones that `arete.lock` pins,
-which target mainnet. Before a production build or deploy:
+The switch decides where a client runs, not the build: unset
+`ARETE_ENVIRONMENT` and the same client is production. `a4 dev up` regenerates
+the protocol client (and the protocol stack's SDK) from the local build, under
+`generated/`, and `a4 install --locked` restores the published ones that
+`arete.lock` pins. Before a production build or deploy:
 
 ```sh
 a4 install --locked     # the published clients, exactly as arete.lock pins them
-a4 install --check      # fails if generated/ differs from arete.lock
+a4 install --check      # fails on a stale arete.lock or a client not recorded as the pinned release
 ```
 
-A production build must not contain:
+A production build must not contain or run with:
 
-- a client generated for a dev environment (a host adapter with
-  `ARETE_CLUSTER=mainnet` refuses it at startup);
+- a client generated from a local build (`a4 install --check` refuses it);
+- `ARETE_ENVIRONMENT=dev`, or its public copies such as
+  `VITE_ARETE_ENVIRONMENT` (a host adapter with `ARETE_CLUSTER=mainnet`
+  refuses dev mode at startup);
 - dev wallet key files (`.arete/` is git-ignored; keep it out of images and
   bundles too);
 - the dev API URL or an environment token;

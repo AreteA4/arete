@@ -300,9 +300,10 @@ a4 protocol webhook test <id>                 # a signed test delivery; ids from
   variables reach only new deployments, so deploy again after adding the
   webhook secret. Node runs workers, live sources (append sources included)
   and its own tick; no cron needed.
-- Set `ARETE_CLUSTER=mainnet` in the host: a build whose client still
-  targets the dev environment then fails every request and says to run
-  `a4 install --locked`.
+- Set `ARETE_CLUSTER=mainnet` in the host: a host that still sets
+  `ARETE_ENVIRONMENT=dev` then fails every request and says the two disagree;
+  unset it to run against production. A client an older `a4` generated with a
+  dev deployment fails the same way and says to run `a4 install --locked`.
 - `npx @usearete/automations manifest` prints the definition's events,
   schedules and sources; `a4 protocol webhook add` subscribes to the
   build's events by default (`--events` narrows it).
