@@ -62,6 +62,7 @@ struct MintResponse {
     token: String,
     /// Seconds since the epoch.
     #[serde(default)]
+    #[serde(alias = "expiresAt")]
     expires_at: Option<u64>,
 }
 

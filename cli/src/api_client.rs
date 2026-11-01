@@ -308,16 +308,25 @@ fn validate_signup_idempotency_key(value: &str) -> Result<()> {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Spec {
     pub id: i32,
+    #[serde(alias = "userId")]
     pub user_id: i32,
     pub name: String,
+    #[serde(alias = "entityName")]
     pub entity_name: String,
+    #[serde(alias = "crateName")]
     pub crate_name: String,
+    #[serde(alias = "modulePath")]
     pub module_path: String,
     pub description: Option<String>,
+    #[serde(alias = "packageName")]
     pub package_name: Option<String>,
+    #[serde(alias = "outputPath")]
     pub output_path: Option<String>,
+    #[serde(alias = "urlSlug")]
     pub url_slug: String,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
+    #[serde(alias = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -351,14 +360,22 @@ pub struct CreateSpecRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SpecVersionWithContent {
     pub id: i32,
+    #[serde(alias = "specId")]
     pub spec_id: i32,
+    #[serde(alias = "versionNumber")]
     pub version_number: i32,
+    #[serde(alias = "portableAstHash")]
     pub portable_ast_hash: Option<String>,
+    #[serde(alias = "versionCreatedAt")]
     pub version_created_at: String,
     // AST content info
+    #[serde(alias = "stateName")]
     pub state_name: String,
+    #[serde(alias = "programId")]
     pub program_id: Option<String>,
+    #[serde(alias = "handlerCount")]
     pub handler_count: i32,
+    #[serde(alias = "sectionCount")]
     pub section_count: i32,
 }
 
@@ -383,6 +400,7 @@ pub struct SpecWithVersion {
     #[serde(flatten)]
     #[allow(dead_code)]
     pub spec: Spec,
+    #[serde(alias = "latestVersion")]
     pub latest_version: Option<SpecVersionWithContent>,
 }
 
@@ -753,25 +771,37 @@ impl BuildStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Build {
     pub id: i32,
+    #[serde(alias = "specId")]
     pub spec_id: Option<i32>,
+    #[serde(alias = "specVersionId")]
     pub spec_version_id: Option<i32>,
     #[serde(default)]
+    #[serde(alias = "portableAstHash")]
     pub portable_ast_hash: Option<String>,
     #[serde(default)]
+    #[serde(alias = "deploymentReleaseHash")]
     pub deployment_release_hash: Option<String>,
     pub status: BuildStatus,
     #[serde(default)]
+    #[serde(alias = "errorCategory")]
     pub error_category: Option<String>,
+    #[serde(alias = "statusMessage")]
     pub status_message: Option<String>,
     pub phase: Option<String>,
     pub progress: Option<i32>,
+    #[serde(alias = "websocketUrl")]
     pub websocket_url: Option<String>,
     #[serde(default)]
+    #[serde(alias = "websocketAuth")]
     pub websocket_auth: Option<serde_json::Value>,
     #[serde(default)]
+    #[serde(alias = "httpAuth")]
     pub http_auth: Option<serde_json::Value>,
+    #[serde(alias = "startedAt")]
     pub started_at: Option<String>,
+    #[serde(alias = "completedAt")]
     pub completed_at: Option<String>,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
 }
 
@@ -779,11 +809,16 @@ pub struct Build {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildEvent {
     pub id: i32,
+    #[serde(alias = "buildId")]
     pub build_id: i32,
+    #[serde(alias = "eventType")]
     pub event_type: String,
     pub phase: Option<String>,
+    #[serde(alias = "previousStatus")]
     pub previous_status: Option<BuildStatus>,
+    #[serde(alias = "newStatus")]
     pub new_status: Option<BuildStatus>,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
 }
 
@@ -810,6 +845,7 @@ pub struct CreateAliasedLiveSpecArtifact {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateBuildResponse {
+    #[serde(alias = "buildId")]
     pub build_id: i32,
     #[allow(dead_code)]
     pub message: String,
@@ -824,6 +860,7 @@ pub struct BuildStatusResponse {
     pub build: Build,
     pub events: Vec<BuildEvent>,
     #[serde(default)]
+    #[serde(alias = "relatedDeploymentId")]
     pub related_deployment_id: Option<i32>,
     #[serde(default)]
     pub provenance: Option<serde_json::Value>,
@@ -1065,32 +1102,52 @@ impl std::fmt::Display for DeploymentStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentResponse {
     pub id: i32,
+    #[serde(alias = "specId")]
     pub spec_id: i32,
+    #[serde(alias = "specName")]
     pub spec_name: String,
+    #[serde(alias = "atomName")]
     pub atom_name: String,
     pub branch: Option<String>,
+    #[serde(alias = "currentBuildId")]
     pub current_build_id: Option<i32>,
+    #[serde(alias = "currentSpecVersionId")]
     pub current_spec_version_id: Option<i32>,
+    #[serde(alias = "currentVersion")]
     pub current_version: Option<i32>,
+    #[serde(alias = "portableAstHash")]
     pub portable_ast_hash: Option<String>,
+    #[serde(alias = "deploymentReleaseHash")]
     pub deployment_release_hash: Option<String>,
     #[serde(default)]
+    #[serde(alias = "currentIdlProgramIds")]
     pub current_idl_program_ids: Vec<String>,
+    #[serde(alias = "currentImageTag")]
     pub current_image_tag: Option<String>,
+    #[serde(alias = "websocketUrl")]
     pub websocket_url: String,
+    #[serde(alias = "httpUrl")]
     pub http_url: String,
     #[serde(default)]
+    #[serde(alias = "websocketAuth")]
     pub websocket_auth: serde_json::Value,
     #[serde(default)]
+    #[serde(alias = "httpAuth")]
     pub http_auth: serde_json::Value,
     #[serde(default)]
+    #[serde(alias = "transactionRelayEnabled")]
     pub transaction_relay_enabled: bool,
     pub status: DeploymentStatus,
+    #[serde(alias = "statusMessage")]
     pub status_message: Option<String>,
+    #[serde(alias = "firstDeployedAt")]
     pub first_deployed_at: Option<String>,
+    #[serde(alias = "lastDeployedAt")]
     pub last_deployed_at: Option<String>,
+    #[serde(alias = "liveStatus")]
     pub live_status: DeploymentLiveStatus,
     #[serde(default)]
+    #[serde(alias = "latestOperation")]
     pub latest_operation: Option<serde_json::Value>,
 }
 
@@ -1108,12 +1165,18 @@ pub enum DeploymentPhase {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentLiveStatus {
     pub phase: DeploymentPhase,
+    #[serde(alias = "desiredReplicas")]
     pub desired_replicas: Option<i32>,
+    #[serde(alias = "readyReplicas")]
     pub ready_replicas: Option<i32>,
+    #[serde(alias = "availableReplicas")]
     pub available_replicas: Option<i32>,
+    #[serde(alias = "updatedReplicas")]
     pub updated_replicas: Option<i32>,
+    #[serde(alias = "lastTransitionTime")]
     pub last_transition_time: Option<String>,
     pub source: String,
+    #[serde(alias = "errorCategory")]
     pub error_category: Option<String>,
 }
 
@@ -1159,12 +1222,18 @@ pub struct CompositionLiveBindingResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
     pub id: i32,
+    #[serde(alias = "userId")]
     pub user_id: i32,
     pub name: Option<String>,
+    #[serde(alias = "lastUsedAt")]
     pub last_used_at: Option<String>,
+    #[serde(alias = "expiresAt")]
     pub expires_at: Option<String>,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
+    #[serde(alias = "keyClass")]
     pub key_class: String,
+    #[serde(alias = "originAllowlist")]
     pub origin_allowlist: Option<Vec<String>>,
 }
 
@@ -1231,7 +1300,9 @@ pub struct CreateApiKeyResponse {
     pub id: i32,
     pub key: String,
     pub name: Option<String>,
+    #[serde(alias = "keyClass")]
     pub key_class: String,
+    #[serde(alias = "expiresAt")]
     pub expires_at: String,
     pub message: String,
 }
@@ -1239,6 +1310,7 @@ pub struct CreateApiKeyResponse {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct StopDeploymentResponse {
+    #[serde(alias = "operationId")]
     pub operation_id: i32,
     pub status: String,
     pub message: String,
@@ -1256,6 +1328,7 @@ fn default_standard_service_class() -> String {
 pub struct RegistryStackItem {
     pub name: String,
     pub description: Option<String>,
+    #[serde(alias = "websocketUrl")]
     pub websocket_url: String,
     pub entities: Vec<String>,
     #[serde(default)]
@@ -2968,10 +3041,13 @@ pub struct AgentSignupResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMeResponse {
     pub slug: String,
+    #[serde(alias = "displayName")]
     pub display_name: String,
     pub status: String,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
     #[serde(default)]
+    #[serde(alias = "lastSeenAt")]
     pub last_seen_at: Option<String>,
     #[serde(rename = "claimState", alias = "claim_state")]
     pub claim_state: String,
@@ -4360,6 +4436,27 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    /// Each response type decodes both key spellings to the same value, so
+    /// this CLI keeps working as API responses move to camelCase.
+    #[test]
+    fn api_responses_decode_snake_case_and_camel_case() {
+        let snake: Spec = serde_json::from_value(json!({
+            "id": 1, "user_id": 2, "name": "ore", "entity_name": "Round",
+            "crate_name": "ore", "module_path": "m", "url_slug": "ore",
+            "created_at": "2026-11-01T00:00:00Z", "updated_at": "2026-11-01T00:00:00Z",
+        }))
+        .unwrap();
+        let camel: Spec = serde_json::from_value(json!({
+            "id": 1, "userId": 2, "name": "ore", "entityName": "Round",
+            "crateName": "ore", "modulePath": "m", "urlSlug": "ore",
+            "createdAt": "2026-11-01T00:00:00Z", "updatedAt": "2026-11-01T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(snake.entity_name, camel.entity_name);
+        assert_eq!(snake.url_slug, camel.url_slug);
+        assert_eq!(snake.updated_at, camel.updated_at);
+    }
 
     #[test]
     fn api_errors_print_each_entry_of_their_errors_list() {
