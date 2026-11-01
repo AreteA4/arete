@@ -4,8 +4,8 @@ import { useAllowedSteps, useProtocolInstance } from "@usearete/react";
 import { client, isDev } from "./arete";
 import { connectWallet, signPrepared } from "./wallet";
 
-// Dev only: loaded inside the `isDev` branch, so a production build that
-// targets the published client never runs it.
+// Dev only: loaded inside the `isDev` branch, so a production client never
+// runs it.
 const DevPanel = lazy(() => import("./DevPanel"));
 
 export function App() {
