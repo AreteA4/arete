@@ -125,7 +125,7 @@ the fork. Each of those helpers throws for a production client.
 
 ```sh
 a4 install --locked               # the published client, exactly as arete.lock pins it
-a4 install --check                # fails if generated/ differs from arete.lock
+a4 install --check                # fails on a stale arete.lock or a client not recorded as the pinned release
 a4 auth keys create-publishable --origin https://your-app.example --env-file .env.local
 npm run build:app                 # dist/app; outside `a4 dev run`, so isDev is false
 npm run server -- --migrate       # once, with DATABASE_URL
