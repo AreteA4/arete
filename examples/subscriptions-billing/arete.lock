@@ -1,0 +1,17 @@
+lock_version = 1
+manifest_hash = "arete-manifest-v1:e9f8340525e34096cd6c8707519225691b6763b9571c3e9d552cd22315e95b67"
+resolver_contract = "registry-resolver-v1"
+
+[[dependency]]
+kind = "program"
+alias = "subscriptions"
+source = "registry:subscriptions"
+requirement = "^1.0.13"
+version = "1.0.13"
+package_release_hash = "arete:registry-package-release:v2:sha256:ed1887b70e263307f80dbf6706d7a1763dd63f3e0bceb222feda9b897d1b809e"
+program_id = "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44"
+program_spec_hash = "arete:h1:program-spec:sha256:a10a30f17be97429474e990fdc24b87edf51e4c5fe0021b0651d434d11f3e698"
+program_release_hash = "arete:h1:program-release:sha256:6b4aab0353344e865113725a2737d41fa2416a25720bd8bb59c7d60698dabfdb"
+sdk_extension_hashes = ["949b5ecf59a33500a2cdaf7508a991bf09af87e31547642b7681f1fdeefd9f15"]
+targets = ["typescript"]
+generator_contract = "sdk-generator-v1"

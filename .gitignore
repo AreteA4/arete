@@ -134,6 +134,8 @@ proto-generated/
 !examples/ore-rust/src/generated/mod.rs
 !examples/ore-rust/src/generated/ore/
 !examples/ore-rust/src/generated/ore/**
+!examples/subscriptions-billing/generated/
+!examples/subscriptions-billing/generated/**
 
 # Testing
 coverage/
@@ -164,6 +166,7 @@ docs/.astro
 examples/*/package-lock.json
 !examples/ore-react/package-lock.json
 !examples/ore-typescript/package-lock.json
+!examples/subscriptions-billing/package-lock.json
 examples/pumpfun-server/
 .claude
 # Agent dirs

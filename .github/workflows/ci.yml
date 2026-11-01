@@ -43,6 +43,7 @@ jobs:
       python-matrix: ${{ steps.affected.outputs.python-matrix }}
       docs: ${{ steps.affected.outputs.docs }}
       benchmarks: ${{ steps.affected.outputs.benchmarks }}
+      subscriptions-billing: ${{ steps.affected.outputs.subscriptions-billing }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -1190,6 +1191,36 @@ jobs:
       - name: Test relative protocol compiler paths
         run: cargo test --locked -p a4-cli --bin a4 commands::protocol_bin::tests
 
+  subscriptions-billing:
+    name: Subscriptions Billing Example
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.subscriptions-billing != 'false' }}
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/subscriptions-billing
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: examples/subscriptions-billing/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Check the protocol
+        run: npx arete-protocol check --offline
+
+      - name: Test the spec
+        run: npm test
+
   # Records that this exact tree passed every job above. A pull_request run
   # checks out the merge commit GitHub would create, so when the base branch
   # has not moved before the merge, main gets this same tree and the release
@@ -1228,6 +1259,7 @@ jobs:
       - docs
       - rust-solana-adapter
       - benchmarks
+      - subscriptions-billing
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
     steps:

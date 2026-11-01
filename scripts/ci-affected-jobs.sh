@@ -30,7 +30,7 @@ all_jobs="
   typescript-core typescript-hash typescript-dev-ui typescript-protocol
   typescript-automations typescript-automations-postgres
   typescript-adapters typescript-react
-  python-matrix docs benchmarks
+  python-matrix docs benchmarks subscriptions-billing
 "
 
 if [ "${1:-}" = "--jobs" ]; then
@@ -79,6 +79,7 @@ jobs_for_path() {
     typescript/react/*) echo typescript-react ore-react ;;
 
     examples/ore-react/*) echo ore-react generated-example-sdks ;;
+    examples/subscriptions-billing/*) echo subscriptions-billing ;;
 
     cli/tests/golden/*) echo "$rust_jobs" python-matrix ;;
     arete-idl/tests/fixtures/*) echo "$rust_jobs" typescript-hash ;;

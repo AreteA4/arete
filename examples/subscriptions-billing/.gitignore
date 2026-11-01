@@ -1,0 +1,3 @@
+# Build output and local `a4 dev` state. generated/ and arete.lock are committed.
+node_modules/
+.arete/
