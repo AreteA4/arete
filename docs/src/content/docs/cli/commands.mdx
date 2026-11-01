@@ -75,6 +75,17 @@ Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when st
 
 **Exit codes:** `0` success (including warnings), `1` command failure, `2` usage error, `10` update available (`a4 self update --check` only).
 
+### JSON output and key spelling
+
+The CLI reads API responses whose multi-word keys are snake_case or camelCase. A JSON object may use either spelling of a key but not both: the CLI rejects a response that carries both as a duplicate field.
+
+`--json` output depends on how the CLI models the data:
+
+- Modeled fields keep the same keys whichever spelling the API sends. For example, `a4 stack list --json` and `a4 build status --json` print `websocket_url` and `created_at`. `a4 explore --json` keeps its own camelCase keys.
+- Objects the CLI does not model pass through with the keys the API sent, so their inner keys can be either spelling. This applies to `websocket_auth`, `http_auth` and `provenance` in `a4 build status --json`, `knowledge` in `a4 explore --json`, and everything `a4 know --json` prints.
+
+Scripts that read inside those pass-through objects should accept both spellings.
+
 ---
 
 ## Quick Reference
