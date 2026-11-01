@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.51.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.51.1...arete-mcp-v0.51.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **cli,mcp:** accept camelCase keys in API responses ([e0c2610](https://github.com/AreteA4/arete/commit/e0c2610ffd4cf6535e65a58bd633e080653f99d2))
+* **mcp:** keep stack connection info when the API sends camelCase ([f459c34](https://github.com/AreteA4/arete/commit/f459c3484b2c5927777cd1dcce535cff7673c239))
+* **mcp:** report every stack auth field in one spelling ([6293644](https://github.com/AreteA4/arete/commit/6293644fe3551ffced5dab82df6d8f40cc3a432b))
+
 ## [0.51.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.51.0...arete-mcp-v0.51.1) (2026-11-01)
 
 

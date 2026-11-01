@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+## [0.51.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.51.1...a4-cli-v0.51.2) (2026-11-01)
+
+
+### Bug Fixes
+
+* **cli,mcp:** accept camelCase keys in API responses ([e0c2610](https://github.com/AreteA4/arete/commit/e0c2610ffd4cf6535e65a58bd633e080653f99d2))
+* **cli:** accept camelCase keys in API response decoders ([8d28890](https://github.com/AreteA4/arete/commit/8d28890c3b87b31f87b7b976a57407d37d23aae4))
+* **mcp:** keep stack connection info when the API sends camelCase ([f459c34](https://github.com/AreteA4/arete/commit/f459c3484b2c5927777cd1dcce535cff7673c239))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.51.1 to 0.51.2
+    * arete-mcp bumped from 0.51.1 to 0.51.2
+
 ## [0.51.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.51.0...a4-cli-v0.51.1) (2026-11-01)
 
 
