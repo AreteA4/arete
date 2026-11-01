@@ -522,6 +522,69 @@ impl RegistryClient {
     }
 }
 
+/// Keys of a registry stack item the API may spell either way, each with the
+/// spelling the stack tools report. Covers the item itself and its auth
+/// objects, so `websocket_url` and `websocket_auth.required` stay readable
+/// whichever spelling the API sends.
+const STACK_KEY_SPELLINGS: [(&str, &str); 6] = [
+    ("websocketUrl", "websocket_url"),
+    ("websocketAuth", "websocket_auth"),
+    ("httpUrl", "http_url"),
+    ("httpAuth", "http_auth"),
+    ("acceptedKeyClasses", "accepted_key_classes"),
+    (
+        "transactionEntitlementRequired",
+        "transaction_entitlement_required",
+    ),
+];
+
+fn respell_stack_keys(map: &mut serde_json::Map<String, Value>) {
+    for (camel, snake) in STACK_KEY_SPELLINGS {
+        if let Some(value) = map.remove(camel) {
+            map.entry(snake).or_insert(value);
+        }
+    }
+}
+
+/// Rewrite one stack item to the spelling the stack tools report. If an item
+/// carries both spellings of a key, the snake_case value wins.
+fn canonicalize_stack_item(stack: &mut Value) {
+    let Value::Object(map) = stack else {
+        return;
+    };
+    respell_stack_keys(map);
+    for auth in ["websocket_auth", "http_auth"] {
+        if let Some(Value::Object(auth)) = map.get_mut(auth) {
+            respell_stack_keys(auth);
+        }
+    }
+}
+
+/// The registry's stack list with each item in the spelling the stack tools
+/// report. A body that is not a JSON array is returned unchanged.
+pub fn canonical_stack_list(body: String) -> String {
+    let Ok(Value::Array(mut stacks)) = serde_json::from_str::<Value>(&body) else {
+        return body;
+    };
+    stacks.iter_mut().for_each(canonicalize_stack_item);
+    serde_json::to_string(&stacks).unwrap_or(body)
+}
+
+/// A requested stack field path in the spelling the stack tools report, so
+/// `websocketAuth.mode` and `websocket_auth.mode` select the same value.
+pub fn canonical_stack_field(field: &str) -> String {
+    field
+        .split('.')
+        .map(|segment| {
+            STACK_KEY_SPELLINGS
+                .iter()
+                .find(|(camel, _)| *camel == segment)
+                .map_or(segment, |(_, snake)| *snake)
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
 fn starter_stacks_response(body: &str) -> Result<String> {
     let stacks = serde_json::from_str::<Value>(body)
         .map_err(|error| anyhow!("registry returned invalid stack list JSON: {error}"))?;
@@ -536,6 +599,10 @@ fn starter_stacks_response(body: &str) -> Result<String> {
                 .and_then(Value::as_str)
                 .unwrap_or("standard")
                 == "starter"
+        })
+        .map(|mut stack| {
+            canonicalize_stack_item(&mut stack);
+            stack
         })
         .collect::<Vec<_>>();
     let response = serde_json::to_string(&serde_json::json!({
@@ -941,6 +1008,69 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("explore_stacks"));
+    }
+
+    #[test]
+    fn starter_discovery_reports_one_spelling_of_connection_info() {
+        let stack = |url_key: &str, auth_key: &str| {
+            serde_json::json!({
+                "name": "trial-feed",
+                "serviceClass": "starter",
+                url_key: "wss://trial-feed",
+                auth_key: {"required": true},
+            })
+        };
+        let response = |item: Value| -> Value {
+            let body = serde_json::json!([item]).to_string();
+            serde_json::from_str(&starter_stacks_response(&body).unwrap()).unwrap()
+        };
+        let snake = response(stack("websocket_url", "websocket_auth"));
+        let camel = response(stack("websocketUrl", "websocketAuth"));
+        assert_eq!(snake, camel);
+        assert_eq!(camel["stacks"][0]["websocket_url"], "wss://trial-feed");
+        assert_eq!(camel["stacks"][0]["websocket_auth"]["required"], true);
+    }
+
+    #[test]
+    fn stack_items_prefer_the_snake_case_value_when_both_spellings_arrive() {
+        let body = serde_json::json!([{
+            "websocket_url": "wss://snake", "websocketUrl": "wss://camel",
+            "websocketAuth": {"acceptedKeyClasses": ["secret"], "accepted_key_classes": ["publishable"]}
+        }])
+        .to_string();
+        let list: Value = serde_json::from_str(&canonical_stack_list(body)).unwrap();
+        assert_eq!(
+            list,
+            serde_json::json!([{
+                "websocket_url": "wss://snake",
+                "websocket_auth": {"accepted_key_classes": ["publishable"]}
+            }])
+        );
+    }
+
+    #[test]
+    fn a_stack_list_that_is_not_an_array_passes_through() {
+        let body = r#"{"error":"nope"}"#.to_string();
+        assert_eq!(canonical_stack_list(body.clone()), body);
+        assert_eq!(canonical_stack_list("<html>".into()), "<html>");
+    }
+
+    #[test]
+    fn stack_field_paths_accept_either_spelling() {
+        assert_eq!(canonical_stack_field("websocketUrl"), "websocket_url");
+        assert_eq!(
+            canonical_stack_field("websocketAuth.mode"),
+            "websocket_auth.mode"
+        );
+        assert_eq!(
+            canonical_stack_field("httpAuth.acceptedKeyClasses"),
+            "http_auth.accepted_key_classes"
+        );
+        assert_eq!(
+            canonical_stack_field("websocket_auth.mode"),
+            "websocket_auth.mode"
+        );
+        assert_eq!(canonical_stack_field("serviceClass"), "serviceClass");
     }
 
     #[test]

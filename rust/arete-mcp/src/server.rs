@@ -1049,11 +1049,13 @@ pub struct VocabularyArgs {
 pub struct ExploreStacksArgs {
     /// Keep only these fields of each stack: top-level keys or dotted paths
     /// such as `websocket_auth.mode`. A list or a comma-separated string.
-    /// Replaces the brief default field set.
+    /// Replaces the brief default field set. `websocketUrl` and
+    /// `websocketAuth.mode` select the same fields, reported as snake_case.
     #[serde(default)]
     pub fields: Option<StringList>,
     /// Return each stack as the server sent it, including `http_url`,
-    /// `subdomain` and the full `websocket_auth`/`http_auth` objects. By
+    /// `subdomain` and the full `websocket_auth`/`http_auth` objects, with the
+    /// server's own key spelling (`websocket_url` or `websocketUrl`). By
     /// default each stack keeps only `name`, `description`, `websocket_url`,
     /// `entities`, `visibility`, `serviceClass` and `websocket_auth.required`.
     #[serde(default)]
@@ -1080,8 +1082,23 @@ fn stack_list_shape(fields: Option<StringList>, full: Option<bool>) -> catalog_v
                 .map(|field| field.to_string())
                 .collect(),
         ),
+        catalog_view::Shape::Fields(fields) => catalog_view::Shape::Fields(
+            fields
+                .iter()
+                .map(|field| crate::registry::canonical_stack_field(field))
+                .collect(),
+        ),
         shape => shape,
     }
+}
+
+/// The registry's stack list in `shape`. Everything but `full` reports one
+/// spelling of the connection keys, whichever one the registry sent.
+fn stack_list_body(body: String, shape: &catalog_view::Shape) -> String {
+    if *shape == catalog_view::Shape::Full {
+        return body;
+    }
+    list_body(crate::registry::canonical_stack_list(body), shape)
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -2234,9 +2251,11 @@ impl AreteMcp {
                           Start here: the returned `websocket_url` is what `connect` \
                           takes, and `entities` tells you which `<EntityName>/<view>` \
                           ids to look for.\n\n\
-                          NOTE: casing is not uniform across these tools. This endpoint \
+                          NOTE: casing is not uniform across these tools. This tool \
                           and `explore_stack_schema` return snake_case \
-                          (`websocket_url`, `primary_keys`, `rust_type`); \
+                          (`websocket_url`, `primary_keys`, `rust_type`), except that \
+                          `full: true` returns stacks with the registry's own spelling, \
+                          which may be `websocketUrl`; \
                           `explore_stack`, `explore_programs` and `explore_program` \
                           return camelCase (`websocketUrl`, `installName`, \
                           `programSpecHash`). `resolve_artifact` has a camelCase \
@@ -2261,7 +2280,7 @@ impl AreteMcp {
         let body = self
             .registry_body(self.registry.list_stacks().await)
             .await?;
-        bounded_result(list_body(body, &shape))
+        bounded_result(stack_list_body(body, &shape))
     }
 
     #[tool(
@@ -4704,6 +4723,105 @@ mod explore_args_tests {
         assert!(error.message.contains("not found"), "{}", error.message);
     }
 
+    /// The same registry item with each spelling of its multi-word keys.
+    fn stack_list_fixtures() -> (serde_json::Value, serde_json::Value) {
+        let snake = serde_json::json!([{
+            "name": "ore", "description": "ORE.", "subdomain": "ore-1",
+            "websocket_url": "wss://ore", "http_url": "https://ore",
+            "websocket_auth": {
+                "required": true, "mode": "signed_session",
+                "accepted_key_classes": ["publishable"],
+                "transaction_entitlement_required": true
+            },
+            "http_auth": {"required": false, "accepted_key_classes": ["secret"]},
+            "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard"
+        }]);
+        let camel = serde_json::json!([{
+            "name": "ore", "description": "ORE.", "subdomain": "ore-1",
+            "websocketUrl": "wss://ore", "httpUrl": "https://ore",
+            "websocketAuth": {
+                "required": true, "mode": "signed_session",
+                "acceptedKeyClasses": ["publishable"],
+                "transactionEntitlementRequired": true
+            },
+            "httpAuth": {"required": false, "acceptedKeyClasses": ["secret"]},
+            "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard"
+        }]);
+        (snake, camel)
+    }
+
+    fn explore_stacks_args(fields: Option<&str>, full: Option<bool>) -> ExploreStacksArgs {
+        ExploreStacksArgs {
+            fields: fields.map(|fields| StringList::One(fields.to_string())),
+            full,
+        }
+    }
+
+    /// `explore_stacks` over a canned registry serving `body`.
+    async fn explored_stacks(
+        body: &serde_json::Value,
+        args: ExploreStacksArgs,
+    ) -> serde_json::Value {
+        let server = canned_registry(vec![("/api/registry", 200, body.to_string())]);
+        let result = server.explore_stacks(Parameters(args)).await.unwrap();
+        serde_json::from_str(&result_text(&result)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn explore_stacks_keeps_connection_info_in_either_spelling_by_default() {
+        let (snake, camel) = stack_list_fixtures();
+        let brief = serde_json::json!([{
+            "name": "ore", "description": "ORE.", "websocket_url": "wss://ore",
+            "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard",
+            "websocket_auth": {"required": true}
+        }]);
+        assert_eq!(
+            explored_stacks(&snake, explore_stacks_args(None, None)).await,
+            brief
+        );
+        assert_eq!(
+            explored_stacks(&camel, explore_stacks_args(None, None)).await,
+            brief
+        );
+    }
+
+    #[tokio::test]
+    async fn explore_stacks_fields_select_the_same_values_in_either_spelling() {
+        let (snake, camel) = stack_list_fixtures();
+        let selected = serde_json::json!([{
+            "websocket_url": "wss://ore",
+            "http_url": "https://ore",
+            "websocket_auth": {
+                "mode": "signed_session",
+                "accepted_key_classes": ["publishable"]
+            },
+            "http_auth": {"required": false}
+        }]);
+        for body in [&snake, &camel] {
+            for fields in [
+                "websocket_url,http_url,websocket_auth.mode,websocket_auth.accepted_key_classes,http_auth.required",
+                "websocketUrl,httpUrl,websocketAuth.mode,websocketAuth.acceptedKeyClasses,httpAuth.required",
+            ] {
+                assert_eq!(
+                    explored_stacks(body, explore_stacks_args(Some(fields), None)).await,
+                    selected,
+                    "{fields}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn explore_stacks_full_returns_the_registry_spelling() {
+        let (snake, camel) = stack_list_fixtures();
+        for body in [&snake, &camel] {
+            assert_eq!(
+                &explored_stacks(body, explore_stacks_args(None, Some(true))).await,
+                body
+            );
+        }
+    }
+
     /// A stack install descriptor padded past the tool-result cap by an
     /// embedded program artifact, as a stack with large IDLs is.
     fn oversized_stack_descriptor(padding: usize) -> String {
@@ -5377,7 +5495,7 @@ mod ergonomics_tests {
         }])
         .to_string();
         let args: ExploreStacksArgs = serde_json::from_value(serde_json::json!({})).unwrap();
-        let out: serde_json::Value = serde_json::from_str(&list_body(
+        let out: serde_json::Value = serde_json::from_str(&stack_list_body(
             body.clone(),
             &stack_list_shape(args.fields, args.full),
         ))
@@ -5391,7 +5509,7 @@ mod ergonomics_tests {
             }])
         );
         assert_eq!(
-            list_body(body.clone(), &stack_list_shape(None, Some(true))),
+            stack_list_body(body.clone(), &stack_list_shape(None, Some(true))),
             body
         );
     }
