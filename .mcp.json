@@ -3,11 +3,31 @@
     "arete": {
       "type": "stdio",
       "command": "a4",
-      "args": ["mcp"]
+      "args": [
+        "mcp"
+      ]
     },
     "arete-docs": {
       "type": "http",
       "url": "https://docs.arete.run/mcp"
+    },
+    "linear": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.linear.app/mcp"
+      ]
+    },
+    "posthog": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.posthog.com/mcp"
+      ]
     }
   }
 }
