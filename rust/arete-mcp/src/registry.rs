@@ -523,27 +523,32 @@ impl RegistryClient {
 }
 
 /// Keys of a registry stack item the API may spell either way, each with the
-/// spelling the stack tools report. Covers the item itself and its auth
-/// objects, so `websocket_url` and `websocket_auth.required` stay readable
-/// whichever spelling the API sends.
-const STACK_KEY_SPELLINGS: [(&str, &str); 6] = [
+/// spelling the stack tools report.
+const STACK_KEY_SPELLINGS: [(&str, &str); 4] = [
     ("websocketUrl", "websocket_url"),
     ("websocketAuth", "websocket_auth"),
     ("httpUrl", "http_url"),
     ("httpAuth", "http_auth"),
-    ("acceptedKeyClasses", "accepted_key_classes"),
-    (
-        "transactionEntitlementRequired",
-        "transaction_entitlement_required",
-    ),
 ];
 
-fn respell_stack_keys(map: &mut serde_json::Map<String, Value>) {
-    for (camel, snake) in STACK_KEY_SPELLINGS {
-        if let Some(value) = map.remove(camel) {
-            map.entry(snake).or_insert(value);
+/// The stack item keys holding auth metadata. Every key inside one is a field
+/// name rather than data, so all of them are reported as snake_case, including
+/// fields added after this was written.
+const STACK_AUTH_KEYS: [&str; 2] = ["websocket_auth", "http_auth"];
+
+/// `sessionEndpoint` as `session_endpoint`. A snake_case key is unchanged.
+fn snake_case_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 4);
+    let mut previous_upper = false;
+    for character in key.chars() {
+        let upper = character.is_ascii_uppercase();
+        if upper && !previous_upper && !out.is_empty() {
+            out.push('_');
         }
+        out.push(character.to_ascii_lowercase());
+        previous_upper = upper;
     }
+    out
 }
 
 /// Rewrite one stack item to the spelling the stack tools report. If an item
@@ -552,10 +557,24 @@ fn canonicalize_stack_item(stack: &mut Value) {
     let Value::Object(map) = stack else {
         return;
     };
-    respell_stack_keys(map);
-    for auth in ["websocket_auth", "http_auth"] {
-        if let Some(Value::Object(auth)) = map.get_mut(auth) {
-            respell_stack_keys(auth);
+    for (camel, snake) in STACK_KEY_SPELLINGS {
+        if let Some(value) = map.remove(camel) {
+            map.entry(snake).or_insert(value);
+        }
+    }
+    for auth in STACK_AUTH_KEYS {
+        let Some(Value::Object(auth)) = map.get_mut(auth) else {
+            continue;
+        };
+        let camel_keys: Vec<String> = auth
+            .keys()
+            .filter(|key| snake_case_key(key) != **key)
+            .cloned()
+            .collect();
+        for key in camel_keys {
+            if let Some(value) = auth.remove(&key) {
+                auth.entry(snake_case_key(&key)).or_insert(value);
+            }
         }
     }
 }
@@ -571,18 +590,26 @@ pub fn canonical_stack_list(body: String) -> String {
 }
 
 /// A requested stack field path in the spelling the stack tools report, so
-/// `websocketAuth.mode` and `websocket_auth.mode` select the same value.
+/// `websocketAuth.jwksUrl` and `websocket_auth.jwks_url` select the same value.
 pub fn canonical_stack_field(field: &str) -> String {
-    field
-        .split('.')
-        .map(|segment| {
-            STACK_KEY_SPELLINGS
-                .iter()
-                .find(|(camel, _)| *camel == segment)
-                .map_or(segment, |(_, snake)| *snake)
-        })
-        .collect::<Vec<_>>()
-        .join(".")
+    let (first, rest) = field.split_once('.').unwrap_or((field, ""));
+    let first = STACK_KEY_SPELLINGS
+        .iter()
+        .find(|(camel, _)| *camel == first)
+        .map_or(first, |(_, snake)| *snake);
+    if rest.is_empty() {
+        return first.to_string();
+    }
+    if !STACK_AUTH_KEYS.contains(&first) {
+        return format!("{first}.{rest}");
+    }
+    let (auth_field, deeper) = rest.split_once('.').unwrap_or((rest, ""));
+    let auth_field = snake_case_key(auth_field);
+    if deeper.is_empty() {
+        format!("{first}.{auth_field}")
+    } else {
+        format!("{first}.{auth_field}.{deeper}")
+    }
 }
 
 fn starter_stacks_response(body: &str) -> Result<String> {
@@ -1049,6 +1076,25 @@ mod tests {
     }
 
     #[test]
+    fn auth_fields_added_later_keep_their_values_in_either_spelling() {
+        let body = serde_json::json!([{
+            "httpAuth": {"brandNewField": 1, "jwksURL": "https://jwks", "scopes": ["read"]},
+            "serviceClass": "standard",
+            "someObject": {"someField": 1}
+        }])
+        .to_string();
+        let list: Value = serde_json::from_str(&canonical_stack_list(body)).unwrap();
+        assert_eq!(
+            list,
+            serde_json::json!([{
+                "http_auth": {"brand_new_field": 1, "jwks_url": "https://jwks", "scopes": ["read"]},
+                "serviceClass": "standard",
+                "someObject": {"someField": 1}
+            }])
+        );
+    }
+
+    #[test]
     fn a_stack_list_that_is_not_an_array_passes_through() {
         let body = r#"{"error":"nope"}"#.to_string();
         assert_eq!(canonical_stack_list(body.clone()), body);
@@ -1070,7 +1116,17 @@ mod tests {
             canonical_stack_field("websocket_auth.mode"),
             "websocket_auth.mode"
         );
+        assert_eq!(
+            canonical_stack_field("websocketAuth.authorizationHeaderSupported"),
+            "websocket_auth.authorization_header_supported"
+        );
+        assert_eq!(canonical_stack_field("websocketAuth"), "websocket_auth");
         assert_eq!(canonical_stack_field("serviceClass"), "serviceClass");
+        // Only auth objects are respelled below the top level.
+        assert_eq!(
+            canonical_stack_field("someObject.someField"),
+            "someObject.someField"
+        );
     }
 
     #[test]

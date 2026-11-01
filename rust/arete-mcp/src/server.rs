@@ -1050,7 +1050,8 @@ pub struct ExploreStacksArgs {
     /// Keep only these fields of each stack: top-level keys or dotted paths
     /// such as `websocket_auth.mode`. A list or a comma-separated string.
     /// Replaces the brief default field set. `websocketUrl` and
-    /// `websocketAuth.mode` select the same fields, reported as snake_case.
+    /// `websocketAuth.sessionEndpoint` select the same fields as `websocket_url`
+    /// and `websocket_auth.session_endpoint`, reported as snake_case.
     #[serde(default)]
     pub fields: Option<StringList>,
     /// Return each stack as the server sent it, including `http_url`,
@@ -4723,17 +4724,31 @@ mod explore_args_tests {
         assert!(error.message.contains("not found"), "{}", error.message);
     }
 
-    /// The same registry item with each spelling of its multi-word keys.
+    /// The same registry item with each spelling of its multi-word keys, with
+    /// the auth metadata a signed-session stack serves.
     fn stack_list_fixtures() -> (serde_json::Value, serde_json::Value) {
         let snake = serde_json::json!([{
             "name": "ore", "description": "ORE.", "subdomain": "ore-1",
             "websocket_url": "wss://ore", "http_url": "https://ore",
             "websocket_auth": {
                 "required": true, "mode": "signed_session",
-                "accepted_key_classes": ["publishable"],
+                "session_endpoint": "https://api.test/ws/sessions",
+                "jwks_url": "https://api.test/ws/.well-known/jwks.json",
+                "token_transport": "query", "query_param": "hs_token",
+                "authorization_header_supported": true,
+                "audience": "arete:stack", "target_kind": "stack", "target_id": "ore-1",
+                "scopes": ["read"], "accepted_key_classes": ["publishable", "secret"],
                 "transaction_entitlement_required": true
             },
-            "http_auth": {"required": false, "accepted_key_classes": ["secret"]},
+            "http_auth": {
+                "required": false, "mode": "signed_session",
+                "session_endpoint": "https://api.test/http/sessions",
+                "jwks_url": "https://api.test/http/.well-known/jwks.json",
+                "token_transport": "bearer", "query_param": "token",
+                "authorization_header_supported": false,
+                "audience": "arete:http", "target_kind": "http", "target_id": "ore-http",
+                "scopes": ["query"], "accepted_key_classes": ["secret"]
+            },
             "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard"
         }]);
         let camel = serde_json::json!([{
@@ -4741,10 +4756,23 @@ mod explore_args_tests {
             "websocketUrl": "wss://ore", "httpUrl": "https://ore",
             "websocketAuth": {
                 "required": true, "mode": "signed_session",
-                "acceptedKeyClasses": ["publishable"],
+                "sessionEndpoint": "https://api.test/ws/sessions",
+                "jwksUrl": "https://api.test/ws/.well-known/jwks.json",
+                "tokenTransport": "query", "queryParam": "hs_token",
+                "authorizationHeaderSupported": true,
+                "audience": "arete:stack", "targetKind": "stack", "targetId": "ore-1",
+                "scopes": ["read"], "acceptedKeyClasses": ["publishable", "secret"],
                 "transactionEntitlementRequired": true
             },
-            "httpAuth": {"required": false, "acceptedKeyClasses": ["secret"]},
+            "httpAuth": {
+                "required": false, "mode": "signed_session",
+                "sessionEndpoint": "https://api.test/http/sessions",
+                "jwksUrl": "https://api.test/http/.well-known/jwks.json",
+                "tokenTransport": "bearer", "queryParam": "token",
+                "authorizationHeaderSupported": false,
+                "audience": "arete:http", "targetKind": "http", "targetId": "ore-http",
+                "scopes": ["query"], "acceptedKeyClasses": ["secret"]
+            },
             "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard"
         }]);
         (snake, camel)
@@ -4793,7 +4821,7 @@ mod explore_args_tests {
             "http_url": "https://ore",
             "websocket_auth": {
                 "mode": "signed_session",
-                "accepted_key_classes": ["publishable"]
+                "accepted_key_classes": ["publishable", "secret"]
             },
             "http_auth": {"required": false}
         }]);
@@ -4805,6 +4833,72 @@ mod explore_args_tests {
                 assert_eq!(
                     explored_stacks(body, explore_stacks_args(Some(fields), None)).await,
                     selected,
+                    "{fields}"
+                );
+            }
+        }
+    }
+
+    /// `field_name` as `fieldName`.
+    fn camel_case(field: &str) -> String {
+        let mut parts = field.split('_');
+        let mut out = parts.next().unwrap_or_default().to_string();
+        for part in parts {
+            let mut chars = part.chars();
+            out.extend(chars.next().map(|first| first.to_ascii_uppercase()));
+            out.push_str(chars.as_str());
+        }
+        out
+    }
+
+    /// Each auth field selected by dotted path, in both spellings of the path,
+    /// from both spellings of the registry response.
+    #[tokio::test]
+    async fn explore_stacks_selects_every_auth_field_in_either_spelling() {
+        let (snake, camel) = stack_list_fixtures();
+        for (auth, camel_auth) in [
+            ("websocket_auth", "websocketAuth"),
+            ("http_auth", "httpAuth"),
+        ] {
+            let source = snake[0][auth].as_object().unwrap();
+            assert_eq!(
+                source.len(),
+                camel[0][camel_auth].as_object().unwrap().len()
+            );
+            for (field, value) in source {
+                let camel_field = camel_case(field);
+                assert_eq!(&camel[0][camel_auth][&camel_field], value, "{camel_field}");
+                let want = serde_json::json!([{ auth: { field.as_str(): value } }]);
+                for path in [
+                    format!("{auth}.{field}"),
+                    format!("{auth}.{camel_field}"),
+                    format!("{camel_auth}.{field}"),
+                    format!("{camel_auth}.{camel_field}"),
+                ] {
+                    for body in [&snake, &camel] {
+                        assert_eq!(
+                            explored_stacks(body, explore_stacks_args(Some(&path), None)).await,
+                            want,
+                            "{path}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn explore_stacks_selects_whole_auth_objects_in_either_spelling() {
+        let (snake, camel) = stack_list_fixtures();
+        let want = serde_json::json!([{
+            "websocket_auth": snake[0]["websocket_auth"],
+            "http_auth": snake[0]["http_auth"]
+        }]);
+        for fields in ["websocket_auth,http_auth", "websocketAuth,httpAuth"] {
+            for body in [&snake, &camel] {
+                assert_eq!(
+                    explored_stacks(body, explore_stacks_args(Some(fields), None)).await,
+                    want,
                     "{fields}"
                 );
             }

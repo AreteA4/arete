@@ -158,8 +158,9 @@ error here.
   what to look for in the schema. Brief by default (`name`, `description`,
   `websocket_url`, `entities`, `visibility`, `serviceClass`,
   `websocket_auth.required`); `full: true` returns every field with the registry's
-  own key spelling. The brief and `fields` forms report these keys as snake_case
-  whichever spelling the registry sends, and `fields` accepts either spelling.
+  own key spelling. The brief and `fields` forms report these keys, and every field
+  inside `websocket_auth` and `http_auth`, as snake_case whichever spelling the
+  registry sends. `fields` accepts either spelling.
 - `explore_stack({ stack, summary?, views?, full? })` — one stack from its pinned
   install descriptor. By default a compact summary: entities with their view ids,
   program SDKs, endpoints, and auth requirements (key classes, scopes, origin-bound
