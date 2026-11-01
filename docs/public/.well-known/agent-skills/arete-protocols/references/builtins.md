@@ -1,9 +1,11 @@
 # Builtin programs
 
-`builtins(...)` adds runtime programs that every protocol may use without
-installing them. They have no program spec, so:
+`builtins(...)` returns typed modules for the runtime programs every protocol
+may use without installing them. `ix` checks their instructions like an
+installed program's: each builtin carries its program spec, and the server
+checks the template against it.
 
-| Builtin | Program | Registry package | What uses it |
+| Builtin | Program | Registry package | Also used by |
 |---|---|---|---|
 | `system` | `11111111111111111111111111111111` | `system-program` | glue (account creation inside ATA creation) |
 | `splToken` | `TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA` | `spl-token` | glue `wrapSol` / `unwrapSol` |
@@ -11,24 +13,40 @@ installing them. They have no program spec, so:
 | `computeBudget` | `ComputeBudget111111111111111111111111111111` | | compute limits the runtime adds |
 | `memo` | `MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr` | | the attested memo on every step transaction |
 
-The same program has three names. The builtin is `associatedToken`, the
-registry package is `spl-ata`, and the generated module is `splAta`. Errors
-use the name of the alias you wrote.
+Each builtin has one name. Other names are errors that name the builtin:
+`spl-ata` and `splAta` are `associatedToken`, `spl-token` is `splToken`,
+`system-program` is `system`, `spl-memo` is `memo` and `compute-budget` is
+`computeBudget`.
 
-## Templates cannot call builtins yet
+```ts
+const { associatedToken } = builtins("associatedToken");
 
-A template instruction on a builtin alias (`ix(associatedToken, ...)`) has no
-program spec to check against. The server rejects it with
-`template_program_spec_missing`, and `arete-protocol check` warns about it.
-Instead:
+ix(associatedToken, "createIdempotent", {
+  accounts: { fundingAddress: "wallet" /* … */ },
+});
+```
 
-- **Token accounts:** use the step's glue. `glue.atas: [{ owner, mint }]`
-  creates each associated token account idempotently before the step.
-  `glue.wrapSol: { amount }` wraps SOL into the fee payer's wSOL account,
-  and `glue.unwrapSol: true` closes it after.
-- **Any other instruction:** install the registry package, for example
-  `a4 install program spl-token --ts` (or `system-program`, `spl-ata`), and
-  call it through that alias with `ix(...)`. Its program spec is pinned like any
-  installed program, and the server checks the template against it.
-- **Addresses only:** `ata(owner, mint)` derives an associated token
-  account without any template.
+## Signers
+
+SPL Token's `owner` and `authority` accounts are signers: pass a key the step
+signs with, such as `wallet` or an ephemeral key. Templates cannot use a
+multisig token authority, because its members would sign as remaining
+accounts, and remaining accounts never sign.
+
+## Glue or a template
+
+Glue is still the shortest way to do the common cases:
+
+- `glue.atas: [{ owner, mint }]` creates each associated token account
+  idempotently before the step.
+- `glue.wrapSol: { amount }` wraps SOL into the fee payer's wSOL account, and
+  `glue.unwrapSol: true` closes it after.
+- `ata(owner, mint)` derives an associated token account address without any
+  template.
+
+Use `ix(<builtin>, ...)` for anything else, such as a token transfer or
+closing an account in the step's own transaction.
+
+Installing the registry package instead (`a4 install program spl-token`)
+still works, and is what you want when an app also calls the program
+directly through its program SDK.

@@ -2,7 +2,7 @@
 name: arete
 description: Discover and install exact Arete stacks, program SDKs or protocols for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, a composed stack, or a protocol, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for multi-step app flows and transaction workflows across programs, for running them locally with a4 dev, for an agent acting on a protocol with its own wallet, and for a backend automating protocol steps for users, use arete-protocols; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.
 metadata:
-  version: "1.10.1"
+  version: "1.10.2"
   min-cli: ">=0.42.0"
 ---
 
@@ -78,7 +78,7 @@ Read each result's coverage modes, then route by what the application needs:
 - **An app flow or transaction workflow over several steps or programs** (open, contribute, close, refund; roles, deadlines, approvals): a protocol. Install an existing one with `a4 install protocol <protocol-ref> --ts`, or author one; use `arete-protocols` for both. A single program call stays with `arete-programs`.
 - **An agent acting on a protocol with a wallet** (what can this wallet do now, prepare a step, check and sign it, submit; the MCP `protocol_*` tools and an optional signer policy): `a4 protocol actions <protocol-ref> --wallet <pubkey>`, covered by `arete-protocols`. The agent signs with the wallet it was given; never configure a signer or move funds unless the user asks.
 - **An app backend running protocol steps for its users** (refund when a raise fails, recurring buys, rebalance on live rates, inside limits each user signed): `@usearete/automations`, covered by `arete-protocols`. Recommend a keeper step, a direct deposit or an on-chain allowance first when one would do.
-- **Local development of a protocol** (a cloud fork, local RPC and UI, steps, clock controls, and a generated dev client): `a4 dev up`, covered by `arete-protocols`. Start a new protocol project with `a4 protocol init`. Streaming its stack locally (`a4 stream --dev`) is in `arete-streams`.
+- **Local development of a protocol** (a cloud fork, local RPC and UI, steps, clock controls, and one switch, `ARETE_ENVIRONMENT=dev` via `a4 dev run`, that runs installed SDKs against it): `a4 dev up`, covered by `arete-protocols`. Start a new protocol project with `a4 protocol init`. Streaming its stack locally (`a4 stream --dev`) is in `arete-streams`.
 - No suitable hosted capability and the user wants a custom feed: specify the missing read model, then use `arete-stack-authoring`.
 - Publication or hosted lifecycle work, including `a4 protocol deploy`: use `arete-deploy`.
 

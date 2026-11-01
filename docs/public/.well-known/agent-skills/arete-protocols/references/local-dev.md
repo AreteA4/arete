@@ -77,30 +77,54 @@ retention period. `a4 dev sleep` sleeps one explicitly; `a4 dev wake` wakes it.
 Reset, restore and delete can discard work; get authorization for that effect.
 Checkpoint storage and active environments count against the account's quotas.
 
-## The app's client
+## The app's client: one switch
 
 The client is generated in `generated/<lang>/protocols/<alias>/`, where
 `a4 install protocol` writes it. `a4 dev sdk --ts` (or `--rust`, `--python`)
 regenerates it explicitly. Read its README for the real export and import path.
-The definition carries the dev deployment id; do not edit generated files.
+It keeps the published deployment id (none before the first deploy); never
+edit generated files.
 
-A backend uses the owning account's secret key and the API origin from
-`a4 dev status --json`. The protocol API is not the loopback chain RPC. In
-TypeScript, pass `keyClass: "secret"` when a key supplied through
-`ARETE_API_KEY` must call secret steps. Browsers use an origin-bound publishable
-key for public steps and an authenticated backend for secret steps.
+The same installed SDKs (protocol, program, stack) run against the
+environment or production depending on one switch:
 
-Point wallets and chain clients at the RPC printed by `a4 dev up` (normally
-`http://127.0.0.1:48700`). Keep the CLI running while they use it. Dev wallet
-keys stay in `.arete/dev/wallets/`; only signed messages leave the machine.
-`.arete/dev/session.json` and token-bearing stream URLs contain credentials:
-never commit them or copy them into a browser bundle, log or chat.
+```bash
+a4 dev up                    # keeps running; serves the edge on 127.0.0.1
+a4 dev run -- npm run dev    # ARETE_ENVIRONMENT=dev + ARETE_DEV_URL (+ VITE_/NEXT_PUBLIC_ copies)
+```
 
-Before shipping, deploy the protocol only when authorized, restore the published
-client with `a4 install --locked`, and run `a4 install --check`. The latter fails
-while a local-build override remains or dependencies differ from the lockfile.
-Never force a production deployment id into a dev client or point the CLI at
-an invented local protocol API.
+- With `ARETE_ENVIRONMENT=dev`, every SDK goes through the edge `a4 dev up`
+  serves. The edge holds the key and attaches tokens; the app holds no Arete
+  credential, browsers included. Browsers pass
+  `environment: { kind: "dev", url: import.meta.env.VITE_ARETE_DEV_URL }` (or
+  `<AreteProvider environment>`).
+- CI or a server with a secret key can skip the edge: `ARETE_ENVIRONMENT=dev`
+  plus `ARETE_DEV_ENV=<environment>`.
+- Unset, the app is production, exactly as installed. `client.environment` is
+  `'dev'` or `'production'`.
+- Dev mode never falls back to production. Refusals carry a code and a fix:
+  `devenv-not-configured`, `devenv-edge-unreachable`,
+  `devenv-stack-not-loaded`, `devenv-protocol-not-deployed`, … Apply the fix.
+- Gate dev-only UI (fund buttons, dev wallets) on
+  `client.environment === "dev"`.
+- Environment stacks start empty: they stream only accounts the environment
+  touches from their load slot (`a4 dev status` shows it). Read current
+  program state through program reads.
+- One project per environment: a second project gets
+  `devenv-environment-leased`; use `a4 dev branch` for a copy, or
+  `a4 dev up --take-over` only when authorized.
+
+Wallets and chain clients that aren't Arete SDKs use the RPC printed by
+`a4 dev up` (normally `http://127.0.0.1:48700`). Dev wallet keys stay in
+`.arete/dev/wallets/`; only signed messages leave the machine.
+`.arete/dev/session.json` holds no key or token; keep it out of commits anyway.
+
+Before shipping, run `a4 dev promote --check`: it lists what exists only in
+the environment (a local protocol build, a local SDK extension, a changed
+program, a project stack under a dependency's alias) with the command that
+publishes each, and exits non-zero while any remain. Deploy the protocol only
+when authorized, then `a4 install --locked`, `a4 install --check`, and deploy
+the app with `ARETE_ENVIRONMENT` unset.
 
 ## Drive and inspect the fork
 

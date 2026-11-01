@@ -93,7 +93,7 @@ const automations = createAutomations({
     deployments: [client.deploymentId],    // required
     clusters: ["mainnet"],                 // mainnet only when listed
   }),
-  simulator: rpcSimulator(process.env.RPC_URL!), // optional in dev mode: the dev environment
+  simulator: rpcSimulator(process.env.RPC_URL!),
   store: postgresStore(pool),
   consent: { domain: "app.example" },
   onOutcome: (outcome) => notifyUser(outcome),
@@ -101,9 +101,10 @@ const automations = createAutomations({
 await automations.use(definition);
 ```
 
-The target comes from the client's environment switch: `dev` when
-`ARETE_ENVIRONMENT=dev` (as `a4 dev up` and `a4 dev run` set), else
-`mainnet`. The generated client is the same file in both. The policy
+The target comes from the switch: `dev` when the client runs with
+`ARETE_ENVIRONMENT=dev` (`a4 dev up` and `a4 dev run` set it), `mainnet`
+otherwise. `ARETE_CLUSTER`, when set, must agree with it. In dev mode,
+automations with no simulator simulate against the environment. The policy
 allows `dev` by default and mainnet only when listed. It is a library in the
 app's backend, next to the app's own database. It needs a secret-key client,
 so it never runs in a browser.
@@ -300,8 +301,9 @@ a4 protocol webhook test <id>                 # a signed test delivery; ids from
   webhook secret. Node runs workers, live sources (append sources included)
   and its own tick; no cron needed.
 - Set `ARETE_CLUSTER=mainnet` in the host: a host that still sets
-  `ARETE_ENVIRONMENT=dev` then fails every request and says the two
-  disagree.
+  `ARETE_ENVIRONMENT=dev` then fails every request and says the two disagree;
+  unset it to run against production. A client an older `a4` generated with a
+  dev deployment fails the same way and says to run `a4 install --locked`.
 - `npx @usearete/automations manifest` prints the definition's events,
   schedules and sources; `a4 protocol webhook add` subscribes to the
   build's events by default (`--events` narrows it).
