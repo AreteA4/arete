@@ -142,7 +142,12 @@ to choose your own:
   category's `slug` and `name`, plus a `hint`. `full: true` adds descriptions,
   synonyms and related slugs.
 - **`explore_stacks`** keeps `name`, `description`, `websocket_url`,
-  `entities`, `visibility`, `serviceClass` and `websocket_auth.required`.
+  `entities`, `visibility`, `serviceClass` and `websocket_auth.required`. These
+  keys and any `fields` you request, including every field inside `websocket_auth`
+  and `http_auth` such as `session_endpoint` and `jwks_url`, are reported as
+  snake_case whichever spelling the registry sends. `fields` accepts either
+  spelling. `full: true` returns the registry's own spelling, which may be
+  `websocketUrl` and `websocketAuth`.
 - **`explore_programs`** drops release and spec hashes.
 - **`get_catalog_entry`** stays complete apart from identity hashes, release
   notes and `programIds`, and adds `live` to a stack; `full: true` returns the

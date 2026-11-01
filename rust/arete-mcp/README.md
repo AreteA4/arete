@@ -157,7 +157,10 @@ error here.
   `websocket_url` in each entry is what `connect` takes; `entities` tells you
   what to look for in the schema. Brief by default (`name`, `description`,
   `websocket_url`, `entities`, `visibility`, `serviceClass`,
-  `websocket_auth.required`); `full: true` returns every field.
+  `websocket_auth.required`); `full: true` returns every field with the registry's
+  own key spelling. The brief and `fields` forms report these keys, and every field
+  inside `websocket_auth` and `http_auth`, as snake_case whichever spelling the
+  registry sends. `fields` accepts either spelling.
 - `explore_stack({ stack, summary?, views?, full? })` — one stack from its pinned
   install descriptor. By default a compact summary: entities with their view ids,
   program SDKs, endpoints, and auth requirements (key classes, scopes, origin-bound
@@ -211,7 +214,9 @@ view ids and `read_view` accepts the stack's `url` (`websocket_url` from
 `explore_stacks`).
 
 **Key casing is not uniform.** `explore_stacks` and `explore_stack_schema` return
-snake_case (`websocket_url`, `stack_name`, `primary_keys`, `rust_type`).
+snake_case (`websocket_url`, `stack_name`, `primary_keys`, `rust_type`), except
+that `explore_stacks` with `full: true` passes through the registry's own spelling,
+which may be camelCase (`websocketUrl`, `websocketAuth`).
 `explore_stack`, `explore_programs` and `explore_program` return camelCase
 (`websocketUrl`, `installName`, `programSpecHash`, `stackManifestHash`) — the CLI
 deserializes those three with `deny_unknown_fields`, so their shape is pinned.

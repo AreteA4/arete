@@ -305,19 +305,35 @@ fn validate_signup_idempotency_key(value: &str) -> Result<()> {
 }
 
 // DTOs matching backend models
+//
+// Response types take `#[serde(alias = "camelCase")]` so the CLI reads either
+// spelling of a multi-word key, and always serialize as snake_case so
+// `a4 --json` keeps stable top-level keys. A JSON object may use either
+// spelling of a key but not both: serde rejects the pair as a duplicate field.
+// Fields typed `serde_json::Value` (build and deployment auth, provenance,
+// the latest operation) pass through with the keys the server sent.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Spec {
     pub id: i32,
+    #[serde(alias = "userId")]
     pub user_id: i32,
     pub name: String,
+    #[serde(alias = "entityName")]
     pub entity_name: String,
+    #[serde(alias = "crateName")]
     pub crate_name: String,
+    #[serde(alias = "modulePath")]
     pub module_path: String,
     pub description: Option<String>,
+    #[serde(alias = "packageName")]
     pub package_name: Option<String>,
+    #[serde(alias = "outputPath")]
     pub output_path: Option<String>,
+    #[serde(alias = "urlSlug")]
     pub url_slug: String,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
+    #[serde(alias = "updatedAt")]
     pub updated_at: String,
 }
 
@@ -351,14 +367,22 @@ pub struct CreateSpecRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SpecVersionWithContent {
     pub id: i32,
+    #[serde(alias = "specId")]
     pub spec_id: i32,
+    #[serde(alias = "versionNumber")]
     pub version_number: i32,
+    #[serde(alias = "portableAstHash")]
     pub portable_ast_hash: Option<String>,
+    #[serde(alias = "versionCreatedAt")]
     pub version_created_at: String,
     // AST content info
+    #[serde(alias = "stateName")]
     pub state_name: String,
+    #[serde(alias = "programId")]
     pub program_id: Option<String>,
+    #[serde(alias = "handlerCount")]
     pub handler_count: i32,
+    #[serde(alias = "sectionCount")]
     pub section_count: i32,
 }
 
@@ -383,6 +407,7 @@ pub struct SpecWithVersion {
     #[serde(flatten)]
     #[allow(dead_code)]
     pub spec: Spec,
+    #[serde(alias = "latestVersion")]
     pub latest_version: Option<SpecVersionWithContent>,
 }
 
@@ -753,25 +778,37 @@ impl BuildStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Build {
     pub id: i32,
+    #[serde(alias = "specId")]
     pub spec_id: Option<i32>,
+    #[serde(alias = "specVersionId")]
     pub spec_version_id: Option<i32>,
     #[serde(default)]
+    #[serde(alias = "portableAstHash")]
     pub portable_ast_hash: Option<String>,
     #[serde(default)]
+    #[serde(alias = "deploymentReleaseHash")]
     pub deployment_release_hash: Option<String>,
     pub status: BuildStatus,
     #[serde(default)]
+    #[serde(alias = "errorCategory")]
     pub error_category: Option<String>,
+    #[serde(alias = "statusMessage")]
     pub status_message: Option<String>,
     pub phase: Option<String>,
     pub progress: Option<i32>,
+    #[serde(alias = "websocketUrl")]
     pub websocket_url: Option<String>,
     #[serde(default)]
+    #[serde(alias = "websocketAuth")]
     pub websocket_auth: Option<serde_json::Value>,
     #[serde(default)]
+    #[serde(alias = "httpAuth")]
     pub http_auth: Option<serde_json::Value>,
+    #[serde(alias = "startedAt")]
     pub started_at: Option<String>,
+    #[serde(alias = "completedAt")]
     pub completed_at: Option<String>,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
 }
 
@@ -779,11 +816,16 @@ pub struct Build {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildEvent {
     pub id: i32,
+    #[serde(alias = "buildId")]
     pub build_id: i32,
+    #[serde(alias = "eventType")]
     pub event_type: String,
     pub phase: Option<String>,
+    #[serde(alias = "previousStatus")]
     pub previous_status: Option<BuildStatus>,
+    #[serde(alias = "newStatus")]
     pub new_status: Option<BuildStatus>,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
 }
 
@@ -810,6 +852,7 @@ pub struct CreateAliasedLiveSpecArtifact {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateBuildResponse {
+    #[serde(alias = "buildId")]
     pub build_id: i32,
     #[allow(dead_code)]
     pub message: String,
@@ -824,6 +867,7 @@ pub struct BuildStatusResponse {
     pub build: Build,
     pub events: Vec<BuildEvent>,
     #[serde(default)]
+    #[serde(alias = "relatedDeploymentId")]
     pub related_deployment_id: Option<i32>,
     #[serde(default)]
     pub provenance: Option<serde_json::Value>,
@@ -1065,32 +1109,52 @@ impl std::fmt::Display for DeploymentStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentResponse {
     pub id: i32,
+    #[serde(alias = "specId")]
     pub spec_id: i32,
+    #[serde(alias = "specName")]
     pub spec_name: String,
+    #[serde(alias = "atomName")]
     pub atom_name: String,
     pub branch: Option<String>,
+    #[serde(alias = "currentBuildId")]
     pub current_build_id: Option<i32>,
+    #[serde(alias = "currentSpecVersionId")]
     pub current_spec_version_id: Option<i32>,
+    #[serde(alias = "currentVersion")]
     pub current_version: Option<i32>,
+    #[serde(alias = "portableAstHash")]
     pub portable_ast_hash: Option<String>,
+    #[serde(alias = "deploymentReleaseHash")]
     pub deployment_release_hash: Option<String>,
     #[serde(default)]
+    #[serde(alias = "currentIdlProgramIds")]
     pub current_idl_program_ids: Vec<String>,
+    #[serde(alias = "currentImageTag")]
     pub current_image_tag: Option<String>,
+    #[serde(alias = "websocketUrl")]
     pub websocket_url: String,
+    #[serde(alias = "httpUrl")]
     pub http_url: String,
     #[serde(default)]
+    #[serde(alias = "websocketAuth")]
     pub websocket_auth: serde_json::Value,
     #[serde(default)]
+    #[serde(alias = "httpAuth")]
     pub http_auth: serde_json::Value,
     #[serde(default)]
+    #[serde(alias = "transactionRelayEnabled")]
     pub transaction_relay_enabled: bool,
     pub status: DeploymentStatus,
+    #[serde(alias = "statusMessage")]
     pub status_message: Option<String>,
+    #[serde(alias = "firstDeployedAt")]
     pub first_deployed_at: Option<String>,
+    #[serde(alias = "lastDeployedAt")]
     pub last_deployed_at: Option<String>,
+    #[serde(alias = "liveStatus")]
     pub live_status: DeploymentLiveStatus,
     #[serde(default)]
+    #[serde(alias = "latestOperation")]
     pub latest_operation: Option<serde_json::Value>,
 }
 
@@ -1108,12 +1172,18 @@ pub enum DeploymentPhase {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeploymentLiveStatus {
     pub phase: DeploymentPhase,
+    #[serde(alias = "desiredReplicas")]
     pub desired_replicas: Option<i32>,
+    #[serde(alias = "readyReplicas")]
     pub ready_replicas: Option<i32>,
+    #[serde(alias = "availableReplicas")]
     pub available_replicas: Option<i32>,
+    #[serde(alias = "updatedReplicas")]
     pub updated_replicas: Option<i32>,
+    #[serde(alias = "lastTransitionTime")]
     pub last_transition_time: Option<String>,
     pub source: String,
+    #[serde(alias = "errorCategory")]
     pub error_category: Option<String>,
 }
 
@@ -1159,12 +1229,18 @@ pub struct CompositionLiveBindingResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
     pub id: i32,
+    #[serde(alias = "userId")]
     pub user_id: i32,
     pub name: Option<String>,
+    #[serde(alias = "lastUsedAt")]
     pub last_used_at: Option<String>,
+    #[serde(alias = "expiresAt")]
     pub expires_at: Option<String>,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
+    #[serde(alias = "keyClass")]
     pub key_class: String,
+    #[serde(alias = "originAllowlist")]
     pub origin_allowlist: Option<Vec<String>>,
 }
 
@@ -1231,7 +1307,9 @@ pub struct CreateApiKeyResponse {
     pub id: i32,
     pub key: String,
     pub name: Option<String>,
+    #[serde(alias = "keyClass")]
     pub key_class: String,
+    #[serde(alias = "expiresAt")]
     pub expires_at: String,
     pub message: String,
 }
@@ -1239,6 +1317,7 @@ pub struct CreateApiKeyResponse {
 #[allow(dead_code)]
 #[derive(Debug, Deserialize)]
 pub struct StopDeploymentResponse {
+    #[serde(alias = "operationId")]
     pub operation_id: i32,
     pub status: String,
     pub message: String,
@@ -1256,6 +1335,7 @@ fn default_standard_service_class() -> String {
 pub struct RegistryStackItem {
     pub name: String,
     pub description: Option<String>,
+    #[serde(alias = "websocketUrl")]
     pub websocket_url: String,
     pub entities: Vec<String>,
     #[serde(default)]
@@ -2968,10 +3048,13 @@ pub struct AgentSignupResponse {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMeResponse {
     pub slug: String,
+    #[serde(alias = "displayName")]
     pub display_name: String,
     pub status: String,
+    #[serde(alias = "createdAt")]
     pub created_at: String,
     #[serde(default)]
+    #[serde(alias = "lastSeenAt")]
     pub last_seen_at: Option<String>,
     #[serde(rename = "claimState", alias = "claim_state")]
     pub claim_state: String,
@@ -4360,6 +4443,350 @@ mod tests {
     use serde_json::json;
     use std::fs;
     use std::os::unix::fs::{symlink, PermissionsExt};
+
+    /// Decode a paired fixture. Both spellings must produce the same value,
+    /// and the fixture must set every optional field: a field whose alias is
+    /// missing decodes to `None` from the camelCase side and fails here.
+    fn decode_pair<T>(snake: serde_json::Value, camel: serde_json::Value) -> T
+    where
+        T: serde::de::DeserializeOwned + std::fmt::Debug,
+    {
+        let from_snake: T = serde_json::from_value(snake).expect("snake_case fixture decodes");
+        let from_camel: T = serde_json::from_value(camel).expect("camelCase fixture decodes");
+        let (snake_debug, camel_debug) = (format!("{from_snake:?}"), format!("{from_camel:?}"));
+        assert_eq!(snake_debug, camel_debug);
+        assert!(
+            !snake_debug.contains("None"),
+            "fixture leaves an optional field unset: {snake_debug}"
+        );
+        from_camel
+    }
+
+    /// `decode_pair`, and the value serializes back to the snake_case fixture
+    /// whichever spelling it was read from: this is what `a4 --json` prints.
+    fn assert_pair_serializes_as_snake_case<T>(pair: (serde_json::Value, serde_json::Value))
+    where
+        T: serde::de::DeserializeOwned + Serialize + std::fmt::Debug,
+    {
+        let (snake, camel) = pair;
+        let decoded: T = decode_pair(snake.clone(), camel);
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), snake);
+    }
+
+    type JsonPair = (serde_json::Value, serde_json::Value);
+
+    fn spec_pair() -> JsonPair {
+        (
+            json!({
+                "id": 1, "user_id": 2, "name": "ore", "entity_name": "Round",
+                "crate_name": "ore", "module_path": "m", "description": "d",
+                "package_name": "ore-sdk", "output_path": "out", "url_slug": "ore",
+                "created_at": "2026-11-01T00:00:00Z", "updated_at": "2026-11-02T00:00:00Z",
+            }),
+            json!({
+                "id": 1, "userId": 2, "name": "ore", "entityName": "Round",
+                "crateName": "ore", "modulePath": "m", "description": "d",
+                "packageName": "ore-sdk", "outputPath": "out", "urlSlug": "ore",
+                "createdAt": "2026-11-01T00:00:00Z", "updatedAt": "2026-11-02T00:00:00Z",
+            }),
+        )
+    }
+
+    fn spec_version_pair() -> JsonPair {
+        (
+            json!({
+                "id": 3, "spec_id": 1, "version_number": 4, "portable_ast_hash": "ast",
+                "version_created_at": "2026-11-01T00:00:00Z", "state_name": "Round",
+                "program_id": "Prog", "handler_count": 5, "section_count": 6,
+            }),
+            json!({
+                "id": 3, "specId": 1, "versionNumber": 4, "portableAstHash": "ast",
+                "versionCreatedAt": "2026-11-01T00:00:00Z", "stateName": "Round",
+                "programId": "Prog", "handlerCount": 5, "sectionCount": 6,
+            }),
+        )
+    }
+
+    fn build_pair() -> JsonPair {
+        (
+            json!({
+                "id": 7, "spec_id": 1, "spec_version_id": 3, "portable_ast_hash": "ast",
+                "deployment_release_hash": "release", "status": "failed",
+                "error_category": "compile", "status_message": "broke", "phase": "BUILD",
+                "progress": 40, "websocket_url": "wss://ore", "websocket_auth": {"mode": "open"},
+                "http_auth": {"mode": "open"}, "started_at": "2026-11-01T00:00:00Z",
+                "completed_at": "2026-11-01T00:01:00Z", "created_at": "2026-11-01T00:00:00Z",
+            }),
+            json!({
+                "id": 7, "specId": 1, "specVersionId": 3, "portableAstHash": "ast",
+                "deploymentReleaseHash": "release", "status": "failed",
+                "errorCategory": "compile", "statusMessage": "broke", "phase": "BUILD",
+                "progress": 40, "websocketUrl": "wss://ore", "websocketAuth": {"mode": "open"},
+                "httpAuth": {"mode": "open"}, "startedAt": "2026-11-01T00:00:00Z",
+                "completedAt": "2026-11-01T00:01:00Z", "createdAt": "2026-11-01T00:00:00Z",
+            }),
+        )
+    }
+
+    fn build_event_pair() -> JsonPair {
+        (
+            json!({
+                "id": 8, "build_id": 7, "event_type": "status", "phase": "BUILD",
+                "previous_status": "queued", "new_status": "building",
+                "created_at": "2026-11-01T00:00:00Z",
+            }),
+            json!({
+                "id": 8, "buildId": 7, "eventType": "status", "phase": "BUILD",
+                "previousStatus": "queued", "newStatus": "building",
+                "createdAt": "2026-11-01T00:00:00Z",
+            }),
+        )
+    }
+
+    fn live_status_pair() -> JsonPair {
+        (
+            json!({
+                "phase": "running", "desired_replicas": 3, "ready_replicas": 2,
+                "available_replicas": 2, "updated_replicas": 1,
+                "last_transition_time": "2026-11-01T00:00:00Z", "source": "cluster",
+                "error_category": "none",
+            }),
+            json!({
+                "phase": "running", "desiredReplicas": 3, "readyReplicas": 2,
+                "availableReplicas": 2, "updatedReplicas": 1,
+                "lastTransitionTime": "2026-11-01T00:00:00Z", "source": "cluster",
+                "errorCategory": "none",
+            }),
+        )
+    }
+
+    fn deployment_pair() -> JsonPair {
+        let (live_snake, live_camel) = live_status_pair();
+        (
+            json!({
+                "id": 9, "spec_id": 1, "spec_name": "ore", "atom_name": "ore-atom",
+                "branch": "main", "current_build_id": 7, "current_spec_version_id": 3,
+                "current_version": 4, "portable_ast_hash": "ast",
+                "deployment_release_hash": "release", "current_idl_program_ids": ["Prog"],
+                "current_image_tag": "tag", "websocket_url": "wss://ore",
+                "http_url": "https://ore", "websocket_auth": {"mode": "open"},
+                "http_auth": {"mode": "open"}, "transaction_relay_enabled": true,
+                "status": "active", "status_message": "ok",
+                "first_deployed_at": "2026-11-01T00:00:00Z",
+                "last_deployed_at": "2026-11-02T00:00:00Z", "live_status": live_snake,
+                "latest_operation": {"id": 1},
+            }),
+            json!({
+                "id": 9, "specId": 1, "specName": "ore", "atomName": "ore-atom",
+                "branch": "main", "currentBuildId": 7, "currentSpecVersionId": 3,
+                "currentVersion": 4, "portableAstHash": "ast",
+                "deploymentReleaseHash": "release", "currentIdlProgramIds": ["Prog"],
+                "currentImageTag": "tag", "websocketUrl": "wss://ore",
+                "httpUrl": "https://ore", "websocketAuth": {"mode": "open"},
+                "httpAuth": {"mode": "open"}, "transactionRelayEnabled": true,
+                "status": "active", "statusMessage": "ok",
+                "firstDeployedAt": "2026-11-01T00:00:00Z",
+                "lastDeployedAt": "2026-11-02T00:00:00Z", "liveStatus": live_camel,
+                "latestOperation": {"id": 1},
+            }),
+        )
+    }
+
+    /// Merge `extra` into the object `base`.
+    fn with_fields(mut base: serde_json::Value, extra: serde_json::Value) -> serde_json::Value {
+        let target = base.as_object_mut().expect("object fixture");
+        target.extend(extra.as_object().expect("object fixture").clone());
+        base
+    }
+
+    #[test]
+    fn spec_responses_decode_either_spelling() {
+        assert_pair_serializes_as_snake_case::<Spec>(spec_pair());
+        assert_pair_serializes_as_snake_case::<SpecVersionWithContent>(spec_version_pair());
+
+        let (spec_snake, spec_camel) = spec_pair();
+        let (version_snake, version_camel) = spec_version_pair();
+        let combined: SpecWithVersion = decode_pair(
+            with_fields(spec_snake, json!({ "latest_version": version_snake })),
+            with_fields(spec_camel, json!({ "latestVersion": version_camel })),
+        );
+        assert_eq!(combined.spec.entity_name, "Round");
+        assert_eq!(combined.latest_version.unwrap().handler_count, 5);
+    }
+
+    #[test]
+    fn build_responses_decode_either_spelling() {
+        assert_pair_serializes_as_snake_case::<Build>(build_pair());
+        assert_pair_serializes_as_snake_case::<BuildEvent>(build_event_pair());
+
+        let created: CreateBuildResponse = decode_pair(
+            json!({
+                "build_id": 7, "message": "queued", "deployment_plan_id": "plan",
+                "selection_digest": "digest",
+            }),
+            json!({
+                "buildId": 7, "message": "queued", "deploymentPlanId": "plan",
+                "selectionDigest": "digest",
+            }),
+        );
+        assert_eq!(created.build_id, 7);
+
+        let (build_snake, build_camel) = build_pair();
+        let (event_snake, event_camel) = build_event_pair();
+        assert_pair_serializes_as_snake_case::<BuildStatusResponse>((
+            json!({
+                "build": build_snake, "events": [event_snake], "related_deployment_id": 9,
+                "provenance": {"source": "cli"},
+            }),
+            json!({
+                "build": build_camel, "events": [event_camel], "relatedDeploymentId": 9,
+                "provenance": {"source": "cli"},
+            }),
+        ));
+    }
+
+    #[test]
+    fn deployment_responses_decode_either_spelling() {
+        assert_pair_serializes_as_snake_case::<DeploymentLiveStatus>(live_status_pair());
+        assert_pair_serializes_as_snake_case::<DeploymentResponse>(deployment_pair());
+
+        let stopped: StopDeploymentResponse = decode_pair(
+            json!({"operation_id": 5, "status": "queued", "message": "stopping"}),
+            json!({"operationId": 5, "status": "queued", "message": "stopping"}),
+        );
+        assert_eq!(stopped.operation_id, 5);
+    }
+
+    #[test]
+    fn api_key_responses_decode_either_spelling() {
+        assert_pair_serializes_as_snake_case::<ApiKey>((
+            json!({
+                "id": 1, "user_id": 2, "name": "ci", "last_used_at": "2026-11-01T00:00:00Z",
+                "expires_at": "2027-11-01T00:00:00Z", "created_at": "2026-10-01T00:00:00Z",
+                "key_class": "publishable", "origin_allowlist": ["https://app.example"],
+            }),
+            json!({
+                "id": 1, "userId": 2, "name": "ci", "lastUsedAt": "2026-11-01T00:00:00Z",
+                "expiresAt": "2027-11-01T00:00:00Z", "createdAt": "2026-10-01T00:00:00Z",
+                "keyClass": "publishable", "originAllowlist": ["https://app.example"],
+            }),
+        ));
+
+        let created: CreateApiKeyResponse = decode_pair(
+            json!({
+                "id": 1, "key": "pk_test", "name": "ci", "key_class": "publishable",
+                "expires_at": "2027-11-01T00:00:00Z", "message": "created",
+            }),
+            json!({
+                "id": 1, "key": "pk_test", "name": "ci", "keyClass": "publishable",
+                "expiresAt": "2027-11-01T00:00:00Z", "message": "created",
+            }),
+        );
+        assert_eq!(created.key_class, "publishable");
+    }
+
+    #[test]
+    fn registry_and_account_responses_decode_either_spelling() {
+        assert_pair_serializes_as_snake_case::<RegistryStackItem>((
+            json!({
+                "name": "ore", "description": "ORE.", "websocket_url": "wss://ore",
+                "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard",
+            }),
+            json!({
+                "name": "ore", "description": "ORE.", "websocketUrl": "wss://ore",
+                "entities": ["OreRound"], "visibility": "public", "serviceClass": "standard",
+            }),
+        ));
+
+        // The account keys this response has always spelled in camelCase have
+        // no snake_case form, so they appear the same on both sides.
+        let camel_only = json!({
+            "entitlementExpiresAt": "2027-11-01T00:00:00Z", "trialAccessEnabled": true,
+            "starterGuidance": "start here", "plan": "starter", "slug": "agent",
+            "status": "active",
+            "usage": {
+                "window": "month", "windowStart": "2026-11-01T00:00:00Z",
+                "windowEnd": "2026-12-01T00:00:00Z", "exhausted": false,
+                "onExhausted": "block",
+                "meters": [{
+                    "meter": "reads", "consumed": 1, "allowance": 2, "remaining": 1,
+                    "exhausted": false,
+                }],
+            },
+        });
+        let me: AgentMeResponse = decode_pair(
+            with_fields(
+                camel_only.clone(),
+                json!({
+                    "display_name": "Agent", "created_at": "2026-10-01T00:00:00Z",
+                    "last_seen_at": "2026-11-01T00:00:00Z", "claim_state": "claimed",
+                }),
+            ),
+            with_fields(
+                camel_only,
+                json!({
+                    "displayName": "Agent", "createdAt": "2026-10-01T00:00:00Z",
+                    "lastSeenAt": "2026-11-01T00:00:00Z", "claimState": "claimed",
+                }),
+            ),
+        );
+        assert_eq!(me.display_name, "Agent");
+        assert_eq!(me.claim_state, "claimed");
+    }
+
+    /// Only the keys a response always carries are required, in either
+    /// spelling, so an omitted optional field is not an error.
+    #[test]
+    fn optional_response_fields_may_be_omitted_in_either_spelling() {
+        let required_build = |spec_key: &str, created_key: &str| json!({ "id": 7, "status": "queued", spec_key: null, created_key: "2026-11-01T00:00:00Z" });
+        for build in [
+            required_build("spec_id", "created_at"),
+            required_build("specId", "createdAt"),
+        ] {
+            let build: Build = serde_json::from_value(build).unwrap();
+            assert_eq!(build.spec_id, None);
+            assert_eq!(build.websocket_url, None);
+            assert_eq!(build.websocket_auth, None);
+        }
+
+        let (_, camel) = spec_pair();
+        let mut minimal = camel;
+        let map = minimal.as_object_mut().unwrap();
+        map.remove("packageName");
+        map.remove("outputPath");
+        map.remove("description");
+        let spec: Spec = serde_json::from_value(minimal).unwrap();
+        assert_eq!(spec.package_name, None);
+    }
+
+    /// Fields typed as raw JSON keep the server's keys, so an untyped nested
+    /// object can change spelling in `--json` output when the server's does.
+    #[test]
+    fn untyped_nested_objects_keep_the_spelling_the_server_sent() {
+        let (_, camel) = build_pair();
+        let build: Build = serde_json::from_value(with_fields(
+            camel,
+            json!({ "websocketAuth": { "acceptedKeyClasses": ["publishable"] } }),
+        ))
+        .unwrap();
+        let output = serde_json::to_value(&build).unwrap();
+        assert_eq!(
+            output["websocket_auth"],
+            json!({ "acceptedKeyClasses": ["publishable"] })
+        );
+        assert!(output.get("websocketAuth").is_none());
+    }
+
+    /// A response carrying both spellings of one key is rejected, so the API
+    /// must send one or the other, never both at once.
+    #[test]
+    fn a_key_sent_in_both_spellings_is_rejected() {
+        let (snake, _) = spec_pair();
+        let error =
+            serde_json::from_value::<Spec>(with_fields(snake, json!({ "entityName": "Round" })))
+                .unwrap_err();
+        assert!(error.to_string().contains("duplicate field"), "{error}");
+    }
 
     #[test]
     fn api_errors_print_each_entry_of_their_errors_list() {

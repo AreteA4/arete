@@ -62,6 +62,7 @@ struct MintResponse {
     token: String,
     /// Seconds since the epoch.
     #[serde(default)]
+    #[serde(alias = "expiresAt")]
     expires_at: Option<u64>,
 }
 
@@ -379,6 +380,20 @@ impl SessionRefresh {
 mod tests {
     use super::*;
     use crate::api_client::test_support::MockServer;
+
+    #[test]
+    fn mint_responses_decode_either_spelling_of_the_expiry() {
+        for body in [
+            r#"{"token":"t","expires_at":1000}"#,
+            r#"{"token":"t","expiresAt":1000}"#,
+        ] {
+            let mint: MintResponse = serde_json::from_str(body).unwrap();
+            assert_eq!(mint.token, "t");
+            assert_eq!(mint.expires_at, Some(1000));
+        }
+        let mint: MintResponse = serde_json::from_str(r#"{"token":"t"}"#).unwrap();
+        assert_eq!(mint.expires_at, None);
+    }
 
     #[test]
     fn a_token_is_replaced_a_minute_before_it_expires() {

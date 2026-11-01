@@ -522,6 +522,96 @@ impl RegistryClient {
     }
 }
 
+/// Keys of a registry stack item the API may spell either way, each with the
+/// spelling the stack tools report.
+const STACK_KEY_SPELLINGS: [(&str, &str); 4] = [
+    ("websocketUrl", "websocket_url"),
+    ("websocketAuth", "websocket_auth"),
+    ("httpUrl", "http_url"),
+    ("httpAuth", "http_auth"),
+];
+
+/// The stack item keys holding auth metadata. Every key inside one is a field
+/// name rather than data, so all of them are reported as snake_case, including
+/// fields added after this was written.
+const STACK_AUTH_KEYS: [&str; 2] = ["websocket_auth", "http_auth"];
+
+/// `sessionEndpoint` as `session_endpoint`. A snake_case key is unchanged.
+fn snake_case_key(key: &str) -> String {
+    let mut out = String::with_capacity(key.len() + 4);
+    let mut previous_upper = false;
+    for character in key.chars() {
+        let upper = character.is_ascii_uppercase();
+        if upper && !previous_upper && !out.is_empty() {
+            out.push('_');
+        }
+        out.push(character.to_ascii_lowercase());
+        previous_upper = upper;
+    }
+    out
+}
+
+/// Rewrite one stack item to the spelling the stack tools report. If an item
+/// carries both spellings of a key, the snake_case value wins.
+fn canonicalize_stack_item(stack: &mut Value) {
+    let Value::Object(map) = stack else {
+        return;
+    };
+    for (camel, snake) in STACK_KEY_SPELLINGS {
+        if let Some(value) = map.remove(camel) {
+            map.entry(snake).or_insert(value);
+        }
+    }
+    for auth in STACK_AUTH_KEYS {
+        let Some(Value::Object(auth)) = map.get_mut(auth) else {
+            continue;
+        };
+        let camel_keys: Vec<String> = auth
+            .keys()
+            .filter(|key| snake_case_key(key) != **key)
+            .cloned()
+            .collect();
+        for key in camel_keys {
+            if let Some(value) = auth.remove(&key) {
+                auth.entry(snake_case_key(&key)).or_insert(value);
+            }
+        }
+    }
+}
+
+/// The registry's stack list with each item in the spelling the stack tools
+/// report. A body that is not a JSON array is returned unchanged.
+pub fn canonical_stack_list(body: String) -> String {
+    let Ok(Value::Array(mut stacks)) = serde_json::from_str::<Value>(&body) else {
+        return body;
+    };
+    stacks.iter_mut().for_each(canonicalize_stack_item);
+    serde_json::to_string(&stacks).unwrap_or(body)
+}
+
+/// A requested stack field path in the spelling the stack tools report, so
+/// `websocketAuth.jwksUrl` and `websocket_auth.jwks_url` select the same value.
+pub fn canonical_stack_field(field: &str) -> String {
+    let (first, rest) = field.split_once('.').unwrap_or((field, ""));
+    let first = STACK_KEY_SPELLINGS
+        .iter()
+        .find(|(camel, _)| *camel == first)
+        .map_or(first, |(_, snake)| *snake);
+    if rest.is_empty() {
+        return first.to_string();
+    }
+    if !STACK_AUTH_KEYS.contains(&first) {
+        return format!("{first}.{rest}");
+    }
+    let (auth_field, deeper) = rest.split_once('.').unwrap_or((rest, ""));
+    let auth_field = snake_case_key(auth_field);
+    if deeper.is_empty() {
+        format!("{first}.{auth_field}")
+    } else {
+        format!("{first}.{auth_field}.{deeper}")
+    }
+}
+
 fn starter_stacks_response(body: &str) -> Result<String> {
     let stacks = serde_json::from_str::<Value>(body)
         .map_err(|error| anyhow!("registry returned invalid stack list JSON: {error}"))?;
@@ -536,6 +626,10 @@ fn starter_stacks_response(body: &str) -> Result<String> {
                 .and_then(Value::as_str)
                 .unwrap_or("standard")
                 == "starter"
+        })
+        .map(|mut stack| {
+            canonicalize_stack_item(&mut stack);
+            stack
         })
         .collect::<Vec<_>>();
     let response = serde_json::to_string(&serde_json::json!({
@@ -941,6 +1035,98 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("explore_stacks"));
+    }
+
+    #[test]
+    fn starter_discovery_reports_one_spelling_of_connection_info() {
+        let stack = |url_key: &str, auth_key: &str| {
+            serde_json::json!({
+                "name": "trial-feed",
+                "serviceClass": "starter",
+                url_key: "wss://trial-feed",
+                auth_key: {"required": true},
+            })
+        };
+        let response = |item: Value| -> Value {
+            let body = serde_json::json!([item]).to_string();
+            serde_json::from_str(&starter_stacks_response(&body).unwrap()).unwrap()
+        };
+        let snake = response(stack("websocket_url", "websocket_auth"));
+        let camel = response(stack("websocketUrl", "websocketAuth"));
+        assert_eq!(snake, camel);
+        assert_eq!(camel["stacks"][0]["websocket_url"], "wss://trial-feed");
+        assert_eq!(camel["stacks"][0]["websocket_auth"]["required"], true);
+    }
+
+    #[test]
+    fn stack_items_prefer_the_snake_case_value_when_both_spellings_arrive() {
+        let body = serde_json::json!([{
+            "websocket_url": "wss://snake", "websocketUrl": "wss://camel",
+            "websocketAuth": {"acceptedKeyClasses": ["secret"], "accepted_key_classes": ["publishable"]}
+        }])
+        .to_string();
+        let list: Value = serde_json::from_str(&canonical_stack_list(body)).unwrap();
+        assert_eq!(
+            list,
+            serde_json::json!([{
+                "websocket_url": "wss://snake",
+                "websocket_auth": {"accepted_key_classes": ["publishable"]}
+            }])
+        );
+    }
+
+    #[test]
+    fn auth_fields_added_later_keep_their_values_in_either_spelling() {
+        let body = serde_json::json!([{
+            "httpAuth": {"brandNewField": 1, "jwksURL": "https://jwks", "scopes": ["read"]},
+            "serviceClass": "standard",
+            "someObject": {"someField": 1}
+        }])
+        .to_string();
+        let list: Value = serde_json::from_str(&canonical_stack_list(body)).unwrap();
+        assert_eq!(
+            list,
+            serde_json::json!([{
+                "http_auth": {"brand_new_field": 1, "jwks_url": "https://jwks", "scopes": ["read"]},
+                "serviceClass": "standard",
+                "someObject": {"someField": 1}
+            }])
+        );
+    }
+
+    #[test]
+    fn a_stack_list_that_is_not_an_array_passes_through() {
+        let body = r#"{"error":"nope"}"#.to_string();
+        assert_eq!(canonical_stack_list(body.clone()), body);
+        assert_eq!(canonical_stack_list("<html>".into()), "<html>");
+    }
+
+    #[test]
+    fn stack_field_paths_accept_either_spelling() {
+        assert_eq!(canonical_stack_field("websocketUrl"), "websocket_url");
+        assert_eq!(
+            canonical_stack_field("websocketAuth.mode"),
+            "websocket_auth.mode"
+        );
+        assert_eq!(
+            canonical_stack_field("httpAuth.acceptedKeyClasses"),
+            "http_auth.accepted_key_classes"
+        );
+        assert_eq!(
+            canonical_stack_field("websocket_auth.mode"),
+            "websocket_auth.mode"
+        );
+        assert_eq!(
+            canonical_stack_field("websocketAuth.authorizationHeaderSupported"),
+            "websocket_auth.authorization_header_supported"
+        );
+        assert_eq!(canonical_stack_field("websocketAuth"), "websocket_auth");
+        assert_eq!(canonical_stack_field("serviceClass"), "serviceClass");
+        // Only auth objects are respelled below the top level.
+        assert_eq!(
+            canonical_stack_field("someObject.someField"),
+            "someObject.someField"
+        );
     }
 
     #[test]
