@@ -676,9 +676,7 @@ await grantDevConsent(automations, devWallets, { wallet: "alice", deploymentId: 
 
 Each helper throws when the client targets production, so keep the
 production signer, simulator and store beside them and pick by
-`clientCluster(client) === "dev"`. (That reads the environment from the
-client's deployment; it is temporary, until the SDK exposes the environment
-on the client.)
+`client.environment === "dev"`.
 
 `a4 dev consent` opts a dev wallet in, signing the consent message with the
 wallet's key as a user's wallet would in your app (entry mode only):

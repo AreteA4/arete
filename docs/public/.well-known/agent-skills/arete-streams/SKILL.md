@@ -2,8 +2,8 @@
 name: arete-streams
 description: Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server, and stream a local protocol's stack from a4 dev with a4 stream --dev (including its TUI). Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.
 metadata:
-  version: "1.9.0"
-  min-cli: ">=0.42.0"
+  version: "1.10.0"
+  min-cli: ">=0.51.0"
 ---
 
 # Query and Subscribe to Arete Views
@@ -89,9 +89,11 @@ a4 stream --dev --tui                            # browse protocols, views, rows
   it can change the chain state underlying the rows; inspect the environment
   before interpreting data after such an operation.
 - The usual filters (`--where`, `--select`, `--ops`, `--take`, `--first`,
-  `--no-snapshot`, `--duration`) apply. Another WebSocket client mints its
-  own stack session (`POST <apiUrl>/ws/sessions` with your key); an installed
-  stack SDK in dev mode needs none, since the `a4 dev up` edge adds it.
+  `--no-snapshot`, `--duration`) apply. Your own code streams an installed
+  stack's environment copy by running with `ARETE_ENVIRONMENT=dev`
+  (`a4 dev run -- <command>`): the stack SDK connects through the edge
+  `a4 dev up` serves, with no token in the app. Environment stacks start
+  empty and stream only accounts touched since they loaded.
 
 ## Install and Inspect Generated Code
 

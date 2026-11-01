@@ -2,8 +2,8 @@
 name: arete-protocols
 description: Author Arete Protocols with defineProtocol (machines, guards, instruction templates, reviewed handlers, reactions, fees), scaffold them with a4 protocol init, iterate with a4 dev on an Arete cloud fork (generated client, a4 stream --dev), deploy privately with a4 protocol deploy and install the result with a4 install protocol, use installed protocols from TypeScript, Rust or Python apps (instances, allowedSteps, prepare, sign, submit, metadata, events, webhooks, Squads multisig setup), and act on a protocol as an agent with a wallet (a4 protocol actions, the MCP protocol tools, an opt-in signer policy), and automate user-signed steps from an app backend with @usearete/automations (triggers, schedules, consent, spending limits, signers, deploying to Cloudflare, Vercel or a Node host). Use when composing existing Solana programs into a hosted multi-step flow or transaction workflow, or when an app calls a protocol. Do not use for a single program call (arete-programs), stack views (arete-streams) or stack authoring (arete-stack-authoring).
 metadata:
-  version: "1.10.1"
-  min-cli: ">=0.49.0"
+  version: "1.12.0"
+  min-cli: ">=0.51.0"
 ---
 
 # Arete Protocols
@@ -42,6 +42,9 @@ Expressions (functions, operators, names in scope, what is not supported):
 [references/expressions.md](references/expressions.md). Rejections with their
 cause and fix: [references/troubleshooting.md](references/troubleshooting.md).
 Builtin programs and glue: [references/builtins.md](references/builtins.md).
+Design patterns (allow-lists, choosing a venue, per-user accounts, state-only
+steps, a PDA the IDL lacks, dev-only app features, dev and production builds):
+[references/patterns.md](references/patterns.md).
 Check a spec against the server before deploying: `npx arete-protocol check`
 with a secret key in `ARETE_API_KEY`, or `a4 protocol deploy --dry-run`.
 
@@ -137,14 +140,18 @@ a4 protocol deploy --dry-run
 ```
 
 - `a4 dev up` regenerates the client in
-  `generated/<lang>/protocols/<alias>/`, with the dev deployment id. Use your
-  account's key for this private deployment and the loopback RPC for its chain.
-  Read the generated README rather than substituting ids manually.
+  `generated/<lang>/protocols/<alias>/` and serves an edge on loopback. Run the
+  app with `a4 dev run -- <command>` (`ARETE_ENVIRONMENT=dev`): every installed
+  SDK then uses the environment, with no credential in the app. Unset, the
+  same app is production. See
+  [local-dev.md](references/local-dev.md#the-apps-client-one-switch).
 - The environment persists across CLI restarts. `a4 dev down` stops local
   forwarding; `a4 dev sleep` sleeps the environment. Reset, restore and delete
   alter cloud state: explain the effect and require the user's authorization.
-- `.arete/dev/session.json` contains a stack token. Keep it and dev wallet
-  keypairs out of git, browser bundles, logs and chat.
+- Keep `.arete/dev/` (session file, dev wallet keypairs) out of git, browser
+  bundles, logs and chat.
+- Before shipping: `a4 dev promote --check` lists what exists only in the
+  environment, with the command that publishes each.
 - `a4 protocol deploy` builds first (`--no-build` refuses a stale build),
   pushes programs installed from a local IDL as your private programs, and
   activates. Deploying is an external mutation: only when the user asks.

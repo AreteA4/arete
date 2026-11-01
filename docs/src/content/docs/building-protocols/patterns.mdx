@@ -167,12 +167,7 @@ Fund buttons, dev-wallet pickers, "skip the deadline" controls and
 the environment the protocol client targets:
 
 ```ts
-import { clientCluster } from "@usearete/automations";
-
-// Temporary: the environment is read from the client's deployment until the
-// SDK exposes it as `client.environment`; then gate on
-// `client.environment === "dev"`.
-export const isDev = clientCluster(client) === "dev";
+export const isDev = client.environment === "dev";
 ```
 
 ```tsx

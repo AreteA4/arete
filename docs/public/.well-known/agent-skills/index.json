@@ -6,14 +6,14 @@
       "type": "archive",
       "description": "Discover and install exact Arete stacks, program SDKs or protocols for a Solana application. Use for generic Arete setup, capability discovery, choosing between a stack, a standalone program SDK, a composed stack, or a protocol, or managing arete.toml dependencies. For view code use arete-streams; for program operations use arete-programs; for multi-step app flows and transaction workflows across programs, for running them locally with a4 dev, for an agent acting on a protocol with its own wallet, and for a backend automating protocol steps for users, use arete-protocols; for Rust stack definitions or composing stacks use arete-stack-authoring; for hosted publication or deployment use arete-deploy.",
       "url": "/.well-known/agent-skills/arete.tar.gz",
-      "digest": "sha256:0d38c27231599b53f7c499ac3237ef27c9b36751fea4d3750361ace8a9165105"
+      "digest": "sha256:01212f5d2904319dbfb534e1ebb5d22e43884af4cd04ecc4bfb950dd6866817c"
     },
     {
       "name": "arete-streams",
       "type": "archive",
       "description": "Query or subscribe to deployed Arete stack views from TypeScript, React, Rust, Python, the a4 CLI, or the Arete MCP server, and stream a local protocol's stack from a4 dev with a4 stream --dev (including its TUI). Use for dashboards, bots, backends, current-state reads, live entity updates, view filtering, or stream debugging. Do not use for program accounts or transaction construction; use arete-programs for those.",
       "url": "/.well-known/agent-skills/arete-streams.tar.gz",
-      "digest": "sha256:3a31a757538adcaf48085a8885fdb59c0dcb8dadd3df8cad5251aa8681809412"
+      "digest": "sha256:3bff29a058b9eead7bbe8a9046fb765af242bb86b8fb490392c982007cc4b9b8"
     },
     {
       "name": "arete-programs",
@@ -41,7 +41,7 @@
       "type": "archive",
       "description": "Author Arete Protocols with defineProtocol (machines, guards, instruction templates, reviewed handlers, reactions, fees), scaffold them with a4 protocol init, iterate with a4 dev on an Arete cloud fork (generated client, a4 stream --dev), deploy privately with a4 protocol deploy and install the result with a4 install protocol, use installed protocols from TypeScript, Rust or Python apps (instances, allowedSteps, prepare, sign, submit, metadata, events, webhooks, Squads multisig setup), and act on a protocol as an agent with a wallet (a4 protocol actions, the MCP protocol tools, an opt-in signer policy), and automate user-signed steps from an app backend with @usearete/automations (triggers, schedules, consent, spending limits, signers, deploying to Cloudflare, Vercel or a Node host). Use when composing existing Solana programs into a hosted multi-step flow or transaction workflow, or when an app calls a protocol. Do not use for a single program call (arete-programs), stack views (arete-streams) or stack authoring (arete-stack-authoring).",
       "url": "/.well-known/agent-skills/arete-protocols.tar.gz",
-      "digest": "sha256:35825146afb354544f97a978d11d2a479413259f7236c4cf35fff71949a80ff5"
+      "digest": "sha256:3ea38a371ba5134868482eff6e0a735d71da71525c5f910ba6fa6b3c5bcba376"
     }
   ]
 }

@@ -16,7 +16,8 @@ is at <https://docs.arete.run/reference/protocol-expressions/#rejections>.
 | `unknown-function` | A function the language lacks | Use one from [expressions.md](expressions.md#functions) |
 | `invalid-expression` | A character or token the syntax lacks | Fix the syntax at the offset |
 | `squads-multisig-not-from-resources` | A Squads step's multisig is not `resources.<name>` | Declare a resource and use it |
-| warning: builtin program in a template | Templates cannot call builtins yet; the server rejects them | Use glue (see [builtins.md](builtins.md)), or install the program from the registry |
+| `template_program_spec_missing` | A template names a program the spec doesn't declare | Install the program and use its alias, or declare the builtin with `builtins(...)` (see [builtins.md](builtins.md)) |
+| a builtin name error (`spl-ata`, `splAta`, …) | Builtins have one name each | Use the name the error gives: `associatedToken`, `splToken`, `system`, `memo`, `computeBudget` |
 
 The local checker checks syntax and names only: its "ok" is not the
 server's.
@@ -48,7 +49,7 @@ Template codes inside `errors` (`path` ends in `/build/instructions/<i>/...`):
 
 | Code | Cause | Fix |
 |---|---|---|
-| `template_program_spec_missing` | Undeclared alias, or a builtin program | Install the program; use glue for token accounts |
+| `template_program_spec_missing` | The template's program alias is not declared | Install the program and use its alias, or declare the builtin with `builtins(...)` |
 | `template_unknown_instruction` | No such instruction in the IDL | Use the IDL's name |
 | `template_unknown_arg` / `template_missing_arg` | Argument not in / missing from the IDL instruction | Match the IDL's arguments |
 | `template_arg_type_mismatch` | The expression's type doesn't fit the IDL argument | Cast or change it |

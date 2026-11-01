@@ -77,17 +77,18 @@ See [fees](authoring.md#fees).
 
 ## Choose the environment
 
-For development, `a4 dev up` generates a client with the deployment id in the
-account's cloud dev environment. Use the account's credentials and the API
-origin reported by the session; keep wallets and chain clients on the loopback
-RPC. The session does not contain a reusable account secret key.
+One switch picks the environment; the installed client is the same file
+either way. Run the app with `a4 dev run -- <command>` (sets
+`ARETE_ENVIRONMENT=dev` and the edge URL) while `a4 dev up` runs, and every
+installed SDK uses the cloud dev environment with no credential in the app.
+Unset, it is production. `client.environment` says which.
 
-For production, deploy only when authorized, then restore the published client
-with `a4 install --locked` and check it with `a4 install --check`. Read the
-generated README for connection options. Backend credentials can come from
-`ARETE_API_KEY`; `ARETE_API_URL` selects the API origin, not the chain RPC.
-Never edit generated ids or put a secret key or session token in browser code.
-See [local-dev.md](local-dev.md#the-apps-client).
+For production, deploy only when authorized, run `a4 dev promote --check`,
+then `a4 install --locked` and `a4 install --check`. Read the generated README
+for connection options. Backend credentials can come from `ARETE_API_KEY`;
+`ARETE_API_URL` selects the API origin, not the chain RPC. Never edit
+generated ids or put a secret key or token in browser code. See
+[local-dev.md](local-dev.md#the-apps-client-one-switch).
 
 ## Reads and live state
 

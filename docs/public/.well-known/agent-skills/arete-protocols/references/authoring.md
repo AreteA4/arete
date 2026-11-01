@@ -79,7 +79,7 @@ not supported are in [expressions.md](expressions.md). Check a spec against
 the server, not only locally: `npx arete-protocol check` with a secret key in
 `ARETE_API_KEY`, or `a4 protocol deploy --dry-run`. Rejections with their
 fixes are in [troubleshooting.md](troubleshooting.md), and builtin programs
-(and why templates can't call them yet) in [builtins.md](builtins.md).
+(typed modules templates call with `ix`) in [builtins.md](builtins.md).
 
 The `deployment` root names the deployment an expression runs under and the
 platform keys it holds:
