@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "arete"
-version = "0.51.0"
+version = "0.51.1"
 dependencies = [
  "anyhow",
  "arete-a4-sdk",
@@ -149,7 +149,7 @@ dependencies = [
 
 [[package]]
 name = "arete-a4-sdk"
-version = "0.51.0"
+version = "0.51.1"
 dependencies = [
  "anyhow",
  "arete-solana-contracts",
@@ -238,7 +238,7 @@ dependencies = [
 
 [[package]]
 name = "arete-interpreter"
-version = "0.51.0"
+version = "0.51.1"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -267,7 +267,7 @@ dependencies = [
 
 [[package]]
 name = "arete-macros"
-version = "0.51.0"
+version = "0.51.1"
 dependencies = [
  "arete-artifacts",
  "arete-hash",
@@ -284,7 +284,7 @@ dependencies = [
 
 [[package]]
 name = "arete-server"
-version = "0.51.0"
+version = "0.51.1"
 dependencies = [
  "anyhow",
  "arete-auth",
