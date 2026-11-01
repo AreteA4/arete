@@ -2,14 +2,37 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "arete": {
+      "enabled": true,
       "type": "local",
-      "command": ["a4", "mcp"],
-      "enabled": true
+      "command": [
+        "a4",
+        "mcp"
+      ]
     },
     "arete-docs": {
+      "enabled": true,
       "type": "remote",
-      "url": "https://docs.arete.run/mcp",
-      "enabled": true
+      "url": "https://docs.arete.run/mcp"
+    },
+    "linear": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "mcp-remote",
+        "https://mcp.linear.app/mcp"
+      ]
+    },
+    "posthog": {
+      "enabled": true,
+      "type": "local",
+      "command": [
+        "npx",
+        "-y",
+        "mcp-remote",
+        "https://mcp.posthog.com/mcp"
+      ]
     }
   }
 }

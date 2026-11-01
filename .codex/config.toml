@@ -1,0 +1,18 @@
+[mcp_servers.arete]
+enabled = true
+command = "a4"
+args = ["mcp"]
+
+[mcp_servers.arete-docs]
+enabled = true
+url = "https://docs.arete.run/mcp"
+
+[mcp_servers.linear]
+enabled = true
+command = "npx"
+args = ["-y", "mcp-remote", "https://mcp.linear.app/mcp"]
+
+[mcp_servers.posthog]
+enabled = true
+command = "npx"
+args = ["-y", "mcp-remote", "https://mcp.posthog.com/mcp"]
