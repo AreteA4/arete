@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.51.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.51.0...a4-cli-v0.51.1) (2026-11-01)
+
+
+### Bug Fixes
+
+* **cli:** protocol-app follows the dev environment switch ([1c1522f](https://github.com/AreteA4/arete/commit/1c1522fcaae05477aaabd83da204f08e20adbb66))
+* **cli:** protocol-app follows the dev environment switch ([ac33c25](https://github.com/AreteA4/arete/commit/ac33c25b3ba9e09a5b24e7bab1d78fe75f6f576f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.51.0 to 0.51.1
+    * arete-mcp bumped from 0.51.0 to 0.51.1
+
 ## [0.51.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.50.0...a4-cli-v0.51.0) (2026-10-31)
 
 

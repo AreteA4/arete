@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.51.1](https://github.com/AreteA4/arete/compare/arete-react-v0.51.0...arete-react-v0.51.1) (2026-11-01)
+
+
+### Miscellaneous Chores
+
+* **arete-react:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/adapter-kit bumped from ^0.51.0 to ^0.51.1
+    * @usearete/sdk bumped from ^0.51.0 to ^0.51.1
+  * peerDependencies
+    * @usearete/adapter-kit bumped from ^0.51.0 to ^0.51.1
+    * @usearete/sdk bumped from ^0.51.0 to ^0.51.1
+
 ## [0.51.0](https://github.com/AreteA4/arete/compare/arete-react-v0.50.0...arete-react-v0.51.0) (2026-10-31)
 
 
