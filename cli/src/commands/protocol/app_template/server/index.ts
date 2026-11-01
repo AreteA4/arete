@@ -3,7 +3,7 @@
  * store, the webhook route and the consent routes the app's backend calls.
  * Built from the token-raise example's server (`@usearete/automations`).
  *
- * In dev (the client `a4 dev up` generated), point `a4 dev up` at it with
+ * In dev (`a4 dev run -- npm run server`), point `a4 dev up` at it with
  * `[dev.automations] forward = "http://localhost:8787/arete/webhook"` in
  * arete.toml. It then runs on `@usearete/automations/dev`: dev wallets sign
  * (Privy too, for any other wallet, when PRIVY_APP_ID is set), the store is
@@ -11,7 +11,7 @@
  * POST /dev/consent signs a consent with a dev wallet. Each dev helper
  * throws for a production client.
  *
- * In production (the published client, after `a4 install --locked`): Privy
+ * In production (`npm run server`, after `a4 install --locked`): Privy
  * signs, Postgres keeps jobs and consent (`npm run server -- --migrate`
  * once), and RPC_URL simulates. See README.md.
  */
@@ -62,8 +62,9 @@ async function privyFromEnv(): Promise<ProtocolSigner | null> {
 
 async function main() {
   const client = createProtocolClient(protocol, { auth: { secretKey: env("ARETE_SECRET_KEY") } });
-  // Temporary: the environment is read from the client's deployment until
-  // the SDK exposes it as `client.environment`.
+  // In dev mode the client learns the environment's deployment first; the
+  // dev helpers and the policy name the deployment the jobs will target.
+  await client.resolveDeployment();
   const dev = clientCluster(client) === "dev";
   const privy = await privyFromEnv();
 

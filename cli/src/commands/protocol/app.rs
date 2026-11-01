@@ -4,9 +4,9 @@
 //!
 //! The app's dev-only features (the dev panel: dev wallets, funding, steps
 //! run as a dev wallet) render only when the client targets a dev
-//! environment, and load lazily, so a production build of the published
-//! client never runs them. The server uses `@usearete/automations/dev` with
-//! a dev client and Privy plus Postgres with the published one.
+//! environment (`a4 dev run` switches it), and load lazily, so a production
+//! client never runs them. The server uses `@usearete/automations/dev` in
+//! dev mode and Privy plus Postgres in production.
 
 use std::path::Path;
 
@@ -88,17 +88,15 @@ protocol client and an automations server (`server/index.ts`):
 | `server/index.ts` | the automations (`automations/index.ts`) with Privy, the webhook route and the consent routes |
 
 ```sh
-a4 dev up                                         # deploys, generates the client the app imports
-a4 auth keys create-publishable --origin http://localhost:5173 --env-file .env.local
-npm run app                                       # http://localhost:5173
+a4 dev up                 # in one terminal: deploys, generates the client the app imports
+a4 dev run -- npm run app # in another: http://localhost:5173
 ```
 
-The client `a4 dev up` generates targets the dev environment, so `isDev`
-is true and the dev panel shows. Dev-only features are gated on the
-client, never on `NODE_ENV` or a hostname, and the dev panel is loaded
-lazily inside that branch. (`isDev` reads the environment from the
-client's deployment; this is temporary, until the SDK exposes it on the
-client.)
+`a4 dev run` puts the client in dev mode, so `isDev` is true and the dev
+panel shows; the page needs no Arete key. Plain `npm run app` is production,
+and fails until the protocol is published. Dev-only features are gated on
+the client (`client.environment`), never on `NODE_ENV` or a hostname, and
+the dev panel is loaded lazily inside that branch.
 
 ### Run the automations in the server
 
@@ -113,12 +111,12 @@ forward = "http://localhost:8787/arete/webhook"
 
 ```sh
 cp .env.example .env              # set ARETE_SECRET_KEY, and ARETE_WEBHOOK_SECRET from .arete/dev/automations/webhook-secret
-npm run server
+a4 dev run -- npm run server
 curl -X POST localhost:8787/dev/consent -H "authorization: Bearer $APP_API_TOKEN" \
   -d '{"wallet":"alice","instanceId":"<jar>","amount":"1000000"}'
 ```
 
-With the dev client the server runs on `@usearete/automations/dev`: dev
+In dev mode the server runs on `@usearete/automations/dev`: dev
 wallets sign (Privy too, for other wallets, once `PRIVY_*` is set), jobs and
 consent are kept in `.arete/dev/app-store.bin`, and transactions simulate on
 the fork. Each of those helpers throws for a production client.
@@ -126,13 +124,14 @@ the fork. Each of those helpers throws for a production client.
 ### Ship it
 
 ```sh
-a4 install --locked               # the published client: isDev is false, the dev panel is gone
-a4 install --check                # fails while a dev client is still in generated/
-npm run build:app                 # dist/app
+a4 install --locked               # the published client, exactly as arete.lock pins it
+a4 install --check                # fails on a stale arete.lock or a client not recorded as the pinned release
+a4 auth keys create-publishable --origin https://your-app.example --env-file .env.local
+npm run build:app                 # dist/app; outside `a4 dev run`, so isDev is false
 npm run server -- --migrate       # once, with DATABASE_URL
 ```
 
-A production build must not contain a dev client, dev wallet keys
+A production build must not contain a local build of the client, dev wallet keys
 (`.arete/` is git-ignored: keep it out of images too), the dev API or an
 environment token. In production the server needs `DATABASE_URL`,
 `PRIVY_APP_ID`, `PRIVY_APP_SECRET`, `PRIVY_AUTHORIZATION_KEY`,
@@ -284,9 +283,18 @@ mod tests {
         let arete = std::fs::read_to_string(project.join("app/src/arete.ts")).unwrap();
         assert!(arete.contains("generated/typescript/protocols/my-app/my-app.js"));
         assert!(!arete.contains("{{"));
+        // `a4 dev run`'s public variables reach the browser's client, and the
+        // gate follows the client, not its descriptor.
+        assert!(arete.contains("import.meta.env.VITE_ARETE_ENVIRONMENT === \"dev\""));
+        assert!(arete.contains("url: import.meta.env.VITE_ARETE_DEV_URL"));
+        assert!(arete.contains("isDev = client.environment === \"dev\""));
+        assert!(!arete.contains("definition.deployment"));
         let server = std::fs::read_to_string(project.join("server/index.ts")).unwrap();
         assert!(server.contains("@usearete/automations/dev"));
         assert!(server.contains("generated/typescript/protocols/my-app/my-app.js"));
+        // The policy and dev helpers read the deployment the environment names.
+        let resolved = server.find("await client.resolveDeployment()").unwrap();
+        assert!(resolved < server.find("clientCluster(client) === \"dev\"").unwrap());
 
         let package: Value =
             serde_json::from_str(&std::fs::read_to_string(project.join("package.json")).unwrap())
@@ -311,6 +319,8 @@ mod tests {
         let readme = std::fs::read_to_string(project.join("README.md")).unwrap();
         assert!(readme.contains("## The app"));
         assert!(readme.contains("a4 install --locked"));
+        assert!(readme.contains("a4 dev run -- npm run app"));
+        assert!(readme.contains("a4 dev run -- npm run server"));
     }
 
     #[test]
