@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "kind": "program",
+  "alias": "subscriptions",
+  "language": "typescript",
+  "package": "subscriptions",
+  "version": "1.0.13",
+  "import": {
+    "module": "subscriptions.ts",
+    "specifier": "./generated/typescript/programs/subscriptions/subscriptions.js",
+    "export": "SUBSCRIPTIONS_PROGRAM"
+  },
+  "programs": [
+    {
+      "key": "subscriptions",
+      "name": "subscriptions",
+      "programId": "De1egAFMkMWZSN5rYXRj9CAdheBamobVNubTsi9avR44",
+      "accounts": [
+        "fixedDelegation",
+        "plan",
+        "recurringDelegation",
+        "subscriptionAuthority",
+        "subscriptionDelegation"
+      ],
+      "instructions": [
+        "initSubscriptionAuthority",
+        "createFixedDelegation",
+        "createRecurringDelegation",
+        "revokeDelegation",
+        "transferFixed",
+        "transferRecurring",
+        "closeSubscriptionAuthority",
+        "createPlan",
+        "updatePlan",
+        "deletePlan",
+        "transferSubscription",
+        "subscribe",
+        "cancelSubscription",
+        "resumeSubscription",
+        "revokeSubscriptionAuthority",
+        "revokeAbandonedDelegation",
+        "revokeAbandonedSubscription",
+        "cancelSubscriptionNow"
+      ],
+      "pdas": [
+        "eventAuthority",
+        "fixedDelegation",
+        "plan",
+        "recurringDelegation",
+        "subscriptionAuthority",
+        "subscriptionDelegation"
+      ],
+      "helpers": [
+        "constants.program",
+        "addresses.eventAuthority",
+        "addresses.subscriptionAuthority",
+        "addresses.plan",
+        "addresses.delegation",
+        "addresses.fixedDelegation",
+        "addresses.recurringDelegation",
+        "addresses.subscription",
+        "math.isExpired",
+        "math.fixedRemainingAmount",
+        "math.recurringRemainingAmount"
+      ]
+    }
+  ]
+}

@@ -48,6 +48,7 @@ check "Kit adapter" "typescript-adapters typescript-react ore-react" typescript/
 check "web3.js adapter" "typescript-adapters ore-react" typescript/adapters/web3js/src/index.ts
 check "React" "typescript-react ore-react" typescript/react/src/index.ts
 check "React example" "ore-react generated-example-sdks" examples/ore-react/src/App.tsx
+check "subscriptions billing example" "subscriptions-billing" examples/subscriptions-billing/protocol.ts
 check "Rust crate" "$rust_jobs" cli/src/main.rs
 check "Rust lockfile" "$rust_jobs" Cargo.lock
 check "Rust toolchain" "$rust_jobs" rust-toolchain.toml

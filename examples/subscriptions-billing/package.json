@@ -1,0 +1,21 @@
+{
+  "dependencies": {
+    "@usearete/protocol": "^0.6.0",
+    "@usearete/sdk": "^0.51",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "name": "subscriptions-billing",
+  "private": true,
+  "scripts": {
+    "build": "arete-protocol build",
+    "check": "arete-protocol check",
+    "test": "node --test tests/spec.test.mjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "type": "module"
+}

@@ -1,0 +1,12 @@
+manifest_version = 1
+
+[project]
+name = "subscriptions-billing"
+
+[sdk]
+targets = ["typescript"]
+
+[dependencies.programs.subscriptions]
+source = { registry = "subscriptions" }
+version = "^1.0.13"
+targets = ["typescript"]
