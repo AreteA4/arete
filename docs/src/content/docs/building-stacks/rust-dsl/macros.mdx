@@ -104,6 +104,7 @@ The path prefix is derived from the IDL's program name. Common forms are:
 - `my_program_sdk::accounts::AccountName::field_name`
 - `my_program_sdk::instructions::InstructionName::field_name`
 - `my_program_sdk::events::EventName::field_name`
+- `my_program_sdk::events::EventName::accounts::account_name` (an account of the instruction that emitted the event, see [Event accounts](#event-accounts))
 
 See [Stack Definitions](/building-stacks/stack-definitions) for the naming convention.
 
@@ -147,15 +148,36 @@ pub trades: Vec<TradeEvent>,
 
 **Arguments:**
 
-| Argument     | Type       | Required | Description                                                                                                                                                                      |
-| ------------ | ---------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`       | `path`     | Yes      | The source instruction or event type.                                                                                                                                            |
-| `fields`     | `array`    | Yes      | List of fields to capture. Use `accounts::name` for instruction accounts and `args::name` (or `data::name`) for instruction arguments. Event sources expose payload fields only. |
-| `strategy`   | `Strategy` | No       | Update strategy (default: `SetOnce`).                                                                                                                                            |
-| `transforms` | `array`    | No       | List of `(field, Transform)` tuples for processing captured fields.                                                                                                              |
-| `lookup_by`  | `field`    | No       | Field used to resolve the entity key.                                                                                                                                            |
-| `rename`     | `string`   | No       | Custom target field name.                                                                                                                                                        |
-| `join_on`    | `field`    | No       | Join field for multi-entity lookups.                                                                                                                                             |
+| Argument     | Type       | Required | Description                                                                                                                                                                                                                                              |
+| ------------ | ---------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`       | `path`     | Yes      | The source instruction or event type.                                                                                                                                                                                                                    |
+| `fields`     | `array`    | Yes      | List of fields to capture. Use `accounts::name` for instruction accounts and `args::name` (or `data::name`) for instruction arguments. On an event source a bare name is a payload field and `accounts::name` is an account of the emitting instruction. |
+| `strategy`   | `Strategy` | No       | Update strategy (default: `SetOnce`).                                                                                                                                                                                                                    |
+| `transforms` | `array`    | No       | List of `(field, Transform)` tuples for processing captured fields.                                                                                                                                                                                      |
+| `lookup_by`  | `field`    | No       | Field used to resolve the entity key.                                                                                                                                                                                                                    |
+| `rename`     | `string`   | No       | Custom target field name.                                                                                                                                                                                                                                |
+| `join_on`    | `field`    | No       | Join field for multi-entity lookups.                                                                                                                                                                                                                     |
+
+### Event accounts
+
+An IDL event carries only its payload. `accounts::name` selects an account of the instruction that emitted the event, by its IDL account name, so an event mapping can record the accounts the payload leaves out. PumpSwap's `BuyEvent` and `SellEvent`, for example, omit the pool's mints, which the `buy` and `sell` instructions pass as accounts:
+
+```rust
+#[map([pump_amm_sdk::events::BuyEvent::accounts::base_mint,
+       pump_amm_sdk::events::SellEvent::accounts::base_mint], strategy = LastWrite)]
+pub base_mint: Option<String>,
+
+#[event(from = pump_amm_sdk::events::BuyEvent,
+        fields = [base_amount_out, quote_amount_in, accounts::base_mint, accounts::quote_mint],
+        lookup_by = pool, strategy = LastWrite)]
+pub last_buy: Option<serde_json::Value>,
+```
+
+- The accounts come from the instruction occurrence that emitted that event. For `emit_cpi!` events, which arrive as their own inner instruction, that is the instruction that made the self-CPI. For `emit!` events, it is the instruction whose own logs hold the `Program data:` line.
+- A bare name stays a payload field, even when an account has the same name (`pool`, `user`). One capture cannot hold both `pool` and `accounts::pool`.
+- The name must be an account of some instruction in the IDL. The IDL does not say which instruction emits an event, so this check cannot be narrower.
+- If the emitting instruction was not decoded (for example, its discriminator is not in your IDL), the account fields stay unset and the runtime logs a warning. They are never filled from another instruction.
+- `accounts::` works in `#[map]` paths, `fields`, `field`, `lookup_by`, `stop_lookup_by`, and as an `accounts.name` path in conditions.
 
 ### `#[snapshot]`
 
@@ -188,16 +210,16 @@ pub total_volume: u64,
 
 **Arguments:**
 
-| Argument    | Type              | Required | Description                                                                                                                            |
-| ----------- | ----------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to aggregate from.                                                                                          |
-| `field`     | `field`           | No       | Field to aggregate. Use `accounts::name` or `args::name` for instructions, or payload fields for events. If omitted, performs `Count`. |
-| `strategy`  | `Strategy`        | No       | `Sum`, `Count`, `Min`, `Max`, `UniqueCount`.                                                                                           |
-| `condition` | `string`          | No       | Boolean expression (e.g., `"amount > 1_000_000"`).                                                                                     |
-| `transform` | `Transform`       | No       | Transform to apply before aggregating.                                                                                                 |
-| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                                                                                  |
-| `rename`    | `string`          | No       | Custom target field name.                                                                                                              |
-| `join_on`   | `field`           | No       | Join field for multi-entity lookups.                                                                                                   |
+| Argument    | Type              | Required | Description                                                                                                                                                                                              |
+| ----------- | ----------------- | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `from`      | `path` \| `array` | Yes      | Instruction(s) or event(s) to aggregate from.                                                                                                                                                            |
+| `field`     | `field`           | No       | Field to aggregate. Use `accounts::name` or `args::name` for instructions. For events, use a payload field or `accounts::name` for an account of the emitting instruction. If omitted, performs `Count`. |
+| `strategy`  | `Strategy`        | No       | `Sum`, `Count`, `Min`, `Max`, `UniqueCount`.                                                                                                                                                             |
+| `condition` | `string`          | No       | Boolean expression (e.g., `"amount > 1_000_000"`).                                                                                                                                                       |
+| `transform` | `Transform`       | No       | Transform to apply before aggregating.                                                                                                                                                                   |
+| `lookup_by` | `field`           | No       | Field used to resolve the entity key.                                                                                                                                                                    |
+| `rename`    | `string`          | No       | Custom target field name.                                                                                                                                                                                |
+| `join_on`   | `field`           | No       | Join field for multi-entity lookups.                                                                                                                                                                     |
 
 **One instruction, several entity instances.** Each aggregate is routed by its own `lookup_by`, even when another field routes the same instruction differently. For example, a split instruction can count on both the source and the child position:
 
