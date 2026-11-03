@@ -1596,7 +1596,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this session may run, and its caps: lamports and per mint, per action and per window, with what the window has spent. Start here. The sandbox's owner sets the rules and caps; this key can only act within them. No key, Privy credential or RPC URL is ever returned."
+        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this session may run, and its caps: lamports and per mint, per action and per window, with what the window has spent. Start here. The sandbox's owner sets the rules and caps; this key can only act within them. No key, wallet credential or RPC URL is ever returned."
     )]
     async fn sandbox_status(&self) -> Result<CallToolResult, McpError> {
         Ok(sandbox_result(self.sandbox.status().await, None))
