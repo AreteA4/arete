@@ -844,16 +844,22 @@ have yet. `a4 dev promote --check` lists each, with the command that
 publishes it, and exits non-zero while any remain, so CI can gate a
 production deploy on it:
 
-| Listed                                                                                                    | Publish it with                                                            |
-| --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| a protocol client generated from a local build                                                            | `a4 protocol deploy` in the protocol's project, then `a4 install`          |
-| a program the environment runs at another release than `arete.lock` pins                                  | deploy it to mainnet, `a4 program push <idl>`, then `a4 install`           |
-| a project stack the environment serves under the live alias of a dependency or of a stack a protocol uses | `a4 up`, point the dependency at it, then `a4 install`                     |
-| an SDK generated with a local extension (`local_extension`)                                               | publish the extension upstream, remove `extensions`, `a4 install --locked` |
+| Listed                                                                                                    | Kind                       | Publish it with                                                            |
+| --------------------------------------------------------------------------------------------------------- | -------------------------- | -------------------------------------------------------------------------- |
+| a protocol client generated from a local build                                                            | `local-protocol-build`     | `a4 protocol deploy` in the protocol's project, then `a4 install`          |
+| a program the environment runs at another release than `arete.lock` pins                                  | `program-release-override` | deploy it to mainnet, `a4 program push <idl>`, then `a4 install`           |
+| a project stack the environment serves under the live alias of a dependency or of a stack a protocol uses | `stack-alias-override`     | `a4 up`, point the dependency at it, then `a4 install`                     |
+| an SDK generated with a local extension (`local_extension` in `arete.lock`)                               | `local-extension`          | publish the extension upstream, remove `extensions`, `a4 install --locked` |
 
 ```sh
 a4 dev promote --check          # --json for CI
 ```
+
+Each listed item names the dependency alias, its kind, what differs and the
+fix. `--json` prints `clean` (`true` when nothing is listed), `environment`
+(the environment's `id` and `name`, or `null` when the project has no dev
+environment and only `arete.lock` was checked) and `pending`, one `kind`,
+`name`, `detail` and `fix` per item.
 
 When the check is clean, run `a4 install --locked` and deploy the app with
 `ARETE_ENVIRONMENT` unset.

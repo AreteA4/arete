@@ -102,6 +102,7 @@ Scripts that read inside those pass-through objects should accept both spellings
 | `a4 auth signup`                                                              | Register an agent account                                         |
 | `a4 login` / `a4 auth login`                                                  | Save an API key (accounts are free)                               |
 | `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                      |
+| `a4 program account decode <address>`                                         | Decode one account through Program Read (`--dev`: the dev fork)   |
 | `a4 stack compose`                                                            | Compose live views and program SDKs                               |
 | `a4 sdk describe <alias>`                                                     | Print an installed SDK's reference (views, fields, reads)         |
 | `a4 sdk create --manifest ... --ts`                                           | Generate a TypeScript SDK offline from a StackManifest            |
@@ -169,6 +170,7 @@ npx @usearete/a4 create my-app --template protocol-app
 | `react-ore`      | `ore-react`                          | ORE mining rounds viewer (React + Vite)                                                                                                  |
 | `rust-ore`       | `ore-rust`                           | ORE mining rounds client (Rust + Tokio)                                                                                                  |
 | `typescript-ore` | `ore-typescript`, `ts-ore`, `ore-ts` | ORE mining rounds client (TypeScript CLI)                                                                                                |
+| `python-ore`     | `ore-python`, `py-ore`, `ore-py`     | ORE mining rounds client (Python + asyncio)                                                                                              |
 
 **Options:**
 
@@ -1532,6 +1534,70 @@ a4 program build ./idl/my-program.json \
 The output describes public program behavior. It does not select a hosted
 decoder release or Program Read endpoint.
 
+### a4 program account decode \<address\>
+
+Decode one account through Program Read: by default the account on mainnet,
+or with `--dev` the account in the project's cloud dev environment.
+
+```bash
+a4 program account decode <address> \
+  [--program <alias|package>] [--account <Type>] \
+  [--dev [--env <name|id>] [--project <dir>]]
+
+a4 program account decode <address>                  # the owner's program, the matching type
+a4 program account decode <address> --program ore --account Round
+a4 program account decode <address> --dev            # the fork's value
+```
+
+| Flag                         | Description                                                                                              |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `--program <alias\|package>` | The program: an `arete.toml` alias, else a registry package. Default: the program that owns the account  |
+| `--account <Type>`           | The account type, by its IDL name. Default: the IDL account whose discriminator starts the data          |
+| `--dev`                      | Read the account from the project's cloud dev environment and decode it there                            |
+| `--env <name\|id>`           | With `--dev`: the environment (default `ARETE_DEV_ENV`, else the project's environment from `a4 dev up`) |
+| `--project <dir>`            | With `--dev`: the project directory; its `arete.toml` names the aliases                                  |
+
+**Production and dev.** Without `--dev`, the account is read from mainnet
+through Arete's managed Solana gateway (`confirmed` commitment) and decoded by
+hosted Program Read. `--env` and `--project` choose a dev environment, so
+without `--dev` they are an error. With `--dev`, the account is read from the
+environment (`processed` commitment) and decoded by the environment's
+Program Read, so the result shows the fork's values. When the environment
+serves another release of the program than the installed one (a changed
+program), the decode uses the environment's release: `--account` is passed
+to it unchecked, and without `--account` the account's data must match a type
+of the installed IDL.
+
+**The program.** `--program` names an `arete.toml` program dependency by
+alias, decoded at the release `arete.lock` pins, or else a registry package.
+Without `--program`, the program is the account's owner: the project's program
+dependency with that program ID (at its pinned release), else the registry's
+program with that ID. An owner the registry doesn't list is an error; pass
+`--program <package>`. The account must be owned by the chosen program.
+
+**The account type.** `--account` must be an account type in the program's
+IDL; the error lists the ones it has. Without it, the type is the IDL account
+whose discriminator starts the account's data, or the IDL's only account when
+none matches. No match, or several, is an error asking for `--account`.
+
+The output is the account, its type, program and environment, then the
+decoded value. With `--json`:
+
+```json
+{
+  "address": "<address>",
+  "program": "<program package>",
+  "programId": "<program id>",
+  "account": "Round",
+  "programReleaseHash": "<the release that decoded it>",
+  "environment": "production",
+  "value": {}
+}
+```
+
+`environment` is `production`, or the dev environment's id with `--dev`.
+`value` is the decoded account.
+
 ### a4 stack compose
 
 Compose a stack from live views and program SDKs. Parts come from published
@@ -2588,22 +2654,23 @@ a4 telemetry disable
 
 ## Environment Variables
 
-| Variable                              | Description                                                                                                               |
-| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `ARETE_API_URL`                       | Override API endpoint                                                                                                     |
-| `ARETE_PROFILE`                       | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them                                   |
-| `ARETE_API_KEY`                       | Legacy direct key override, used only when no profile is selected                                                         |
-| `ARETE_CREDENTIALS_PATH`              | Override the credentials file                                                                                             |
-| `ARETE_DEV_ENV`                       | The dev environment `a4 dev` commands and the MCP dev tools act on (a name or an id)                                      |
-| `ARETE_REQUIRE_REGISTRY_SIGNATURES=1` | Require valid registry signatures even in bootstrap builds without trust anchors; official builds enforce them by default |
-| `A4_INSTALL_DIR`                      | Install directory for `a4 self install` and the bootstrappers                                                             |
-| `A4_NO_MODIFY_PATH=1`                 | Do not edit shell profiles or the Windows PATH on install                                                                 |
-| `A4_NO_UPDATE_CHECK=1`                | Disable the once-per-day "update available" notice                                                                        |
-| `A4_NON_INTERACTIVE=1`                | Never prompt (same as `--non-interactive`)                                                                                |
-| `A4_VERSION`                          | Version for `install.sh` / `install.ps1` to install                                                                       |
-| `CI`                                  | When set: never prompt, no PATH edits, no update notice, no telemetry banner                                              |
-| `DO_NOT_TRACK=1`                      | Disable telemetry (standard)                                                                                              |
-| `ARETE_TELEMETRY_DISABLED=1`          | Disable telemetry (Arete-specific)                                                                                        |
+| Variable                              | Description                                                                                                                                                                                                                                                               |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ARETE_API_URL`                       | Override API endpoint                                                                                                                                                                                                                                                     |
+| `ARETE_PROFILE`                       | Named credential profile outside initialized repos; `.arete/auth.toml` wins inside them                                                                                                                                                                                   |
+| `ARETE_API_KEY`                       | Legacy direct key override, used only when no profile is selected                                                                                                                                                                                                         |
+| `ARETE_CREDENTIALS_PATH`              | Override the credentials file                                                                                                                                                                                                                                             |
+| `ARETE_DEV_ENV`                       | The dev environment `a4 dev` commands and the MCP dev tools act on (a name or an id)                                                                                                                                                                                      |
+| `ARETE_ENVIRONMENT`                   | The dev environment switch. `dev` makes `a4 stream`, `a4 protocol actions` and `a4 protocol squads` act on the `a4 dev` session as `--dev` does (`a4 dev run` sets it for the command it runs); unset, empty or `production` changes nothing; any other value is an error |
+| `ARETE_REQUIRE_REGISTRY_SIGNATURES=1` | Require valid registry signatures even in bootstrap builds without trust anchors; official builds enforce them by default                                                                                                                                                 |
+| `A4_INSTALL_DIR`                      | Install directory for `a4 self install` and the bootstrappers                                                                                                                                                                                                             |
+| `A4_NO_MODIFY_PATH=1`                 | Do not edit shell profiles or the Windows PATH on install                                                                                                                                                                                                                 |
+| `A4_NO_UPDATE_CHECK=1`                | Disable the once-per-day "update available" notice                                                                                                                                                                                                                        |
+| `A4_NON_INTERACTIVE=1`                | Never prompt (same as `--non-interactive`)                                                                                                                                                                                                                                |
+| `A4_VERSION`                          | Version for `install.sh` / `install.ps1` to install                                                                                                                                                                                                                       |
+| `CI`                                  | When set: never prompt, no PATH edits, no update notice, no telemetry banner                                                                                                                                                                                              |
+| `DO_NOT_TRACK=1`                      | Disable telemetry (standard)                                                                                                                                                                                                                                              |
+| `ARETE_TELEMETRY_DISABLED=1`          | Disable telemetry (Arete-specific)                                                                                                                                                                                                                                        |
 
 ---
 

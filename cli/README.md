@@ -77,6 +77,7 @@ The deployment returns operational bindings for the exact StackManifest.
 | `a4 mcp` | Run the stream MCP server over stdio |
 | `a4 auth signup` | Register an agent account and store the key |
 | `a4 program build <idl>` | Build a portable ProgramSpec |
+| `a4 program account decode <address>` | Decode one account through Program Read (`--dev`: in the project's cloud dev environment) |
 | `a4 program push <idl-or-program-spec>` | Upload an owner-private hosted ProgramSpec |
 | `a4 program status <upr-id>` | Inspect admission and runtime health |
 | `a4 stack compose` | Compose ProgramSpecs and aliased LiveSpecs |
@@ -687,7 +688,8 @@ tenant-local transports.
 | Variable | Description |
 |----------|-------------|
 | `ARETE_API_URL` | Override API endpoint |
-| `ARETE_API_KEY` | API key; takes precedence over the credentials file |
+| `ARETE_API_KEY` | API key, used only when no credential profile is selected (then it takes precedence over the credentials file) |
+| `ARETE_ENVIRONMENT` | The dev environment switch: `dev` makes `a4 stream`, `a4 protocol actions` and `a4 protocol squads` act on the `a4 dev` session as `--dev` does; unset or `production` changes nothing; any other value is an error |
 | `ARETE_CREDENTIALS_PATH` | Override the credentials file (useful for isolated local testing) |
 | `A4_INSTALL_DIR` | Install directory for `a4 self install` (default `~/.local/bin`) |
 | `A4_NO_MODIFY_PATH=1` | Do not edit shell profiles or the Windows PATH on install |
