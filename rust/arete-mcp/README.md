@@ -520,6 +520,40 @@ or a package reference `protocol`; `dev: true` targets the project's dev deploym
   (the local RPC endpoint of a running `a4 dev up` is used when the signer
   has none).
 
+### Sandbox wallets
+
+Listed only when `ARETE_SANDBOX_KEY` holds a sandbox session key
+(`a4_sbx_…`). A sandbox is a hosted wallet whose owner decides which programs
+and instructions it may use and how much may leave it; Arete builds, checks,
+signs and sends every transaction. The agent sends named instructions and
+never sees a private key or an RPC URL. Owner operations (rules, caps, pause,
+revoke) are not reachable from these tools.
+
+- `sandbox_status()` — wallet address, SOL and token balances (raw
+  amounts), granted actions, and caps (lamports and per mint, per action and
+  per window) with what the window has spent.
+- `sandbox_rules()` — the allowed programs and, for each, the allowed
+  instructions with their argument types and accounts.
+- `sandbox_derive({ kind: "ata" | "pda", ... })` — an associated token
+  account (`mint`, optional `owner`, `tokenProgram`) or a program-derived
+  address (`programId`, `seeds`), computed locally by the API.
+- `sandbox_preview({ instructions, computeUnitLimit?, computeUnitPriceMicroLamports? })`
+  — encodes and checks the instructions without signing or recording
+  anything. Returns `pass` with what the wallet would lose, or the refusal.
+- `sandbox_invoke({ instructions, ..., idempotencyKey? })` — runs them:
+  `{ program, instruction, args, accounts, remainingAccounts? }` each, named
+  as `sandbox_rules` lists them. The idempotency key (yours or generated) is
+  returned; a key never runs twice.
+- `sandbox_withdraw({ lamports, idempotencyKey? })` — SOL to the owner's
+  withdraw address, the only destination a withdraw can have.
+- `sandbox_action({ actionId | idempotencyKey })` — one action's status,
+  for looking up a timed-out call instead of retrying it.
+
+A refusal is a tool error whose JSON carries the API's `code`, the `rule`
+that refused (`program-allowlist`, `instruction-allowlist`, `outflow-cap`,
+`window-cap`, `no-authority-change`, ...), what triggered it (`program`,
+`instruction`, `mint`, `attempted`, `cap`, `remaining`) and a `hint`.
+
 ### Health
 
 - `ping()` — returns `pong`. Used by clients to verify the server is up.
@@ -569,6 +603,7 @@ RUST_LOG=hs_mcp=debug,arete_sdk=info a4 mcp
 | `ARETE_API_URL` | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run`  |
 | `ARETE_MCP_RPC_URL` | Solana RPC the protocol tools simulate prepared transactions against (signer balance changes) |
 | `ARETE_MCP_SIGNER_CONFIG` | A TOML file with a `[signer]` table, instead of `~/.arete/mcp.toml`                    |
+| `ARETE_SANDBOX_KEY` | A sandbox session key (`a4_sbx_…`); lists the `sandbox_*` tools. Sent only to `ARETE_API_URL` when it is an Arete HTTPS or loopback origin |
 | `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
 
 A resolved API key is attached to discovery requests **only when `ARETE_API_URL`
