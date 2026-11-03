@@ -4478,13 +4478,37 @@ fn sandbox_result(
         }
         value
     };
-    match result {
-        Ok(body) => CallToolResult::success(vec![Content::text(
+    let (text, failed) = match result {
+        Ok(body) => (
             serde_json::to_string(&with_key(body)).unwrap_or_default(),
-        )]),
-        Err(refusal) => CallToolResult::error(vec![Content::text(
+            false,
+        ),
+        Err(refusal) => (
             serde_json::to_string(&with_key(refusal.to_json())).unwrap_or_default(),
-        )]),
+            true,
+        ),
+    };
+    // The same ceiling as every other tool result; the key survives it.
+    if text.len() > crate::sandbox::MAX_RESPONSE_BYTES {
+        let refusal = crate::sandbox::SandboxRefusal {
+            status: 0,
+            body: serde_json::json!({
+                "code": "sandbox-response-too-large",
+                "error": format!(
+                    "The answer is {} bytes, over the {} byte limit for a tool result",
+                    text.len(),
+                    crate::sandbox::MAX_RESPONSE_BYTES
+                ),
+            }),
+        };
+        return CallToolResult::error(vec![Content::text(
+            serde_json::to_string(&with_key(refusal.to_json())).unwrap_or_default(),
+        )]);
+    }
+    if failed {
+        CallToolResult::error(vec![Content::text(text)])
+    } else {
+        CallToolResult::success(vec![Content::text(text)])
     }
 }
 

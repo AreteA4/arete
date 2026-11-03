@@ -19,6 +19,7 @@ use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
 use crate::credentials::{normalize_api_url, DEFAULT_API_URL};
+pub(crate) use crate::registry::MAX_RESPONSE_BYTES;
 
 pub const ENV_VAR_SANDBOX_KEY: &str = "ARETE_SANDBOX_KEY";
 const ENV_VAR_API_URL: &str = "ARETE_API_URL";
@@ -99,6 +100,12 @@ fn hint_for(code: &str) -> Option<&'static str> {
             "This idempotency key already ran: look it up with sandbox_action instead of retrying."
         }
         "sandbox-rate-limited" => "Too many requests: wait for retryAfterSeconds.",
+        "sandbox-api-unreachable" | "sandbox-response-unreadable" => {
+            "If this was sandbox_invoke or sandbox_withdraw, the action may have run: look it up with sandbox_action and the idempotencyKey before retrying, and retry only with the same key."
+        }
+        "sandbox-response-too-large" => {
+            "The answer is too large for one tool result. For an action, look it up with sandbox_action and the idempotencyKey."
+        }
         "sandbox-session-invalid" | "sandbox-session-revoked" | "sandbox-session-expired" => {
             "The sandbox key no longer works. Ask the owner for a new one."
         }
@@ -204,11 +211,41 @@ impl SandboxClient {
             }),
         })?;
         let status = response.status().as_u16();
-        let body: Value = response.json().await.unwrap_or(Value::Null);
-        if (200..300).contains(&status) {
-            Ok(body)
-        } else {
-            Err(SandboxRefusal { status, body })
+        let success = (200..300).contains(&status);
+        let unreadable = |detail: String| SandboxRefusal {
+            status,
+            body: json!({
+                "code": "sandbox-response-unreadable",
+                "error": format!("The Arete API answered {status} but its body could not be read: {detail}"),
+                "retryable": true,
+            }),
+        };
+        let bytes = match read_bounded(response).await {
+            Ok(bytes) => bytes,
+            Err(BodyError::TooLarge) => {
+                return Err(SandboxRefusal {
+                    status,
+                    body: json!({
+                        "code": "sandbox-response-too-large",
+                        "error": format!(
+                            "The Arete API answer is over the {MAX_RESPONSE_BYTES} byte limit for a tool result"
+                        ),
+                    }),
+                })
+            }
+            Err(BodyError::Read(detail)) => return Err(unreadable(detail)),
+        };
+        match serde_json::from_slice::<Value>(&bytes) {
+            Ok(body) if success && body.is_object() => Ok(body),
+            // A success the agent cannot read is never reported as one: an
+            // action may have run, and the agent needs its key to look it up.
+            Ok(_) if success => Err(unreadable("not a JSON object".into())),
+            Err(error) if success => Err(unreadable(error.to_string())),
+            Ok(body) => Err(SandboxRefusal { status, body }),
+            Err(_) => Err(SandboxRefusal {
+                status,
+                body: Value::Null,
+            }),
         }
     }
 
@@ -271,6 +308,34 @@ impl SandboxClient {
             }
         };
         self.call(reqwest::Method::GET, &path, None, None).await
+    }
+}
+
+enum BodyError {
+    TooLarge,
+    Read(String),
+}
+
+/// The response body, refusing to buffer more than a tool result may hold.
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, BodyError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(BodyError::TooLarge);
+    }
+    let mut bytes = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if bytes.len() + chunk.len() > MAX_RESPONSE_BYTES {
+                    return Err(BodyError::TooLarge);
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => return Ok(bytes),
+            Err(error) => return Err(BodyError::Read(error.without_url().to_string())),
+        }
     }
 }
 
@@ -697,6 +762,42 @@ mod tests {
             let refusal = client(origin).status().await.unwrap_err();
             assert_eq!(refusal.body["code"], "sandbox-untrusted-api", "{origin}");
         }
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_success_is_an_error_not_a_null_result() {
+        // A 200 whose body is not JSON (as when it is cut off).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buffer = [0u8; 8192];
+                let _ = stream.read(&mut buffer);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 7\r\nconnection: close\r\n\r\n{{\"actio"
+                );
+            }
+        });
+        let refusal = client(&format!("http://{address}"))
+            .invoke(json!({}), "key-9")
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.status, 200);
+        assert_eq!(refusal.body["code"], "sandbox-response-unreadable");
+        assert!(refusal.to_json()["hint"]
+            .as_str()
+            .unwrap()
+            .contains("sandbox_action"));
+    }
+
+    #[tokio::test]
+    async fn oversized_answers_are_refused_while_reading() {
+        let big = json!({ "rules": "x".repeat(MAX_RESPONSE_BYTES + 10) });
+        let (base, _) = stub(vec![("GET", "/api/sandbox/v1/rules", 200, big)]);
+        let refusal = client(&base).rules().await.unwrap_err();
+        assert_eq!(refusal.body["code"], "sandbox-response-too-large");
     }
 
     #[test]
