@@ -23,6 +23,7 @@ pub mod protocol_api;
 pub mod protocol_listing;
 mod recovery;
 mod registry;
+pub mod sandbox;
 pub mod sdk_reference;
 pub mod server;
 pub mod signer;
