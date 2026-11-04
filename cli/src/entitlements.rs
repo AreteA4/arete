@@ -83,7 +83,7 @@ pub fn account_surface(api_url: Option<&str>, profile: Option<&str>, config: &st
 }
 
 /// The value of a global option in raw arguments (`--name value`,
-/// `--name=value`, or `-s value`), before any `--`.
+/// `--name=value`, `-s value`, `-svalue` or `-s=value`), before any `--`.
 pub fn global_option(args: &[OsString], long: &str, short: Option<&str>) -> Option<String> {
     let mut args = args.iter().skip(1).map(|arg| arg.to_string_lossy());
     while let Some(arg) = args.next() {
@@ -98,6 +98,13 @@ pub fn global_option(args: &[OsString], long: &str, short: Option<&str>) -> Opti
             .and_then(|rest| rest.strip_prefix('='))
         {
             return Some(value.to_string());
+        }
+        // `-cvalue` or `-c=value`, as clap accepts them.
+        if let Some(value) = short
+            .and_then(|short| arg.strip_prefix(short))
+            .filter(|value| !value.is_empty())
+        {
+            return Some(value.strip_prefix('=').unwrap_or(value).to_string());
         }
     }
     None
@@ -134,6 +141,13 @@ mod tests {
             global_option(&raw, "--config", Some("-c")).as_deref(),
             Some("a.toml")
         );
+        for attached in ["-cproject/arete.toml", "-c=project/arete.toml"] {
+            let raw = args(&["a4", attached, "--help"]);
+            assert_eq!(
+                global_option(&raw, "--config", Some("-c")).as_deref(),
+                Some("project/arete.toml")
+            );
+        }
         let after = args(&["a4", "get", "--", "--profile", "x"]);
         assert_eq!(global_option(&after, "--profile", None), None);
     }
