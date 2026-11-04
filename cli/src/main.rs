@@ -2510,10 +2510,18 @@ mod tests {
         (short, long)
     }
 
-    fn bash_completions(mut cmd: clap::Command) -> String {
+    // Fish, not bash: clap_complete's bash generator can't handle the hidden
+    // internal `dev __admit-local-programs` subcommand.
+    fn fish_completions(mut cmd: clap::Command) -> String {
         let mut out = Vec::new();
-        generate(Shell::Bash, &mut cmd, "a4", &mut out);
+        generate(Shell::Fish, &mut cmd, "a4", &mut out);
         String::from_utf8(out).unwrap()
+    }
+
+    fn completes_top_level(completions: &str, command: &str) -> bool {
+        completions.contains(&format!(
+            "-n \"__fish_a4_needs_command\" -f -a \"{command}\""
+        ))
     }
 
     #[test]
@@ -2540,7 +2548,7 @@ mod tests {
         let all = entitlements::visible(Cli::command(), &surface(&Group::ALL));
         all.clone().debug_assert();
         assert_eq!(rendered_help(all.clone()), today);
-        assert_eq!(bash_completions(all), bash_completions(Cli::command()));
+        assert_eq!(fish_completions(all), fish_completions(Cli::command()));
     }
 
     #[test]
@@ -2575,18 +2583,18 @@ mod tests {
                 "{hidden} listed:\n{help}"
             );
         }
-        let completions = bash_completions(sandboxes.clone());
-        assert!(completions.contains("a4,doctor)"));
-        assert!(
-            completions.contains("a4__self,install)"),
-            "core keeps its own subcommands"
-        );
+        let completions = fish_completions(sandboxes.clone());
+        assert!(completes_top_level(&completions, "doctor"));
         for hidden in ["install", "protocol", "dev", "stream"] {
             assert!(
-                !completions.contains(&format!("a4,{hidden})")),
+                !completes_top_level(&completions, hidden),
                 "{hidden} completes"
             );
         }
+        assert!(
+            completes_top_level(&fish_completions(Cli::command()), "install"),
+            "the pattern matches today's completions"
+        );
 
         // Forcing a hidden command through this command is unknown locally,
         // with no suggestion of the hidden name.
