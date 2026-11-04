@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.52.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.51.2...arete-mcp-v0.52.0) (2026-11-04)
+
+
+### Features
+
+* **mcp:** sandbox wallet tools ([4ed1a6e](https://github.com/AreteA4/arete/commit/4ed1a6e9767444efd3e41926eb4cd2fdf17223fc))
+* **mcp:** sandbox wallet tools (A4-417) ([7768adc](https://github.com/AreteA4/arete/commit/7768adc0ad133d43a9e5f02a8149ad6b10e624a3))
+
+
+### Bug Fixes
+
+* **mcp:** keep the idempotency key when a sandbox answer cannot be read, and bound sandbox output ([9a4492f](https://github.com/AreteA4/arete/commit/9a4492f701b3317c173ae92d60dd4fbc6cb74457))
+* **mcp:** word the sandbox status description without a vendor name ([2f9b466](https://github.com/AreteA4/arete/commit/2f9b4665e678289c76b4b4493a17ac7717f25365))
+
 ## [0.51.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.51.1...arete-mcp-v0.51.2) (2026-11-01)
 
 
