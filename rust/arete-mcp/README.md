@@ -537,15 +537,24 @@ revoke) are not reachable from these tools.
 - `sandbox_derive({ kind: "ata" | "pda", ... })` — an associated token
   account (`mint`, optional `owner`, `tokenProgram`) or a program-derived
   address (`programId`, `seeds`), computed locally by the API.
-- `sandbox_preview({ instructions, computeUnitLimit?, computeUnitPriceMicroLamports? })`
+- `sandbox_preview({ instructions, computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? })`
   — encodes and checks the instructions without signing or recording
-  anything. Returns `pass` with what the wallet would lose, or the refusal.
+  anything. Returns `pass` with what the wallet would lose and the
+  `transactionFormat` and `transactionBytes` it built, or the refusal.
 - `sandbox_invoke({ instructions, ..., idempotencyKey? })` — runs them:
   `{ program, instruction, args, accounts, remainingAccounts? }` each, named
   as `sandbox_rules` lists them. The idempotency key (yours or generated) is
-  returned; a key never runs twice.
-- `sandbox_withdraw({ lamports, idempotencyKey? })` — SOL to the owner's
-  withdraw address, the only destination a withdraw can have.
+  returned; a key never runs twice. The result reports `transactionFormat`.
+- `sandbox_withdraw({ lamports, transactionFormat?, idempotencyKey? })` — SOL
+  to the owner's withdraw address, the only destination a withdraw can have.
+
+Actions build Solana v1 transactions (SIMD-0385) by default: up to 4096
+bytes and 64 accounts, no address lookup tables, with the compute budget in
+the message itself. `transactionFormat: "v0"` builds the older format
+instead (up to 1232 bytes). `computeUnitPriceMicroLamports` is a per-unit
+price in both; a v1 transaction pays the same total as its priority fee.
+A transaction too large for its format is refused with rule
+`transaction-size`.
 - `sandbox_action({ actionId | idempotencyKey })` — one action's status,
   for looking up a timed-out call instead of retrying it.
 
