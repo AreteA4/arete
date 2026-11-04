@@ -2540,6 +2540,10 @@ mod tests {
     #[test]
     fn granting_every_group_renders_todays_help() {
         use arete_mcp::entitlements::{Group, Surface};
+        // Help shows `ARETE_API_URL`'s value, which other tests set.
+        let _env = crate::api_client::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let today = rendered_help(Cli::command());
         assert_eq!(
             rendered_help(entitlements::visible(Cli::command(), &Surface::Everything)),
