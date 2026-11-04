@@ -154,7 +154,7 @@ always listed.
 
 | Group | Tools |
 |-------|-------|
-| `sandboxes` | `sandbox_*` (also need `ARETE_SANDBOX_KEY`) |
+| `sandboxes` | `sandbox_*` (also need `ARETE_SANDBOX_ID`) |
 | `streams` | connection, subscription and cache tools, and `read_view` |
 | `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
 | `protocols` | `protocol_*`, `squads_*` |
@@ -541,31 +541,58 @@ or a package reference `protocol`; `dev: true` targets the project's dev deploym
 
 ### Sandbox wallets
 
-Listed only when `ARETE_SANDBOX_KEY` holds a sandbox session key
-(`a4_sbx_…`). A sandbox is a hosted wallet whose owner decides which programs
-and instructions it may use and how much may leave it; Arete builds, checks,
-signs and sends every transaction. The agent sends named instructions and
-never sees a private key or an RPC URL. Owner operations (rules, caps, pause,
-revoke) are not reachable from these tools.
+A sandbox is a hosted wallet whose owner decides which programs and
+instructions it may use, which actions an agent may run and how much may
+leave it. Arete builds, checks, signs and sends every transaction: the agent
+names an action and its arguments, and never sees a private key, a raw
+transaction to sign or an RPC URL. Owner operations (rules, caps, grants,
+pause, revoke) live in the dashboard and are not reachable from these tools.
+
+**Auth.** Listed only when `ARETE_SANDBOX_ID` names a sandbox. The agent
+uses its own account's secret API key (`ARETE_API_KEY`, or its a4 login) to
+mint a short-lived sandbox token at `POST /ws/sessions` with
+`{ "targetKind": "sandbox", "targetId": "<sandbox id>" }`. The mint succeeds
+only while the sandbox's owner grants this agent access; the token carries a
+`sandbox:<action>` scope per granted action and is the only credential the
+sandbox routes see. The server mints it on first use and again when it
+expires; a revoked grant fails closed. Neither the key nor the token is ever
+returned in a tool result.
+
+**Agent loop:** discover → preview → invoke.
 
 - `sandbox_status()` — wallet address, SOL and token balances (raw
-  amounts), granted actions, and caps (lamports and per mint, per action and
-  per window) with what the window has spent.
+  amounts), the actions this agent was granted, and caps (lamports and per
+  mint, per action and per window) with what the window has spent. Start
+  here.
 - `sandbox_rules()` — the allowed programs and, for each, the allowed
   instructions with their argument types and accounts.
 - `sandbox_derive({ kind: "ata" | "pda", ... })` — an associated token
   account (`mint`, optional `owner`, `tokenProgram`) or a program-derived
-  address (`programId`, `seeds`), computed locally by the API.
-- `sandbox_preview({ instructions, computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? })`
-  — encodes and checks the instructions without signing or recording
-  anything. Returns `pass` with what the wallet would lose and the
-  `transactionFormat` and `transactionBytes` it built, or the refusal.
-- `sandbox_invoke({ instructions, ..., idempotencyKey? })` — runs them:
-  `{ program, instruction, args, accounts, remainingAccounts? }` each, named
-  as `sandbox_rules` lists them. The idempotency key (yours or generated) is
-  returned; a key never runs twice. The result reports `transactionFormat`.
-- `sandbox_withdraw({ lamports, transactionFormat?, idempotencyKey? })` — SOL
-  to the owner's withdraw address, the only destination a withdraw can have.
+  address (`programId`, `seeds`), computed by the API without touching the
+  chain.
+- `sandbox_preview({ action, args })` — a dry run of the same action
+  `sandbox_invoke` takes: builds the transaction and runs every check
+  without signing or recording anything. Returns `pass` with what the wallet
+  would lose and the transaction it built, or the refusal. `withdraw` has no
+  dry run and is refused with `sandbox-preview-unavailable`.
+- `sandbox_invoke({ action, args, idempotencyKey? })` — runs one action.
+  This is the only tool that moves funds; there are no per-action tools.
+- `sandbox_action({ actionId | idempotencyKey })` — one action's status,
+  for looking up a timed-out call instead of retrying it.
+
+Actions (an action the owner did not grant is refused before anything is
+sent, with code `sandbox-action-not-granted` and rule `session-grant`):
+
+| `action`   | `args` |
+| ---------- | ------ |
+| `invoke`   | `{ instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` — 1 to 8 named instructions, exactly as `sandbox_rules` lists them; the wallet is the only signer |
+| `withdraw` | `{ lamports, transactionFormat? }` — SOL to the owner's withdraw address, the only destination a withdraw can have |
+| `swap`     | `{ inputMint, outputMint, amount, slippageBps?, computeUnitLimit?, computeUnitPriceMicroLamports? }` — exact input, in the input mint's smallest unit, through the venues the owner allows |
+
+Pass u64 amounts as decimal strings. Every `sandbox_invoke` has an
+idempotency key (yours, or generated); it is returned on success and on
+error, and a key never runs twice. After a timeout, look the action up with
+`sandbox_action` and retry only with the same key.
 
 Actions build Solana v1 transactions (SIMD-0385) by default: up to 4096
 bytes and 64 accounts, no address lookup tables, with the compute budget in
@@ -574,13 +601,12 @@ instead (up to 1232 bytes). `computeUnitPriceMicroLamports` is a per-unit
 price in both; a v1 transaction pays the same total as its priority fee.
 A transaction too large for its format is refused with rule
 `transaction-size`.
-- `sandbox_action({ actionId | idempotencyKey })` — one action's status,
-  for looking up a timed-out call instead of retrying it.
 
 A refusal is a tool error whose JSON carries the API's `code`, the `rule`
 that refused (`program-allowlist`, `instruction-allowlist`, `outflow-cap`,
-`window-cap`, `no-authority-change`, ...), what triggered it (`program`,
-`instruction`, `mint`, `attempted`, `cap`, `remaining`) and a `hint`.
+`window-cap`, `no-authority-change`, `session-grant`, `swap-venues`, ...),
+what triggered it (`program`, `instruction`, `mint`, `attempted`, `cap`,
+`remaining`), a `hint`, and for `sandbox_invoke` the `idempotencyKey`.
 
 ### Health
 
@@ -631,7 +657,7 @@ RUST_LOG=hs_mcp=debug,arete_sdk=info a4 mcp
 | `ARETE_API_URL` | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run`  |
 | `ARETE_MCP_RPC_URL` | Solana RPC the protocol tools simulate prepared transactions against (signer balance changes) |
 | `ARETE_MCP_SIGNER_CONFIG` | A TOML file with a `[signer]` table, instead of `~/.arete/mcp.toml`                    |
-| `ARETE_SANDBOX_KEY` | A sandbox session key (`a4_sbx_…`); lists the `sandbox_*` tools. Sent only to `ARETE_API_URL` when it is an Arete HTTPS or loopback origin |
+| `ARETE_SANDBOX_ID` | The sandbox an owner granted this agent; lists the `sandbox_*` tools. The agent's API key mints a scoped sandbox token for it, sent only to `ARETE_API_URL` when it is an Arete HTTPS or loopback origin |
 | `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
 
 A resolved API key is attached to discovery requests **only when `ARETE_API_URL`

@@ -127,7 +127,7 @@ pub struct AreteMcp {
     sdk_references: Option<Arc<dyn SdkReferenceSource>>,
     /// The protocol tools' API targets, remembered ids and optional signer.
     protocols: crate::protocol_agent::ProtocolAgent,
-    /// The sandbox wallet tools' API client (`ARETE_SANDBOX_KEY`).
+    /// The sandbox wallet tools' API client (`ARETE_SANDBOX_ID`).
     sandbox: crate::sandbox::SandboxClient,
 }
 
@@ -1542,7 +1542,7 @@ impl AreteMcp {
     }
 
     /// The server with these protocol tools and sandbox client. The sandbox
-    /// tools are listed only when a sandbox key is configured.
+    /// tools are listed only when a sandbox is configured.
     pub fn with_agents(
         protocols: crate::protocol_agent::ProtocolAgent,
         sandbox: crate::sandbox::SandboxClient,
@@ -1571,7 +1571,7 @@ impl AreteMcp {
     /// Remove the tools of entitlement groups `surface` does not grant
     /// (see [`crate::entitlements`]). Hiding is UX only: the API still
     /// refuses calls the account may not make. Sandbox tools also still
-    /// need a sandbox key.
+    /// need a sandbox id.
     pub fn with_surface(mut self, surface: &crate::entitlements::Surface) -> Self {
         let hidden: Vec<String> = self
             .tool_router
@@ -1614,14 +1614,14 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this session may run, and its caps: lamports and per mint, per action and per window, with what the window has spent. Start here. The sandbox's owner sets the rules and caps; this key can only act within them. No key, wallet credential or RPC URL is ever returned."
+        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this agent may run (`invoke`, `withdraw`, `swap`, as the owner granted), and its caps: lamports and per mint, per action and per window, with what the window has spent. Start here. The sandbox's owner sets the rules, grants and caps; this agent can only act within them. No key, token, wallet credential or RPC URL is ever returned."
     )]
     async fn sandbox_status(&self) -> Result<CallToolResult, McpError> {
         Ok(sandbox_result(self.sandbox.status().await, None))
     }
 
     #[tool(
-        description = "The sandbox's rules: the programs it may call and, for each, the allowed instructions with their arguments (IDL types) and accounts (writable/signer/optional/fixed address). Build `sandbox_invoke` instructions from exactly these names. `baseline` lists plumbing always allowed (create your own token accounts, wrap/unwrap SOL); everything else needs the owner's rules."
+        description = "The sandbox's rules: the programs it may call and, for each, the allowed instructions with their arguments (IDL types) and accounts (writable/signer/optional/fixed address). Build `invoke` instructions for `sandbox_invoke` from exactly these names. `baseline` lists plumbing always allowed (create your own token accounts, wrap/unwrap SOL); everything else needs the owner's rules."
     )]
     async fn sandbox_rules(&self) -> Result<CallToolResult, McpError> {
         Ok(sandbox_result(self.sandbox.rules().await, None))
@@ -1638,59 +1638,34 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Dry-run instructions: Arete encodes them from the program's IDL, builds the transaction and runs every check (rules at every CPI depth, account owners, no authority or delegate changes, caps) without signing or recording anything. Returns `pass` with what the wallet would lose, the `transactionFormat` and `transactionBytes` it built, or the refusal with its code, rule and details (program, instruction, mint, attempted, cap). Transactions are Solana v1 by default (up to 4096 bytes and 64 accounts, no lookup tables); pass `transactionFormat: \"v0\"` for the 1232-byte v0 format. Iterate here until it passes, then `sandbox_invoke`."
+        description = "Dry-run one sandbox action: the same `action` and `args` as `sandbox_invoke`. Arete builds the transaction and runs every check (rules at every CPI depth, account owners, no authority or delegate changes, caps) without signing or recording anything. Returns `pass` with what the wallet would lose and the transaction it built, or the refusal with its code, the `rule` that refused and details (program, instruction, mint, attempted, cap). `invoke` and `swap` have a dry run; `withdraw` does not (it is refused with `sandbox-preview-unavailable`; `sandbox_status` shows the caps it is checked against). Iterate here until it passes, then `sandbox_invoke`."
     )]
     async fn sandbox_preview(
         &self,
         Parameters(args): Parameters<crate::sandbox::SandboxPreviewArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let body = crate::sandbox::invoke_body(&args.into_invoke());
-        Ok(sandbox_result(self.sandbox.preview(body).await, None))
+        let body = crate::sandbox::action_args(args.args)
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        Ok(sandbox_result(
+            self.sandbox.preview(args.action, body).await,
+            None,
+        ))
     }
 
     #[tool(
-        description = "Run named instructions from the sandbox wallet: Arete encodes them from the IDL, checks them like `sandbox_preview`, signs, sends and waits for confirmation. Only programs and instructions in `sandbox_rules`; the wallet is the only signer. Returns the action id, status (`landed`, `failed`, `sent`), signature, `transactionFormat`, and what left the wallet. Builds a Solana v1 transaction by default (up to 4096 bytes and 64 accounts); `transactionFormat: \"v0\"` builds the 1232-byte v0 format instead. Each call has an idempotency key (yours, or generated and returned): never retry a timed-out call with a new key; look it up with `sandbox_action`."
+        description = "Run one action from the sandbox wallet. Name the `action` and pass its `args`; Arete builds the transaction, checks it like `sandbox_preview`, signs, sends and waits for confirmation. Actions (only those the owner granted; `sandbox_status` lists them): `invoke` — named program instructions, `args: { instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat?: \"v1\" | \"v0\" }`, 1 to 8, named exactly as `sandbox_rules` lists them, the wallet the only signer; `withdraw` — SOL to the owner's withdraw address (the only destination), `args: { lamports, transactionFormat? }`; `swap` — exact-input swap through the venues the owner allows, `args: { inputMint, outputMint, amount, slippageBps?, computeUnitLimit?, computeUnitPriceMicroLamports? }`. Pass u64 amounts as decimal strings. Returns the action id, status (`landed`, `failed`, `sent`), signature and what left the wallet. Transactions are Solana v1 by default (up to 4096 bytes and 64 accounts); `transactionFormat: \"v0\"` builds the 1232-byte v0 format. A refusal names the `code` and the `rule` that refused. Each call has an idempotency key (yours, or generated), returned on success and on error: never retry a timed-out call with a new key; look it up with `sandbox_action`."
     )]
     async fn sandbox_invoke(
         &self,
         Parameters(args): Parameters<crate::sandbox::SandboxInvokeArgs>,
     ) -> Result<CallToolResult, McpError> {
+        let body = crate::sandbox::action_args(args.args)
+            .map_err(|error| McpError::invalid_params(error, None))?;
         let key = args
             .idempotency_key
-            .clone()
-            .unwrap_or_else(crate::sandbox::new_idempotency_key);
-        let body = crate::sandbox::invoke_body(&args);
-        Ok(sandbox_result(
-            self.sandbox.invoke(body, &key).await,
-            Some(&key),
-        ))
-    }
-
-    #[tool(
-        description = "Send SOL (lamports) from the sandbox wallet to its owner's withdraw address, the only destination a withdraw can have. Within the lamport caps; same idempotency rules and `transactionFormat` (v1 by default, or v0) as `sandbox_invoke`."
-    )]
-    async fn sandbox_withdraw(
-        &self,
-        Parameters(args): Parameters<crate::sandbox::SandboxWithdrawArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let lamports = match &args.lamports {
-            serde_json::Value::String(text) => text.trim().to_string(),
-            serde_json::Value::Number(number) => number.to_string(),
-            other => {
-                return Err(McpError::invalid_params(
-                    format!("lamports must be a number or decimal string, not {other}"),
-                    None,
-                ))
-            }
-        };
-        let key = args
-            .idempotency_key
-            .clone()
             .unwrap_or_else(crate::sandbox::new_idempotency_key);
         Ok(sandbox_result(
-            self.sandbox
-                .withdraw(&lamports, args.transaction_format, &key)
-                .await,
+            self.sandbox.invoke(args.action, body, &key).await,
             Some(&key),
         ))
     }
@@ -5918,11 +5893,14 @@ mod describe_sdk_tests {
         assert!(error.message.contains("a4 mcp"));
     }
 
+    const TEST_SANDBOX_ID: &str = "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10";
+
     fn server_with_sandbox_key() -> AreteMcp {
         AreteMcp::with_agents(
             crate::protocol_agent::ProtocolAgent::new(None),
             crate::sandbox::SandboxClient::from_values(
-                Some("a4_sbx_secret".into()),
+                Some(TEST_SANDBOX_ID.into()),
+                Some("a4_sk_secret".into()),
                 Some("http://127.0.0.1:1".into()),
             ),
         )
@@ -5991,10 +5969,10 @@ mod describe_sdk_tests {
             everything
         );
 
-        // A granted group never lists sandbox tools without a sandbox key.
+        // A granted group never lists sandbox tools without a sandbox.
         let without_key = AreteMcp::with_agents(
             crate::protocol_agent::ProtocolAgent::new(None),
-            crate::sandbox::SandboxClient::from_values(None, None),
+            crate::sandbox::SandboxClient::from_values(None, Some("a4_sk_secret".into()), None),
         )
         .with_surface(&Surface::Groups([Group::Sandboxes].into_iter().collect()))
         .tool_names();
@@ -6003,31 +5981,43 @@ mod describe_sdk_tests {
     }
 
     #[tokio::test]
-    async fn sandbox_tools_are_listed_only_with_a_sandbox_key_and_never_echo_it() {
+    async fn sandbox_tools_are_listed_only_with_a_sandbox_and_never_echo_credentials() {
         use std::io::{Read, Write};
         let without = AreteMcp::with_agents(
             crate::protocol_agent::ProtocolAgent::new(None),
-            crate::sandbox::SandboxClient::from_values(None, None),
+            crate::sandbox::SandboxClient::from_values(None, Some("a4_sk_secret".into()), None),
         );
         let listed = without.tool_names();
         for tool in crate::sandbox::TOOL_NAMES {
             assert!(
                 !listed.iter().any(|name| name == tool),
-                "{tool} listed without a key"
+                "{tool} listed without a sandbox"
             );
         }
 
+        // Mints a token granting `invoke`; refuses every action as off-rules.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
                 let mut buffer = [0u8; 8192];
-                let _ = stream.read(&mut buffer);
-                let body = r#"{"schemaVersion":1,"error":"not in the rules","code":"sandbox-program-not-allowlisted","rule":"program-allowlist","program":"P"}"#;
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let (status, body) = if head.starts_with("POST /ws/sessions") {
+                    (
+                        200,
+                        r#"{"token":"tok-secret","expiresAt":99999999999,"tokenType":"Bearer","scopes":["sandbox:invoke"]}"#,
+                    )
+                } else {
+                    (
+                        403,
+                        r#"{"schemaVersion":1,"error":"not in the rules","code":"sandbox-program-not-allowlisted","rule":"program-allowlist","program":"P"}"#,
+                    )
+                };
                 let _ = write!(
                     stream,
-                    "HTTP/1.1 403 X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
                 );
             }
@@ -6035,7 +6025,8 @@ mod describe_sdk_tests {
         let with = AreteMcp::with_agents(
             crate::protocol_agent::ProtocolAgent::new(None),
             crate::sandbox::SandboxClient::from_values(
-                Some("a4_sbx_secret".into()),
+                Some(TEST_SANDBOX_ID.into()),
+                Some("a4_sk_secret".into()),
                 Some(format!("http://{address}")),
             ),
         );
@@ -6043,8 +6034,14 @@ mod describe_sdk_tests {
         for tool in crate::sandbox::TOOL_NAMES {
             assert!(listed.iter().any(|name| name == tool), "{tool} missing");
         }
+        // One generic action tool: no per-action tools.
+        assert!(!listed
+            .iter()
+            .any(|name| name == "sandbox_withdraw" || name == "sandbox_swap"));
+
         let args: crate::sandbox::SandboxInvokeArgs = serde_json::from_value(serde_json::json!({
-            "instructions": [{ "program": "P", "instruction": "buy" }],
+            "action": "invoke",
+            "args": { "instructions": [{ "program": "P", "instruction": "buy" }] },
             "idempotencyKey": "k-1"
         }))
         .unwrap();
@@ -6057,9 +6054,35 @@ mod describe_sdk_tests {
             text.contains("k-1"),
             "the idempotency key is echoed: {text}"
         );
-        assert!(
-            !text.contains("a4_sbx_secret"),
-            "the key never reaches the agent"
-        );
+
+        // An action outside the grant fails closed, still with its key.
+        let args: crate::sandbox::SandboxInvokeArgs = serde_json::from_value(serde_json::json!({
+            "action": "withdraw", "args": { "lamports": "1" }, "idempotencyKey": "k-2"
+        }))
+        .unwrap();
+        let result = with.sandbox_invoke(Parameters(args)).await.unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let refused = serde_json::to_string(&result.content).unwrap();
+        assert!(refused.contains("sandbox-action-not-granted"), "{refused}");
+        assert!(refused.contains("session-grant"), "{refused}");
+        assert!(refused.contains("k-2"), "{refused}");
+
+        for shown in [&text, &refused] {
+            assert!(
+                !shown.contains("a4_sk_secret"),
+                "the API key never reaches the agent"
+            );
+            assert!(
+                !shown.contains("tok-secret"),
+                "the token never reaches the agent"
+            );
+        }
+
+        // `args` must be an object.
+        let args: crate::sandbox::SandboxInvokeArgs = serde_json::from_value(serde_json::json!({
+            "action": "invoke", "args": "buy"
+        }))
+        .unwrap();
+        assert!(with.sandbox_invoke(Parameters(args)).await.is_err());
     }
 }
