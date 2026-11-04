@@ -289,12 +289,17 @@ impl SandboxClient {
     pub async fn withdraw(
         &self,
         lamports: &str,
+        transaction_format: Option<SandboxTransactionFormat>,
         idempotency_key: &str,
     ) -> Result<Value, SandboxRefusal> {
+        let mut body = json!({ "lamports": lamports });
+        if let Some(format) = transaction_format {
+            body["transactionFormat"] = json!(format.as_str());
+        }
         self.call(
             reqwest::Method::POST,
             "/actions/withdraw",
-            Some(json!({ "lamports": lamports })),
+            Some(body),
             Some(idempotency_key),
         )
         .await
@@ -418,10 +423,34 @@ pub fn invoke_body(args: &SandboxInvokeArgs) -> Value {
     if let Some(price) = &args.compute_unit_price_micro_lamports {
         body.insert("computeUnitPriceMicroLamports".into(), price.clone());
     }
+    if let Some(format) = args.transaction_format {
+        body.insert("transactionFormat".into(), json!(format.as_str()));
+    }
     Value::Object(body)
 }
 
 // ---- Tool arguments ----------------------------------------------------------
+
+/// The Solana transaction format an action is built in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SandboxTransactionFormat {
+    /// Transaction v1 (SIMD-0385), the default: up to 4096 bytes and 64
+    /// accounts, the compute budget in the message itself.
+    V1,
+    /// The older v0 format: up to 1232 bytes, the compute budget as
+    /// ComputeBudget instructions.
+    V0,
+}
+
+impl SandboxTransactionFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::V1 => "v1",
+            Self::V0 => "v0",
+        }
+    }
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -462,9 +491,15 @@ pub struct SandboxInvokeArgs {
     /// Compute unit limit (default 400000, at most 1400000).
     #[serde(default)]
     pub compute_unit_limit: Option<Value>,
-    /// Priority fee in micro-lamports per compute unit (default 0).
+    /// Priority fee in micro-lamports per compute unit (default 0). A v1
+    /// transaction pays the same total (price × limit, rounded up) as its
+    /// lamport priority fee.
     #[serde(default)]
     pub compute_unit_price_micro_lamports: Option<Value>,
+    /// `v1` (the default: up to 4096 bytes and 64 accounts) or `v0` (up to
+    /// 1232 bytes). Use `v0` only when something downstream needs it.
+    #[serde(default)]
+    pub transaction_format: Option<SandboxTransactionFormat>,
     /// Your key for this action (1-128 chars). The same key never runs twice;
     /// after a timeout, look the action up with `sandbox_action` instead of
     /// retrying. Generated when omitted and returned in the result.
@@ -481,6 +516,9 @@ pub struct SandboxPreviewArgs {
     pub compute_unit_limit: Option<Value>,
     #[serde(default)]
     pub compute_unit_price_micro_lamports: Option<Value>,
+    /// As for `sandbox_invoke`: `v1` (the default) or `v0`.
+    #[serde(default)]
+    pub transaction_format: Option<SandboxTransactionFormat>,
 }
 
 impl SandboxPreviewArgs {
@@ -489,6 +527,7 @@ impl SandboxPreviewArgs {
             instructions: self.instructions,
             compute_unit_limit: self.compute_unit_limit,
             compute_unit_price_micro_lamports: self.compute_unit_price_micro_lamports,
+            transaction_format: self.transaction_format,
             idempotency_key: None,
         }
     }
@@ -544,6 +583,9 @@ impl SandboxDeriveArgs {
 pub struct SandboxWithdrawArgs {
     /// Lamports to send to the owner's withdraw address (decimal string or number).
     pub lamports: Value,
+    /// As for `sandbox_invoke`: `v1` (the default) or `v0`.
+    #[serde(default)]
+    pub transaction_format: Option<SandboxTransactionFormat>,
     /// As for `sandbox_invoke`.
     #[serde(default)]
     pub idempotency_key: Option<String>,
@@ -686,6 +728,55 @@ mod tests {
             true
         );
         assert_eq!(sent["computeUnitLimit"], "300000");
+        // No format given: the API builds v1, its default.
+        assert!(sent.get("transactionFormat").is_none());
+    }
+
+    #[test]
+    fn the_transaction_format_is_passed_through() {
+        let args: SandboxPreviewArgs = serde_json::from_value(json!({
+            "instructions": [{ "program": "P", "instruction": "buy" }],
+            "transactionFormat": "v0"
+        }))
+        .unwrap();
+        assert_eq!(invoke_body(&args.into_invoke())["transactionFormat"], "v0");
+        let args: SandboxInvokeArgs = serde_json::from_value(json!({
+            "instructions": [{ "program": "P", "instruction": "buy" }],
+            "transactionFormat": "v1"
+        }))
+        .unwrap();
+        assert_eq!(invoke_body(&args)["transactionFormat"], "v1");
+        assert!(serde_json::from_value::<SandboxInvokeArgs>(json!({
+            "instructions": [], "transactionFormat": "legacy"
+        }))
+        .is_err());
+    }
+
+    #[tokio::test]
+    async fn withdraw_sends_the_format_only_when_given() {
+        let (base, seen) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/actions/withdraw",
+            200,
+            json!({ "status": "landed", "transactionFormat": "v0" }),
+        )]);
+        let client = client(&base);
+        client
+            .withdraw("1000", Some(SandboxTransactionFormat::V0), "key-1")
+            .await
+            .unwrap();
+        client.withdraw("1000", None, "key-2").await.unwrap();
+        let bodies: Vec<Value> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|request| serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap())
+            .collect();
+        assert_eq!(
+            bodies[0],
+            json!({ "lamports": "1000", "transactionFormat": "v0" })
+        );
+        assert_eq!(bodies[1], json!({ "lamports": "1000" }));
     }
 
     #[tokio::test]

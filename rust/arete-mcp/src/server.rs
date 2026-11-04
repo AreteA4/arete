@@ -1620,7 +1620,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Dry-run instructions: Arete encodes them from the program's IDL, builds the transaction and runs every check (rules at every CPI depth, account owners, no authority or delegate changes, caps) without signing or recording anything. Returns `pass` with what the wallet would lose, or the refusal with its code, rule and details (program, instruction, mint, attempted, cap). Iterate here until it passes, then `sandbox_invoke`."
+        description = "Dry-run instructions: Arete encodes them from the program's IDL, builds the transaction and runs every check (rules at every CPI depth, account owners, no authority or delegate changes, caps) without signing or recording anything. Returns `pass` with what the wallet would lose, the `transactionFormat` and `transactionBytes` it built, or the refusal with its code, rule and details (program, instruction, mint, attempted, cap). Transactions are Solana v1 by default (up to 4096 bytes and 64 accounts, no lookup tables); pass `transactionFormat: \"v0\"` for the 1232-byte v0 format. Iterate here until it passes, then `sandbox_invoke`."
     )]
     async fn sandbox_preview(
         &self,
@@ -1631,7 +1631,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Run named instructions from the sandbox wallet: Arete encodes them from the IDL, checks them like `sandbox_preview`, signs, sends and waits for confirmation. Only programs and instructions in `sandbox_rules`; the wallet is the only signer. Returns the action id, status (`landed`, `failed`, `sent`), signature, and what left the wallet. Each call has an idempotency key (yours, or generated and returned): never retry a timed-out call with a new key; look it up with `sandbox_action`."
+        description = "Run named instructions from the sandbox wallet: Arete encodes them from the IDL, checks them like `sandbox_preview`, signs, sends and waits for confirmation. Only programs and instructions in `sandbox_rules`; the wallet is the only signer. Returns the action id, status (`landed`, `failed`, `sent`), signature, `transactionFormat`, and what left the wallet. Builds a Solana v1 transaction by default (up to 4096 bytes and 64 accounts); `transactionFormat: \"v0\"` builds the 1232-byte v0 format instead. Each call has an idempotency key (yours, or generated and returned): never retry a timed-out call with a new key; look it up with `sandbox_action`."
     )]
     async fn sandbox_invoke(
         &self,
@@ -1649,7 +1649,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Send SOL (lamports) from the sandbox wallet to its owner's withdraw address, the only destination a withdraw can have. Within the lamport caps; same idempotency rules as `sandbox_invoke`."
+        description = "Send SOL (lamports) from the sandbox wallet to its owner's withdraw address, the only destination a withdraw can have. Within the lamport caps; same idempotency rules and `transactionFormat` (v1 by default, or v0) as `sandbox_invoke`."
     )]
     async fn sandbox_withdraw(
         &self,
@@ -1670,7 +1670,9 @@ impl AreteMcp {
             .clone()
             .unwrap_or_else(crate::sandbox::new_idempotency_key);
         Ok(sandbox_result(
-            self.sandbox.withdraw(&lamports, &key).await,
+            self.sandbox
+                .withdraw(&lamports, args.transaction_format, &key)
+                .await,
             Some(&key),
         ))
     }
