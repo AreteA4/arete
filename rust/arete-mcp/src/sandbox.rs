@@ -331,23 +331,24 @@ impl SandboxClient {
         body: Option<Value>,
         idempotency_key: Option<&str>,
     ) -> Result<Value, SandboxRefusal> {
-        let session = self.session().await?;
-        self.call_with(&session, method, path, body, idempotency_key)
+        self.call_with(None, method, path, body, idempotency_key)
             .await
     }
 
     /// `path` under the sandbox routes with `session`'s token. A token the
     /// API calls expired or invalid is re-minted once and the call repeated:
     /// the API refuses those before running anything, so the repeat (with
-    /// the same idempotency key) cannot run an action twice.
+    /// the same idempotency key) cannot run an action twice. With `action`,
+    /// every token used (the first and a renewed one) must grant it.
     async fn call_with(
         &self,
-        session: &SessionToken,
+        action: Option<SandboxActionName>,
         method: reqwest::Method,
         path: &str,
         body: Option<Value>,
         idempotency_key: Option<&str>,
     ) -> Result<Value, SandboxRefusal> {
+        let session = self.authorized(action).await?;
         self.trusted_origin()?;
         let url = format!("{}/api/sandbox/v1{path}", self.api_base);
         let timeout = if method == reqwest::Method::POST {
@@ -374,7 +375,7 @@ impl SandboxClient {
             return first;
         }
         self.forget_token();
-        let renewed = self.session().await?;
+        let renewed = self.authorized(action).await?;
         self.send(method, &url, &renewed.token, body, idempotency_key, timeout)
             .await
     }
@@ -461,10 +462,17 @@ impl SandboxClient {
             .await
     }
 
-    /// The session for `action`, refusing (before anything is sent to the
-    /// sandbox routes) an action the owner's grant does not include.
-    async fn granted(&self, action: SandboxActionName) -> Result<SessionToken, SandboxRefusal> {
+    /// A live session, granting `action` when one is given: an action the
+    /// owner's grant does not include is refused before anything is sent to
+    /// the sandbox routes.
+    async fn authorized(
+        &self,
+        action: Option<SandboxActionName>,
+    ) -> Result<SessionToken, SandboxRefusal> {
         let session = self.session().await?;
+        let Some(action) = action else {
+            return Ok(session);
+        };
         if session.actions.iter().any(|a| a == action.as_str()) {
             return Ok(session);
         }
@@ -497,8 +505,7 @@ impl SandboxClient {
                 }),
             });
         };
-        let session = self.granted(action).await?;
-        self.call_with(&session, reqwest::Method::POST, path, Some(args), None)
+        self.call_with(Some(action), reqwest::Method::POST, path, Some(args), None)
             .await
     }
 
@@ -509,9 +516,8 @@ impl SandboxClient {
         args: Value,
         idempotency_key: &str,
     ) -> Result<Value, SandboxRefusal> {
-        let session = self.granted(action).await?;
         self.call_with(
-            &session,
+            Some(action),
             reqwest::Method::POST,
             action.invoke_path(),
             Some(args),
@@ -901,6 +907,62 @@ mod tests {
         assert!(seen[3]
             .to_ascii_lowercase()
             .contains("idempotency-key: key-7"));
+    }
+
+    #[tokio::test]
+    async fn a_renewed_token_must_still_grant_the_action() {
+        // The first mint grants withdraw; after expiry the owner narrowed the
+        // grant, and the renewed token grants nothing.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(Mutex::new(Vec::<String>::new()));
+        let log = seen.clone();
+        std::thread::spawn(move || {
+            let mut mints = 0;
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buffer = [0u8; 8192];
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                let head = String::from_utf8_lossy(&buffer[..read]).to_string();
+                log.lock().unwrap().push(head.clone());
+                let (status, body) = if head.starts_with("POST /ws/sessions") {
+                    mints += 1;
+                    let scopes = if mints == 1 {
+                        json!(["sandbox:withdraw"])
+                    } else {
+                        json!([])
+                    };
+                    (
+                        200,
+                        json!({ "token": format!("tok-{mints}"), "expiresAt": unix_now() + 600, "scopes": scopes }),
+                    )
+                } else {
+                    (
+                        401,
+                        json!({ "code": "sandbox-session-expired", "error": "expired" }),
+                    )
+                };
+                let body = body.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let refusal = client(&format!("http://{address}"))
+            .invoke(
+                SandboxActionName::Withdraw,
+                json!({ "lamports": "5" }),
+                "k-1",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
+        let seen = requests(&seen);
+        // mint, withdraw (401), mint: the retry is never sent.
+        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert!(seen[2].starts_with("POST /ws/sessions"));
     }
 
     #[tokio::test]
