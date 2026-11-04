@@ -27,7 +27,7 @@
 //!
 //! See `a4 --help` for the full command reference.
 
-use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use clap_complete::{generate, Shell};
 use colored::Colorize;
 use std::io;
@@ -38,6 +38,7 @@ mod api_client;
 mod arete_home;
 mod commands;
 mod config;
+mod entitlements;
 mod project;
 mod registry_signatures;
 mod selfhost;
@@ -1012,8 +1013,38 @@ enum BuildCommands {
     },
 }
 
+/// Parse the arguments. A command runs as before, granted or not (the API
+/// refuses what the account may not use). Help, errors and suggestions list
+/// only the command groups the account is entitled to.
+fn parse_cli() -> Cli {
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let error = match Cli::try_parse_from(&args) {
+        Ok(cli) => return cli,
+        Err(error) => error,
+    };
+    if error.kind() == clap::error::ErrorKind::DisplayVersion {
+        error.exit();
+    }
+    let cmd = visible_command(
+        entitlements::global_option(&args, "--api-url", None).as_deref(),
+        entitlements::global_option(&args, "--profile", None).as_deref(),
+        &entitlements::global_option(&args, "--config", Some("-c"))
+            .unwrap_or_else(|| "arete.toml".to_string()),
+    );
+    let matches = cmd.get_matches_from(&args);
+    Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+/// The `a4` command with only the account's command groups.
+fn visible_command(api_url: Option<&str>, profile: Option<&str>, config: &str) -> clap::Command {
+    entitlements::visible(
+        Cli::command(),
+        &entitlements::account_surface(api_url, profile, config),
+    )
+}
+
 fn main() {
-    let cli = Cli::parse();
+    let cli = parse_cli();
 
     // Internal IPC worker: use only its explicit stdin identity, with no
     // profile lookup, consent banner or unrelated stdout before its frames.
@@ -1073,7 +1104,7 @@ fn main() {
     }
 
     if let Some(shell) = cli.completions {
-        let mut cmd = Cli::command();
+        let mut cmd = visible_command(cli.api_url.as_deref(), cli.profile.as_deref(), &cli.config);
         generate(shell, &mut cmd, "a4", &mut io::stdout());
         return;
     }
@@ -1297,7 +1328,8 @@ fn check_install(manifest: impl AsRef<std::path::Path>, json: bool) -> anyhow::R
 
 fn run(cli: Cli) -> anyhow::Result<()> {
     let Some(command) = cli.command else {
-        Cli::command().print_help()?;
+        visible_command(cli.api_url.as_deref(), cli.profile.as_deref(), &cli.config)
+            .print_help()?;
         return Ok(());
     };
 
@@ -2466,6 +2498,142 @@ mod tests {
     #[test]
     fn clap_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    fn surface(groups: &[arete_mcp::entitlements::Group]) -> arete_mcp::entitlements::Surface {
+        arete_mcp::entitlements::Surface::Groups(groups.iter().copied().collect())
+    }
+
+    fn rendered_help(mut cmd: clap::Command) -> (String, String) {
+        let short = cmd.render_help().to_string();
+        let long = cmd.render_long_help().to_string();
+        (short, long)
+    }
+
+    fn bash_completions(mut cmd: clap::Command) -> String {
+        let mut out = Vec::new();
+        generate(Shell::Bash, &mut cmd, "a4", &mut out);
+        String::from_utf8(out).unwrap()
+    }
+
+    #[test]
+    fn every_command_belongs_to_core_or_an_entitlement_group() {
+        let unclassified: Vec<String> = Cli::command()
+            .get_subcommands()
+            .map(|sub| sub.get_name().to_string())
+            .filter(|name| entitlements::command_groups(name).is_none())
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "classify these commands in entitlements::command_groups: {unclassified:?}"
+        );
+    }
+
+    #[test]
+    fn granting_every_group_renders_todays_help() {
+        use arete_mcp::entitlements::{Group, Surface};
+        let today = rendered_help(Cli::command());
+        assert_eq!(
+            rendered_help(entitlements::visible(Cli::command(), &Surface::Everything)),
+            today
+        );
+        let all = entitlements::visible(Cli::command(), &surface(&Group::ALL));
+        all.clone().debug_assert();
+        assert_eq!(rendered_help(all.clone()), today);
+        assert_eq!(bash_completions(all), bash_completions(Cli::command()));
+    }
+
+    #[test]
+    fn ungranted_commands_leave_help_suggestions_and_completions() {
+        use arete_mcp::entitlements::Group;
+        let sandboxes = entitlements::visible(Cli::command(), &surface(&[Group::Sandboxes]));
+        sandboxes.clone().debug_assert();
+        let (help, _) = rendered_help(sandboxes.clone());
+        for core in [
+            "init",
+            "doctor",
+            "auth",
+            "login",
+            "mcp",
+            "self",
+            "telemetry",
+        ] {
+            assert!(
+                help.contains(&format!("  {core} ")),
+                "{core} missing:\n{help}"
+            );
+        }
+        for hidden in [
+            "install", "dev", "protocol", "stream", "explore", "program", "sdk",
+        ] {
+            assert!(
+                !help.contains(&format!("  {hidden} ")),
+                "{hidden} listed:\n{help}"
+            );
+        }
+        let completions = bash_completions(sandboxes.clone());
+        assert!(completions.contains("a4,doctor)"));
+        assert!(
+            completions.contains("a4__self,install)"),
+            "core keeps its own subcommands"
+        );
+        for hidden in ["install", "protocol", "dev", "stream"] {
+            assert!(
+                !completions.contains(&format!("a4,{hidden})")),
+                "{hidden} completes"
+            );
+        }
+
+        // Forcing a hidden command through this command is unknown locally,
+        // with no suggestion of the hidden name.
+        let error = sandboxes
+            .clone()
+            .try_get_matches_from(["a4", "instal"])
+            .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidSubcommand);
+        assert!(!error.to_string().contains("'install'"), "{error}");
+        assert!(sandboxes
+            .clone()
+            .try_get_matches_from(["a4", "install", "ore"])
+            .is_err());
+        // Core commands still parse into the same `Cli`.
+        let matches = sandboxes
+            .try_get_matches_from(["a4", "--json", "auth", "whoami"])
+            .expect("core parses");
+        let cli = Cli::from_arg_matches(&matches).expect("decodes");
+        assert!(cli.json);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Auth(AuthCommands::Whoami))
+        ));
+
+        // The full parser still accepts a hidden command: it runs and the
+        // API refuses it when the account may not use it.
+        assert!(Cli::try_parse_from(["a4", "install", "ore"]).is_ok());
+    }
+
+    #[test]
+    fn a_granted_group_lists_its_commands() {
+        use arete_mcp::entitlements::Group;
+        let registry = entitlements::visible(
+            Cli::command(),
+            &surface(&[Group::Sandboxes, Group::Registry]),
+        );
+        let (help, _) = rendered_help(registry.clone());
+        for listed in ["install", "update", "remove", "sdk"] {
+            assert!(help.contains(&format!("  {listed} ")), "{listed} missing");
+        }
+        assert!(!help.contains("  dev "));
+        let error = registry.try_get_matches_from(["a4", "instal"]).unwrap_err();
+        assert!(error.to_string().contains("install"), "{error}");
+        // `create` is in two groups: either one lists it.
+        let (help, _) = rendered_help(entitlements::visible(
+            Cli::command(),
+            &surface(&[Group::Protocols]),
+        ));
+        assert!(help.contains("  create "));
+        assert!(help.contains("  protocol "));
+        assert!(help.contains("  squads "));
     }
 
     #[test]

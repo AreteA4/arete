@@ -93,6 +93,20 @@ The deployment returns operational bindings for the exact StackManifest.
 | `a4 stack list` | List all stacks |
 | `a4 stack show <name>` | Show stack details |
 
+### Commands your account can use
+
+When you are logged in, `a4 --help`, completions (`a4 --completions <shell>`)
+and "did you mean" suggestions list only the command groups the Arete API
+reports for your account (`GET /api/auth/me`): `catalog` (`explore`, `know`),
+`streams` (`stream`, `get`, `stack`, `up`, `status`), `registry` (`install`,
+`update`, `remove`, `sdk`), `programs` (`program`, `idl`), `protocols`
+(`protocol`, `squads`), `dev` (`dev`); `create` needs `streams` or
+`protocols`. Setup commands (`init`, `doctor`, `auth`, `login`, `mcp`, `self`,
+`upgrade`, `config`, `telemetry`) are always listed, and admins see
+everything. With no login, when the API can't be reached, or when it reports
+no groups, every command is listed. Hiding is never the gate: a command typed
+anyway runs, and the API refuses what the account may not use.
+
 ## Private Program Uploads
 
 Uploads are explicit and never happen as a side effect of `a4 up`:
