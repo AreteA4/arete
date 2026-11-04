@@ -147,17 +147,16 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 
 ### Which tools are listed
 
-At startup `a4 mcp` asks the Arete API (`GET /api/auth/me`, with the resolved
-key) which entitlement groups the account may use, and lists only their
-tools. `ping`, `account_status` and `create_claim_link` are always listed;
-admins see every tool.
+At startup `a4 mcp` asks the Arete API which command groups the account may
+use (`commandGroups` on `GET /api/auth/me`, with the resolved key) and lists
+only their tools. `ping`, `account_status` and `create_claim_link` are
+always listed.
 
 | Group | Tools |
 |-------|-------|
 | `sandboxes` | `sandbox_*` (also need `ARETE_SANDBOX_KEY`) |
-| `catalog` | `explore_*`, `resolve_artifact`, `search_catalog`, `get_catalog_entry`, `list_catalog_vocabulary`, the knowledge tools |
-| `streams` | connection, subscription, cache tools and `read_view` |
-| `registry` | `describe_sdk` |
+| `streams` | connection, subscription and cache tools, and `read_view` |
+| `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
 | `protocols` | `protocol_*`, `squads_*` |
 | `dev` | `dev_*` |
 

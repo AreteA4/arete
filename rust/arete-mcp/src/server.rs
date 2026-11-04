@@ -5952,11 +5952,13 @@ mod describe_sdk_tests {
                 .with_surface(&Surface::Everything)
                 .tool_names(),
             everything,
-            "no groups to go by (offline, no key, older API) or an admin: today's listing"
+            "no groups to go by (offline, no key, older API): today's listing"
         );
 
         let sandboxes = server_with_sandbox_key()
-            .with_surface(&Surface::Groups([Group::Sandboxes].into_iter().collect()))
+            .with_surface(&Surface::Groups(
+                [Group::Account, Group::Sandboxes].into_iter().collect(),
+            ))
             .tool_names();
         let mut expected: Vec<&str> = vec!["ping", "account_status", "create_claim_link"];
         expected.extend(crate::sandbox::TOOL_NAMES);
@@ -5979,6 +5981,15 @@ mod describe_sdk_tests {
             .iter()
             .any(|name| name.starts_with("protocol_")));
         assert!(!dev_and_streams.iter().any(|name| name == "search_catalog"));
+        assert!(dev_and_streams.iter().any(|name| name == "ping"));
+
+        // An admin's list names every group: today's listing.
+        assert_eq!(
+            server_with_sandbox_key()
+                .with_surface(&Surface::Groups(Group::ALL.into_iter().collect()))
+                .tool_names(),
+            everything
+        );
 
         // A granted group never lists sandbox tools without a sandbox key.
         let without_key = AreteMcp::with_agents(

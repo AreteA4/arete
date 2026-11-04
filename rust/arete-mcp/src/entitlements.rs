@@ -1,9 +1,9 @@
 //! Which surfaces (CLI command groups and MCP tools) an account sees.
 //!
-//! `GET /api/auth/me` may report the entitlement groups the account may use
-//! (`entitlementGroups`) and whether it is an admin (`isAdmin`). `a4` and
-//! `a4 mcp` hide what the account is not entitled to. Hiding is UX only: the
-//! API still refuses calls the account may not make.
+//! `GET /api/auth/me` reports the command groups the account may use
+//! (`commandGroups`; an admin gets every group). `a4` and `a4 mcp` hide what
+//! the account is not entitled to. Hiding is UX only: the API still refuses
+//! calls the account may not make.
 //!
 //! The groups always come from the API. When there is no account key, the
 //! API can't be reached, or it does not report groups, everything is listed
@@ -18,57 +18,55 @@ use serde_json::Value;
 /// everything.
 pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// One entitlement group: a set of CLI commands and MCP tools granted
-/// together.
+/// One command group: a set of CLI commands and MCP tools granted together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Group {
+    /// Sign-in, keys, `doctor`, config, self-update. Always listed here,
+    /// whatever the API reports, so an account can always log in.
+    Account,
     /// Sandbox wallets (`sandbox_*` tools).
     Sandboxes,
-    /// Catalog and knowledge discovery (`a4 explore`, `a4 know`).
-    Catalog,
-    /// Stack streams and deployments (`a4 stream`, `a4 get`, `a4 stack`, `a4 up`).
+    /// Live stack streams, views and snapshots (`a4 stream`, `a4 get`).
     Streams,
-    /// SDK installs from the registry (`a4 install`, `a4 sdk`).
-    Registry,
-    /// Program artifacts (`a4 program`, `a4 idl`).
-    Programs,
+    /// The account's own stacks and programs (`a4 create`, `a4 up`,
+    /// `a4 stack`, `a4 program`).
+    Stacks,
     /// Protocols and their Squads multisigs (`a4 protocol`, `a4 squads`).
     Protocols,
     /// Dev environments (`a4 dev`, `dev_*` tools).
     Dev,
+    /// Discovery and installs (`a4 explore`, `a4 know`, `a4 install`, `a4 sdk`).
+    Registry,
 }
 
 impl Group {
     pub const ALL: [Group; 7] = [
+        Group::Account,
         Group::Sandboxes,
-        Group::Catalog,
         Group::Streams,
-        Group::Registry,
-        Group::Programs,
+        Group::Stacks,
         Group::Protocols,
         Group::Dev,
+        Group::Registry,
     ];
 
     /// The group's name on the wire.
     pub fn as_str(self) -> &'static str {
         match self {
+            Group::Account => "account",
             Group::Sandboxes => "sandboxes",
-            Group::Catalog => "catalog",
             Group::Streams => "streams",
-            Group::Registry => "registry",
-            Group::Programs => "programs",
+            Group::Stacks => "stacks",
             Group::Protocols => "protocols",
             Group::Dev => "dev",
+            Group::Registry => "registry",
         }
     }
 
-    /// A wire name, case-insensitively. `install` is an alias of
-    /// `registry`. Unknown names are `None` (a newer API's groups).
+    /// A wire name, case-insensitively. Unknown names are `None` (a newer
+    /// API's groups).
     pub fn parse(name: &str) -> Option<Self> {
         let name = name.trim().to_ascii_lowercase();
-        if name == "install" {
-            return Some(Group::Registry);
-        }
         Group::ALL.into_iter().find(|group| group.as_str() == name)
     }
 }
@@ -76,25 +74,18 @@ impl Group {
 /// What the account sees.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Surface {
-    /// Every command and tool: an admin, or no groups to go by (no key, API
-    /// unreachable, or an API that does not report groups).
+    /// Every command and tool: no groups to go by (no key, API unreachable,
+    /// or an API that does not report groups).
     Everything,
-    /// Only the always-available core and these groups.
+    /// Only the always-listed account commands and these groups.
     Groups(BTreeSet<Group>),
 }
 
 impl Surface {
-    /// Decode a `GET /api/auth/me` body. Only an explicit group list
-    /// narrows the surface; without one (or for an admin) it is
-    /// [`Surface::Everything`].
+    /// Decode a `GET /api/auth/me` body. Only an explicit `commandGroups`
+    /// list narrows the surface; without one it is [`Surface::Everything`].
     pub fn from_account(value: &Value) -> Self {
-        let admin = ["isAdmin", "is_admin", "admin"]
-            .iter()
-            .any(|key| value.get(*key).and_then(Value::as_bool) == Some(true));
-        if admin {
-            return Surface::Everything;
-        }
-        let Some(groups) = ["entitlementGroups", "entitlement_groups"]
+        let Some(groups) = ["commandGroups", "command_groups"]
             .iter()
             .find_map(|key| value.get(*key).and_then(Value::as_array))
         else {
@@ -116,28 +107,26 @@ impl Surface {
         }
     }
 
-    /// Whether something in `groups` is visible: core (no groups) always
-    /// is, otherwise when any of its groups is granted.
+    /// Whether something in `groups` is visible: account commands always
+    /// are, anything else when one of its groups is granted.
     pub fn allows_any(&self, groups: &[Group]) -> bool {
-        groups.is_empty() || groups.iter().any(|group| self.allows(*group))
+        groups.contains(&Group::Account) || groups.iter().any(|group| self.allows(*group))
     }
 }
 
-/// The groups an MCP tool belongs to. `Some(&[])` is core, listed for every
-/// account; `None` is a tool this table does not know (listed, and caught
-/// by the test that classifies every tool).
+/// The groups an MCP tool belongs to; `None` is a tool this table does not
+/// know (listed, and caught by the test that classifies every tool).
 pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
-    const CORE: &[Group] = &[];
+    const ACCOUNT: &[Group] = &[Group::Account];
     const SANDBOXES: &[Group] = &[Group::Sandboxes];
-    const CATALOG: &[Group] = &[Group::Catalog];
     const STREAMS: &[Group] = &[Group::Streams];
     const REGISTRY: &[Group] = &[Group::Registry];
     const PROTOCOLS: &[Group] = &[Group::Protocols];
     const DEV: &[Group] = &[Group::Dev];
     Some(match tool {
-        "ping" | "account_status" | "create_claim_link" => CORE,
-        "describe_sdk" => REGISTRY,
-        "resolve_artifact"
+        "ping" | "account_status" | "create_claim_link" => ACCOUNT,
+        "describe_sdk"
+        | "resolve_artifact"
         | "search_catalog"
         | "get_catalog_entry"
         | "list_catalog_vocabulary"
@@ -145,12 +134,12 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
         | "get_protocol"
         | "get_program_knowledge"
         | "get_recipe"
-        | "list_concepts" => CATALOG,
+        | "list_concepts" => REGISTRY,
         "connect" | "disconnect" | "read_view" | "subscribe" | "unsubscribe" | "query_entities"
         | "get_entity" | "list_entities" | "get_recent" | "list_subscriptions"
         | "list_connections" => STREAMS,
         _ if tool.starts_with("sandbox_") => SANDBOXES,
-        _ if tool.starts_with("explore_") => CATALOG,
+        _ if tool.starts_with("explore_") => REGISTRY,
         _ if tool.starts_with("dev_") => DEV,
         _ if tool.starts_with("protocol_") || tool.starts_with("squads_") => PROTOCOLS,
         _ => return None,
@@ -198,17 +187,21 @@ mod tests {
 
     #[test]
     fn only_an_explicit_group_list_narrows_the_surface() {
-        // Today's API: no groups reported, so nothing is hidden.
-        let today = json!({"accountKind": "agent", "plan": "free", "capabilities": []});
-        assert_eq!(Surface::from_account(&today), Surface::Everything);
+        // An API that does not report groups: nothing is hidden.
+        let older = json!({"accountKind": "agent", "plan": "free", "capabilities": []});
+        assert_eq!(Surface::from_account(&older), Surface::Everything);
 
-        let granted = json!({"entitlementGroups": ["sandboxes", "Install", "teleport"]});
+        let granted = json!({"commandGroups": ["account", "sandboxes", "Registry", "teleport"]});
         assert_eq!(
             Surface::from_account(&granted),
-            Surface::Groups([Group::Sandboxes, Group::Registry].into_iter().collect())
+            Surface::Groups(
+                [Group::Account, Group::Sandboxes, Group::Registry]
+                    .into_iter()
+                    .collect()
+            )
         );
 
-        let snake = json!({"entitlement_groups": []});
+        let snake = json!({"command_groups": []});
         assert_eq!(
             Surface::from_account(&snake),
             Surface::Groups(BTreeSet::new())
@@ -216,19 +209,8 @@ mod tests {
     }
 
     #[test]
-    fn admins_see_everything_whatever_groups_they_report() {
-        for admin in [
-            json!({"isAdmin": true, "entitlementGroups": ["sandboxes"]}),
-            json!({"is_admin": true, "entitlementGroups": []}),
-        ] {
-            assert_eq!(Surface::from_account(&admin), Surface::Everything);
-        }
-        let not_admin = json!({"isAdmin": false, "entitlementGroups": ["dev"]});
-        assert!(!Surface::from_account(&not_admin).allows(Group::Sandboxes));
-    }
-
-    #[test]
-    fn core_tools_are_always_listed_and_grouped_tools_need_their_group() {
+    fn account_tools_are_always_listed_and_grouped_tools_need_their_group() {
+        // Even a list without `account` keeps sign-in and health.
         let sandboxes = Surface::Groups([Group::Sandboxes].into_iter().collect());
         assert!(mcp_tool_visible(&sandboxes, "ping"));
         assert!(mcp_tool_visible(&sandboxes, "account_status"));

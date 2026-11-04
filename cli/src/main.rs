@@ -2546,7 +2546,11 @@ mod tests {
     #[test]
     fn ungranted_commands_leave_help_suggestions_and_completions() {
         use arete_mcp::entitlements::Group;
-        let sandboxes = entitlements::visible(Cli::command(), &surface(&[Group::Sandboxes]));
+        // The default grant.
+        let sandboxes = entitlements::visible(
+            Cli::command(),
+            &surface(&[Group::Account, Group::Sandboxes]),
+        );
         sandboxes.clone().debug_assert();
         let (help, _) = rendered_help(sandboxes.clone());
         for core in [
@@ -2617,16 +2621,17 @@ mod tests {
         use arete_mcp::entitlements::Group;
         let registry = entitlements::visible(
             Cli::command(),
-            &surface(&[Group::Sandboxes, Group::Registry]),
+            &surface(&[Group::Account, Group::Sandboxes, Group::Registry]),
         );
         let (help, _) = rendered_help(registry.clone());
-        for listed in ["install", "update", "remove", "sdk"] {
+        for listed in ["install", "update", "remove", "sdk", "explore", "know"] {
             assert!(help.contains(&format!("  {listed} ")), "{listed} missing");
         }
         assert!(!help.contains("  dev "));
         let error = registry.try_get_matches_from(["a4", "instal"]).unwrap_err();
         assert!(error.to_string().contains("install"), "{error}");
-        // `create` is in two groups: either one lists it.
+        // `create` is in two groups: either one lists it. An account list
+        // without `account` still keeps sign-in.
         let (help, _) = rendered_help(entitlements::visible(
             Cli::command(),
             &surface(&[Group::Protocols]),
@@ -2634,6 +2639,8 @@ mod tests {
         assert!(help.contains("  create "));
         assert!(help.contains("  protocol "));
         assert!(help.contains("  squads "));
+        assert!(help.contains("  login "));
+        assert!(!help.contains("  up "));
     }
 
     #[test]

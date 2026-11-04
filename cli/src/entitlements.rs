@@ -13,21 +13,20 @@ use std::ffi::OsString;
 
 use crate::api_client::ApiClient;
 
-/// The entitlement groups of a top-level command. `Some(&[])` is core,
-/// listed for every account; `None` is a command this table does not know
-/// (listed, and caught by the test that classifies every command).
+/// The command groups of a top-level command; `None` is a command this
+/// table does not know (listed, and caught by the test that classifies every
+/// command). `account` commands are listed for every account.
 pub fn command_groups(name: &str) -> Option<&'static [Group]> {
     Some(match name {
         "init" | "doctor" | "self" | "upgrade" | "mcp" | "auth" | "login" | "config"
-        | "telemetry" | "help" => &[],
-        "explore" | "know" => &[Group::Catalog],
-        "stream" | "get" | "stack" | "up" | "status" | "build" => &[Group::Streams],
-        "install" | "update" | "remove" | "sdk" => &[Group::Registry],
-        "program" | "idl" => &[Group::Programs],
+        | "telemetry" | "help" => &[Group::Account],
+        "stream" | "get" => &[Group::Streams],
+        "up" | "status" | "stack" | "build" | "program" | "idl" => &[Group::Stacks],
+        "explore" | "know" | "install" | "update" | "remove" | "sdk" => &[Group::Registry],
         "protocol" | "squads" => &[Group::Protocols],
         "dev" => &[Group::Dev],
-        // Templates for stack apps and protocols.
-        "create" => &[Group::Streams, Group::Protocols],
+        // Templates for stack apps and for protocols.
+        "create" => &[Group::Stacks, Group::Protocols],
         _ => return None,
     })
 }
@@ -163,11 +162,15 @@ mod tests {
         }
         let server = MockServer::json(
             200,
-            r#"{"accountKind":"agent","entitlementGroups":["sandboxes","registry"]}"#,
+            r#"{"accountKind":"agent","commandGroups":["account","sandboxes","registry"]}"#,
         );
         assert_eq!(
             ApiClient::account_surface_at(server.base_url(), "a4_sk_test"),
-            Surface::Groups([Group::Sandboxes, Group::Registry].into_iter().collect())
+            Surface::Groups(
+                [Group::Account, Group::Sandboxes, Group::Registry]
+                    .into_iter()
+                    .collect()
+            )
         );
         let request = server.request();
         assert!(request.request_line.starts_with("GET /api/auth/me "));
