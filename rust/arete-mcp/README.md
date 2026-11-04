@@ -145,6 +145,25 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 | Protocols | `protocol_check`, `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_squads_proposer`, `protocol_squads_status`, `squads_status`, `squads_attach`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
 | Health | `ping` | None |
 
+### Which tools are listed
+
+At startup `a4 mcp` asks the Arete API which command groups the account may
+use (`commandGroups` on `GET /api/auth/me`, with the resolved key) and lists
+only their tools. `ping`, `account_status` and `create_claim_link` are
+always listed.
+
+| Group | Tools |
+|-------|-------|
+| `sandboxes` | `sandbox_*` (also need `ARETE_SANDBOX_KEY`) |
+| `streams` | connection, subscription and cache tools, and `read_view` |
+| `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
+| `protocols` | `protocol_*`, `squads_*` |
+| `dev` | `dev_*` |
+
+With no key, when the API can't be reached, or when it reports no groups,
+every tool is listed as before. Hiding is never the gate: the API refuses
+calls the account may not make, whether the tool is listed or not.
+
 ### Discovery
 
 Read-only lookups against the public `/api/registry/*` endpoints. No signup

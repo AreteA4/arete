@@ -1568,6 +1568,24 @@ impl AreteMcp {
         }
     }
 
+    /// Remove the tools of entitlement groups `surface` does not grant
+    /// (see [`crate::entitlements`]). Hiding is UX only: the API still
+    /// refuses calls the account may not make. Sandbox tools also still
+    /// need a sandbox key.
+    pub fn with_surface(mut self, surface: &crate::entitlements::Surface) -> Self {
+        let hidden: Vec<String> = self
+            .tool_router
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .filter(|name| !crate::entitlements::mcp_tool_visible(surface, name))
+            .collect();
+        for name in hidden {
+            self.tool_router.remove_route(&name);
+        }
+        self
+    }
+
     /// The names of the tools this server lists.
     #[cfg(test)]
     pub(crate) fn tool_names(&self) -> Vec<String> {
@@ -5898,6 +5916,90 @@ mod describe_sdk_tests {
             .await
             .unwrap_err();
         assert!(error.message.contains("a4 mcp"));
+    }
+
+    fn server_with_sandbox_key() -> AreteMcp {
+        AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(
+                Some("a4_sbx_secret".into()),
+                Some("http://127.0.0.1:1".into()),
+            ),
+        )
+    }
+
+    #[test]
+    fn every_tool_belongs_to_core_or_an_entitlement_group() {
+        // `protocol_execute` is listed only with a local signer.
+        let mut names = server_with_sandbox_key().tool_names();
+        names.push("protocol_execute".to_string());
+        let unclassified: Vec<String> = names
+            .into_iter()
+            .filter(|name| crate::entitlements::mcp_tool_groups(name).is_none())
+            .collect();
+        assert!(
+            unclassified.is_empty(),
+            "classify these tools in entitlements::mcp_tool_groups: {unclassified:?}"
+        );
+    }
+
+    #[test]
+    fn tools_are_listed_per_entitlement_group() {
+        use crate::entitlements::{Group, Surface};
+        let everything = server_with_sandbox_key().tool_names();
+        assert_eq!(
+            server_with_sandbox_key()
+                .with_surface(&Surface::Everything)
+                .tool_names(),
+            everything,
+            "no groups to go by (offline, no key, older API): today's listing"
+        );
+
+        let sandboxes = server_with_sandbox_key()
+            .with_surface(&Surface::Groups(
+                [Group::Account, Group::Sandboxes].into_iter().collect(),
+            ))
+            .tool_names();
+        let mut expected: Vec<&str> = vec!["ping", "account_status", "create_claim_link"];
+        expected.extend(crate::sandbox::TOOL_NAMES);
+        let mut listed: Vec<&str> = sandboxes.iter().map(String::as_str).collect();
+        listed.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(listed, expected);
+
+        let dev_and_streams = server_with_sandbox_key()
+            .with_surface(&Surface::Groups(
+                [Group::Dev, Group::Streams].into_iter().collect(),
+            ))
+            .tool_names();
+        assert!(dev_and_streams.iter().any(|name| name == "dev_status"));
+        assert!(dev_and_streams.iter().any(|name| name == "subscribe"));
+        assert!(!dev_and_streams
+            .iter()
+            .any(|name| name.starts_with("sandbox_")));
+        assert!(!dev_and_streams
+            .iter()
+            .any(|name| name.starts_with("protocol_")));
+        assert!(!dev_and_streams.iter().any(|name| name == "search_catalog"));
+        assert!(dev_and_streams.iter().any(|name| name == "ping"));
+
+        // An admin's list names every group: today's listing.
+        assert_eq!(
+            server_with_sandbox_key()
+                .with_surface(&Surface::Groups(Group::ALL.into_iter().collect()))
+                .tool_names(),
+            everything
+        );
+
+        // A granted group never lists sandbox tools without a sandbox key.
+        let without_key = AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(None, None),
+        )
+        .with_surface(&Surface::Groups([Group::Sandboxes].into_iter().collect()))
+        .tool_names();
+        assert!(!without_key.iter().any(|name| name.starts_with("sandbox_")));
+        assert!(without_key.iter().any(|name| name == "ping"));
     }
 
     #[tokio::test]

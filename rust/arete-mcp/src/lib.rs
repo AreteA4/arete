@@ -12,6 +12,7 @@ pub mod descriptor;
 pub mod dev;
 pub mod dev_capture;
 pub mod dev_env;
+pub mod entitlements;
 pub mod extension_reads;
 pub mod field_amounts;
 mod filter;
@@ -59,10 +60,19 @@ pub async fn serve_stdio_with(
         .try_init();
 
     tracing::info!("starting arete mcp stdio server");
+    // List only the account's entitlement groups. Without a key, or when the
+    // API can't be reached or reports no groups, every tool is listed and
+    // the API refuses what the account may not use.
+    let api_url = std::env::var("ARETE_API_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| credentials::DEFAULT_API_URL.to_string());
+    let surface = entitlements::fetch_surface(&api_url).await;
     let server = match sdk_references {
         Some(source) => AreteMcp::new().with_sdk_references(source),
         None => AreteMcp::new(),
-    };
+    }
+    .with_surface(&surface);
     let service = server.serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

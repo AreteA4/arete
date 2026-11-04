@@ -3401,6 +3401,25 @@ impl ApiClient {
             .ok_or_else(|| anyhow::anyhow!("the account response did not list capabilities"))
     }
 
+    /// The entitlement groups `GET {api_url}/api/auth/me` reports for `key`
+    /// (see [`arete_mcp::entitlements`]). Everything when the call fails in
+    /// any way or the API reports no groups: hiding never decides access.
+    pub fn account_surface_at(api_url: &str, key: &str) -> arete_mcp::entitlements::Surface {
+        use arete_mcp::entitlements::{Surface, LOOKUP_TIMEOUT};
+        let response = http_client()
+            .get(format!("{}/api/auth/me", api_url.trim_end_matches('/')))
+            .timeout(LOOKUP_TIMEOUT)
+            .bearer_auth(key)
+            .send();
+        match response {
+            Ok(response) if response.status().is_success() => response
+                .json::<serde_json::Value>()
+                .map(|body| Surface::from_account(&body))
+                .unwrap_or(Surface::Everything),
+            _ => Surface::Everything,
+        }
+    }
+
     /// `GET /api/auth/entitlements`: every surface the account can or can't
     /// use, with the reason and the unlock for each one it can't, and the
     /// account's dev environment tier. Unknown fields are ignored.
