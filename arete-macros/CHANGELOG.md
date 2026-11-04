@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.52.0](https://github.com/AreteA4/arete/compare/arete-macros-v0.51.2...arete-macros-v0.52.0) (2026-11-04)
+
+
+### Miscellaneous Chores
+
+* **arete-macros:** Synchronize arete versions
+
 ## [0.51.2](https://github.com/AreteA4/arete/compare/arete-macros-v0.51.1...arete-macros-v0.51.2) (2026-11-01)
 
 
