@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.53.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.52.0...arete-mcp-v0.53.0) (2026-11-05)
+
+
+### Features
+
+* **cli,mcp:** hide commands and MCP tools the account is not entitled to ([0c47e36](https://github.com/AreteA4/arete/commit/0c47e36da9c79901646308239837b0d4d92a827a))
+* **cli,mcp:** list only the command groups and MCP tools the account is entitled to ([c0b14c7](https://github.com/AreteA4/arete/commit/c0b14c76c383967eba397abc0fcb220b95fc59da))
+* **cli,mcp:** read commandGroups with the API's group vocabulary ([f60742d](https://github.com/AreteA4/arete/commit/f60742d77e325db8074c4fd9085224b99cb386e0))
+* **mcp:** one sandbox action tool, authed by a scoped sandbox token ([97a206f](https://github.com/AreteA4/arete/commit/97a206f848c217b6cdd4e96afb0e41aeb76ef7b6))
+* **mcp:** one sandbox action tool, authed by a scoped sandbox token ([9ef4c51](https://github.com/AreteA4/arete/commit/9ef4c5130eb0e15f61aa12c81570daa30fc6049a))
+* **mcp:** sandbox actions take a transaction format, v1 by default ([b8999f9](https://github.com/AreteA4/arete/commit/b8999f91803476ca070f70b8f009778c31df7679))
+* **mcp:** sandbox actions take a transaction format, v1 by default ([48afc4b](https://github.com/AreteA4/arete/commit/48afc4bedccc84dd2e34db9aad81d64f8596e43a))
+
+
+### Bug Fixes
+
+* **mcp:** check the action against a renewed sandbox token before retrying ([34c135e](https://github.com/AreteA4/arete/commit/34c135ed8ff841fe7110c88271d4edd5b5b2aa1d))
+
 ## [0.52.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.51.2...arete-mcp-v0.52.0) (2026-11-04)
 
 
