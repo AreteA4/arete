@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.53.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.52.0...arete-sdk-v0.53.0) (2026-11-05)
+
+
+### Features
+
+* **sdk:** account-field PDA seeds, build options in ops, dispatch module, trait-only build ([ec30c6a](https://github.com/AreteA4/arete/commit/ec30c6a5b4e8545f04c42fdd643d4190aced48de))
+* **sdk:** account-field PDA seeds, build options in ops, dispatch module, trait-only build ([88c4a2c](https://github.com/AreteA4/arete/commit/88c4a2c29de5aaa859280769532b93887bab4ebb))
+
 ## [0.52.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.51.2...arete-sdk-v0.52.0) (2026-11-04)
 
 

@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+## [0.53.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.52.0...a4-cli-v0.53.0) (2026-11-05)
+
+
+### Features
+
+* **cli,mcp:** hide commands and MCP tools the account is not entitled to ([0c47e36](https://github.com/AreteA4/arete/commit/0c47e36da9c79901646308239837b0d4d92a827a))
+* **cli,mcp:** list only the command groups and MCP tools the account is entitled to ([c0b14c7](https://github.com/AreteA4/arete/commit/c0b14c76c383967eba397abc0fcb220b95fc59da))
+* **cli,mcp:** read commandGroups with the API's group vocabulary ([f60742d](https://github.com/AreteA4/arete/commit/f60742d77e325db8074c4fd9085224b99cb386e0))
+* **sdk:** account-field PDA seeds, build options in ops, dispatch module, trait-only build ([ec30c6a](https://github.com/AreteA4/arete/commit/ec30c6a5b4e8545f04c42fdd643d4190aced48de))
+* **sdk:** account-field PDA seeds, build options in ops, dispatch module, trait-only build ([88c4a2c](https://github.com/AreteA4/arete/commit/88c4a2c29de5aaa859280769532b93887bab4ebb))
+
+
+### Bug Fixes
+
+* **cli:** read attached short config values (-cpath) for the help lookup ([a65826a](https://github.com/AreteA4/arete/commit/a65826af941a87ee4e92956cc4cccce68504a17b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.52.0 to 0.53.0
+    * arete-mcp bumped from 0.52.0 to 0.53.0
+
 ## [0.52.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.51.2...a4-cli-v0.52.0) (2026-11-04)
 
 
