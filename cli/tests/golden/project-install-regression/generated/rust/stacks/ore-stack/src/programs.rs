@@ -11,7 +11,7 @@
 
 /// Program SDK for `ore` (program ID `oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv`).
 pub mod ore {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler, PdaConfig, PdaSeed};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuildOptions, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler, PdaConfig, PdaSeed};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "oreV3EG1i9BEgiAJ8b177Z2S2rMarzak4NMv1kULvWv";
@@ -122,6 +122,17 @@ pub mod ore {
         }
     }
 
+    /// Builds the `automate` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn automate_with(params: AutomateParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        automate_handler().build_with(params, options)
+    }
+
     /// Typed params for `checkpoint`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CheckpointParams {
@@ -216,6 +227,17 @@ pub mod ore {
         }
     }
 
+    /// Builds the `checkpoint` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn checkpoint_with(params: CheckpointParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        checkpoint_handler().build_with(params, options)
+    }
+
     /// Typed params for `claimSol`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct ClaimSolParams {
@@ -288,6 +310,17 @@ pub mod ore {
                 ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
+    }
+
+    /// Builds the `claimSol` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn claim_sol_with(params: ClaimSolParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        claim_sol_handler().build_with(params, options)
     }
 
     /// Typed params for `claimOre`: instruction args plus overridable accounts.
@@ -411,6 +444,17 @@ pub mod ore {
         }
     }
 
+    /// Builds the `claimOre` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn claim_ore_with(params: ClaimOreParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        claim_ore_handler().build_with(params, options)
+    }
+
     /// Typed params for `close`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CloseParams {
@@ -491,6 +535,17 @@ pub mod ore {
                 ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
+    }
+
+    /// Builds the `close` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn close_with(params: CloseParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        close_handler().build_with(params, options)
     }
 
     /// Typed params for `deploy`: instruction args plus overridable accounts.
@@ -631,6 +686,17 @@ pub mod ore {
         }
     }
 
+    /// Builds the `deploy` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn deploy_with(params: DeployParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        deploy_handler().build_with(params, options)
+    }
+
     /// Typed params for `log`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct LogParams {
@@ -670,6 +736,17 @@ pub mod ore {
                 ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
+    }
+
+    /// Builds the `log` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn log_with(params: LogParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        log_handler().build_with(params, options)
     }
 
     /// Typed params for `reset`: instruction args plus overridable accounts.
@@ -854,6 +931,17 @@ pub mod ore {
         }
     }
 
+    /// Builds the `reset` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn reset_with(params: ResetParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        reset_handler().build_with(params, options)
+    }
+
     /// Typed params for `bury`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct BuryParams {
@@ -990,6 +1078,17 @@ pub mod ore {
                 ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
+    }
+
+    /// Builds the `bury` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn bury_with(params: BuryParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        bury_handler().build_with(params, options)
     }
 
     /// Typed params for `buyback`: instruction args plus overridable accounts.
@@ -1132,6 +1231,17 @@ pub mod ore {
         }
     }
 
+    /// Builds the `buyback` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn buyback_with(params: BuybackParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        buyback_handler().build_with(params, options)
+    }
+
     /// Typed params for `wrap`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct WrapParams {
@@ -1204,6 +1314,17 @@ pub mod ore {
         }
     }
 
+    /// Builds the `wrap` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn wrap_with(params: WrapParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        wrap_handler().build_with(params, options)
+    }
+
     /// Typed params for `setAdmin`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct SetAdminParams {
@@ -1259,6 +1380,17 @@ pub mod ore {
                 ErrorMetadata { code: 2, name: "InvalidExecutor".to_string(), msg: "Invalid executor".to_string() },
             ],
         }
+    }
+
+    /// Builds the `setAdmin` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn set_admin_with(params: SetAdminParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        set_admin_handler().build_with(params, options)
     }
 
     /// Typed params for `newVar`: instruction args plus overridable accounts.
@@ -1354,6 +1486,57 @@ pub mod ore {
         }
     }
 
+    /// Builds the `newVar` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn new_var_with(params: NewVarParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        new_var_handler().build_with(params, options)
+    }
+
+    /// Surface dispatch for this program's generated instruction builders:
+    /// `register` maps each surface path to its builder, which takes an
+    /// `arete_sdk::dispatch::InstructionInput` (args, account addresses,
+    /// remaining accounts) and returns the built instruction.
+    pub mod dispatch {
+        /// Surface path of every generated instruction builder, with its Rust binding.
+        pub const BINDINGS: &[(&str, &str)] = &[
+            ("rawInstructions.automate", "automate"),
+            ("rawInstructions.checkpoint", "checkpoint"),
+            ("rawInstructions.claimSol", "claim_sol"),
+            ("rawInstructions.claimOre", "claim_ore"),
+            ("rawInstructions.close", "close"),
+            ("rawInstructions.deploy", "deploy"),
+            ("rawInstructions.log", "log"),
+            ("rawInstructions.reset", "reset"),
+            ("rawInstructions.bury", "bury"),
+            ("rawInstructions.buyback", "buyback"),
+            ("rawInstructions.wrap", "wrap"),
+            ("rawInstructions.setAdmin", "set_admin"),
+            ("rawInstructions.newVar", "new_var"),
+        ];
+
+        /// Registers every generated instruction builder under its surface path.
+        pub fn register(map: &mut arete_sdk::dispatch::Dispatch) {
+            map.instruction("rawInstructions.automate", super::automate_handler);
+            map.instruction("rawInstructions.checkpoint", super::checkpoint_handler);
+            map.instruction("rawInstructions.claimSol", super::claim_sol_handler);
+            map.instruction("rawInstructions.claimOre", super::claim_ore_handler);
+            map.instruction("rawInstructions.close", super::close_handler);
+            map.instruction("rawInstructions.deploy", super::deploy_handler);
+            map.instruction("rawInstructions.log", super::log_handler);
+            map.instruction("rawInstructions.reset", super::reset_handler);
+            map.instruction("rawInstructions.bury", super::bury_handler);
+            map.instruction("rawInstructions.buyback", super::buyback_handler);
+            map.instruction("rawInstructions.wrap", super::wrap_handler);
+            map.instruction("rawInstructions.setAdmin", super::set_admin_handler);
+            map.instruction("rawInstructions.newVar", super::new_var_handler);
+        }
+    }
+
     /// PDA derivation helpers for this program.
     pub mod pdas {
         use arete_sdk::instruction::{InstructionError, Pubkey, derive_program_address, serialize_seed_value};
@@ -1425,52 +1608,104 @@ pub mod ore {
             automate(params)
         }
 
+        pub fn automate_with(&self, params: AutomateParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            automate_with(params, options)
+        }
+
         pub fn checkpoint(&self, params: CheckpointParams) -> Result<BuiltInstruction, InstructionError> {
             checkpoint(params)
+        }
+
+        pub fn checkpoint_with(&self, params: CheckpointParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            checkpoint_with(params, options)
         }
 
         pub fn claim_sol(&self, params: ClaimSolParams) -> Result<BuiltInstruction, InstructionError> {
             claim_sol(params)
         }
 
+        pub fn claim_sol_with(&self, params: ClaimSolParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            claim_sol_with(params, options)
+        }
+
         pub fn claim_ore(&self, params: ClaimOreParams) -> Result<BuiltInstruction, InstructionError> {
             claim_ore(params)
+        }
+
+        pub fn claim_ore_with(&self, params: ClaimOreParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            claim_ore_with(params, options)
         }
 
         pub fn close(&self, params: CloseParams) -> Result<BuiltInstruction, InstructionError> {
             close(params)
         }
 
+        pub fn close_with(&self, params: CloseParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            close_with(params, options)
+        }
+
         pub fn deploy(&self, params: DeployParams) -> Result<BuiltInstruction, InstructionError> {
             deploy(params)
+        }
+
+        pub fn deploy_with(&self, params: DeployParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            deploy_with(params, options)
         }
 
         pub fn log(&self, params: LogParams) -> Result<BuiltInstruction, InstructionError> {
             log(params)
         }
 
+        pub fn log_with(&self, params: LogParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            log_with(params, options)
+        }
+
         pub fn reset(&self, params: ResetParams) -> Result<BuiltInstruction, InstructionError> {
             reset(params)
+        }
+
+        pub fn reset_with(&self, params: ResetParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            reset_with(params, options)
         }
 
         pub fn bury(&self, params: BuryParams) -> Result<BuiltInstruction, InstructionError> {
             bury(params)
         }
 
+        pub fn bury_with(&self, params: BuryParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            bury_with(params, options)
+        }
+
         pub fn buyback(&self, params: BuybackParams) -> Result<BuiltInstruction, InstructionError> {
             buyback(params)
+        }
+
+        pub fn buyback_with(&self, params: BuybackParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            buyback_with(params, options)
         }
 
         pub fn wrap(&self, params: WrapParams) -> Result<BuiltInstruction, InstructionError> {
             wrap(params)
         }
 
+        pub fn wrap_with(&self, params: WrapParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            wrap_with(params, options)
+        }
+
         pub fn set_admin(&self, params: SetAdminParams) -> Result<BuiltInstruction, InstructionError> {
             set_admin(params)
         }
 
+        pub fn set_admin_with(&self, params: SetAdminParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            set_admin_with(params, options)
+        }
+
         pub fn new_var(&self, params: NewVarParams) -> Result<BuiltInstruction, InstructionError> {
             new_var(params)
+        }
+
+        pub fn new_var_with(&self, params: NewVarParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            new_var_with(params, options)
         }
 
         /// Typed reader for `Automation` accounts (release-addressed HTTP reads).
@@ -1531,7 +1766,7 @@ pub mod ore {
 
 /// Program SDK for `entropy` (program ID `3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X`).
 pub mod entropy {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuildOptions, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "3jSkUuYBoJzQPMEzTvkDFXCZUBksPamrVhrnHR9igu2X";
@@ -1635,6 +1870,17 @@ pub mod entropy {
         }
     }
 
+    /// Builds the `open` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn open_with(params: OpenParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        open_handler().build_with(params, options)
+    }
+
     /// Typed params for `close`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct CloseParams {
@@ -1690,6 +1936,17 @@ pub mod entropy {
         }
     }
 
+    /// Builds the `close` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn close_with(params: CloseParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        close_handler().build_with(params, options)
+    }
+
     /// Typed params for `next`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct NextParams {
@@ -1743,6 +2000,17 @@ pub mod entropy {
         }
     }
 
+    /// Builds the `next` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn next_with(params: NextParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        next_handler().build_with(params, options)
+    }
+
     /// Typed params for `reveal`: instruction args plus overridable accounts.
     #[derive(Debug, Clone, Serialize, Default)]
     pub struct RevealParams {
@@ -1793,6 +2061,17 @@ pub mod entropy {
                 ErrorMetadata { code: 1, name: "InvalidSeed".to_string(), msg: "Invalid seed".to_string() },
             ],
         }
+    }
+
+    /// Builds the `reveal` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn reveal_with(params: RevealParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        reveal_handler().build_with(params, options)
     }
 
     /// Typed params for `sample`: instruction args plus overridable accounts.
@@ -1851,6 +2130,41 @@ pub mod entropy {
         }
     }
 
+    /// Builds the `sample` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn sample_with(params: SampleParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        sample_handler().build_with(params, options)
+    }
+
+    /// Surface dispatch for this program's generated instruction builders:
+    /// `register` maps each surface path to its builder, which takes an
+    /// `arete_sdk::dispatch::InstructionInput` (args, account addresses,
+    /// remaining accounts) and returns the built instruction.
+    pub mod dispatch {
+        /// Surface path of every generated instruction builder, with its Rust binding.
+        pub const BINDINGS: &[(&str, &str)] = &[
+            ("rawInstructions.open", "open"),
+            ("rawInstructions.close", "close"),
+            ("rawInstructions.next", "next"),
+            ("rawInstructions.reveal", "reveal"),
+            ("rawInstructions.sample", "sample"),
+        ];
+
+        /// Registers every generated instruction builder under its surface path.
+        pub fn register(map: &mut arete_sdk::dispatch::Dispatch) {
+            map.instruction("rawInstructions.open", super::open_handler);
+            map.instruction("rawInstructions.close", super::close_handler);
+            map.instruction("rawInstructions.next", super::next_handler);
+            map.instruction("rawInstructions.reveal", super::reveal_handler);
+            map.instruction("rawInstructions.sample", super::sample_handler);
+        }
+    }
+
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct EntropyProgram {
@@ -1873,20 +2187,40 @@ pub mod entropy {
             open(params)
         }
 
+        pub fn open_with(&self, params: OpenParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            open_with(params, options)
+        }
+
         pub fn close(&self, params: CloseParams) -> Result<BuiltInstruction, InstructionError> {
             close(params)
+        }
+
+        pub fn close_with(&self, params: CloseParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            close_with(params, options)
         }
 
         pub fn next(&self, params: NextParams) -> Result<BuiltInstruction, InstructionError> {
             next(params)
         }
 
+        pub fn next_with(&self, params: NextParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            next_with(params, options)
+        }
+
         pub fn reveal(&self, params: RevealParams) -> Result<BuiltInstruction, InstructionError> {
             reveal(params)
         }
 
+        pub fn reveal_with(&self, params: RevealParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            reveal_with(params, options)
+        }
+
         pub fn sample(&self, params: SampleParams) -> Result<BuiltInstruction, InstructionError> {
             sample(params)
+        }
+
+        pub fn sample_with(&self, params: SampleParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            sample_with(params, options)
         }
 
         /// Typed reader for `Var` accounts (release-addressed HTTP reads).

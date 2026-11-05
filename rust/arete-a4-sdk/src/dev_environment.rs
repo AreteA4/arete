@@ -15,13 +15,17 @@
 //! [`AreteError::DevEnvironment`] carrying the wire code, message and fix. No
 //! dev request ever falls back to production.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
+#[cfg(feature = "client")]
+use std::collections::HashMap;
 use std::path::Path;
+#[cfg(feature = "client")]
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
+#[cfg(feature = "client")]
 use crate::auth::{AuthConfig, StackRelease};
 use crate::error::AreteError;
 
@@ -363,6 +367,7 @@ fn direct(env: &str, source: &str, inputs: &SwitchInputs<'_>) -> Result<SwitchRe
 
 /// Decide the switch from the process: the variables, the nearest session
 /// file and whether `auth` holds a secret key.
+#[cfg(feature = "client")]
 pub fn resolve_switch_from_process(
     option: Option<&EnvironmentOption>,
     auth: Option<&AuthConfig>,
@@ -489,6 +494,7 @@ pub struct StackIdentity {
     pub live_alias: String,
 }
 
+#[cfg(feature = "client")]
 impl From<&StackRelease> for StackIdentity {
     fn from(release: &StackRelease) -> Self {
         Self {
@@ -597,6 +603,7 @@ pub fn surface_target(
     }
 }
 
+#[cfg(feature = "client")]
 pub(crate) fn target_str<'a>(
     target: &'a Map<String, Value>,
     name: &str,
@@ -615,6 +622,7 @@ pub(crate) fn target_str<'a>(
 
 /// Where a stack target answers HTTP queries; a stack that serves only its
 /// stream fails queries (not the stream) with `devenv-surface-unavailable`.
+#[cfg(feature = "client")]
 pub(crate) fn stack_query_base(
     target: &Map<String, Value>,
     stack: &str,
@@ -777,6 +785,7 @@ pub(crate) fn refusal_error(
 // ---------------------------------------------------------------------------
 
 /// `ws(s)://<edge host>/stacks/<liveAlias>?stackManifestHash=<hash>`.
+#[cfg(feature = "client")]
 pub fn edge_stack_websocket_url(edge_url: &str, release: &StackRelease) -> String {
     let (base, query) = edge_stack_query(edge_url, release);
     let base = if let Some(rest) = base.strip_prefix("https://") {
@@ -791,6 +800,7 @@ pub fn edge_stack_websocket_url(edge_url: &str, release: &StackRelease) -> Strin
 
 /// Where stack HTTP queries go through the edge, and the query parameters
 /// added to each.
+#[cfg(feature = "client")]
 pub fn edge_stack_query(edge_url: &str, release: &StackRelease) -> (String, Vec<(String, String)>) {
     (
         format!(
@@ -836,6 +846,7 @@ pub(crate) fn encode_segment(value: &str) -> String {
 /// How every request of one surface goes through the edge: the identity
 /// header it carries, the query parameters added to it, and the edge whose
 /// marker the answer must carry.
+#[cfg(feature = "client")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeRequestPolicy {
     pub edge_url: String,
@@ -844,6 +855,7 @@ pub struct EdgeRequestPolicy {
     pub query: Vec<(String, String)>,
 }
 
+#[cfg(feature = "client")]
 impl EdgeRequestPolicy {
     pub fn new(edge_url: &str, identity: Option<&ResolveRequest>) -> Self {
         Self {
@@ -881,6 +893,7 @@ impl EdgeRequestPolicy {
     }
 }
 
+#[cfg(feature = "client")]
 pub(crate) fn is_edge_answer(headers: &reqwest::header::HeaderMap) -> bool {
     headers
         .get(DEV_EDGE_HEADER)
@@ -890,6 +903,7 @@ pub(crate) fn is_edge_answer(headers: &reqwest::header::HeaderMap) -> bool {
 
 /// `GET <edge>/.well-known/arete-dev-edge`: `200`, the marker header and
 /// `{"edge": 1}`, or `devenv-edge-unreachable`.
+#[cfg(feature = "client")]
 pub async fn check_edge(http: &reqwest::Client, edge_url: &str) -> Result<(), AreteError> {
     let url = format!(
         "{}{DEV_EDGE_WELL_KNOWN_PATH}",
@@ -918,10 +932,12 @@ pub async fn check_edge(http: &reqwest::Client, edge_url: &str) -> Result<(), Ar
 // ---------------------------------------------------------------------------
 
 /// One identity's resolve answer, fetched once.
+#[cfg(feature = "client")]
 type ResolveCell = Arc<tokio::sync::OnceCell<Arc<Value>>>;
 
 /// Calls resolve for one client, with the client's secret key, and keeps
 /// every answer for the life of the client.
+#[cfg(feature = "client")]
 pub struct DirectResolver {
     environment: String,
     url: String,
@@ -932,6 +948,7 @@ pub struct DirectResolver {
     cache: std::sync::Mutex<HashMap<String, ResolveCell>>,
 }
 
+#[cfg(feature = "client")]
 impl std::fmt::Debug for DirectResolver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DirectResolver")
@@ -942,6 +959,7 @@ impl std::fmt::Debug for DirectResolver {
 }
 
 /// The Arete API origin direct mode resolves and mints against.
+#[cfg(feature = "client")]
 pub(crate) fn api_origin() -> String {
     std::env::var(crate::protocol::ARETE_API_URL_ENV)
         .ok()
@@ -959,6 +977,7 @@ pub fn resolve_url(api_origin: &str, environment: &str) -> String {
     )
 }
 
+#[cfg(feature = "client")]
 impl DirectResolver {
     pub(crate) fn new(environment: String, auth: AuthConfig, http: reqwest::Client) -> Self {
         let url = resolve_url(&api_origin(), &environment);
@@ -1060,12 +1079,14 @@ impl DirectResolver {
 }
 
 /// The client's dev mode, carried to every transport it builds.
+#[cfg(feature = "client")]
 #[derive(Clone, Debug)]
 pub enum DevMode {
     Edge { edge_url: String },
     Direct(Arc<DirectResolver>),
 }
 
+#[cfg(feature = "client")]
 impl DevMode {
     /// The dev mode of `switch`, or `None` in production. Direct mode needs
     /// the secret key `auth` holds.
@@ -1095,10 +1116,12 @@ impl DevMode {
 
 /// A token source that fails every request with one error before anything
 /// is sent: a surface the environment refused, or one dev mode can't serve.
+#[cfg(feature = "client")]
 pub(crate) struct RefusedTokens {
     pub(crate) error: AreteError,
 }
 
+#[cfg(feature = "client")]
 #[async_trait::async_trait]
 impl crate::http::TokenSource for RefusedTokens {
     async fn token(
@@ -1112,6 +1135,7 @@ impl crate::http::TokenSource for RefusedTokens {
     fn invalidate(&self, _request: &crate::http::AuthTokenRequest) {}
 }
 
+#[cfg(feature = "client")]
 #[async_trait::async_trait]
 impl crate::program_read_transport::BearerTokenSource for RefusedTokens {
     async fn bearer_token(
@@ -1133,10 +1157,12 @@ impl crate::program_read_transport::BearerTokenSource for RefusedTokens {
 
 /// Edge requests carry no credential: this source mints nothing and names
 /// the edge policy the request follows.
+#[cfg(feature = "client")]
 pub(crate) struct EdgeTokens {
     pub(crate) policy: EdgeRequestPolicy,
 }
 
+#[cfg(feature = "client")]
 #[async_trait::async_trait]
 impl crate::http::TokenSource for EdgeTokens {
     async fn token(
@@ -1154,6 +1180,7 @@ impl crate::http::TokenSource for EdgeTokens {
     }
 }
 
+#[cfg(feature = "client")]
 #[async_trait::async_trait]
 impl crate::program_read_transport::BearerTokenSource for EdgeTokens {
     async fn bearer_token(
@@ -1179,6 +1206,7 @@ impl crate::program_read_transport::BearerTokenSource for EdgeTokens {
 
 /// The endpoint used for a surface that never sends: requests through it
 /// fail at the token source before anything goes out.
+#[cfg(feature = "client")]
 pub(crate) const REFUSED_ENDPOINT: &str = "http://127.0.0.1:9";
 
 /// The token request body of a targeted session in direct mode (contract
@@ -1190,5 +1218,6 @@ pub fn environment_token_body(mut installed: Value, environment: &str) -> Value 
     installed
 }
 
+#[cfg(feature = "client")]
 #[cfg(test)]
 mod vectors;

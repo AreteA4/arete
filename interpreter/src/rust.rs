@@ -5,8 +5,8 @@ use crate::idl_models::{
 };
 use crate::rust_doc;
 use crate::stack_types::{
-    account_reader_programs, entity_program_name, resolved_type_namespaces, AccountModels,
-    ProgramTypeDefs, StackResolvedTypes,
+    account_reader_programs, entity_program_name, idl_account_field_snapshots,
+    resolved_type_namespaces, AccountModels, ProgramTypeDefs, StackResolvedTypes,
 };
 use crate::typescript_instructions::{
     dedupe_errors_by_code, disambiguate_instruction_account_names, error_metadata_msg,
@@ -2573,6 +2573,157 @@ mod tests {
         assert!(types.contains("pub struct MeteoraDammMigrationMetadata {"));
         assert_eq!(types.matches("    pub padding_0: Option<u64>,").count(), 1);
         assert_eq!(types.matches("    pub _padding_0: Option<u64>,").count(), 1);
+    }
+
+    /// An Anchor program whose `vault` PDA derives from a field of the
+    /// `curve` account (`curve.creator`), plus a field behind a string.
+    fn account_field_stack_spec() -> SerializableStackSpec {
+        let mut spec = programs_stack_spec();
+        spec.pdas.clear();
+        spec.idls = vec![serde_json::from_value(serde_json::json!({
+            "name": "demo",
+            "address": TEST_PROGRAM_ID,
+            "version": "0.1.0",
+            "accounts": [
+                { "name": "Curve", "discriminator": [1, 2, 3, 4, 5, 6, 7, 8] },
+                { "name": "Named", "discriminator": [8, 7, 6, 5, 4, 3, 2, 1] }
+            ],
+            "instructions": [],
+            "types": [
+                { "name": "Curve", "type": { "kind": "struct", "fields": [
+                    { "name": "reserves", "type": { "array": ["u64", 2] } },
+                    { "name": "complete", "type": "bool" },
+                    { "name": "mode", "type": { "defined": { "name": "Mode" } } },
+                    { "name": "creator", "type": "pubkey" }
+                ] } },
+                { "name": "Mode", "type": { "kind": "enum", "variants": [
+                    { "name": "Open" }, { "name": "Closed" }
+                ] } },
+                { "name": "Named", "type": { "kind": "struct", "fields": [
+                    { "name": "label", "type": "string" },
+                    { "name": "owner", "type": "pubkey" }
+                ] } }
+            ],
+            "discriminant_size": 8
+        }))
+        .expect("test IDL parses")];
+        let field_pda = |account: &str| AccountResolution::PdaInline {
+            seeds: vec![
+                PdaSeedDef::Literal {
+                    value: "vault".to_string(),
+                },
+                PdaSeedDef::AccountRef {
+                    account_name: account.to_string(),
+                },
+            ],
+            program_id: None,
+            program: None,
+        };
+        spec.instructions = vec![
+            InstructionDef {
+                name: "collect".to_string(),
+                discriminator: vec![9],
+                discriminator_size: 8,
+                accounts: vec![
+                    instruction_account("curve", AccountResolution::UserProvided),
+                    instruction_account("vault", field_pda("curve.creator")),
+                ],
+                args: vec![],
+                errors: vec![],
+                program_id: Some(TEST_PROGRAM_ID.to_string()),
+                docs: vec![],
+            },
+            InstructionDef {
+                name: "close".to_string(),
+                discriminator: vec![10],
+                discriminator_size: 8,
+                accounts: vec![
+                    instruction_account("named", AccountResolution::UserProvided),
+                    instruction_account("vault", field_pda("named.owner")),
+                ],
+                args: vec![],
+                errors: vec![],
+                program_id: Some(TEST_PROGRAM_ID.to_string()),
+                docs: vec![],
+            },
+        ];
+        spec
+    }
+
+    #[test]
+    fn rust_generator_resolves_account_field_seeds_from_the_idl_layout() {
+        let output = compile_stack_spec(account_field_stack_spec(), None)
+            .expect("account-field seeds should generate");
+        let programs = output.programs_rs.expect("program module");
+        // 8-byte discriminator + [u64; 2] + bool + unit enum = 26.
+        assert!(
+            programs.contains(
+                "PdaSeed::AccountField { account: \"curve\".to_string(), field: \"creator\".to_string(), offset: 26, len: 32, discriminator: vec![1, 2, 3, 4, 5, 6, 7, 8] }"
+            ),
+            "{programs}"
+        );
+        // The PDA keeps an optional address for callers that hold it.
+        let collect = programs
+            .split("pub struct CollectParams {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }").next())
+            .expect("collect params");
+        assert!(collect.contains("pub vault: Option<String>,"), "{collect}");
+        assert!(programs.contains("derives from account data (`curve.creator`)"));
+
+        // A variable-width field before the seed's keeps the PDA caller-provided.
+        assert!(programs.contains("field `label` before `owner` has a variable width"));
+        let close = programs
+            .split("pub struct CloseParams {")
+            .nth(1)
+            .and_then(|rest| rest.split("\n    }").next())
+            .expect("close params");
+        assert!(close.contains("pub vault: String,"), "{close}");
+    }
+
+    #[test]
+    fn rust_generator_refuses_account_field_seeds_outside_anchor_layouts() {
+        let mut spec = account_field_stack_spec();
+        spec.idls[0].discriminant_size = 1;
+        let output = compile_stack_spec(spec, None).expect("program module");
+        let programs = output.programs_rs.expect("program module");
+        assert!(!programs.contains("PdaSeed::AccountField"));
+        assert!(programs.contains("only Anchor account layouts are supported"));
+    }
+
+    #[test]
+    fn rust_generator_emits_option_builders_and_a_dispatch_module() {
+        let output = compile_stack_spec(account_field_stack_spec(), None).expect("program module");
+        let programs = output.programs_rs.expect("program module");
+        assert!(programs.contains(
+            "pub fn collect_with(params: CollectParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {"
+        ));
+        assert!(programs.contains("collect_handler().build_with(params, options)"));
+        assert!(programs
+            .contains("pub fn collect_with(&self, params: CollectParams, options: &BuildOptions)"));
+        assert!(programs.contains("    pub mod dispatch {"));
+        assert!(programs.contains("(\"rawInstructions.collect\", \"collect\"),"));
+        assert!(programs
+            .contains("map.instruction(\"rawInstructions.collect\", super::collect_handler);"));
+        assert!(
+            programs.contains("map.instruction(\"rawInstructions.close\", super::close_handler);")
+        );
+    }
+
+    #[test]
+    fn rust_generator_skips_an_option_builder_whose_name_an_instruction_takes() {
+        let mut spec = programs_stack_spec();
+        let mut taken = spec.instructions[0].clone();
+        taken.name = "doThingWith".to_string();
+        taken.discriminator = vec![99];
+        spec.instructions.push(taken);
+        let output = compile_stack_spec(spec, None).expect("program module");
+        let programs = output.programs_rs.expect("program module");
+        assert_eq!(programs.matches("pub fn do_thing_with(").count(), 2); // free fn + method
+        assert!(programs.contains("pub fn do_thing_with_with("));
+        assert!(programs.contains(
+            "`do_thing_with` is not generated for `doThing`: an instruction builder uses the name"
+        ));
     }
 
     #[test]
@@ -5807,6 +5958,7 @@ fn map_rust_account(
     account_names: &HashSet<&str>,
     arg_types: &BTreeMap<&str, &str>,
     account_name_map: &BTreeMap<String, String>,
+    idl: Option<&IdlSnapshot>,
 ) -> MappedRustAccount {
     let emitted_name = account_name_map
         .get(&acc.name)
@@ -5889,13 +6041,9 @@ fn map_rust_account(
                 account_names,
                 arg_types,
                 account_name_map,
+                idl,
             ) {
-                Ok((resolution, notes)) => MappedRustAccount {
-                    literal: rust_account_meta_literal(acc, emitted_name, &resolution, None),
-                    field: None,
-                    notes,
-                    uses_pda: true,
-                },
+                Ok(config) => config.into_mapped(acc, emitted_name),
                 Err(reason) => degraded(reason),
             }
         }
@@ -5913,19 +6061,267 @@ fn map_rust_account(
                     account_names,
                     arg_types,
                     account_name_map,
+                    idl,
                 ) {
-                    Ok((resolution, notes)) => MappedRustAccount {
-                        literal: rust_account_meta_literal(acc, emitted_name, &resolution, None),
-                        field: None,
-                        notes,
-                        uses_pda: true,
-                    },
+                    Ok(config) => config.into_mapped(acc, emitted_name),
                     Err(reason) => degraded(format!("PDA '{}': {}", pda_name, reason)),
                 }
             }
             None => degraded(format!("references unknown PDA '{}'", pda_name)),
         },
     }
+}
+
+/// An emitted `AccountResolution::Pda(PdaConfig { … })` expression.
+struct RustPdaConfig {
+    resolution: String,
+    notes: Vec<String>,
+    /// The `account.field` paths the seeds read from account data.
+    account_fields: Vec<String>,
+}
+
+impl RustPdaConfig {
+    fn into_mapped(self, acc: &InstructionAccountDef, emitted_name: &str) -> MappedRustAccount {
+        let mut notes = self.notes;
+        // A PDA that reads account data keeps an optional address field: a
+        // caller holding the address needs neither the data nor the chain.
+        let field = if self.account_fields.is_empty() {
+            None
+        } else {
+            notes.push(format!(
+                "account `{}` derives from account data ({}): name its address, pass the data in `BuildOptions::account_data`, or build with the handler's `build_with_chain`",
+                acc.name,
+                self.account_fields
+                    .iter()
+                    .map(|path| format!("`{path}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+            Some((emitted_name.to_string(), RustAccountFieldKind::Optional))
+        };
+        MappedRustAccount {
+            literal: rust_account_meta_literal(acc, emitted_name, &self.resolution, None),
+            field,
+            notes,
+            uses_pda: true,
+        }
+    }
+}
+
+/// Byte size of a value whose Borsh encoding has a fixed width, or `None`
+/// when the width varies (strings, vectors, options, maps, data enums).
+fn borsh_fixed_size(ty: &IdlTypeSnapshot, idl: &IdlSnapshot, depth: usize) -> Option<usize> {
+    if depth > 16 {
+        return None;
+    }
+    let simple = |name: &str| -> Option<usize> {
+        match name {
+            "bool" | "u8" | "i8" => Some(1),
+            "u16" | "i16" => Some(2),
+            "u32" | "i32" | "f32" => Some(4),
+            "u64" | "i64" | "f64" => Some(8),
+            "u128" | "i128" => Some(16),
+            "pubkey" | "publicKey" => Some(32),
+            _ => None,
+        }
+    };
+    match ty {
+        IdlTypeSnapshot::Simple(name) => simple(name),
+        IdlTypeSnapshot::Array(array) => {
+            let [element, IdlArrayElementSnapshot::Size(len)] = array.array.as_slice() else {
+                return None;
+            };
+            let element = match element {
+                IdlArrayElementSnapshot::Type(ty) => borsh_fixed_size(ty, idl, depth + 1)?,
+                IdlArrayElementSnapshot::TypeName(name) => simple(name)?,
+                IdlArrayElementSnapshot::Size(_) => return None,
+            };
+            element.checked_mul(*len as usize)
+        }
+        IdlTypeSnapshot::Tuple(tuple) => tuple.tuple.iter().try_fold(0usize, |sum, ty| {
+            sum.checked_add(borsh_fixed_size(ty, idl, depth + 1)?)
+        }),
+        IdlTypeSnapshot::Defined(defined) => {
+            let name = match &defined.defined {
+                IdlDefinedInnerSnapshot::Named { name } => name,
+                IdlDefinedInnerSnapshot::Simple(name) => name,
+            };
+            let def = idl.types.iter().find(|def| def.name == *name)?;
+            if !matches!(
+                def.serialization,
+                None | Some(IdlSerializationSnapshot::Borsh)
+            ) {
+                return None;
+            }
+            match &def.type_def {
+                IdlTypeDefKindSnapshot::Struct { fields, .. } => {
+                    fields.iter().try_fold(0usize, |sum, field| {
+                        sum.checked_add(borsh_fixed_size(&field.type_, idl, depth + 1)?)
+                    })
+                }
+                IdlTypeDefKindSnapshot::TupleStruct { fields, .. } => {
+                    fields.iter().try_fold(0usize, |sum, ty| {
+                        sum.checked_add(borsh_fixed_size(ty, idl, depth + 1)?)
+                    })
+                }
+                IdlTypeDefKindSnapshot::Enum { variants, .. } => variants
+                    .iter()
+                    .all(|variant| variant.fields.is_empty())
+                    .then_some(1),
+            }
+        }
+        IdlTypeSnapshot::Option(_)
+        | IdlTypeSnapshot::Vec(_)
+        | IdlTypeSnapshot::String(_)
+        | IdlTypeSnapshot::HashMap(_) => None,
+    }
+}
+
+/// Whether a field's bytes are the seed the program derives from it: a
+/// pubkey, an integer (little-endian, as `to_le_bytes`), or a byte array.
+fn is_seed_field_type(ty: &IdlTypeSnapshot) -> bool {
+    match ty {
+        IdlTypeSnapshot::Simple(name) => matches!(
+            name.as_str(),
+            "pubkey"
+                | "publicKey"
+                | "u8"
+                | "i8"
+                | "u16"
+                | "i16"
+                | "u32"
+                | "i32"
+                | "u64"
+                | "i64"
+                | "u128"
+                | "i128"
+        ),
+        IdlTypeSnapshot::Array(array) => matches!(
+            array.array.as_slice(),
+            [IdlArrayElementSnapshot::Type(IdlTypeSnapshot::Simple(element)), IdlArrayElementSnapshot::Size(_)]
+                | [IdlArrayElementSnapshot::TypeName(element), IdlArrayElementSnapshot::Size(_)]
+                if element == "u8"
+        ),
+        _ => false,
+    }
+}
+
+/// A `PdaSeed::AccountField` expression for an Anchor seed that reads a
+/// field of another instruction account (`bonding_curve.creator`).
+///
+/// The account's type is the IDL account named after the instruction
+/// account (`bonding_curve` → `BondingCurve`); the field's offset is the
+/// discriminator plus the fixed Borsh widths of the fields before it. Only
+/// an Anchor layout (8-byte discriminators, Borsh accounts) is packed this
+/// way, so anything else, a nested path, or a variable-width field before
+/// the seed's is `Err(reason)`.
+fn rust_account_field_seed(
+    path: &str,
+    idl: Option<&IdlSnapshot>,
+    account_names: &HashSet<&str>,
+    account_name_map: &BTreeMap<String, String>,
+) -> Result<String, String> {
+    let unsupported = |why: String| {
+        format!("seed references account field '{path}' which is not supported for auto-resolution ({why})")
+    };
+    let Some((account, field)) = path.split_once('.') else {
+        return Err(unsupported("not an account field".to_string()));
+    };
+    if field.contains('.') {
+        return Err(unsupported(
+            "nested field paths are not supported".to_string(),
+        ));
+    }
+    if !account_names.contains(account) {
+        return Err(format!(
+            "seed references account '{account}' not present in this instruction"
+        ));
+    }
+    let Some(idl) = idl else {
+        return Err(unsupported(
+            "no IDL to read the account layout from".to_string(),
+        ));
+    };
+    if idl.discriminant_size != 8 {
+        return Err(unsupported(
+            "only Anchor account layouts are supported".to_string(),
+        ));
+    }
+    let type_name = to_pascal_case(account);
+    let Some(account_type) = idl
+        .accounts
+        .iter()
+        .find(|candidate| to_pascal_case(&candidate.name) == type_name)
+    else {
+        return Err(unsupported(format!(
+            "the IDL declares no account type `{type_name}`"
+        )));
+    };
+    let type_serialization = idl
+        .types
+        .iter()
+        .find(|def| def.name == account_type.name)
+        .and_then(|def| def.serialization.clone());
+    if !matches!(
+        account_type.serialization.clone().or(type_serialization),
+        None | Some(IdlSerializationSnapshot::Borsh)
+    ) {
+        return Err(unsupported(format!(
+            "`{}` is not a Borsh account",
+            account_type.name
+        )));
+    }
+    let Some(fields) = idl_account_field_snapshots(idl, account_type) else {
+        return Err(unsupported(format!(
+            "`{}` has an enum layout",
+            account_type.name
+        )));
+    };
+    let mut offset = account_type.discriminator.len();
+    let mut found = None;
+    for candidate in &fields {
+        if candidate.name == field || to_snake_stem(&candidate.name) == to_snake_stem(field) {
+            found = Some(candidate);
+            break;
+        }
+        let Some(size) = borsh_fixed_size(&candidate.type_, idl, 0) else {
+            return Err(unsupported(format!(
+                "field `{}` before `{field}` has a variable width",
+                candidate.name
+            )));
+        };
+        offset += size;
+    }
+    let Some(found) = found else {
+        return Err(unsupported(format!(
+            "`{}` has no field `{field}`",
+            account_type.name
+        )));
+    };
+    let len = match borsh_fixed_size(&found.type_, idl, 0) {
+        Some(len) if is_seed_field_type(&found.type_) => len,
+        _ => {
+            return Err(unsupported(format!(
+                "field `{field}` is not a pubkey, integer or byte array"
+            )))
+        }
+    };
+    let discriminator: Vec<String> = account_type
+        .discriminator
+        .iter()
+        .map(|byte| byte.to_string())
+        .collect();
+    Ok(format!(
+        "PdaSeed::AccountField {{ account: {}.to_string(), field: {}.to_string(), offset: {offset}, len: {len}, discriminator: vec![{}] }}",
+        rust_string_literal(
+            account_name_map
+                .get(account)
+                .map(String::as_str)
+                .unwrap_or(account)
+        ),
+        rust_string_literal(field),
+        discriminator.join(", ")
+    ))
 }
 
 /// Build an `AccountResolution::Pda(PdaConfig { … })` expression from seed
@@ -5937,9 +6333,11 @@ fn build_rust_pda_config(
     account_names: &HashSet<&str>,
     arg_types: &BTreeMap<&str, &str>,
     account_name_map: &BTreeMap<String, String>,
-) -> Result<(String, Vec<String>), String> {
+    idl: Option<&IdlSnapshot>,
+) -> Result<RustPdaConfig, String> {
     let mut seed_exprs: Vec<String> = Vec::new();
     let mut notes: Vec<String> = Vec::new();
+    let mut account_fields: Vec<String> = Vec::new();
     for seed in seeds {
         match seed {
             PdaSeedDef::Literal { value } => {
@@ -5954,10 +6352,14 @@ fn build_rust_pda_config(
             }
             PdaSeedDef::AccountRef { account_name } => {
                 if account_name.contains('.') {
-                    return Err(format!(
-                        "seed references account field '{}' which is not supported for auto-resolution",
-                        account_name
-                    ));
+                    seed_exprs.push(rust_account_field_seed(
+                        account_name,
+                        idl,
+                        account_names,
+                        account_name_map,
+                    )?);
+                    account_fields.push(account_name.clone());
+                    continue;
                 }
                 if !account_names.contains(account_name.as_str()) {
                     return Err(format!(
@@ -6019,14 +6421,15 @@ fn build_rust_pda_config(
         Some(pid) => format!("Some({}.to_string())", rust_string_literal(pid)),
         None => "None".to_string(),
     };
-    Ok((
-        format!(
+    Ok(RustPdaConfig {
+        resolution: format!(
             "AccountResolution::Pda(PdaConfig {{ program_id: {}, seeds: vec![{}] }})",
             program_expr,
             seed_exprs.join(", ")
         ),
         notes,
-    ))
+        account_fields,
+    })
 }
 
 /// Generated code for one instruction: module items plus the accessor method.
@@ -6035,6 +6438,16 @@ struct RustInstructionBlock {
     method: String,
     /// The typed params struct's name, claimed once the block is emitted.
     params_name: String,
+    /// The typed builder's name (`buy`).
+    fn_name: String,
+    /// The raw handler accessor's name (`buy_handler`).
+    handler_name: String,
+    /// The options-taking builder's name (`buy_with`).
+    with_name: String,
+    /// The options-taking free builder, emitted unless its name is taken.
+    with_fn: String,
+    /// The options-taking accessor method, emitted with `with_fn`.
+    with_method: String,
 }
 
 /// Names a program module's typed params structs: `<Ix>Params`, unless the
@@ -6099,8 +6512,10 @@ impl RustParamsNames {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_rust_instruction_block(
     instr: &InstructionDef,
+    idl: Option<&IdlSnapshot>,
     instruction_snapshot: Option<&IdlInstructionSnapshot>,
     errors: &[IdlErrorSnapshot],
     pda_lookup: &BTreeMap<&str, &PdaDefinition>,
@@ -6151,6 +6566,7 @@ fn generate_rust_instruction_block(
             &account_names,
             &arg_types,
             &account_name_map,
+            idl,
         );
         account_literals.push(mapped.literal);
         if let Some(field) = mapped.field {
@@ -6345,11 +6761,56 @@ fn generate_rust_instruction_block(
         params_name = params_name
     );
 
+    let with_name = format!("{}_with", to_snake_stem(&instr.name));
+    let with_fn = format!(
+        "    /// Builds the `{name}` instruction with explicit build options: account\n    /// addresses, remaining accounts (appended after the declared accounts),\n    /// the data account-field PDA seeds read, and the payer.\n    pub fn {with_name}(params: {params_name}, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {{\n        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {{\n            context: \"params\".to_string(),\n            message: error.to_string(),\n        }})?;\n        {handler_name}().build_with(params, options)\n    }}",
+        name = instr.name,
+    );
+    let with_method = format!(
+        "        pub fn {with_name}(&self, params: {params_name}, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {{\n            {with_name}(params, options)\n        }}"
+    );
+
     Ok(RustInstructionBlock {
         code: format!("{}\n\n{}\n\n{}", params_struct, typed_fn, handler_fn),
         method,
         params_name,
+        fn_name,
+        handler_name,
+        with_name,
+        with_fn,
+        with_method,
     })
+}
+
+/// The `dispatch` module of one program: every generated instruction
+/// builder under its surface path (`rawInstructions.<instruction>`, the
+/// path the TypeScript SDK's `raw.<instruction>` binding carries), for a
+/// caller that routes named actions through `arete_sdk::dispatch`.
+fn generate_rust_dispatch_module(entries: &[(String, String, String)]) -> String {
+    let bindings: Vec<String> = entries
+        .iter()
+        .map(|(instruction, fn_name, _)| {
+            format!(
+                "            ({}, {}),",
+                rust_string_literal(&format!("rawInstructions.{instruction}")),
+                rust_string_literal(fn_name)
+            )
+        })
+        .collect();
+    let registrations: Vec<String> = entries
+        .iter()
+        .map(|(instruction, _, handler_name)| {
+            format!(
+                "            map.instruction({}, super::{handler_name});",
+                rust_string_literal(&format!("rawInstructions.{instruction}"))
+            )
+        })
+        .collect();
+    format!(
+        "    /// Surface dispatch for this program's generated instruction builders:\n    /// `register` maps each surface path to its builder, which takes an\n    /// `arete_sdk::dispatch::InstructionInput` (args, account addresses,\n    /// remaining accounts) and returns the built instruction.\n    pub mod dispatch {{\n        /// Surface path of every generated instruction builder, with its Rust binding.\n        pub const BINDINGS: &[(&str, &str)] = &[\n{bindings}\n        ];\n\n        /// Registers every generated instruction builder under its surface path.\n        pub fn register(map: &mut arete_sdk::dispatch::Dispatch) {{\n{registrations}\n        }}\n    }}",
+        bindings = bindings.join("\n"),
+        registrations = registrations.join("\n"),
+    )
 }
 
 /// Generate the `pdas` helper module for one program. Returns `None` when the
@@ -6624,6 +7085,7 @@ fn generate_stack_programs_rs(
         let mut methods: Vec<String> = Vec::new();
         let mut skipped: Vec<(String, String)> = Vec::new();
         let mut params_names = RustParamsNames::new(idl);
+        let mut built_blocks: Vec<(String, RustInstructionBlock)> = Vec::new();
         for instr in group {
             let errors = if instr.errors.is_empty() {
                 program_errors.clone()
@@ -6632,6 +7094,7 @@ fn generate_stack_programs_rs(
             };
             match generate_rust_instruction_block(
                 instr,
+                idl,
                 find_instruction_snapshot(instr, idl),
                 &errors,
                 &pda_lookup,
@@ -6640,11 +7103,36 @@ fn generate_stack_programs_rs(
                 &mut needs,
             ) {
                 Ok(block) => {
-                    params_names.claim(block.params_name);
-                    blocks.push(block.code);
-                    methods.push(block.method);
+                    params_names.claim(block.params_name.clone());
+                    built_blocks.push((instr.name.clone(), block));
                 }
                 Err(reason) => skipped.push((instr.name.clone(), reason)),
+            }
+        }
+        // `<ix>_with` builders, unless an instruction's own builder or
+        // handler takes the name (`swap` and `swap_with`).
+        let taken_fn_names: HashSet<String> = built_blocks
+            .iter()
+            .flat_map(|(_, block)| [block.fn_name.clone(), block.handler_name.clone()])
+            .collect();
+        let mut dispatch_entries: Vec<(String, String, String)> = Vec::new();
+        let mut with_notes: Vec<String> = Vec::new();
+        for (instruction_name, block) in built_blocks {
+            dispatch_entries.push((
+                instruction_name.clone(),
+                block.fn_name.clone(),
+                block.handler_name.clone(),
+            ));
+            methods.push(block.method);
+            if taken_fn_names.contains(&block.with_name) {
+                with_notes.push(format!(
+                    "`{}` is not generated for `{instruction_name}`: an instruction builder uses the name; use `{}().build_with`",
+                    block.with_name, block.handler_name
+                ));
+                blocks.push(block.code);
+            } else {
+                blocks.push(format!("{}\n\n{}", block.code, block.with_fn));
+                methods.push(block.with_method);
             }
         }
 
@@ -6708,7 +7196,12 @@ fn generate_stack_programs_rs(
 
         let mut sections: Vec<String> = Vec::new();
         if !blocks.is_empty() {
-            let mut imports = vec!["BuiltInstruction", "InstructionError", "InstructionHandler"];
+            let mut imports = vec![
+                "BuildOptions",
+                "BuiltInstruction",
+                "InstructionError",
+                "InstructionHandler",
+            ];
             if needs.account_meta {
                 imports.extend(["AccountMeta", "AccountResolution"]);
             }
@@ -6771,6 +7264,10 @@ fn generate_stack_programs_rs(
             }
         }
         sections.extend(blocks);
+        if !dispatch_entries.is_empty() {
+            sections.push(generate_rust_dispatch_module(&dispatch_entries));
+        }
+        reader_notes.extend(with_notes);
         // `pdas` carries every PDA the program's ProgramSpec declares, as the
         // standalone program SDK does, plus the stack's own (which win on a
         // name both declare).

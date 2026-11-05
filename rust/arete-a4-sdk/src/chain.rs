@@ -7,18 +7,22 @@
 //! `u64` values are decimal strings on the wire (validated as `^\d+$` within
 //! `u64::MAX`); account data is base64.
 
+#[cfg(feature = "client")]
 use std::sync::Arc;
 
 pub use arete_solana_contracts::{
     Contextual, OwnerTokenAccountsPage, OwnerTokenAccountsRequest, ReadOptions,
 };
 use async_trait::async_trait;
+#[cfg(feature = "client")]
 use base64::Engine as _;
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "client")]
 use serde_json::json;
 use thiserror::Error;
 
 use crate::error::{AreteError, AuthErrorCode};
+#[cfg(feature = "client")]
 use crate::http::{fetch_json, AuthedRequest, HttpMethod, TokenSource};
 
 /// Errors produced by chain read requests.
@@ -302,6 +306,7 @@ pub fn derive_http_endpoint(ws_url: &str) -> String {
 }
 
 /// Percent-encodes a URL path segment like JavaScript's `encodeURIComponent`.
+#[cfg(feature = "client")]
 fn encode_uri_component(value: &str) -> String {
     const UNRESERVED: &[u8] = b"-_.!~*'()";
     let mut encoded = String::with_capacity(value.len());
@@ -315,6 +320,7 @@ fn encode_uri_component(value: &str) -> String {
     encoded
 }
 
+#[cfg(feature = "client")]
 fn parse_decimal_u64(value: &str, field: &str, path: &str) -> Result<u64, ChainError> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(ChainError::InvalidResponse {
@@ -332,12 +338,14 @@ fn parse_decimal_u64(value: &str, field: &str, path: &str) -> Result<u64, ChainE
 
 /// HTTP [`ChainClient`] over a stack's base URL, authenticated with the
 /// `read` scope through a [`TokenSource`].
+#[cfg(feature = "client")]
 pub struct HttpChainClient {
     base_url: String,
     tokens: Arc<dyn TokenSource>,
     http: reqwest::Client,
 }
 
+#[cfg(feature = "client")]
 impl HttpChainClient {
     pub fn new(base_url: impl Into<String>, tokens: Arc<dyn TokenSource>) -> Self {
         Self::with_http_client(base_url, tokens, reqwest::Client::new())
@@ -408,6 +416,7 @@ impl HttpChainClient {
     }
 }
 
+#[cfg(feature = "client")]
 fn validate_read_context(
     context: &Option<arete_solana_contracts::ReadContext>,
     options: ReadOptions,
@@ -427,6 +436,7 @@ fn validate_read_context(
     Ok(())
 }
 
+#[cfg(feature = "client")]
 fn with_context_slot(
     mut body: serde_json::Value,
     options: ContextSlotOptions,
@@ -437,16 +447,19 @@ fn with_context_slot(
     body
 }
 
+#[cfg(feature = "client")]
 #[derive(Debug, Deserialize)]
 struct ExistsResponse {
     exists: bool,
 }
 
+#[cfg(feature = "client")]
 #[derive(Debug, Deserialize)]
 struct LamportsResponse {
     lamports: u64,
 }
 
+#[cfg(feature = "client")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct NativeBalanceWire {
@@ -454,6 +467,7 @@ struct NativeBalanceWire {
     context_slot: String,
 }
 
+#[cfg(feature = "client")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawAccountWire {
@@ -464,6 +478,7 @@ struct RawAccountWire {
     data: String,
 }
 
+#[cfg(feature = "client")]
 #[derive(Debug, Deserialize)]
 struct AccountsWire {
     items: Vec<Option<RawAccountWire>>,
@@ -473,6 +488,7 @@ struct AccountsWire {
 /// than as a remote 400.
 pub const MAX_BATCH_ADDRESSES: usize = 100;
 
+#[cfg(feature = "client")]
 fn decode_raw_account(wire: RawAccountWire, path: &str) -> Result<RawAccountInfo, ChainError> {
     let data = base64::engine::general_purpose::STANDARD
         .decode(wire.data.as_bytes())
@@ -497,6 +513,7 @@ fn decode_raw_account(wire: RawAccountWire, path: &str) -> Result<RawAccountInfo
     })
 }
 
+#[cfg(feature = "client")]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct TokenBalanceWire {
@@ -515,6 +532,7 @@ struct TokenBalanceWire {
     context_slot: String,
 }
 
+#[cfg(feature = "client")]
 #[async_trait]
 impl ChainClient for HttpChainClient {
     async fn owner_token_accounts(
@@ -742,6 +760,7 @@ impl ChainClient for HttpChainClient {
     }
 }
 
+#[cfg(feature = "client")]
 #[cfg(test)]
 mod tests {
     use super::*;

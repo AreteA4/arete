@@ -11,7 +11,7 @@
 
 /// Program SDK for `vote_program` (program ID `Vote111111111111111111111111111111111111111`).
 pub mod vote_program {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, BuiltInstruction, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, BuildOptions, BuiltInstruction, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "Vote111111111111111111111111111111111111111";
@@ -66,6 +66,33 @@ pub mod vote_program {
         }
     }
 
+    /// Builds the `ping` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn ping_with(params: PingParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        ping_handler().build_with(params, options)
+    }
+
+    /// Surface dispatch for this program's generated instruction builders:
+    /// `register` maps each surface path to its builder, which takes an
+    /// `arete_sdk::dispatch::InstructionInput` (args, account addresses,
+    /// remaining accounts) and returns the built instruction.
+    pub mod dispatch {
+        /// Surface path of every generated instruction builder, with its Rust binding.
+        pub const BINDINGS: &[(&str, &str)] = &[
+            ("rawInstructions.ping", "ping"),
+        ];
+
+        /// Registers every generated instruction builder under its surface path.
+        pub fn register(map: &mut arete_sdk::dispatch::Dispatch) {
+            map.instruction("rawInstructions.ping", super::ping_handler);
+        }
+    }
+
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct VoteProgramProgram {
@@ -86,6 +113,10 @@ pub mod vote_program {
 
         pub fn ping(&self, params: PingParams) -> Result<BuiltInstruction, InstructionError> {
             ping(params)
+        }
+
+        pub fn ping_with(&self, params: PingParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            ping_with(params, options)
         }
     }
 
