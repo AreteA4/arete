@@ -161,6 +161,27 @@ pub enum PdaSeed {
     },
     /// The 32-byte address of a previously resolved account.
     AccountRef(String),
+    /// Bytes read from the on-chain data of a previously resolved account
+    /// (an Anchor seed such as `bonding_curve.creator`): `len` bytes at
+    /// `offset` of the account's data, as the program reads the field.
+    ///
+    /// Generated code computes `offset` from the IDL layout, so the data is
+    /// checked against the account type's `discriminator` before it is read.
+    /// The build reads the data from [`BuildOptions::account_data`];
+    /// [`InstructionHandler::build_with_chain`](super::InstructionHandler::build_with_chain)
+    /// fetches it.
+    AccountField {
+        /// Name of the instruction account whose data holds the field.
+        account: String,
+        /// Field path, for messages (e.g. `"creator"`).
+        field: String,
+        /// Byte offset of the field in the account data (discriminator included).
+        offset: usize,
+        /// Byte length of the field.
+        len: usize,
+        /// Discriminator the account data must start with (empty: unchecked).
+        discriminator: Vec<u8>,
+    },
 }
 
 /// Configuration for PDA (Program-Derived Address) derivation.
@@ -231,6 +252,12 @@ pub struct BuildOptions {
     pub accounts: BTreeMap<String, String>,
     /// Extra account metas appended after declared accounts (Anchor `remainingAccounts`).
     pub remaining_accounts: Vec<BuiltAccountMeta>,
+    /// Raw on-chain data of instruction accounts, by account name, that
+    /// [`PdaSeed::AccountField`] seeds read. A build that needs data absent
+    /// here fails with [`InstructionError::MissingAccountData`];
+    /// [`InstructionHandler::build_with_chain`](super::InstructionHandler::build_with_chain)
+    /// fetches it instead.
+    pub account_data: BTreeMap<String, Vec<u8>>,
 }
 
 /// Errors produced while building an instruction.
@@ -276,6 +303,27 @@ pub enum InstructionError {
         /// Account name.
         name: String,
         /// What is wrong with the address.
+        message: String,
+    },
+    /// A PDA seed reads a field of an account whose data the build does not
+    /// have ([`BuildOptions::account_data`]).
+    #[error("PDA seed for \"{pda}\" reads {account}.{field}, but no data was provided for account \"{account}\" ({address})")]
+    MissingAccountData {
+        /// The PDA account being derived.
+        pda: String,
+        /// The account whose data holds the field.
+        account: String,
+        /// The account's resolved address.
+        address: String,
+        /// The field the seed reads.
+        field: String,
+    },
+    /// Account data a PDA seed reads is not the account type the seed expects.
+    #[error("Invalid data for account \"{account}\": {message}")]
+    InvalidAccountData {
+        /// The account whose data was read.
+        account: String,
+        /// What is wrong with the data.
         message: String,
     },
     /// PDA `accountRef` seeds form a cycle.

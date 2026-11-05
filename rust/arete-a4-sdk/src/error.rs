@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
+#[cfg(feature = "client")]
 use tokio_tungstenite::tungstenite::{self, http::Response};
 use url::{Host, Url};
 
@@ -726,6 +727,7 @@ impl AreteError {
             .unwrap_or(false)
     }
 
+    #[cfg(feature = "client")]
     pub(crate) fn from_tungstenite(error: tungstenite::Error) -> Self {
         match error {
             tungstenite::Error::Http(response) => Self::from_http_response(response),
@@ -736,6 +738,7 @@ impl AreteError {
         }
     }
 
+    #[cfg(feature = "client")]
     pub(crate) fn from_http_response(response: Response<Option<Vec<u8>>>) -> Self {
         let status = response.status().as_u16();
         let header_code = response
@@ -821,6 +824,7 @@ impl From<serde_json::Error> for AreteError {
     }
 }
 
+#[cfg(feature = "client")]
 impl From<tungstenite::Error> for AreteError {
     fn from(value: tungstenite::Error) -> Self {
         Self::from_tungstenite(value)
@@ -914,6 +918,7 @@ mod tests {
         assert_eq!(error.to_string(), "Missing required argument \"amount\"");
     }
 
+    #[cfg(feature = "client")]
     #[test]
     fn parses_platform_handshake_rejection() {
         let response = Response::builder()

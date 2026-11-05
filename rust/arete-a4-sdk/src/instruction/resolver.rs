@@ -61,12 +61,44 @@ pub fn resolve_accounts(
     payer: Option<&str>,
     program_id: Option<&str>,
 ) -> Result<AccountResolutionResult, InstructionError> {
+    resolve_accounts_with_data(
+        metas,
+        args,
+        overrides,
+        resolve,
+        payer,
+        program_id,
+        &BTreeMap::new(),
+    )
+}
+
+/// [`resolve_accounts`], with the raw on-chain data of the accounts that
+/// [`PdaSeed::AccountField`] seeds read, by account name. A seed whose
+/// account has no entry fails with [`InstructionError::MissingAccountData`],
+/// naming the account's resolved address so a caller can fetch it.
+pub fn resolve_accounts_with_data(
+    metas: &[AccountMeta],
+    args: &Map<String, Value>,
+    overrides: &BTreeMap<String, String>,
+    resolve: Option<&Map<String, Value>>,
+    payer: Option<&str>,
+    program_id: Option<&str>,
+    account_data: &BTreeMap<String, Vec<u8>>,
+) -> Result<AccountResolutionResult, InstructionError> {
     let sorted = sort_by_dependency(metas)?;
 
     let mut resolved: BTreeMap<String, ResolvedAccount> = BTreeMap::new();
     let mut missing = Vec::new();
+    let context = ResolveContext {
+        args,
+        overrides,
+        resolve,
+        payer,
+        program_id,
+        account_data,
+    };
     for meta in sorted {
-        match resolve_single(meta, args, overrides, resolve, payer, program_id, &resolved)? {
+        match resolve_single(meta, &context, &resolved)? {
             Some(account) => {
                 resolved.insert(meta.name.clone(), account);
             }
@@ -146,10 +178,13 @@ fn visit<'a>(
     visiting.insert(name.to_string());
     if let AccountResolution::Pda(config) = &meta.resolution {
         for seed in &config.seeds {
-            if let PdaSeed::AccountRef(dep) = seed {
-                if pdas.iter().any(|candidate| candidate.name == *dep) {
-                    visit(dep, pdas, visited, visiting, out)?;
-                }
+            let dep = match seed {
+                PdaSeed::AccountRef(dep) => dep,
+                PdaSeed::AccountField { account, .. } => account,
+                _ => continue,
+            };
+            if pdas.iter().any(|candidate| candidate.name == *dep) {
+                visit(dep, pdas, visited, visiting, out)?;
             }
         }
     }
@@ -159,17 +194,23 @@ fn visit<'a>(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// The inputs every account of one resolution reads.
+struct ResolveContext<'a> {
+    args: &'a Map<String, Value>,
+    overrides: &'a BTreeMap<String, String>,
+    resolve: Option<&'a Map<String, Value>>,
+    payer: Option<&'a str>,
+    program_id: Option<&'a str>,
+    account_data: &'a BTreeMap<String, Vec<u8>>,
+}
+
 fn resolve_single(
     meta: &AccountMeta,
-    args: &Map<String, Value>,
-    overrides: &BTreeMap<String, String>,
-    resolve: Option<&Map<String, Value>>,
-    payer: Option<&str>,
-    program_id: Option<&str>,
+    context: &ResolveContext<'_>,
     resolved: &BTreeMap<String, ResolvedAccount>,
 ) -> Result<Option<ResolvedAccount>, InstructionError> {
-    if let Some(address) = overrides.get(&meta.name) {
+    let payer = context.payer;
+    if let Some(address) = context.overrides.get(&meta.name) {
         validate_account_override(&meta.name, address)?;
         return Ok(Some(ResolvedAccount {
             name: meta.name.clone(),
@@ -195,9 +236,7 @@ fn resolve_single(
         })),
         // Only an explicit address resolves a user-provided account.
         AccountResolution::UserProvided => Ok(None),
-        AccountResolution::Pda(config) => {
-            resolve_pda(meta, config, args, resolve, resolved, program_id).map(Some)
-        }
+        AccountResolution::Pda(config) => resolve_pda(meta, config, context, resolved).map(Some),
     }
 }
 
@@ -223,16 +262,15 @@ fn validate_account_override(name: &str, address: &str) -> Result<(), Instructio
 fn resolve_pda(
     meta: &AccountMeta,
     config: &PdaConfig,
-    args: &Map<String, Value>,
-    resolve: Option<&Map<String, Value>>,
+    context: &ResolveContext<'_>,
     resolved: &BTreeMap<String, ResolvedAccount>,
-    fallback_program_id: Option<&str>,
 ) -> Result<ResolvedAccount, InstructionError> {
+    let (args, resolve) = (context.args, context.resolve);
     let program_id = config
         .program_id
         .as_deref()
         .filter(|id| !id.is_empty())
-        .or(fallback_program_id)
+        .or(context.program_id)
         .ok_or_else(|| InstructionError::MissingProgramId(meta.name.clone()))?;
 
     let mut seeds = Vec::with_capacity(config.seeds.len());
@@ -263,6 +301,36 @@ fn resolve_pda(
                     .map_err(|_| InstructionError::InvalidPubkey(referenced.address.clone()))?;
                 seeds.push(bytes);
             }
+            PdaSeed::AccountField {
+                account,
+                field,
+                offset,
+                len,
+                discriminator,
+            } => {
+                let Some(referenced) = resolved.get(account) else {
+                    return Err(InstructionError::Pda(format!(
+                        "PDA seed references unresolved account: {account} (for account \"{}\")",
+                        meta.name
+                    )));
+                };
+                let Some(data) = context.account_data.get(account) else {
+                    return Err(InstructionError::MissingAccountData {
+                        pda: meta.name.clone(),
+                        account: account.clone(),
+                        address: referenced.address.clone(),
+                        field: field.clone(),
+                    });
+                };
+                seeds.push(read_account_field(
+                    account,
+                    field,
+                    data,
+                    *offset,
+                    *len,
+                    discriminator,
+                )?);
+            }
         }
     }
 
@@ -273,6 +341,37 @@ fn resolve_pda(
         is_signer: meta.is_signer,
         is_writable: meta.is_writable,
     })
+}
+
+/// The `len` bytes at `offset` of an account's data, once the data starts
+/// with the account type's discriminator.
+fn read_account_field(
+    account: &str,
+    field: &str,
+    data: &[u8],
+    offset: usize,
+    len: usize,
+    discriminator: &[u8],
+) -> Result<Vec<u8>, InstructionError> {
+    let invalid = |message: String| InstructionError::InvalidAccountData {
+        account: account.to_string(),
+        message,
+    };
+    if !data.starts_with(discriminator) {
+        return Err(invalid(format!(
+            "the data does not start with the expected discriminator {discriminator:?}"
+        )));
+    }
+    let end = offset
+        .checked_add(len)
+        .ok_or_else(|| invalid(format!("field \"{field}\" overflows the account data")))?;
+    let Some(bytes) = data.get(offset..end) else {
+        return Err(invalid(format!(
+            "field \"{field}\" spans bytes {offset}..{end}, but the data is {} bytes",
+            data.len()
+        )));
+    };
+    Ok(bytes.to_vec())
 }
 
 /// Dot-path lookup into a JSON object: `"a.b.c"` walks nested objects, a plain

@@ -11,7 +11,7 @@
 
 /// Program SDK for `alpha` (program ID `2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM`).
 pub mod alpha {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuildOptions, BuiltInstruction, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM";
@@ -75,6 +75,33 @@ pub mod alpha {
         }
     }
 
+    /// Builds the `configure` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn configure_with(params: ConfigureParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        configure_handler().build_with(params, options)
+    }
+
+    /// Surface dispatch for this program's generated instruction builders:
+    /// `register` maps each surface path to its builder, which takes an
+    /// `arete_sdk::dispatch::InstructionInput` (args, account addresses,
+    /// remaining accounts) and returns the built instruction.
+    pub mod dispatch {
+        /// Surface path of every generated instruction builder, with its Rust binding.
+        pub const BINDINGS: &[(&str, &str)] = &[
+            ("rawInstructions.configure", "configure"),
+        ];
+
+        /// Registers every generated instruction builder under its surface path.
+        pub fn register(map: &mut arete_sdk::dispatch::Dispatch) {
+            map.instruction("rawInstructions.configure", super::configure_handler);
+        }
+    }
+
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct AlphaProgram {
@@ -97,6 +124,10 @@ pub mod alpha {
             configure(params)
         }
 
+        pub fn configure_with(&self, params: ConfigureParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            configure_with(params, options)
+        }
+
         /// Typed reader for `Header` accounts (release-addressed HTTP reads).
         pub fn header_accounts(&self) -> Result<arete_sdk::AccountReader<crate::types::Header>, arete_sdk::AreteError> {
             Ok(arete_sdk::AccountReader::new(
@@ -115,7 +146,7 @@ pub mod alpha {
 
 /// Program SDK for `beta` (program ID `Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS`).
 pub mod beta {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuiltInstruction, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgField, ArgSchema, ArgType, BuildOptions, BuiltInstruction, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "Br9jAU97qteFboeqv34ph8XTsLnfCPTaZ8NepqqeLzDS";
@@ -179,6 +210,33 @@ pub mod beta {
         }
     }
 
+    /// Builds the `configure` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn configure_with(params: ConfigureParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        configure_handler().build_with(params, options)
+    }
+
+    /// Surface dispatch for this program's generated instruction builders:
+    /// `register` maps each surface path to its builder, which takes an
+    /// `arete_sdk::dispatch::InstructionInput` (args, account addresses,
+    /// remaining accounts) and returns the built instruction.
+    pub mod dispatch {
+        /// Surface path of every generated instruction builder, with its Rust binding.
+        pub const BINDINGS: &[(&str, &str)] = &[
+            ("rawInstructions.configure", "configure"),
+        ];
+
+        /// Registers every generated instruction builder under its surface path.
+        pub fn register(map: &mut arete_sdk::dispatch::Dispatch) {
+            map.instruction("rawInstructions.configure", super::configure_handler);
+        }
+    }
+
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct BetaProgram {
@@ -199,6 +257,10 @@ pub mod beta {
 
         pub fn configure(&self, params: ConfigureParams) -> Result<BuiltInstruction, InstructionError> {
             configure(params)
+        }
+
+        pub fn configure_with(&self, params: ConfigureParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            configure_with(params, options)
         }
 
         /// Typed reader for `Header` accounts (release-addressed HTTP reads).

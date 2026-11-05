@@ -11,13 +11,17 @@
 //!
 //! `u64` fields are decimal strings on the wire.
 
+#[cfg(feature = "client")]
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use serde_json::{Map, Value};
+#[cfg(feature = "client")]
+use serde_json::Map;
+use serde_json::Value;
 use thiserror::Error;
 
 use crate::error::AreteError;
+#[cfg(feature = "client")]
 use crate::http::{fetch_json, AuthedRequest, HttpMethod, TokenSource};
 
 /// Commitment levels accepted by the relay.
@@ -397,11 +401,14 @@ pub trait TransactionTransport: Send + Sync {
     }
 }
 
+#[cfg(feature = "client")]
 const SCOPE_INSPECT: &str = "transaction:inspect";
+#[cfg(feature = "client")]
 const SCOPE_SEND: &str = "transaction:send";
 
 /// Parse one wire status entry. `None` means the cluster has not seen the signature — shared so
 /// the single and batch routes cannot interpret a status differently.
+#[cfg(feature = "client")]
 fn parse_signature_status(
     signature: &str,
     status: Option<&Value>,
@@ -432,6 +439,7 @@ fn parse_signature_status(
 
 /// Nullable decimal `i64` on the wire — `blockTime` is the only one, and it predates the epoch
 /// for no cluster anyone runs, but the RPC type is signed so the parse is too.
+#[cfg(feature = "client")]
 fn optional_decimal_i64(
     value: Option<&Value>,
     field: &str,
@@ -449,6 +457,7 @@ fn optional_decimal_i64(
 }
 
 /// Parse one wire entry of a `signatures` page.
+#[cfg(feature = "client")]
 fn parse_signature_entry(entry: &Value) -> Result<SignaturePageEntry, TransactionError> {
     Ok(SignaturePageEntry {
         signature: entry
@@ -472,6 +481,7 @@ fn parse_signature_entry(entry: &Value) -> Result<SignaturePageEntry, Transactio
 /// Parse the `transaction` field of a `get` response. `None` means the cluster has not seen it —
 /// only an explicit JSON `null` says that. An absent field is a malformed response, not an unseen
 /// signature: a caller acting on "unseen" waits for a transaction that may already be final.
+#[cfg(feature = "client")]
 fn parse_confirmed_transaction(
     value: Option<&Value>,
 ) -> Result<Option<ConfirmedTransaction>, TransactionError> {
@@ -538,10 +548,12 @@ fn parse_confirmed_transaction(
     }))
 }
 
+#[cfg(feature = "client")]
 fn decimal(value: Option<u64>) -> Option<Value> {
     value.map(|v| Value::String(v.to_string()))
 }
 
+#[cfg(feature = "client")]
 fn decimal_u64(value: Option<&Value>, field: &str) -> Result<u64, TransactionError> {
     let Some(Value::String(text)) = value else {
         return Err(TransactionError::InvalidResponse(format!(
@@ -560,6 +572,7 @@ fn decimal_u64(value: Option<&Value>, field: &str) -> Result<u64, TransactionErr
     })
 }
 
+#[cfg(feature = "client")]
 fn optional_decimal_u64(
     value: Option<&Value>,
     field: &str,
@@ -570,8 +583,10 @@ fn optional_decimal_u64(
     }
 }
 
+#[cfg(feature = "client")]
 struct BodyBuilder(Map<String, Value>);
 
+#[cfg(feature = "client")]
 impl BodyBuilder {
     fn new() -> Self {
         Self(Map::new())
@@ -594,17 +609,20 @@ impl BodyBuilder {
     }
 }
 
+#[cfg(feature = "client")]
 fn commitment_value(commitment: Option<Commitment>) -> Option<Value> {
     commitment.map(|c| Value::String(c.as_str().to_string()))
 }
 
 /// HTTP [`TransactionTransport`] over `<base>/transactions/v1`.
+#[cfg(feature = "client")]
 pub struct HttpTransactionTransport {
     root: String,
     tokens: Arc<dyn TokenSource>,
     http: reqwest::Client,
 }
 
+#[cfg(feature = "client")]
 impl HttpTransactionTransport {
     pub fn new(base_url: impl Into<String>, tokens: Arc<dyn TokenSource>) -> Self {
         Self::with_http_client(base_url, tokens, reqwest::Client::new())
@@ -650,6 +668,7 @@ impl HttpTransactionTransport {
     }
 }
 
+#[cfg(feature = "client")]
 #[async_trait]
 impl TransactionTransport for HttpTransactionTransport {
     async fn latest_blockhash(
@@ -924,6 +943,7 @@ impl TransactionTransport for HttpTransactionTransport {
     }
 }
 
+#[cfg(feature = "client")]
 #[cfg(test)]
 mod tests {
     use super::*;

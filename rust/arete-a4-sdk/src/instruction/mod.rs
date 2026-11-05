@@ -19,7 +19,9 @@ mod serializer;
 mod types;
 
 pub use handler::InstructionHandler;
-pub use resolver::{resolve_accounts, AccountResolutionResult, ResolvedAccount};
+pub use resolver::{
+    resolve_accounts, resolve_accounts_with_data, AccountResolutionResult, ResolvedAccount,
+};
 pub use seed::{
     derive_program_address, normalize_seed_type, serialize_seed_value, CanonicalSeedType,
 };

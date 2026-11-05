@@ -1105,6 +1105,22 @@ jobs:
             fi
           done
 
+      # `default-features = false` is the trait-only surface (ChainClient,
+      # PreparedOperation, instruction building, dispatch) for servers that
+      # bring their own transports: no HTTP or WebSocket client in its graph.
+      - name: Build the trait-only SDK without network clients
+        run: |
+          cargo clippy --locked -p arete-a4-sdk --no-default-features --all-targets -- -D warnings
+          cargo test --locked -p arete-a4-sdk --no-default-features --lib
+          cargo check --locked -p arete-a4-sdk --no-default-features --features solana-adapter
+          tree=$(cargo tree --locked -p arete-a4-sdk --no-default-features -e normal)
+          for crate in reqwest tokio-tungstenite tungstenite hyper h2 rustls native-tls openssl dirs toml; do
+            if echo "$tree" | grep -q " $crate v"; then
+              echo "::error::$crate is in the trait-only dependency graph"
+              exit 1
+            fi
+          done
+
       - name: Test the adapter
         run: |
           cargo test --locked -p arete-a4-sdk --features solana-adapter

@@ -11,7 +11,7 @@
 
 /// Program SDK for `vault` (program ID `2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM`).
 pub mod vault {
-    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler};
+    use arete_sdk::instruction::{AccountMeta, AccountResolution, ArgSchema, ArgType, BuildOptions, BuiltInstruction, ErrorMetadata, InstructionError, InstructionHandler};
     use serde::Serialize;
 
     pub const PROGRAM_ID: &str = "2c35Vf2AKSi7mTvaNdhSrgE3ppGAEyeSSLWNRkxbrQQM";
@@ -77,6 +77,33 @@ pub mod vault {
         }
     }
 
+    /// Builds the `deposit` instruction with explicit build options: account
+    /// addresses, remaining accounts (appended after the declared accounts),
+    /// the data account-field PDA seeds read, and the payer.
+    pub fn deposit_with(params: DepositParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+        let params = serde_json::to_value(params).map_err(|error| InstructionError::InvalidValue {
+            context: "params".to_string(),
+            message: error.to_string(),
+        })?;
+        deposit_handler().build_with(params, options)
+    }
+
+    /// Surface dispatch for this program's generated instruction builders:
+    /// `register` maps each surface path to its builder, which takes an
+    /// `arete_sdk::dispatch::InstructionInput` (args, account addresses,
+    /// remaining accounts) and returns the built instruction.
+    pub mod dispatch {
+        /// Surface path of every generated instruction builder, with its Rust binding.
+        pub const BINDINGS: &[(&str, &str)] = &[
+            ("rawInstructions.deposit", "deposit"),
+        ];
+
+        /// Registers every generated instruction builder under its surface path.
+        pub fn register(map: &mut arete_sdk::dispatch::Dispatch) {
+            map.instruction("rawInstructions.deposit", super::deposit_handler);
+        }
+    }
+
     /// Program accessor exposed on the stack client's `programs` namespace.
     #[derive(Clone)]
     pub struct VaultProgram {
@@ -97,6 +124,10 @@ pub mod vault {
 
         pub fn deposit(&self, params: DepositParams) -> Result<BuiltInstruction, InstructionError> {
             deposit(params)
+        }
+
+        pub fn deposit_with(&self, params: DepositParams, options: &BuildOptions) -> Result<BuiltInstruction, InstructionError> {
+            deposit_with(params, options)
         }
 
         /// Typed reader for `Vault` accounts (release-addressed HTTP reads).

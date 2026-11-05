@@ -18,8 +18,16 @@ extension-api = 1
 
 [features]
 default = ["rustls"]
-rustls = ["tokio-tungstenite/rustls-tls-webpki-roots"]
-native-tls = ["tokio-tungstenite/native-tls"]
+# The network clients: the WebSocket stack client, the HTTP chain, program
+# read, transaction, protocol and auth clients, and the `a4` credentials file.
+# Both TLS features enable it. Without it (`default-features = false`) the
+# crate is its trait-only surface: `ChainClient`, `WalletAdapter`,
+# `TransactionTransport`, `PreparedOperation`, instruction building and
+# `dispatch`, with no HTTP or WebSocket client in the dependency graph — for
+# a server that plans operations behind its own transports.
+client = ["dep:dirs", "dep:reqwest", "dep:tokio-tungstenite", "dep:toml"]
+rustls = ["client", "tokio-tungstenite/rustls-tls-webpki-roots"]
+native-tls = ["client", "tokio-tungstenite/native-tls"]
 # Optional first-party Solana transaction adapter (legacy/v0/V1). Off by
 # default: none of the crates below appear in the base dependency graph, so an
 # existing user's install and Solana version are untouched.
@@ -44,13 +52,13 @@ async-trait = "0.1"
 base64 = "0.22"
 bs58 = "0.5"
 # Home directory for the `a4` CLI credentials file (same crate the CLI uses).
-dirs = "5"
+dirs = { version = "5", optional = true }
 # Verifies execution receipts and attestation signatures offline.
 ed25519-dalek = "2"
 flate2 = "1.0"
 futures-util = { version = "0.3", features = ["sink"] }
 pin-project-lite = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 # `arete_sdk::encoding::{sha256, keccak256}` for extension bundles. sha2 is
@@ -62,10 +70,10 @@ sha3 = "0.10"
 solana-pubkey = { version = "2.3", default-features = false, features = ["std", "sha2", "curve25519"] }
 thiserror = "1.0"
 # Reads the `a4` CLI credentials file.
-toml = "0.8"
+toml = { version = "0.8", optional = true }
 tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time", "macros"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect"] }
+tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect"], optional = true }
 tracing = "0.1"
 unicode-normalization = "0.1"
 unicode-properties = { version = "0.1", default-features = false, features = ["general-category"] }
@@ -106,8 +114,42 @@ tokio = { version = "1.0", features = ["full"] }
 
 [[example]]
 name = "solana_v1"
-required-features = ["solana-adapter"]
+required-features = ["client", "solana-adapter"]
+
+# The integration tests drive the network clients.
+[[test]]
+name = "auth_lifecycle"
+required-features = ["client"]
+
+[[test]]
+name = "client_runtime"
+required-features = ["client"]
+
+[[test]]
+name = "generated_protocol"
+required-features = ["client"]
 
 [[test]]
 name = "generated_solana"
-required-features = ["solana-adapter"]
+required-features = ["client", "solana-adapter"]
+
+[[test]]
+name = "protocol_v2_lifecycle"
+required-features = ["client"]
+
+[[test]]
+name = "session_lifecycle"
+required-features = ["client"]
+
+[[test]]
+name = "solana_adapter"
+required-features = ["client"]
+
+[[test]]
+name = "view_get_options"
+required-features = ["client"]
+
+[[test]]
+name = "websocket_v2_conformance"
+required-features = ["client"]
+

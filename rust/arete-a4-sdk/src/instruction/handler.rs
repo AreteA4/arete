@@ -10,8 +10,11 @@ use std::str::FromStr;
 use serde_json::{Map, Value};
 use solana_pubkey::Pubkey;
 
-use super::resolver::resolve_accounts;
+use super::resolver::resolve_accounts_with_data;
 use super::serializer::serialize_instruction_data;
+use crate::chain::ChainClient;
+use crate::error::AreteError;
+
 use super::types::{
     json_kind, AccountMeta, ArgSchema, BuildOptions, BuiltAccountMeta, BuiltInstruction,
     ErrorMetadata, InstructionError,
@@ -72,13 +75,14 @@ impl InstructionHandler {
         }
 
         let program_id = (!self.program_id.is_empty()).then_some(self.program_id.as_str());
-        let resolution = resolve_accounts(
+        let resolution = resolve_accounts_with_data(
             &self.accounts,
             &args,
             &overrides,
             resolve.as_ref(),
             options.payer.as_deref(),
             program_id,
+            &options.account_data,
         )?;
         if !resolution.missing.is_empty() {
             return Err(InstructionError::MissingAccounts(resolution.missing));
@@ -103,6 +107,63 @@ impl InstructionHandler {
             accounts,
             data,
         })
+    }
+
+    /// [`build_with`](Self::build_with), fetching from `chain` the data of
+    /// every account a [`PdaSeed::AccountField`](super::PdaSeed::AccountField)
+    /// seed reads that `options.account_data` does not carry.
+    ///
+    /// Each fetched account must exist and be owned by this handler's
+    /// program (the program whose IDL declares the account type the seed
+    /// reads). Building stays deterministic: the data read is the only
+    /// network input, and a caller that already holds it passes it in
+    /// `options.account_data` and calls `build_with`.
+    pub async fn build_with_chain(
+        &self,
+        chain: &dyn ChainClient,
+        params: Value,
+        options: &BuildOptions,
+    ) -> Result<BuiltInstruction, AreteError> {
+        let mut options = options.clone();
+        // Each pass either finishes or fetches one account the previous pass
+        // lacked, so the loop ends after at most one pass per account.
+        for _ in 0..=self.accounts.len() {
+            match self.build_with(params.clone(), &options) {
+                Err(InstructionError::MissingAccountData {
+                    account, address, ..
+                }) => {
+                    let data = self.fetch_account_data(chain, &account, &address).await?;
+                    options.account_data.insert(account, data);
+                }
+                result => return result.map_err(AreteError::from),
+            }
+        }
+        Err(AreteError::from(InstructionError::Pda(
+            "account-field seeds did not resolve after fetching every account".to_string(),
+        )))
+    }
+
+    async fn fetch_account_data(
+        &self,
+        chain: &dyn ChainClient,
+        account: &str,
+        address: &str,
+    ) -> Result<Vec<u8>, AreteError> {
+        let invalid = |message: String| InstructionError::InvalidAccountData {
+            account: account.to_string(),
+            message,
+        };
+        let Some(info) = chain.account(address).await? else {
+            return Err(invalid(format!("account {address} does not exist")).into());
+        };
+        if info.owner_program != self.program_id {
+            return Err(invalid(format!(
+                "account {address} is owned by {}, not {}",
+                info.owner_program, self.program_id
+            ))
+            .into());
+        }
+        Ok(info.data)
     }
 
     /// Looks up an IDL error definition by code.
@@ -540,5 +601,262 @@ mod tests {
             Some("Boom")
         );
         assert_eq!(handler.error_for_code(6001), None);
+    }
+
+    // --- Account-field seeds -------------------------------------------------
+
+    const CURVE: &str = "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf";
+    const CREATOR: &str = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
+    const CURVE_DISCRIMINATOR: [u8; 8] = [23, 183, 248, 55, 96, 216, 172, 96];
+
+    /// `curve` holds a `creator` pubkey at offset 9 (8-byte discriminator, a
+    /// `bool`); `vault` derives from `["vault", curve.creator]`.
+    fn field_handler() -> InstructionHandler {
+        InstructionHandler {
+            program_id: TOKEN_PROGRAM.to_string(),
+            discriminator: vec![2],
+            accounts: vec![
+                AccountMeta {
+                    name: "curve".to_string(),
+                    is_signer: false,
+                    is_writable: false,
+                    resolution: AccountResolution::UserProvided,
+                    is_optional: false,
+                },
+                AccountMeta {
+                    name: "vault".to_string(),
+                    is_signer: false,
+                    is_writable: true,
+                    resolution: AccountResolution::Pda(PdaConfig {
+                        program_id: None,
+                        seeds: vec![
+                            PdaSeed::Literal("vault".to_string()),
+                            PdaSeed::AccountField {
+                                account: "curve".to_string(),
+                                field: "creator".to_string(),
+                                offset: 9,
+                                len: 32,
+                                discriminator: CURVE_DISCRIMINATOR.to_vec(),
+                            },
+                        ],
+                    }),
+                    is_optional: false,
+                },
+            ],
+            args: vec![],
+            errors: vec![],
+        }
+    }
+
+    fn curve_data(discriminator: [u8; 8]) -> Vec<u8> {
+        let mut data = discriminator.to_vec();
+        data.push(1); // the `bool` before `creator`
+        data.extend(bs58::decode(CREATOR).into_vec().unwrap());
+        data.extend([0u8; 16]);
+        data
+    }
+
+    fn vault_pda() -> Pubkey {
+        let seeds = vec![b"vault".to_vec(), bs58::decode(CREATOR).into_vec().unwrap()];
+        derive_program_address(&seeds, TOKEN_PROGRAM).unwrap().0
+    }
+
+    fn with_curve_data(data: Vec<u8>) -> BuildOptions {
+        let mut options = BuildOptions::default();
+        options.account_data.insert("curve".to_string(), data);
+        options
+    }
+
+    #[test]
+    fn derives_a_pda_from_a_field_of_provided_account_data() {
+        let built = field_handler()
+            .build_with(
+                json!({ "curve": CURVE }),
+                &with_curve_data(curve_data(CURVE_DISCRIMINATOR)),
+            )
+            .unwrap();
+        assert_eq!(built.accounts[0].pubkey, Pubkey::from_str(CURVE).unwrap());
+        assert_eq!(built.accounts[1].pubkey, vault_pda());
+    }
+
+    #[test]
+    fn names_the_account_whose_data_a_field_seed_needs() {
+        let err = field_handler()
+            .build_with(json!({ "curve": CURVE }), &BuildOptions::default())
+            .unwrap_err();
+        assert_eq!(
+            err,
+            InstructionError::MissingAccountData {
+                pda: "vault".to_string(),
+                account: "curve".to_string(),
+                address: CURVE.to_string(),
+                field: "creator".to_string(),
+            }
+        );
+        // An explicit address for the PDA needs no data.
+        let vault = vault_pda().to_string();
+        let built = field_handler()
+            .build_with(
+                json!({ "curve": CURVE, "vault": vault }),
+                &BuildOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(built.accounts[1].pubkey, vault_pda());
+    }
+
+    #[test]
+    fn refuses_data_of_another_account_type_or_too_short() {
+        let err = field_handler()
+            .build_with(
+                json!({ "curve": CURVE }),
+                &with_curve_data(curve_data([0; 8])),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(&err, InstructionError::InvalidAccountData { account, message }
+                if account == "curve" && message.contains("discriminator")),
+            "{err:?}"
+        );
+        let short = curve_data(CURVE_DISCRIMINATOR)[..20].to_vec();
+        let err = field_handler()
+            .build_with(json!({ "curve": CURVE }), &with_curve_data(short))
+            .unwrap_err();
+        assert!(
+            matches!(&err, InstructionError::InvalidAccountData { message, .. }
+                if message.contains("9..41")),
+            "{err:?}"
+        );
+    }
+
+    mod chain {
+        use std::sync::Mutex;
+
+        use async_trait::async_trait;
+
+        use super::*;
+        use crate::chain::{
+            ChainClock, ChainError, ContextSlotOptions, MintAccountInfo, NativeBalanceInfo,
+            RawAccountInfo, TokenAccountInfo, TokenBalanceInfo, TokenBalanceInput,
+        };
+
+        /// Serves `account` reads from a fixed map and records them.
+        pub(super) struct AccountsChain {
+            pub accounts: BTreeMap<String, RawAccountInfo>,
+            pub reads: Mutex<Vec<String>>,
+        }
+
+        #[async_trait]
+        impl ChainClient for AccountsChain {
+            async fn exists(&self, _address: &str) -> Result<bool, ChainError> {
+                unimplemented!()
+            }
+            async fn lamports(&self, _address: &str) -> Result<u64, ChainError> {
+                unimplemented!()
+            }
+            async fn native_balance(
+                &self,
+                _address: &str,
+                _options: ContextSlotOptions,
+            ) -> Result<NativeBalanceInfo, ChainError> {
+                unimplemented!()
+            }
+            async fn minimum_balance_for_rent_exemption(
+                &self,
+                _space: u64,
+            ) -> Result<u64, ChainError> {
+                unimplemented!()
+            }
+            async fn clock(&self) -> Result<ChainClock, ChainError> {
+                unimplemented!()
+            }
+            async fn account(&self, address: &str) -> Result<Option<RawAccountInfo>, ChainError> {
+                self.reads.lock().unwrap().push(address.to_string());
+                Ok(self.accounts.get(address).cloned())
+            }
+            async fn accounts(
+                &self,
+                _addresses: &[String],
+            ) -> Result<Vec<Option<RawAccountInfo>>, ChainError> {
+                unimplemented!()
+            }
+            async fn mint(&self, _address: &str) -> Result<Option<MintAccountInfo>, ChainError> {
+                unimplemented!()
+            }
+            async fn token_account(
+                &self,
+                _address: &str,
+            ) -> Result<Option<TokenAccountInfo>, ChainError> {
+                unimplemented!()
+            }
+            async fn balance(
+                &self,
+                _input: &TokenBalanceInput,
+                _options: ContextSlotOptions,
+            ) -> Result<TokenBalanceInfo, ChainError> {
+                unimplemented!()
+            }
+        }
+
+        pub(super) fn chain_with_curve(owner: &str) -> AccountsChain {
+            let mut accounts = BTreeMap::new();
+            accounts.insert(
+                CURVE.to_string(),
+                RawAccountInfo {
+                    address: CURVE.to_string(),
+                    owner_program: owner.to_string(),
+                    lamports: 1,
+                    executable: false,
+                    data: curve_data(CURVE_DISCRIMINATOR),
+                },
+            );
+            AccountsChain {
+                accounts,
+                reads: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn fetches_the_data_a_field_seed_reads_from_the_chain() {
+        let chain = chain::chain_with_curve(TOKEN_PROGRAM);
+        let built = field_handler()
+            .build_with_chain(&chain, json!({ "curve": CURVE }), &BuildOptions::default())
+            .await
+            .unwrap();
+        assert_eq!(built.accounts[1].pubkey, vault_pda());
+        assert_eq!(*chain.reads.lock().unwrap(), [CURVE.to_string()]);
+
+        // Provided data is not fetched again.
+        let chain = chain::chain_with_curve(TOKEN_PROGRAM);
+        field_handler()
+            .build_with_chain(
+                &chain,
+                json!({ "curve": CURVE }),
+                &with_curve_data(curve_data(CURVE_DISCRIMINATOR)),
+            )
+            .await
+            .unwrap();
+        assert!(chain.reads.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn refuses_a_fetched_account_the_program_does_not_own_or_that_is_absent() {
+        let chain = chain::chain_with_curve(SYSTEM_PROGRAM);
+        let err = field_handler()
+            .build_with_chain(&chain, json!({ "curve": CURVE }), &BuildOptions::default())
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("is owned by"), "{err}");
+
+        let chain = chain::chain_with_curve(TOKEN_PROGRAM);
+        let err = field_handler()
+            .build_with_chain(
+                &chain,
+                json!({ "curve": WSOL_MINT }),
+                &BuildOptions::default(),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("does not exist"), "{err}");
     }
 }

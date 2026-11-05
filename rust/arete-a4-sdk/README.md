@@ -20,6 +20,23 @@ arete-sdk = { package = "arete-a4-sdk", version = "0.52.0" } # x-release-please-
 By default the SDK uses `rustls` for TLS. Switch to native TLS with
 `default-features = false, features = ["native-tls"]`.
 
+### Trait-only build
+
+The network clients (the stack client, the HTTP chain, read, transaction,
+protocol and auth clients, the `a4` credentials file) sit behind the `client`
+feature, which both TLS features enable. A server that plans operations
+behind its own transports turns them off:
+
+```toml
+arete-sdk = { package = "arete-a4-sdk", version = "0.52.0", default-features = false } # x-release-please-version
+```
+
+That build keeps the traits and the pure layers — `ChainClient`,
+`WalletAdapter`, `TransactionTransport`, `PreparedOperation` and the
+operation helpers, instruction building, and `dispatch` — with no HTTP or
+WebSocket client (`reqwest`, `tokio-tungstenite`, `hyper`, TLS) in its
+dependency graph. Generated stack and program crates use the default build.
+
 ## Quick start
 
 Generated stack code (from `a4 sdk create` / `a4 sdk sync`) provides a `Stack`
@@ -125,6 +142,56 @@ PDA accounts are derived automatically from the IDL seeds (literals, argument
 references, account references), known addresses are filled in, and unknown
 parameters fail closed. The lower-level schema-driven
 `arete_sdk::InstructionHandler` is available for advanced composition.
+
+Every builder has a `<ix>_with(params, &BuildOptions)` form that carries
+remaining accounts (appended after the declared accounts, e.g. a DLMM swap's
+bin arrays), account overrides and the payer:
+
+```rust
+let ix = lb_clmm::swap_with(params, &BuildOptions {
+    remaining_accounts: bin_arrays, // Vec<BuiltAccountMeta>
+    ..Default::default()
+})?;
+```
+
+Some Anchor seeds read a field of another account (pump's `creator_vault`
+derives from `bonding_curve.creator`). The generator computes the field's
+offset from the IDL layout, and the build reads it from the account's data:
+pass the data in `BuildOptions::account_data`, name the PDA's address, or let
+`InstructionHandler::build_with_chain` fetch it through a `ChainClient`
+(checking the account's owner and discriminator):
+
+```rust
+let ix = pump::buy_handler()
+    .build_with_chain(chain.as_ref(), serde_json::to_value(params)?, &BuildOptions::default())
+    .await?;
+```
+
+### Dispatch
+
+`arete_sdk::dispatch` calls bindings by their surface path, JSON in, typed
+output out, for a planner that turns a named action into a transaction.
+Generated program modules register every instruction builder under
+`rawInstructions.<instruction>` (`<module>::dispatch::register`, with the
+path-to-binding table in `<module>::dispatch::BINDINGS`); extensions add their
+own entries with `Dispatch::entry`.
+
+```rust
+use arete_sdk::dispatch::{Call, Dispatch};
+
+let mut actions = Dispatch::new();
+pump::dispatch::register(&mut actions);
+let ix = actions
+    .call("rawInstructions.buy", Call::new()
+        .with_input(json!({
+            "args": { "amount": 1000, "max_sol_cost": 5000 },
+            "accounts": { "mint": mint, "user": user /* … */ },
+            "remainingAccounts": [{ "address": extra, "writable": true }],
+        }))
+        .with_chain(chain))           // reads account-field seeds' data
+    .await?
+    .into_instruction()?;
+```
 
 Generated programs also expose release-addressed HTTP account readers:
 
