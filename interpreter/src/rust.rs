@@ -105,6 +105,7 @@ pub fn compile_serializable_spec(
     entity_name: String,
     config: Option<RustConfig>,
 ) -> Result<RustOutput, String> {
+    crate::codegen_input::validate_entity_spec(&spec)?;
     let config = config.unwrap_or_default();
     let compiler = RustCompiler::new(spec, entity_name, config);
     Ok(compiler.compile())
@@ -4299,6 +4300,7 @@ fn compile_stack_spec_with_view_selection(
     config: Option<RustStackConfig>,
     exact_views: bool,
 ) -> Result<RustOutput, String> {
+    crate::codegen_input::validate_stack_spec(&stack_spec)?;
     let config = config.unwrap_or_default();
     let stack_name = &stack_spec.stack_name;
     let stack_kebab = to_kebab_case(stack_name);
@@ -4428,6 +4430,7 @@ pub fn compile_program_modules(
     stack_spec: SerializableStackSpec,
     config: Option<RustStackConfig>,
 ) -> Result<RustProgramOutput, String> {
+    crate::codegen_input::validate_stack_spec(&stack_spec)?;
     let config = config.unwrap_or_default();
     if stack_spec.idls.is_empty() {
         return Err(format!(
@@ -4594,6 +4597,10 @@ pub fn compile_composed_public_artifacts_v2(
 ) -> Result<RustCompositionOutput, String> {
     let composed =
         crate::public_artifacts::stack_specs_from_artifacts_v2(programs, live_specs, manifest)?;
+    crate::codegen_input::validate_text("stack name", &composed.name)?;
+    for live in &composed.live_specs {
+        crate::codegen_input::validate_text("LiveSpec alias", &live.alias)?;
+    }
     if composed.live_specs.is_empty() {
         return Err(
             "Rust composition generation requires at least one aliased LiveSpec".to_string(),

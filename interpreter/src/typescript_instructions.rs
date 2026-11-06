@@ -2683,16 +2683,18 @@ pub(crate) fn dedupe_errors_by_code(errors: &[IdlErrorSnapshot]) -> Vec<IdlError
 }
 
 /// An IDL error's `msg` as the generated SDKs' error metadata carries it:
-/// empty when absent, with every line break (`\n`, `\r`) turned into a space,
-/// so a message the IDL wraps across source lines reads as one line. The
-/// TypeScript SDK set this text; the Rust and Python generators use the same
-/// function so all three SDKs report identical messages.
+/// empty when absent, with every line break (`\n`, `\r`, and the Unicode
+/// line and paragraph separators, which end a TypeScript string literal)
+/// turned into a space, so a message the IDL wraps across source lines reads
+/// as one line. The TypeScript SDK set this text; the Rust and Python
+/// generators use the same function so all three SDKs report identical
+/// messages.
 pub(crate) fn error_metadata_msg(error: &IdlErrorSnapshot) -> String {
     error
         .msg
         .as_deref()
         .unwrap_or("")
-        .replace(['\n', '\r'], " ")
+        .replace(['\n', '\r', '\u{2028}', '\u{2029}'], " ")
 }
 
 fn render_program_errors(const_name: &str, type_name: &str, errors: &[IdlErrorSnapshot]) -> String {
@@ -2759,7 +2761,7 @@ fn render_docs(docs: &[String]) -> String {
     }
     let lines: Vec<String> = docs
         .iter()
-        .map(|line| format!(" * {}", line.trim()))
+        .map(|line| format!(" * {}", crate::codegen_input::comment_text(line.trim())))
         .collect();
     format!("/**\n{}\n */\n", lines.join("\n"))
 }

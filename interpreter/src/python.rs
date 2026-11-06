@@ -234,6 +234,7 @@ pub fn compile_program_modules(
     stack_spec: SerializableStackSpec,
     config: Option<PythonStackConfig>,
 ) -> Result<PythonProgramOutput, String> {
+    crate::codegen_input::validate_stack_spec(&stack_spec)?;
     let config = config.unwrap_or_default();
     if stack_spec.idls.is_empty() {
         return Err(format!(
@@ -359,6 +360,10 @@ pub fn compile_composed_public_artifacts_v2(
 ) -> Result<PythonCompositionOutput, String> {
     let composed =
         crate::public_artifacts::stack_specs_from_artifacts_v2(programs, live_specs, manifest)?;
+    crate::codegen_input::validate_text("stack name", &composed.name)?;
+    for live in &composed.live_specs {
+        crate::codegen_input::validate_text("LiveSpec alias", &live.alias)?;
+    }
     if composed.live_specs.is_empty() {
         return Err(
             "Python composition generation requires at least one aliased LiveSpec".to_string(),
@@ -539,6 +544,7 @@ fn compile_stack_spec_with_view_selection(
     config: Option<PythonStackConfig>,
     exact_views: bool,
 ) -> Result<PythonOutput, String> {
+    crate::codegen_input::validate_stack_spec(&stack_spec)?;
     let config = config.unwrap_or_default();
     let stack_name = stack_spec.stack_name.clone();
     let stack_kebab = to_kebab_case(&stack_name);
@@ -4457,12 +4463,31 @@ fn py_string_literal(value: &str) -> String {
     out
 }
 
+/// One docstring line as the body of a `"""` literal: backslashes and
+/// `"""` are escaped, so the text can neither end the literal nor form an
+/// escape sequence, and control characters other than tabs and line breaks
+/// (which Python rejects or mangles in source) are written as escapes.
+fn py_docstring_text(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    for character in line.chars() {
+        match character {
+            '\\' => out.push_str("\\\\"),
+            '\t' | '\n' | '\r' => out.push(character),
+            character if character.is_control() => {
+                out.push_str(&format!("\\x{:02x}", character as u32))
+            }
+            character => out.push(character),
+        }
+    }
+    out.replace("\"\"\"", "\\\"\\\"\\\"")
+}
+
 /// Render an indented triple-quoted docstring (closing quotes on their own
 /// line so content can never terminate the literal early).
 fn py_docstring(lines: &[String], indent: &str) -> String {
     let mut out = format!("{indent}\"\"\"");
     for (index, line) in lines.iter().enumerate() {
-        let sanitized = line.replace('\\', "\\\\").replace("\"\"\"", "\\\"\\\"\\\"");
+        let sanitized = py_docstring_text(line);
         if index == 0 {
             out.push_str(&sanitized);
         } else if sanitized.is_empty() {
