@@ -50,6 +50,7 @@ mod stack_types;
 pub mod transaction_metadata;
 pub mod typescript;
 pub mod typescript_instructions;
+mod url_guard;
 pub mod versioned;
 pub mod vm;
 pub mod vm_metrics;

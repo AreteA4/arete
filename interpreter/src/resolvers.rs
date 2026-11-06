@@ -530,9 +530,85 @@ impl TokenMetadataResolverClient {
 // ============================================================================
 
 const DEFAULT_URL_TIMEOUT_SECS: u64 = 30;
+const DEFAULT_URL_CONNECT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_URL_MAX_BODY_BYTES: usize = 1024 * 1024;
+const DEFAULT_URL_MAX_REDIRECTS: usize = 5;
+const DEFAULT_URL_MAX_CONCURRENT: usize = 32;
+const DEFAULT_URL_MAX_CONCURRENT_PER_HOST: usize = 4;
+const URL_MAX_BODY_BYTES_ENV: &str = "ARETE_URL_RESOLVER_MAX_BODY_BYTES";
+const URL_ALLOW_PRIVATE_NETWORKS_ENV: &str = "ARETE_URL_RESOLVER_ALLOW_PRIVATE_NETWORKS";
 
+/// Limits applied to URL resolver requests.
+#[derive(Debug, Clone)]
+pub struct UrlResolverOptions {
+    /// Total time for a request, from connecting until the body is read.
+    pub timeout: std::time::Duration,
+    pub connect_timeout: std::time::Duration,
+    /// Responses with a larger body are aborted.
+    pub max_body_bytes: usize,
+    pub max_redirects: usize,
+    pub max_concurrent_requests: usize,
+    pub max_concurrent_per_host: usize,
+    /// Allow requests to loopback, private, link-local and other non-public
+    /// addresses. Off by default; meant for local development only.
+    pub allow_private_networks: bool,
+}
+
+impl Default for UrlResolverOptions {
+    fn default() -> Self {
+        Self {
+            timeout: std::time::Duration::from_secs(DEFAULT_URL_TIMEOUT_SECS),
+            connect_timeout: std::time::Duration::from_secs(DEFAULT_URL_CONNECT_TIMEOUT_SECS),
+            max_body_bytes: DEFAULT_URL_MAX_BODY_BYTES,
+            max_redirects: DEFAULT_URL_MAX_REDIRECTS,
+            max_concurrent_requests: DEFAULT_URL_MAX_CONCURRENT,
+            max_concurrent_per_host: DEFAULT_URL_MAX_CONCURRENT_PER_HOST,
+            allow_private_networks: false,
+        }
+    }
+}
+
+impl UrlResolverOptions {
+    /// Defaults, with `ARETE_URL_RESOLVER_MAX_BODY_BYTES` and
+    /// `ARETE_URL_RESOLVER_ALLOW_PRIVATE_NETWORKS` applied when set.
+    pub fn from_env() -> Self {
+        let mut options = Self::default();
+        if let Some(max_body_bytes) = std::env::var(URL_MAX_BODY_BYTES_ENV)
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| *value > 0)
+        {
+            options.max_body_bytes = max_body_bytes;
+        }
+        options.allow_private_networks = std::env::var(URL_ALLOW_PRIVATE_NETWORKS_ENV)
+            .map(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "1" | "true" | "yes" | "on"
+                )
+            })
+            .unwrap_or(false);
+        if options.allow_private_networks {
+            tracing::warn!(
+                "{URL_ALLOW_PRIVATE_NETWORKS_ENV} is set; URL resolvers may reach private and \
+                 loopback addresses"
+            );
+        }
+        options
+    }
+}
+
+/// Fetches JSON for URL resolvers.
+///
+/// URLs come from stack definitions and on-chain data, so requests are kept
+/// to public `http`/`https` destinations: every resolved address and every
+/// redirect hop is checked, the connection uses the checked addresses, bodies
+/// are size-capped and concurrency is limited per host.
 pub struct UrlResolverClient {
     client: reqwest::Client,
+    policy: std::sync::Arc<crate::url_guard::AddressPolicy>,
+    limiter: crate::url_guard::HostLimiter,
+    max_body_bytes: usize,
 }
 
 impl Default for UrlResolverClient {
@@ -543,21 +619,56 @@ impl Default for UrlResolverClient {
 
 impl UrlResolverClient {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(DEFAULT_URL_TIMEOUT_SECS))
-            .build()
-            .expect("Failed to create HTTP client for URL resolver");
-
-        Self { client }
+        Self::with_options(UrlResolverOptions::from_env())
     }
 
     pub fn with_timeout(timeout_secs: u64) -> Self {
+        Self::with_options(UrlResolverOptions {
+            timeout: std::time::Duration::from_secs(timeout_secs),
+            ..UrlResolverOptions::from_env()
+        })
+    }
+
+    pub fn with_options(options: UrlResolverOptions) -> Self {
+        Self::build(
+            options,
+            crate::url_guard::AddressPolicy::default(),
+            crate::url_guard::system_lookup(),
+        )
+    }
+
+    fn build(
+        options: UrlResolverOptions,
+        mut policy: crate::url_guard::AddressPolicy,
+        lookup: crate::url_guard::LookupFn,
+    ) -> Self {
+        policy.allow_private_networks = options.allow_private_networks;
+        let policy = std::sync::Arc::new(policy);
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
+            .timeout(options.timeout)
+            .connect_timeout(options.connect_timeout)
+            // A proxy would resolve the target itself, bypassing the checks.
+            .no_proxy()
+            .dns_resolver(std::sync::Arc::new(crate::url_guard::GuardedResolver::new(
+                lookup,
+                policy.clone(),
+            )))
+            .redirect(crate::url_guard::redirect_policy(
+                policy.clone(),
+                options.max_redirects,
+            ))
             .build()
             .expect("Failed to create HTTP client for URL resolver");
 
-        Self { client }
+        Self {
+            client,
+            policy,
+            limiter: crate::url_guard::HostLimiter::new(
+                options.max_concurrent_requests,
+                options.max_concurrent_per_host,
+            ),
+            max_body_bytes: options.max_body_bytes,
+        }
     }
 
     /// Resolve a URL and return the parsed JSON response
@@ -570,15 +681,47 @@ impl UrlResolverClient {
             return Err("URL is empty".into());
         }
 
-        let response = match method {
-            crate::ast::HttpMethod::Get => self.client.get(url).send().await?,
-            crate::ast::HttpMethod::Post => self.client.post(url).send().await?,
+        let url = reqwest::Url::parse(url)?;
+        self.policy.check_url(&url)?;
+        let host = url.host_str().unwrap_or_default().to_string();
+        let _permits = self.limiter.acquire(&host).await;
+
+        let request = match method {
+            crate::ast::HttpMethod::Get => self.client.get(url),
+            crate::ast::HttpMethod::Post => self.client.post(url),
         };
+        let response = request.send().await?.error_for_status()?;
+        if response.status().is_redirection() {
+            // A redirect the client could not follow, e.g. to an unsupported scheme.
+            return Err(
+                format!("URL resolver redirect not followed ({})", response.status()).into(),
+            );
+        }
+        let body = Self::read_body_capped(response, self.max_body_bytes).await?;
 
-        let response = response.error_for_status()?;
-        let value = response.json::<Value>().await?;
+        Ok(serde_json::from_slice(&body)?)
+    }
 
-        Ok(value)
+    async fn read_body_capped(
+        mut response: reqwest::Response,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error + Send + Sync>> {
+        let too_large = || format!("URL resolver response exceeds {max_bytes} bytes");
+        if response
+            .content_length()
+            .is_some_and(|len| len > max_bytes as u64)
+        {
+            return Err(too_large().into());
+        }
+
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            if body.len() + chunk.len() > max_bytes {
+                return Err(too_large().into());
+            }
+            body.extend_from_slice(&chunk);
+        }
+        Ok(body)
     }
 
     /// Resolve a URL and extract a specific JSON path from the response
@@ -1289,5 +1432,291 @@ impl<'a> InstructionContext<'a> {
         self.update_context
             .as_ref()
             .and_then(|context| context.ix_path.as_deref())
+    }
+}
+
+#[cfg(test)]
+mod url_resolver_tests {
+    use super::*;
+    use crate::ast::HttpMethod;
+    use crate::url_guard::{AddressPolicy, LookupFn};
+    use std::net::{IpAddr, Ipv4Addr};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    const LOCAL: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
+
+    fn json(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+             Connection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn redirect(location: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n"
+        )
+    }
+
+    /// Serves canned responses by path and closes each connection after one
+    /// response, so every request opens a new connection.
+    async fn serve(routes: impl Fn(u16) -> Vec<(&'static str, String)>) -> u16 {
+        let listener = tokio::net::TcpListener::bind((LOCAL, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let routes = Arc::new(routes(port));
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let routes = routes.clone();
+                tokio::spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buf = [0u8; 1024];
+                    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+                        match socket.read(&mut buf).await {
+                            Ok(0) | Err(_) => return,
+                            Ok(n) => request.extend_from_slice(&buf[..n]),
+                        }
+                    }
+                    let request = String::from_utf8_lossy(&request);
+                    let path = request.split_whitespace().nth(1).unwrap_or("/");
+                    let response = routes
+                        .iter()
+                        .find(|(route, _)| *route == path)
+                        .map(|(_, response)| response.clone())
+                        .unwrap_or_else(|| {
+                            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\
+                             Connection: close\r\n\r\n"
+                                .to_string()
+                        });
+                    let _ = socket.write_all(response.as_bytes()).await;
+                    let _ = socket.shutdown().await;
+                });
+            }
+        });
+        port
+    }
+
+    /// Resolves `*.test` names from a fixed table.
+    fn lookup(table: &'static [(&'static str, &'static str)]) -> LookupFn {
+        Arc::new(move |host: String| {
+            Box::pin(async move {
+                table
+                    .iter()
+                    .find(|(name, _)| *name == host)
+                    .map(|(_, ip)| vec![ip.parse().unwrap()])
+                    .ok_or_else(|| std::io::Error::other(format!("unknown host {host}")))
+            })
+        })
+    }
+
+    /// A client that may reach the local test server at 127.0.0.1 and no
+    /// other non-public address.
+    fn client(lookup: LookupFn, options: UrlResolverOptions) -> UrlResolverClient {
+        UrlResolverClient::build(
+            options,
+            AddressPolicy {
+                allow_private_networks: false,
+                exempt: vec![LOCAL],
+            },
+            lookup,
+        )
+    }
+
+    fn assert_blocked(result: Result<Value, Box<dyn std::error::Error + Send + Sync>>) {
+        let err = result.expect_err("request should be blocked");
+        let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err.as_ref());
+        while let Some(current) = source {
+            if current.to_string().contains("URL resolver request blocked") {
+                return;
+            }
+            source = current.source();
+        }
+        panic!("expected a blocked-request error, got: {err:?}");
+    }
+
+    const HOSTS: &[(&str, &str)] = &[
+        ("origin.test", "127.0.0.1"),
+        ("internal.test", "10.0.0.1"),
+        ("metadata.test", "169.254.169.254"),
+    ];
+
+    #[tokio::test]
+    async fn fetches_json_from_a_permitted_host() {
+        let port = serve(|_| vec![("/data", json(r#"{"name":"ok"}"#))]).await;
+        let client = client(lookup(HOSTS), UrlResolverOptions::default());
+        let value = client
+            .resolve(&format!("http://origin.test:{port}/data"), &HttpMethod::Get)
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::json!({ "name": "ok" }));
+    }
+
+    #[tokio::test]
+    async fn internal_destinations_are_refused() {
+        let port = serve(|_| vec![("/data", json("{}"))]).await;
+
+        // A live local server is refused by a client with the default policy,
+        // whether named by hostname or IP literal.
+        let default_client = UrlResolverClient::with_options(UrlResolverOptions::default());
+        for url in [
+            format!("http://localhost:{port}/data"),
+            format!("http://127.0.0.1:{port}/data"),
+            format!("http://[::ffff:127.0.0.1]:{port}/data"),
+            format!("http://2130706433:{port}/data"),
+        ] {
+            assert_blocked(default_client.resolve(&url, &HttpMethod::Get).await);
+        }
+
+        let client = client(lookup(HOSTS), UrlResolverOptions::default());
+        for url in [
+            "http://169.254.169.254/latest/meta-data/".to_string(),
+            "http://10.0.0.1/".to_string(),
+            "http://192.168.0.1/".to_string(),
+            "http://[fd00::1]/".to_string(),
+            format!("http://internal.test:{port}/data"),
+            format!("http://metadata.test:{port}/data"),
+            "file:///etc/passwd".to_string(),
+        ] {
+            assert_blocked(client.resolve(&url, &HttpMethod::Get).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn redirects_to_internal_destinations_are_refused() {
+        let port = serve(|port| {
+            vec![
+                ("/data", json("{}")),
+                (
+                    "/to-metadata",
+                    redirect("http://169.254.169.254/latest/meta-data/"),
+                ),
+                (
+                    "/to-loopback",
+                    redirect(&format!("http://127.0.0.2:{port}/data")),
+                ),
+                (
+                    "/to-internal-name",
+                    redirect(&format!("http://internal.test:{port}/data")),
+                ),
+                ("/to-file", redirect("file:///etc/passwd")),
+                (
+                    "/to-ok",
+                    redirect(&format!("http://origin.test:{port}/data")),
+                ),
+            ]
+        })
+        .await;
+        let client = client(lookup(HOSTS), UrlResolverOptions::default());
+        let base = format!("http://origin.test:{port}");
+
+        for path in ["/to-metadata", "/to-loopback", "/to-internal-name"] {
+            assert_blocked(
+                client
+                    .resolve(&format!("{base}{path}"), &HttpMethod::Get)
+                    .await,
+            );
+        }
+
+        // A redirect to another scheme is never followed.
+        let err = client
+            .resolve(&format!("{base}/to-file"), &HttpMethod::Get)
+            .await
+            .expect_err("redirect to file:// should fail");
+        assert!(err.to_string().contains("redirect not followed"), "{err}");
+
+        // Redirects between permitted destinations are still followed.
+        let value = client
+            .resolve(&format!("{base}/to-ok"), &HttpMethod::Get)
+            .await
+            .unwrap();
+        assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn redirect_chains_are_capped() {
+        let port = serve(|port| {
+            vec![(
+                "/loop",
+                redirect(&format!("http://origin.test:{port}/loop")),
+            )]
+        })
+        .await;
+        let options = UrlResolverOptions {
+            max_redirects: 2,
+            ..UrlResolverOptions::default()
+        };
+        let client = client(lookup(HOSTS), options);
+        assert_blocked(
+            client
+                .resolve(&format!("http://origin.test:{port}/loop"), &HttpMethod::Get)
+                .await,
+        );
+    }
+
+    #[tokio::test]
+    async fn every_connection_rechecks_dns_so_rebinding_is_refused() {
+        let port = serve(|_| vec![("/data", json("{}"))]).await;
+
+        // The name first resolves to the permitted server, then to an
+        // internal address, as a rebinding DNS server would answer.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let rebinding: LookupFn = {
+            let calls = calls.clone();
+            Arc::new(move |_host: String| {
+                let answer = if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                    LOCAL
+                } else {
+                    "10.0.0.1".parse().unwrap()
+                };
+                Box::pin(async move { Ok(vec![answer]) })
+            })
+        };
+        let client = client(rebinding, UrlResolverOptions::default());
+        let url = format!("http://rebind.test:{port}/data");
+
+        client.resolve(&url, &HttpMethod::Get).await.unwrap();
+        assert_blocked(client.resolve(&url, &HttpMethod::Get).await);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn bodies_over_the_cap_are_aborted() {
+        let big = format!(r#"{{"data":"{}"}}"#, "x".repeat(4096));
+        let port = serve(move |_| {
+            vec![
+                ("/small", json(r#"{"ok":true}"#)),
+                ("/declared", json(&big)),
+                // No Content-Length: the body runs until the connection closes.
+                (
+                    "/streamed",
+                    format!("HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{big}"),
+                ),
+            ]
+        })
+        .await;
+        let options = UrlResolverOptions {
+            max_body_bytes: 1024,
+            ..UrlResolverOptions::default()
+        };
+        let client = client(lookup(HOSTS), options);
+        let base = format!("http://origin.test:{port}");
+
+        assert!(client
+            .resolve(&format!("{base}/small"), &HttpMethod::Get)
+            .await
+            .is_ok());
+        for path in ["/declared", "/streamed"] {
+            let err = client
+                .resolve(&format!("{base}{path}"), &HttpMethod::Get)
+                .await
+                .expect_err("oversized body should be rejected");
+            assert!(
+                err.to_string().contains("exceeds 1024 bytes"),
+                "{path}: {err}"
+            );
+        }
     }
 }

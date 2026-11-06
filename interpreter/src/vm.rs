@@ -413,6 +413,21 @@ fn resolver_failure_backoff(failures: u32) -> Duration {
         .min(MAX_RESOLVER_FAILURE_BACKOFF)
 }
 
+/// Adds a random extra delay of up to a quarter of `delay`, so requests that
+/// failed together do not all retry at the same moment.
+fn with_retry_jitter(delay: Duration) -> Duration {
+    use std::hash::{BuildHasher, Hasher};
+    let max_extra_ms = u64::try_from(delay.as_millis() / 4).unwrap_or(u64::MAX);
+    if max_extra_ms == 0 {
+        return delay;
+    }
+    // A freshly keyed hasher is a cheap random source; no RNG dependency needed.
+    let random = std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish();
+    delay + Duration::from_millis(random % (max_extra_ms + 1))
+}
+
 fn json_type_name(value: &Value) -> &'static str {
     match value {
         Value::Null => "null",
@@ -2737,15 +2752,17 @@ impl VmContext {
         self.resolver_requests.extend(requests);
     }
 
-    /// Requeue requests whose backend call failed, after a backoff that grows
-    /// with each consecutive failure. Unlike `restore_resolver_requests`, a
-    /// backend that keeps failing is not called again on every dispatch.
+    /// Requeue requests whose backend call or URL fetch failed, after a
+    /// jittered backoff that grows with each consecutive failure. Unlike
+    /// `restore_resolver_requests`, a backend or URL that keeps failing is not
+    /// called again on every dispatch.
     pub fn defer_resolver_requests(&mut self, requests: Vec<ResolverRequest>) {
         let now = Instant::now();
         for request in requests {
             if let Some(entry) = self.resolver_pending.get_mut(&request.cache_key) {
                 entry.backend_failures = entry.backend_failures.saturating_add(1);
-                entry.next_retry_at = now + resolver_failure_backoff(entry.backend_failures);
+                entry.next_retry_at =
+                    now + with_retry_jitter(resolver_failure_backoff(entry.backend_failures));
                 entry.in_flight = false;
                 entry.queued = false;
                 self.resolver_deferred
@@ -9133,6 +9150,18 @@ mod tests {
         let entry = &vm.resolver_pending[&cache_key];
         assert_eq!(entry.backend_failures, 2);
         assert!(entry.next_retry_at >= before + resolver_failure_backoff(2));
+    }
+
+    #[test]
+    fn retry_jitter_adds_at_most_a_quarter() {
+        let base = Duration::from_secs(8);
+        let delays: Vec<Duration> = (0..64).map(|_| with_retry_jitter(base)).collect();
+        assert!(delays
+            .iter()
+            .all(|delay| *delay >= base && *delay <= base + base / 4));
+        // Not every retry lands on the same instant.
+        assert!(delays.iter().any(|delay| *delay != delays[0]));
+        assert_eq!(with_retry_jitter(Duration::ZERO), Duration::ZERO);
     }
 
     #[test]
