@@ -1,0 +1,5 @@
+# Signed release fixtures: a signature covers exact bytes, so checkouts must
+# not convert their line endings.
+cli/tests/fixtures/selfhost/** -text
+cli/tests/fixtures/templates/** -text
+packages/arete/test/fixtures/** -text
