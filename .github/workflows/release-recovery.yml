@@ -467,20 +467,39 @@ jobs:
           BINARY_NAME: ${{ matrix.binary_name }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ matrix.release }}-v${{ inputs.version }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
         run: |
           release="$(gh release view "$RELEASE_TAG" --json assets)"
           if jq -e --arg name "$BINARY_NAME" 'any(.assets[]; .name == $name and .state == "uploaded" and .size > 0)' <<<"$release" >/dev/null; then
             gh release download "$RELEASE_TAG" --pattern "$BINARY_NAME" --dir .
             # Anyone who can edit the release can replace an asset. Only reuse
             # a binary this repository's release workflows built on main, on a
-            # GitHub-hosted runner; a binary without that attestation is never
-            # hashed into checksums.txt or signed.
+            # GitHub-hosted runner, from this release's tagged commit (a normal
+            # release) or from this recovery's source (an earlier attempt of
+            # it). Any other binary, including one from another release, is
+            # never hashed into checksums.txt or signed.
+            tag_sha="$(git ls-remote origin "refs/tags/$RELEASE_TAG^{}" | cut -f1)"
+            if [[ -z "$tag_sha" ]]; then
+              tag_sha="$(git ls-remote origin "refs/tags/$RELEASE_TAG" | cut -f1)"
+            fi
+            if [[ ! "$tag_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Cannot resolve the commit of $RELEASE_TAG"
+              exit 1
+            fi
             repo_pattern="${GITHUB_REPOSITORY//./\\.}"
-            if ! gh attestation verify "$BINARY_NAME" \
-              --repo "$GITHUB_REPOSITORY" \
-              --deny-self-hosted-runners \
-              --cert-identity-regex "^https://github\\.com/${repo_pattern}/\\.github/workflows/release-(please|recovery)\\.yml@refs/heads/main\$"; then
-              echo "$BINARY_NAME on $RELEASE_TAG has no valid build provenance from this repository's release workflows on main; refusing to reuse it"
+            verified=""
+            for source_digest in "$tag_sha" "$SOURCE_SHA"; do
+              if gh attestation verify "$BINARY_NAME" \
+                --repo "$GITHUB_REPOSITORY" \
+                --deny-self-hosted-runners \
+                --source-digest "$source_digest" \
+                --cert-identity-regex "^https://github\\.com/${repo_pattern}/\\.github/workflows/release-(please|recovery)\\.yml@refs/heads/main\$"; then
+                verified=1
+                break
+              fi
+            done
+            if [[ -z "$verified" ]]; then
+              echo "$BINARY_NAME on $RELEASE_TAG has no build provenance from this repository's release workflows on main for $tag_sha ($RELEASE_TAG) or $SOURCE_SHA (this recovery's source); refusing to reuse it"
               exit 1
             fi
             echo "exists=true" >> "$GITHUB_OUTPUT"
