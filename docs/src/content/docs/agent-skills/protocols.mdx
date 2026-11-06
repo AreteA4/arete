@@ -201,7 +201,7 @@ rpcUrl = "https://<your-rpc>"             # simulates balance changes
 
 [signer.policy]
 deployments = ["<deployment id>"]         # required: where it may sign
-maxSolPerTransaction = 0.05               # required: SOL out of the signer per transaction
+maxSolPerTransaction = 0.05               # required: SOL out of the signer per transaction and per step
 programs = ["<program id>"]               # optional: programs a transaction may invoke
 clusters = ["dev"]                        # optional; mainnet only when listed
 
@@ -215,36 +215,45 @@ policy, then signs, submits and waits. The policy checks are:
 
 - `deployments`: the deployment must be listed.
 - `clusters`: `dev` or `mainnet`. A deployment in a dev environment
-  (`dev: true`) is `dev`; a deployment on Arete settles on mainnet. When
+  (`dev: true`) is `dev`; a deployment on Arete settles on mainnet. With
+  `dev: true` the signer signs only for the environment's own deployment: a
+  `deployment` argument naming any other is refused. When
   `clusters` is omitted it is `dev`, so mainnet must always be listed
   explicitly. Configs written for earlier versions still load: `localnet` is
   read as `dev`, and `devnet` and `testnet` (which Arete does not run on) are
   ignored.
-- `programs`: when set, every program a transaction invokes must be listed.
-  The compute budget, memo, System, SPL Token, Token-2022 and associated
+- `programs`: when set, every program a transaction invokes must be listed,
+  including the programs invoked by CPI, which are read from the
+  simulation's inner instructions. A CPI whose program cannot be resolved,
+  or a simulation that returns no inner instructions, is refused. The
+  compute budget, memo, System, SPL Token, Token-2022 and associated
   token programs the transaction compiler adds are always allowed. What they
   move is bounded by the caps below.
-- `maxSolPerTransaction`: the SOL leaving the signer in each transaction, as
-  simulated. Wrapped SOL counts as SOL (wrapping is not an outflow, spending
-  wrapped SOL is), and so do the lamports of a token account the signer
-  closes to another account. If the change cannot be simulated (no
-  `rpcUrl`, a transaction that depends on an earlier one, or one that writes
-  more than 64 accounts), the step is refused.
-- `maxTokenAmounts`: each mint's outflow must be within its cap. An outflow
+- `maxSolPerTransaction`: the SOL leaving the signer in each transaction,
+  and in total over the step's transactions, as simulated. Wrapped SOL
+  counts as SOL (wrapping is not an outflow, spending wrapped SOL is), and so
+  do the lamports of a token account the signer closes to another account.
+  If the change cannot be simulated (no `rpcUrl`, a transaction that depends
+  on an earlier one, or one that writes more than 64 accounts), the step is
+  refused. Each transaction is simulated on its own against current state,
+  so a transaction that uses an account an earlier transaction of the step
+  writes is refused too.
+- `maxTokenAmounts`: each mint's outflow, per transaction and in total over
+  the step, must be within its cap. An outflow
   of a mint that is not listed is refused, so without this table no token
   may leave the signer. A token account handed to another owner counts as
   its whole balance leaving.
 - `authority`: instructions that hand control of the signer's funds to
   someone else are always refused: SPL Token and Token-2022 `Approve`,
   `ApproveChecked` and `SetAuthority`, Token-2022 extension instructions the
-  signer takes part in, System `Assign`, `AssignWithSeed` and `Allocate` of
-  the signer, nonce authority changes and withdrawals, stake authority
+  signer takes part in, System `Assign`, `AssignWithSeed`, `Allocate` and
+  `AllocateWithSeed` of the signer or an account derived from it, nonce authority changes and withdrawals, stake authority
   changes and withdrawals, and upgradeable-loader instructions. Top-level
   instructions are always read; inner (CPI) instructions are read when the
   RPC returns them from the simulation.
 
-The caps hold per transaction, not per step and not over time: a step of
-three transactions may move three times the cap, and so may three steps.
+The caps hold per transaction and per step, not over time: three steps may
+move three times the cap.
 
 The simulation reads the signer's accounts, then simulates at that slot or
 later. An account that changes between the two reads can skew the measured

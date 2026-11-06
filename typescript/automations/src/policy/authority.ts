@@ -4,7 +4,9 @@
  *
  * The policy's caps measure balance changes, and some instructions change no
  * balance yet give the funds away: a token delegation (`approve`), a new
- * owner or authority (`setAuthority`, System `assign`), or lamports leaving
+ * owner or authority (`setAuthority`, System `assign`, or `allocateWithSeed`
+ * and `assignWithSeed`, which give an account derived from the signer, and
+ * any lamports already in it, to another program), or lamports leaving
  * an account the signer controls that is not the signer's own (a nonce or
  * stake withdrawal). This module names those instructions in the System, SPL
  * Token, Token-2022, upgradeable loader and stake programs when the signer
@@ -76,7 +78,6 @@ const SYSTEM_ALLOWED = new Set([
   'transfer',
   'advanceNonce',
   'initializeNonce',
-  'allocateWithSeed',
   'upgradeNonce',
 ]);
 
@@ -239,6 +240,7 @@ function refusalReason(program: string, name: string): string | null {
     switch (name) {
       case 'assign':
       case 'assignWithSeed':
+      case 'allocateWithSeed':
         return 'changes the owner of an account the signer controls';
       case 'allocate':
         return "allocates data on the signer's account";

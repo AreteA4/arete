@@ -919,7 +919,14 @@
     {
       "expect": {
         "closedToOthers": [],
-        "findings": []
+        "findings": [
+          {
+            "inner": false,
+            "instruction": "allocateWithSeed",
+            "programId": "11111111111111111111111111111111",
+            "reason": "changes the owner of an account the signer controls"
+          }
+        ]
       },
       "input": {
         "kind": "topLevel",

@@ -894,7 +894,9 @@ impl ProtocolAgent {
         let mut target = self.target(args, None)?;
         target.rpc_url = simulation_rpc(&signer, &target);
         let deployment = self.deployment(&target, args, None).await?;
-        if let Err(refusal) = signer.check_target(&deployment, target.cluster) {
+        if let Err(refusal) = dev_deployment_binding(&target, &deployment)
+            .and_then(|()| signer.check_target(&deployment, target.cluster))
+        {
             return Ok(refused(&refusal, &deployment, target.cluster, None, None));
         }
         let wallet = signer.pubkey();
@@ -939,6 +941,27 @@ impl ProtocolAgent {
             .await?;
         result["summary"] = summary;
         Ok(result)
+    }
+}
+
+/// A dev target is labelled `dev` because its deployment runs in the dev
+/// environment. A deployment id passed alongside it may name any deployment,
+/// a mainnet one included, so the signer only signs for the environment's
+/// own deployment there.
+fn dev_deployment_binding(target: &Target, deployment: &str) -> Result<(), Refusal> {
+    let Some(dev) = &target.dev else {
+        return Ok(());
+    };
+    match dev.deployment() {
+        Ok(own) if own == deployment => Ok(()),
+        Ok(own) => Err(Refusal::new(
+            "clusters",
+            format!("deployment {deployment} is not the dev environment's deployment ({own}), so it is not known to be on the dev cluster; the signer signs only for the environment's own deployment in a dev target"),
+        )),
+        Err(_) => Err(Refusal::new(
+            "clusters",
+            format!("the dev environment has no deployment, so deployment {deployment} is not known to be on the dev cluster"),
+        )),
     }
 }
 

@@ -2281,6 +2281,893 @@
         "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
       },
       "name": "the second of two transactions over a cap"
+    },
+    {
+      "expect": {
+        "reason": "the step's transactions through transaction 1 move 0.02001 SOL out of the signer in total (wrapped SOL and closed token accounts included), over the 0.015 SOL cap",
+        "rule": "maxSolPerTransaction"
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 1989995000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 10000000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 10000000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.015"
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQwCAAAAgJaYAAAAAAA="
+            },
+            {
+              "index": 1,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQwCAAAAgJaYAAAAAAA="
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "two transactions within the SOL cap each and over it in total"
+    },
+    {
+      "expect": null,
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 1989995000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 10000000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "GgBaCs3NCBuZN12kCJgAW63ydqohFkHEdfdEXBPzLHq": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 10000000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.02001"
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQwCAAAAgJaYAAAAAAA="
+            },
+            {
+              "index": 1,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIAAQwCAAAAgJaYAAAAAAA="
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "two transactions within the SOL cap in total"
+    },
+    {
+      "expect": {
+        "reason": "the step's transactions through transaction 1 move 1200 base units of 2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9 out of the signer in total, over the cap of 1000",
+        "rule": "maxTokenAmounts"
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "3EKkiwNLWqoUbzFkPrmKbtUB4EweE6f4STzevYUmezeL": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "3EKkiwNLWqoUbzFkPrmKbtUB4EweE6f4STzevYUmezeL": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "3JF3sEqM796hk5WFqA6EtmEwJQ9quALszsfJyvXNQKy3": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05",
+          "maxTokenAmounts": {
+            "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9": "1000"
+          }
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            },
+            {
+              "index": 1,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISEhISIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiIiKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "two transactions within a token cap each and over it in total"
+    },
+    {
+      "expect": {
+        "reason": "transaction 1 uses 3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd, which an earlier transaction of the step writes, so its simulation against current state does not show its effect and the caps cannot be checked",
+        "rule": "maxSolPerTransaction"
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd": {
+              "data": [
+                "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "3AQTaduKvYWFTu1ExZSQK1hQp5jSZ2yEt4KzsASAufKd": {
+                "data": [
+                  "BpuIV/6rgYT7aH9jRhjANdrEOdwa6ztVmKDwAAAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAUBCDwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 3039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 1998995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.01"
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEC"
+            },
+            {
+              "index": 1,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEEAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDBt324ddloZPZy+FGzut5rBy0he1fWzeROoz1hX7/AKkHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwEDAwECAAEJ"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a transaction using an account an earlier one writes"
+    },
+    {
+      "expect": {
+        "reason": "transaction 0 invokes 3mg7sM6RFEBHiiFotFNfvteH1WdFcc9cujKuPaqZdfDz by CPI, which is not in the signer's programs allow-list",
+        "rule": "programs"
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [
+              {
+                "index": 0,
+                "instructions": [
+                  {
+                    "parsed": {
+                      "info": {
+                        "amount": "600",
+                        "authority": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                        "destination": "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv",
+                        "source": "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD"
+                      },
+                      "type": "transfer"
+                    },
+                    "program": "spl-token",
+                    "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                  },
+                  {
+                    "accounts": [
+                      "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD"
+                    ],
+                    "data": "",
+                    "programId": "3mg7sM6RFEBHiiFotFNfvteH1WdFcc9cujKuPaqZdfDz"
+                  }
+                ]
+              }
+            ],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05",
+          "maxTokenAmounts": {
+            "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9": "1000"
+          },
+          "programs": [
+            "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH"
+          ]
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a program invoked by CPI outside the allow-list"
+    },
+    {
+      "expect": null,
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [
+              {
+                "index": 0,
+                "instructions": [
+                  {
+                    "parsed": {
+                      "info": {
+                        "amount": "600",
+                        "authority": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                        "destination": "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv",
+                        "source": "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD"
+                      },
+                      "type": "transfer"
+                    },
+                    "program": "spl-token",
+                    "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                  },
+                  {
+                    "accounts": [
+                      "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD"
+                    ],
+                    "data": "",
+                    "programId": "3mg7sM6RFEBHiiFotFNfvteH1WdFcc9cujKuPaqZdfDz"
+                  }
+                ]
+              }
+            ],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05",
+          "maxTokenAmounts": {
+            "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9": "1000"
+          },
+          "programs": [
+            "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+            "3mg7sM6RFEBHiiFotFNfvteH1WdFcc9cujKuPaqZdfDz"
+          ]
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a program invoked by CPI in the allow-list"
+    },
+    {
+      "expect": {
+        "reason": "the programs transaction 0 invokes by CPI could not all be resolved from the simulation, so the programs allow-list cannot be checked",
+        "rule": "programs"
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAegDAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+              "data": [
+                "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2039280,
+              "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+            },
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 1000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv": {
+                "data": [
+                  "FBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA1gCAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 2039280,
+                "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+              },
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 999995000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [
+              {
+                "index": 0,
+                "instructions": [
+                  {
+                    "parsed": {
+                      "info": {
+                        "amount": "600",
+                        "authority": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi",
+                        "destination": "36VASLSKLFD2KokjXG7V28veZvXEsyHRKefLonPaAKzv",
+                        "source": "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD"
+                      },
+                      "type": "transfer"
+                    },
+                    "program": "spl-token",
+                    "programId": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+                  },
+                  {
+                    "accounts": [
+                      "32ZsJ2yJjwuoBiWE5xnZjG9tKmK3CubbmEzgkQLyQzgD"
+                    ],
+                    "data": "",
+                    "programId": "3mg7sM6RFEBHiiFotFNfvteH1WdFcc9cujKuPaqZdfDz"
+                  },
+                  {
+                    "accounts": [],
+                    "data": "",
+                    "programIdIndex": 99
+                  }
+                ]
+              }
+            ],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05",
+          "maxTokenAmounts": {
+            "2MNus2KCpxwXnp19iyXNpWSFtBD2UGjQBAL8AbtywfT9": "1000"
+          },
+          "programs": [
+            "3hkpj3dQevt4ad1JSx3ke1sWmMR3wYToMKfFLCnxtKuH",
+            "3mg7sM6RFEBHiiFotFNfvteH1WdFcc9cujKuPaqZdfDz"
+          ]
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAIFAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEeHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh4eHh8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fHx8fKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgG3fbh12Whk9nL4UbO63msHLSF7V9bN5E6jPWFfv8AqQcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHAQMEAAECBAEB"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "a CPI whose program is not resolved"
+    },
+    {
+      "expect": {
+        "reason": "transaction 0 has a `allocateWithSeed` instruction of 11111111111111111111111111111111 that changes the owner of an account the signer controls; the signer never signs those",
+        "rule": "authority"
+      },
+      "input": {
+        "chain": {
+          "accounts": {
+            "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+              "data": [
+                "",
+                "base64"
+              ],
+              "executable": false,
+              "lamports": 2000000000,
+              "owner": "11111111111111111111111111111111"
+            }
+          },
+          "simulation": {
+            "accounts": {
+              "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 1989995000,
+                "owner": "11111111111111111111111111111111"
+              },
+              "CktRuQ2mttgRGkXJtyksdKHjUdc2C4TgDzyB98oEzy8": {
+                "data": [
+                  "",
+                  "base64"
+                ],
+                "executable": false,
+                "lamports": 10000000,
+                "owner": "11111111111111111111111111111111"
+              }
+            },
+            "err": null,
+            "innerInstructions": [],
+            "logs": [
+              "Program log: ok"
+            ],
+            "slot": 101
+          },
+          "slot": 100
+        },
+        "deploymentId": "dep-1",
+        "policy": {
+          "clusters": [
+            "dev"
+          ],
+          "deployments": [
+            "dep-1"
+          ],
+          "maxSolPerTransaction": "0.05"
+        },
+        "prepared": {
+          "intent": {
+            "deployment": {
+              "deploymentId": "dep-1"
+            }
+          },
+          "transactions": [
+            {
+              "index": 0,
+              "transactionBase64": "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAEDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcBAgIBAAQJAAAA"
+            }
+          ]
+        },
+        "signer": "4vJ9JU1bJJE96FWSJKvHsmmFADCg4gpZQff4P3bkLKi"
+      },
+      "name": "an allocateWithSeed based on the signer"
     }
   ],
   "description": "check_prepared over the summary of a prepared step. `expect` is null or the refusal; compare `reason` unless `compareReason` is false.",
