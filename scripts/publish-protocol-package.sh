@@ -3,8 +3,17 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 package_dir="${1:-$root/typescript/protocol}"
-dry_run="${2:-}"
-[[ -z "$dry_run" || "$dry_run" == '--dry-run' ]] || { echo 'Expected --dry-run' >&2; exit 2; }
+shift || true
+# Remaining arguments ([--dry-run] [--tarball <file.tgz>]) go to publish-npm-package.sh.
+publish_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) publish_args+=(--dry-run); shift ;;
+    "") shift ;;
+    --tarball) [[ -n "${2:-}" ]] || { echo 'Expected --tarball <file.tgz>' >&2; exit 2; }; publish_args+=(--tarball "$2"); shift 2 ;;
+    *) echo 'Expected --dry-run or --tarball <file.tgz>' >&2; exit 2 ;;
+  esac
+done
 node "$root/scripts/check-protocol-release-dependency.mjs" "$package_dir"
 hash_version="$(node -e 'const fs = require("node:fs"); const path = require("node:path"); console.log(JSON.parse(fs.readFileSync(path.resolve(process.argv[1], "../hash/package.json"), "utf8")).version)' "$package_dir")"
 hash_status="$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' "https://registry.npmjs.org/@usearete%2fhash/$hash_version")"
@@ -12,14 +21,14 @@ hash_status="$(curl --silent --show-error --retry 3 --output /dev/null --write-o
 status="$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' 'https://registry.npmjs.org/@usearete%2fprotocol')"
 case "$status" in
   200)
-    env -u NPM_TOKEN -u NODE_AUTH_TOKEN "$root/scripts/publish-npm-package.sh" "$package_dir" "$dry_run"
+    env -u NPM_TOKEN -u NODE_AUTH_TOKEN "$root/scripts/publish-npm-package.sh" "$package_dir" ${publish_args[@]+"${publish_args[@]}"}
     ;;
   404)
     if [[ -z "${NPM_TOKEN:-}" ]]; then
       echo 'First protocol publish requires the repository NPM_TOKEN secret with package creation access. Configure it before releasing.' >&2
       exit 1
     fi
-    NODE_AUTH_TOKEN="$NPM_TOKEN" "$root/scripts/publish-npm-package.sh" "$package_dir" "$dry_run"
+    NODE_AUTH_TOKEN="$NPM_TOKEN" "$root/scripts/publish-npm-package.sh" "$package_dir" ${publish_args[@]+"${publish_args[@]}"}
     ;;
   *)
     echo "Cannot determine protocol package existence (HTTP $status); refusing to publish." >&2

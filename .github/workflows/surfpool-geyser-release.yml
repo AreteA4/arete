@@ -41,11 +41,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check that the Surfpool version is pinned
+      - name: Check the dispatch ref and that the Surfpool version is pinned
         id: pin
         env:
           SURFPOOL_VERSION: ${{ inputs.surfpool_version }}
         run: |
+          # The build scripts and pins come from the dispatched ref, and the
+          # result is signed with the release key: only main may do that.
+          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
+            echo "::error::Dispatch this workflow from main, not $GITHUB_REF"
+            exit 1
+          fi
           if [[ ! "$SURFPOOL_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error::surfpool_version must be X.Y.Z, got '$SURFPOOL_VERSION'"
             exit 1
@@ -128,6 +134,7 @@ jobs:
     name: Sign and publish
     needs: [check, build]
     runs-on: ubuntu-latest
+    environment: oss-release-publication
     permissions:
       contents: write
     steps:
