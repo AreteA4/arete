@@ -195,32 +195,54 @@ impl TemplateManager {
         verify::verify_sha256_bytes(&checksums, tarball, &self.tarball_name())
             .context("The template download failed verification; nothing was extracted")?;
 
-        if self.cache_dir.exists() {
-            fs::remove_dir_all(&self.cache_dir).with_context(|| {
-                format!("Failed to remove cache directory: {:?}", self.cache_dir)
-            })?;
-        }
-        fs::create_dir_all(&self.cache_dir)
-            .with_context(|| format!("Failed to create cache directory: {:?}", self.cache_dir))?;
-        let extracted = self
-            .extract_tarball(tarball)
+        // Extract into a private directory and publish it with one rename, so
+        // a concurrent `a4 create` never sees a partial cache or loses the
+        // one it is copying from.
+        let parent = self
+            .cache_dir
+            .parent()
+            .context("Template cache directory has no parent")?;
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create cache directory: {:?}", parent))?;
+        let staging = parent.join(format!(".{}-{}", self.version, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&staging)
+            .with_context(|| format!("Failed to create cache directory: {:?}", staging))?;
+        let extracted = Self::extract_tarball(&staging, tarball)
             .context("Failed to extract templates")
             .and_then(|()| {
-                let version_file = self.cache_dir.join(".version");
+                let version_file = staging.join(".version");
                 fs::write(&version_file, &self.version)
                     .with_context(|| format!("Failed to write version file: {:?}", version_file))
             });
-        if extracted.is_err() {
+        if let Err(error) = extracted {
+            let _ = fs::remove_dir_all(&staging);
+            return Err(error);
+        }
+        if self.is_cached() {
+            // Another download published first; it holds the same files.
+            let _ = fs::remove_dir_all(&staging);
+            return Ok(());
+        }
+        if self.cache_dir.exists() {
+            // Left incomplete by an older CLI: no `.version`, never in use.
             let _ = fs::remove_dir_all(&self.cache_dir);
         }
-        extracted
+        if let Err(error) = fs::rename(&staging, &self.cache_dir) {
+            let _ = fs::remove_dir_all(&staging);
+            if !self.is_cached() {
+                return Err(error).with_context(|| {
+                    format!("Failed to publish templates to {:?}", self.cache_dir)
+                });
+            }
+        }
+        Ok(())
     }
 
-    /// Extract a gzipped tarball to the cache directory. Only regular files
+    /// Extract a gzipped tarball into `destination`. Only regular files
     /// and directories at relative paths without `..` are accepted; any
     /// other entry (a link, a device, an absolute or escaping path) fails
     /// the extraction.
-    fn extract_tarball<R: Read>(&self, reader: R) -> Result<()> {
+    fn extract_tarball<R: Read>(destination: &Path, reader: R) -> Result<()> {
         let decoder = GzDecoder::new(reader);
         let mut archive = Archive::new(decoder);
 
@@ -267,7 +289,7 @@ impl TemplateManager {
                 continue;
             }
 
-            let dest = self.cache_dir.join(&relative);
+            let dest = destination.join(&relative);
 
             if entry_type.is_dir() {
                 fs::create_dir_all(&dest)
@@ -555,6 +577,35 @@ mod tests {
     }
 
     #[test]
+    fn a_complete_cache_is_never_replaced_and_no_staging_is_left() {
+        let (_dir, manager) = manager("0.0.0-test");
+        fs::create_dir_all(&manager.cache_dir).unwrap();
+        fs::write(manager.cache_dir.join(".version"), "0.0.0-test").unwrap();
+        fs::write(manager.cache_dir.join("in-use"), "copying\n").unwrap();
+        install(
+            &manager,
+            &fixture("arete-templates-v0.0.0-test.tar.gz"),
+            TEST_PUBLIC_KEY,
+        )
+        .unwrap();
+        assert!(manager.cache_dir.join("in-use").exists());
+        let parent = manager.cache_dir.parent().unwrap();
+        assert_eq!(fs::read_dir(parent).unwrap().count(), 1, "no staging left");
+
+        // A cache without `.version` was never published: it is replaced.
+        fs::remove_file(manager.cache_dir.join(".version")).unwrap();
+        install(
+            &manager,
+            &fixture("arete-templates-v0.0.0-test.tar.gz"),
+            TEST_PUBLIC_KEY,
+        )
+        .unwrap();
+        assert!(!manager.cache_dir.join("in-use").exists());
+        assert!(manager.is_cached());
+        assert_eq!(fs::read_dir(parent).unwrap().count(), 1, "no staging left");
+    }
+
+    #[test]
     fn a_tampered_or_unsigned_template_tarball_is_rejected() {
         let mut tampered = fixture("arete-templates-v0.0.0-test.tar.gz");
         let last = tampered.len() - 1;
@@ -638,7 +689,8 @@ mod tests {
             crafted("ore-react/fifo", tar::EntryType::Fifo, ""),
         ];
         for archive in cases {
-            let error = manager.extract_tarball(&archive[..]).unwrap_err();
+            let error =
+                TemplateManager::extract_tarball(&manager.cache_dir, &archive[..]).unwrap_err();
             assert!(
                 error.to_string().contains("template archive entry"),
                 "{error:#}"
