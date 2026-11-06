@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.7.1](https://github.com/AreteA4/arete/compare/arete-auth-v0.7.0...arete-auth-v0.7.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **auth:** verify JWKS-URL tokens against the fetched keys only ([efb8a13](https://github.com/AreteA4/arete/commit/efb8a1348b6103f578b92519a3548836a5211a90))
+* **auth:** verify JWKS-URL tokens against the fetched keys only ([c944055](https://github.com/AreteA4/arete/commit/c944055ccf7c688c805617488d8f1e4ec2d58f52))
+
 ## [0.7.0](https://github.com/AreteA4/arete/compare/arete-auth-v0.6.0...arete-auth-v0.7.0) (2026-10-27)
 
 

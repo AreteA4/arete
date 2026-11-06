@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.53.1](https://github.com/AreteA4/arete/compare/arete-server-v0.53.0...arete-server-v0.53.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **server:** authorise live frames by their publication scope; key snapshots to the row-scope policy ([733b5f0](https://github.com/AreteA4/arete/commit/733b5f0b4a06217eb2c1a37a2db42e4ca351f337))
+* **server:** authorise live row-scoped frames by their publication scope ([f4b5b40](https://github.com/AreteA4/arete/commit/f4b5b406b0d855ded0069659bd59a9060bbcf8ca))
+* **server:** bound request bodies, upstream reads and WebSocket handshakes ([35ad416](https://github.com/AreteA4/arete/commit/35ad41617221da05b41ee1b8f615cff053abcb18))
+* **server:** bound request bodies, upstream reads and WebSocket handshakes ([b784ab6](https://github.com/AreteA4/arete/commit/b784ab66859583adf01ac1ba5778dda3d3dbd6c1))
+* **server:** bound WebSocket auth by the handshake deadline and hold pending slots until registration ([fe10372](https://github.com/AreteA4/arete/commit/fe10372888e3a1e2bd3d7e16e9dc729a983af1cf))
+* **server:** keep the read RPC URL out of chain-read error responses ([a8ec1f5](https://github.com/AreteA4/arete/commit/a8ec1f519d118b65bcc8266e04554737b7b6f485))
+* **server:** keep the read RPC URL out of chain-read error responses ([c910b1d](https://github.com/AreteA4/arete/commit/c910b1dc2ca49c95842b9b76af02ab03929c5c04))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.53.0 to 0.53.1
+    * arete-auth bumped from 0.7.0 to 0.7.1
+
 ## [0.53.0](https://github.com/AreteA4/arete/compare/arete-server-v0.52.0...arete-server-v0.53.0) (2026-11-05)
 
 

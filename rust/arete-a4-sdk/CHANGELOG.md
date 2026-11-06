@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.53.1](https://github.com/AreteA4/arete/compare/arete-sdk-v0.53.0...arete-sdk-v0.53.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **deps:** move TLS clients onto patched rustls-webpki and webpki-roots ([a38ffe5](https://github.com/AreteA4/arete/commit/a38ffe55e8c9514ce9d3b779d9269ac6973296fd))
+* **deps:** move TLS clients onto patched rustls-webpki and webpki-roots ([4885e2b](https://github.com/AreteA4/arete/commit/4885e2b1fb616b3ce56ee9d151ffdc44166611f6))
+
 ## [0.53.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.52.0...arete-sdk-v0.53.0) (2026-11-05)
 
 

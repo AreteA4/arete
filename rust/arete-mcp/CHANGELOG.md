@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.53.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.53.0...arete-mcp-v0.53.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **mcp:** harden the local signer policy across multi-transaction steps, CPI callees, dev targets and seeded allocations ([b3855b3](https://github.com/AreteA4/arete/commit/b3855b38773751747d9ea7b71a457a9365cc6997))
+* **mcp:** local signer policy holds across multi-transaction steps, CPI callees, dev targets and seeded allocations ([3781d4e](https://github.com/AreteA4/arete/commit/3781d4e591e3d91f59a33fe252cf133877fde71d))
+
 ## [0.53.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.52.0...arete-mcp-v0.53.0) (2026-11-05)
 
 

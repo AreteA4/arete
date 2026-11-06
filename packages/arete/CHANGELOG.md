@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.53.1](https://github.com/AreteA4/arete/compare/a4-npm-v0.53.0...a4-npm-v0.53.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* unsigned templates, unbound release tags and installers that ran unverified binaries ([63210de](https://github.com/AreteA4/arete/commit/63210de5991f90b4e2808dc2aa3a86582a333ccc))
+* verify templates and release tags; installers never run an unverified binary ([21052bf](https://github.com/AreteA4/arete/commit/21052bfa82e73bcda21be49708111f2f5fb4c48c))
+
 ## [0.53.0](https://github.com/AreteA4/arete/compare/a4-npm-v0.52.0...a4-npm-v0.53.0) (2026-11-05)
 
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.53.1](https://github.com/AreteA4/arete/compare/arete-automations-v0.53.0...arete-automations-v0.53.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **mcp:** harden the local signer policy across multi-transaction steps, CPI callees, dev targets and seeded allocations ([b3855b3](https://github.com/AreteA4/arete/commit/b3855b38773751747d9ea7b71a457a9365cc6997))
+* **mcp:** local signer policy holds across multi-transaction steps, CPI callees, dev targets and seeded allocations ([3781d4e](https://github.com/AreteA4/arete/commit/3781d4e591e3d91f59a33fe252cf133877fde71d))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.53.0 to ^0.53.1
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.53.0 to ^0.53.1
+
 ## [0.53.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.52.0...arete-automations-v0.53.0) (2026-11-05)
 
 
