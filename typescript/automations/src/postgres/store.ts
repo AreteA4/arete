@@ -382,6 +382,24 @@ export function postgresStore(executor: PgQueryable, options: PostgresStoreOptio
         await ready();
         try {
           return await atomic(async (db) => {
+            if (input.consent) {
+              // Every grant that could cover the job, locked so a concurrent
+              // revoke or replacement (which locks them for update) is ordered
+              // before or after this transition, never in between.
+              const { wallet, deploymentId, step, instanceId, nonce } = input.consent;
+              const { rows } = await db.query(
+                `SELECT * FROM ${s}.consents
+                 WHERE wallet = $1 AND deployment_id = $2 AND (instance_id = '' OR instance_id = $3)
+                 FOR SHARE`,
+                [wallet, deploymentId, instanceId ?? ''],
+              );
+              // The grant consent.find would return now.
+              const active = rows.filter(
+                (row) => row.steps.includes(step) && row.revoked_at === null && num(row.expires_at) > input.now,
+              );
+              const row = active.find((candidate) => candidate.instance_id !== '') ?? active[0];
+              if (!row || rowToGrant(row).proof?.nonce !== nonce) return false;
+            }
             const result = await db.query(
               `UPDATE ${s}.jobs SET
                  state = $4,

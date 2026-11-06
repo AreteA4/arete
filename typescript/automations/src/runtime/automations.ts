@@ -965,15 +965,41 @@ export function createAutomations<TTypes extends ProtocolTypeMap = ProtocolTypeM
         index,
         amounts: Object.fromEntries([...amounts].map(([asset, amount]) => [asset, amount.toString()])),
       }));
-      const saved = await advance(job, 'signed', { args: job.progress.args, format, intent, prepared: baseline, signed, outflows: perTransaction, signedAt: clock.now() }, {
-        record: [...outflows].map(([asset, amount]) => ({
+      // The signatures are kept only if the grant checked above is still the
+      // active one, checked atomically with the move to `signed`: a revoke
+      // (or new grant) that lands while the signer runs discards them unsent.
+      const progress = { args: job.progress.args, format, intent, prepared: baseline, signed, outflows: perTransaction, signedAt: clock.now() };
+      const kept = await store.jobs.transition(job.id, {
+        worker,
+        from: job.state,
+        to: 'signed',
+        now: clock.now(),
+        keepLease: leaseUntil(),
+        progress,
+        ledger: {
+          record: [...outflows].map(([asset, amount]) => ({
+            wallet,
+            deploymentId: job.deploymentId,
+            asset,
+            amount: amount.toString(),
+          })),
+        },
+        consent: {
           wallet,
           deploymentId: job.deploymentId,
-          asset,
-          amount: amount.toString(),
-        })),
+          step: request.step,
+          instanceId: request.instance ?? null,
+          nonce: grant.proof.nonce,
+        },
       });
-      return submit(saved);
+      if (!kept) {
+        if ((await consentFor(job))?.proof.nonce === grant.proof.nonce) throw new LostLease();
+        return finish(job, 'skipped', {
+          code: 'no_consent',
+          reason: 'consent was revoked or replaced while the step was signed; its signatures were discarded',
+        });
+      }
+      return submit({ ...job, state: 'signed', progress: { ...job.progress, ...progress } });
     };
 
     /** Submit a `signed` job's saved transactions, then track the intent. */

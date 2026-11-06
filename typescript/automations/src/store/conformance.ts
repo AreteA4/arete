@@ -328,6 +328,54 @@ export function runStoreConformance(
       expect((await store.consent.find(query))?.instanceId).toBeNull();
     });
 
+    it('makes a transition conditional on a consent grant still being the active one', async () => {
+      const store = await createStore();
+      await store.consent.put(grantFor('alice', { proof: { message: 'm', signature: 's', nonce: 'broad', issuedAt: T0 } }));
+      const [id] = await seedSteps(store, 'd1', [step('d1', 'alice')]);
+      await store.jobs.claimNext({ worker: 'w1', leaseMs: LEASE, now: T0 });
+      const consent = { wallet: 'alice', deploymentId: 'dep-1', step: 'deposit', instanceId: 'inst-1', nonce: 'broad' };
+      const record = { record: [{ wallet: 'alice', deploymentId: 'dep-1', asset: 'SOL', amount: '5000' }] };
+      const sign = (now: number, condition = consent) =>
+        store.jobs.transition(id!, {
+          worker: 'w1',
+          from: 'running',
+          to: 'signed',
+          now,
+          keepLease: { until: T0 + LEASE },
+          progress: { signed: ['AAAA'] },
+          ledger: record,
+          consent: condition,
+        });
+      const unchanged = async () => {
+        const job = (await store.jobs.get(id!)) as StepJob;
+        expect(job.state).toBe('running');
+        expect(job.progress.signed).toBe(undefined);
+        expect(await store.ledger.spent({ wallet: 'alice', deploymentId: 'dep-1', asset: 'SOL', since: T0 })).toBe(0n);
+      };
+      // Not the grant's nonce, past its expiry, or a step it does not cover.
+      expect(await sign(T0 + 1, { ...consent, nonce: 'other' })).toBe(false);
+      expect(await sign(T0 + 1000)).toBe(false);
+      expect(await sign(T0 + 1, { ...consent, step: 'claim' })).toBe(false);
+      await unchanged();
+      // An instance's own grant takes precedence over the grant for every instance.
+      await store.consent.put(
+        grantFor('alice', { instanceId: 'inst-1', proof: { message: 'm', signature: 's', nonce: 'scoped', issuedAt: T0 } }),
+      );
+      expect(await sign(T0 + 1)).toBe(false);
+      await unchanged();
+      expect(await store.consent.revoke({ wallet: 'alice', deploymentId: 'dep-1', instanceId: 'inst-1', now: T0 + 1 })).toBe(1);
+      // Revoking the step stops the transition; revoking another step does not.
+      expect(await store.consent.revoke({ wallet: 'alice', deploymentId: 'dep-1', steps: ['withdraw'], now: T0 + 1 })).toBe(1);
+      expect(await store.consent.revoke({ wallet: 'alice', deploymentId: 'dep-1', steps: ['deposit'], now: T0 + 1 })).toBe(1);
+      expect(await sign(T0 + 2)).toBe(false);
+      await unchanged();
+      await store.consent.put(grantFor('alice', { proof: { message: 'm', signature: 's', nonce: 'broad', issuedAt: T0 } }));
+      expect(await sign(T0 + 2)).toBe(true);
+      const job = (await store.jobs.get(id!)) as StepJob;
+      expect(job.state).toBe('signed');
+      expect(await store.ledger.spent({ wallet: 'alice', deploymentId: 'dep-1', asset: 'SOL', since: T0 })).toBe(5000n);
+    });
+
     it('lists the active grants of a deployment for fan-out', async () => {
       const store = await createStore();
       await store.consent.put(grantFor('alice'));

@@ -139,6 +139,14 @@ export interface TransitionInput {
     readonly void?: boolean;
     readonly keepAssets?: readonly string[];
   };
+  /**
+   * Make the transition only while the grant identified by `nonce` (its
+   * proof's nonce) is still the one `consent.find` returns for this query at
+   * the transition's `now`: not revoked, not expired and not replaced. It is
+   * checked in the same atomic step, so a revoke that finishes first always
+   * stops the transition. `false` otherwise, writing nothing.
+   */
+  readonly consent?: Omit<ConsentQuery, 'now'> & { readonly nonce: string };
 }
 
 /**
@@ -151,6 +159,7 @@ export interface TransitionInput {
  * - compare-and-set transitions, by state and lease holder;
  * - completing a delivery job and enqueuing its step jobs atomically;
  * - ledger writes atomic with the job transition they belong to;
+ * - transitions conditional on a consent grant, atomic with its revocation;
  * - single-use consent nonces;
  * - compare-and-set on view-source state, with its delivery in the same step.
  *

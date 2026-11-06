@@ -181,6 +181,80 @@ describe('the step pipeline', () => {
     expect(h.fake.submitCalls).toHaveLength(0);
   });
 
+  it('discards the signatures of a step whose consent is revoked while it is signed, and signs nothing queued after', async () => {
+    let signs = 0;
+    const revoking: ProtocolSigner = {
+      ...walletsSigner(),
+      async signTransactions(input) {
+        signs += 1;
+        // The revoke lands after the last pre-signing check, while the signer runs.
+        await h.automations.consent.revoke({ wallet: ALICE });
+        return walletsSigner().signTransactions(input);
+      },
+    };
+    const h = harness({}, { signer: revoking });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    // Two runs queued for the wallet before any is signed.
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 'a' });
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 'b' });
+    await h.automations.drain();
+    expect(signs).toBe(1);
+    expect(h.outcomes.map((outcome) => [outcome.state, outcome.code, outcome.reason])).toEqual([
+      ['skipped', 'no_consent', 'consent was revoked or replaced while the step was signed; its signatures were discarded'],
+      ['skipped', 'no_consent', 'no active consent for deposit'],
+    ]);
+    expect(h.fake.submitCalls).toHaveLength(0);
+    expect(await h.store.ledger.list({ wallet: ALICE })).toEqual([]);
+    for (const job of await h.stepJobs()) expect(job.progress.signed).toBe(undefined);
+    expect(h.errors).toHaveLength(0);
+  });
+
+  it('discards the signatures of a step whose consent is replaced while it is signed', async () => {
+    const replacing: ProtocolSigner = {
+      ...walletsSigner(),
+      async signTransactions(input) {
+        // A new grant (say, lower limits) replaces the one the step was checked against.
+        await h.store.consent.put(
+          storedGrant(ALICE, h.clock.now(), { proof: { message: '', signature: '', nonce: 'replacement', issuedAt: h.clock.now() } }),
+        );
+        return walletsSigner().signTransactions(input);
+      },
+    };
+    const h = harness({}, { signer: replacing });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.outcomes[0]).toMatchObject({ state: 'skipped', code: 'no_consent' });
+    expect(h.fake.submitCalls).toHaveLength(0);
+    expect(await h.store.ledger.list({ wallet: ALICE })).toEqual([]);
+  });
+
+  it('treats a lost lease at signing as a lost lease, not a revocation', async () => {
+    const base = memoryStore();
+    let dropSigned = true;
+    const store: AutomationStore = {
+      ...base,
+      jobs: {
+        ...base.jobs,
+        transition: async (id, input) => {
+          if (input.to === 'signed' && dropSigned) {
+            dropSigned = false;
+            return false;
+          }
+          return base.jobs.transition(id, input);
+        },
+      },
+    };
+    const h = harness({}, { store });
+    await h.grant(ALICE);
+    onDeposits(h.automations);
+    await h.automations.dispatch('deposits', { wallets: [ALICE] }, { id: 't' });
+    await h.automations.drain();
+    expect(h.outcomes.filter((outcome) => outcome.code === 'no_consent')).toHaveLength(0);
+  });
+
   it('treats a guard rejection as a normal outcome', async () => {
     const h = harness({
       allowed: (step) => (step === 'deposit' ? { step, allowed: false, reason: 'raise_closed' } : { step, allowed: true }),

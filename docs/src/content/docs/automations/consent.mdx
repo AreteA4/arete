@@ -101,7 +101,10 @@ await automations.consent.revoke({ wallet, steps: ["buy"] });     // some steps
 ```
 
 Revoking needs no wallet signature and takes effect before the next step
-signs, including steps already queued. Expose it only to the signed-in user
+signs, including steps already queued. A step that is being signed when the
+revoke lands keeps its signatures only if its consent is still active when
+it is recorded as signed, checked atomically in the store; otherwise they
+are discarded unsent and the step ends `skipped` with `no_consent`. Expose it only to the signed-in user
 (through your app's own authentication), or anyone could stop someone else's
 automations. A consent scoped to one instance also ends when that instance
 finishes.
