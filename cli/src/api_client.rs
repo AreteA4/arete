@@ -188,7 +188,7 @@ pub const REGISTRY_SIGNATURES_HEADER: &str = "X-Arete-Registry-Signatures";
 
 /// The signature formats this build verifies (see
 /// [`crate::registry_signatures`]), sent as [`REGISTRY_SIGNATURES_HEADER`].
-pub const REGISTRY_SIGNATURE_VERSIONS: &str = "v1";
+pub const REGISTRY_SIGNATURE_VERSIONS: &str = "v1,v2";
 
 /// The HTTP client behind [`ApiClient`]: every request carries [`USER_AGENT`].
 fn http_client() -> reqwest::blocking::Client {
@@ -4109,16 +4109,43 @@ mod agent_tests {
         assert_eq!(req.header("authorization"), Some("Bearer a4_ak_me"));
     }
 
-    fn signed_protocol_descriptor(signatures: Option<serde_json::Value>) -> String {
-        let mut descriptor = serde_json::json!({
+    fn protocol_descriptor() -> serde_json::Value {
+        serde_json::json!({
             "kind": "protocol",
             "alias": "tip-jar",
             "package": "tip-jar",
             "version": "1.0.0",
             "packageReleaseHash": "arete:registry-package-release:v2:sha256:aa",
+            "protocol": {
+                "protocolReleaseHash": "arete:h1:protocol-release:sha256:01",
+                "protocolSpecHash": "arete:h1:protocol-spec:sha256:02",
+                "deployment": { "deploymentId": "dep-1" }
+            },
             "stacks": [],
             "programs": []
-        });
+        })
+    }
+
+    /// The release content descriptor the registry signs for
+    /// [`protocol_descriptor`].
+    fn protocol_release_content() -> serde_json::Value {
+        serde_json::json!({
+            "schema": crate::registry_signatures::content::RELEASE_CONTENT_SCHEMA,
+            "kind": "protocol",
+            "owner": "public",
+            "package": "tip-jar",
+            "version": "1.0.0",
+            "packageReleaseHash": "arete:registry-package-release:v2:sha256:aa",
+            "artifacts": [
+                { "role": "protocol-release", "hash": "arete:h1:protocol-release:sha256:01" },
+                { "role": "protocol-spec", "hash": "arete:h1:protocol-spec:sha256:02" },
+                { "role": "deployment", "hash": "dep-1" }
+            ]
+        })
+    }
+
+    fn signed_protocol_descriptor(signatures: Option<serde_json::Value>) -> String {
+        let mut descriptor = protocol_descriptor();
         if let Some(signatures) = signatures {
             descriptor["signatures"] = signatures;
         }
@@ -4127,22 +4154,31 @@ mod agent_tests {
 
     #[test]
     fn install_descriptors_have_their_signatures_checked_and_removed() {
-        use crate::registry_signatures::tests::{key_entry, keys_document, sign, signing_key};
+        use crate::registry_signatures::tests::{
+            key_entry, keys_document, sign, sign_content, signing_key,
+        };
         let key = signing_key(9);
         let signature = sign(
             "arete-1",
             &key,
             "arete:registry-package-release:v2:sha256:aa",
         );
+        let mut descriptor = protocol_descriptor();
+        descriptor["signatures"] = serde_json::json!([signature]);
+        descriptor["releaseContent"] = protocol_release_content();
+        descriptor["contentSignatures"] =
+            serde_json::json!([sign_content("arete-1", &key, &protocol_release_content())]);
+        // The same response with its deployment swapped: the signatures
+        // still verify, but the release content no longer matches.
+        let mut swapped = descriptor.clone();
+        swapped["protocol"]["deployment"]["deploymentId"] = serde_json::json!("dep-2");
         let server = MockServer::json_sequence(vec![
-            (
-                200,
-                signed_protocol_descriptor(Some(serde_json::json!([signature]))),
-            ),
+            (200, descriptor.to_string()),
             (
                 200,
                 keys_document(vec![key_entry("arete-1", &key, None)]).to_string(),
             ),
+            (200, swapped.to_string()),
         ]);
         let cache = tempfile::tempdir().unwrap();
         let trust = cache.path().join("trusted-keys.json");
@@ -4157,19 +4193,24 @@ mod agent_tests {
         crate::registry_signatures::TEST_REQUIRE.with(|require| require.set(Some(true)));
         let client = ApiClient::with_base_url(server.base_url()).with_api_key("a4_sk_me".into());
         let descriptor = client.get_registry_protocol_install("tip-jar");
+        let swapped = client.get_registry_protocol_install("tip-jar");
         crate::registry_signatures::TEST_REQUIRE.with(|require| require.set(Some(false)));
         crate::registry_signatures::TEST_CACHE_FILE.with(|file| *file.borrow_mut() = None);
 
         crate::registry_signatures::TEST_TRUST_FILE.with(|file| *file.borrow_mut() = None);
         let descriptor = descriptor.expect("a valid signature passes when required");
         assert!(descriptor.get("signatures").is_none());
+        assert!(descriptor.get("releaseContent").is_none());
+        assert!(descriptor.get("contentSignatures").is_none());
+        let error = swapped.unwrap_err().to_string();
+        assert!(error.contains("deployment - is dep-2"), "{error}");
         let install = server.request();
         assert!(install
             .request_line
             .starts_with("GET /api/registry/protocols/tip-jar/install"));
         // Logged in: the key goes with registry requests.
         assert_eq!(install.header("authorization"), Some("Bearer a4_sk_me"));
-        assert_eq!(install.header("x-arete-registry-signatures"), Some("v1"));
+        assert_eq!(install.header("x-arete-registry-signatures"), Some("v1,v2"));
         assert_eq!(install.header("user-agent"), Some(USER_AGENT));
         assert_eq!(
             server.request().request_line,
@@ -4193,7 +4234,10 @@ mod agent_tests {
 
         assert!(warned.is_ok());
         let error = refused.unwrap_err().to_string();
-        assert!(error.contains("no signature for tip-jar@1.0.0"), "{error}");
+        assert!(
+            error.contains("no signed release content for tip-jar@1.0.0"),
+            "{error}"
+        );
         assert!(
             error.contains(crate::registry_signatures::REQUIRE_SIGNATURES_ENV),
             "{error}"
@@ -4229,7 +4273,7 @@ mod agent_tests {
         ] {
             let request = server.request();
             assert!(request.request_line.starts_with(path), "{request:?}");
-            assert_eq!(request.header("x-arete-registry-signatures"), Some("v1"));
+            assert_eq!(request.header("x-arete-registry-signatures"), Some("v1,v2"));
             assert_eq!(request.header("user-agent"), Some(USER_AGENT));
         }
         // A response that is never signature-checked does not ask for

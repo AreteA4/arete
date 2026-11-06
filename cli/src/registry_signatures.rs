@@ -1,11 +1,21 @@
 //! Signed registry package releases.
 //!
-//! The registry signs each package release's identity (its
-//! `packageReleaseHash`) with Ed25519 and returns the signatures beside it,
-//! as `signatures: [{ keyId, signature }]`, on every package release entry
-//! of an install descriptor or resolve result. Each key signs the UTF-8
-//! message `arete.registry-package-release/v1\n<keyId>\n<packageReleaseHash>`;
-//! the signature is 64 bytes, padded standard base64.
+//! Every package release entry of an install descriptor or resolve result
+//! carries two kinds of Ed25519 signature by the registry keys:
+//!
+//! * `signatures: [{ keyId, signature }]` over the release identity alone:
+//!   the UTF-8 message `arete.registry-package-release/v1\n<keyId>\n<packageReleaseHash>`.
+//!   a4 cannot recompute that identity, so this signature does not bind the
+//!   artifacts a response carries; it is only checked in the warning-only
+//!   mode, against registries that predate content signatures.
+//! * `contentSignatures: [{ keyId, signature }]` over the digest of the
+//!   entry's `releaseContent` descriptor (kind, owner, package, version,
+//!   release identity and every artifact hash): the message
+//!   `arete.registry-package-release/v2\n<keyId>\n<digest>`. a4 recomputes the
+//!   digest and checks the descriptor against what the response installs;
+//!   see [`content`].
+//!
+//! Signatures are 64 bytes, padded standard base64.
 //!
 //! Trust anchors come from `cli/registry-keys.json` compiled into `a4`, or an
 //! explicitly provisioned `ARETE_REGISTRY_TRUSTED_KEYS_FILE`. Registry key
@@ -13,9 +23,13 @@
 //! introduce authorities or replace public keys. Strict verification requires
 //! a current key: unsigned publication times cannot revive a retired authority.
 //!
-//! Signatures are required by default when trust anchors are provisioned.
-//! Empty bootstrap builds warn until pins are installed. Setting
-//! `ARETE_REQUIRE_REGISTRY_SIGNATURES=1` always requires verification.
+//! Signatures are required by default when trust anchors are provisioned:
+//! then every release entry needs a valid content signature that matches
+//! the response. Empty bootstrap builds warn until pins are installed.
+//! Setting `ARETE_REQUIRE_REGISTRY_SIGNATURES=1` always requires
+//! verification; `0` turns refusals into warnings.
+
+pub mod content;
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
@@ -263,6 +277,18 @@ pub fn verify_release(
     published_at: Option<&str>,
     keys: &KeySet,
 ) -> Verdict {
+    verify_signed(signed_message, identity, signatures, published_at, keys)
+}
+
+/// Check `signatures` over the message `message(keyId, signed)` against
+/// `keys`.
+fn verify_signed(
+    message: fn(&str, &str) -> String,
+    signed: &str,
+    signatures: Option<&Value>,
+    published_at: Option<&str>,
+    keys: &KeySet,
+) -> Verdict {
     let signatures = match signatures {
         None | Some(Value::Null) => return Verdict::Unsigned,
         Some(Value::Array(signatures)) if signatures.is_empty() => return Verdict::Unsigned,
@@ -301,7 +327,7 @@ pub fn verify_release(
             unknown.push(key_id.to_string());
             continue;
         };
-        let message = signed_message(key_id, identity);
+        let message = message(key_id, signed);
         if trusted
             .key
             .verify_strict(message.as_bytes(), &Signature::from_bytes(&bytes))
@@ -349,12 +375,20 @@ pub enum ReleaseShape {
     ProgramInstall,
 }
 
-fn release_object(object: &mut Map<String, Value>, f: &mut dyn FnMut(&mut Map<String, Value>)) {
+/// Called on each package release entry with what the response installs
+/// for that release.
+type ReleaseVisitor<'a> = dyn FnMut(&mut Map<String, Value>, content::Observed) + 'a;
+
+fn release_object(
+    object: &mut Map<String, Value>,
+    observed: content::Observed,
+    f: &mut ReleaseVisitor<'_>,
+) {
     if object
         .get("packageReleaseHash")
         .is_some_and(Value::is_string)
     {
-        f(object);
+        f(object, observed);
     }
 }
 
@@ -367,19 +401,16 @@ fn each_mut(value: &mut Value, key: &str, mut f: impl FnMut(&mut Value)) {
 }
 
 /// Call `f` on every package release entry of `value`.
-fn for_each_release(
-    value: &mut Value,
-    shape: ReleaseShape,
-    f: &mut dyn FnMut(&mut Map<String, Value>),
-) {
+fn for_each_release(value: &mut Value, shape: ReleaseShape, f: &mut ReleaseVisitor<'_>) {
     match shape {
         ReleaseShape::ResolveResponse => each_mut(value, "dependencies", |dependency| {
             for_each_release(dependency, ReleaseShape::Dependency, f)
         }),
         ReleaseShape::Dependency => {
             let kind = value.get("kind").and_then(Value::as_str).map(str::to_owned);
+            let observed = content::observe_dependency(value);
             if let Some(object) = value.as_object_mut() {
-                release_object(object, f);
+                release_object(object, observed, f);
             }
             match kind.as_deref() {
                 Some("program") => {
@@ -404,11 +435,12 @@ fn for_each_release(
             for_each_release(program, ReleaseShape::ProgramInstall, f)
         }),
         ReleaseShape::ProgramInstall => {
+            let observed = content::observe_program_package(value);
             if let Some(object) = value
                 .get_mut("programPackage")
                 .and_then(Value::as_object_mut)
             {
-                release_object(object, f);
+                release_object(object, observed, f);
             }
         }
     }
@@ -420,39 +452,113 @@ pub struct ReleaseEntry {
     /// `package@version` when the entry names them, else the identity.
     pub label: String,
     pub identity: String,
+    pub package: Option<String>,
+    pub version: Option<String>,
     pub signatures: Option<Value>,
     pub published_at: Option<String>,
+    /// The entry's `releaseContent` descriptor.
+    pub content: Option<Value>,
+    pub content_signatures: Option<Value>,
+    /// What the response installs for this release.
+    pub observed: content::Observed,
 }
 
-/// The package release entries of `value`, with their `signatures` removed
-/// so the response still matches the typed contract it is read into.
+/// The package release entries of `value`, with their `signatures`,
+/// `releaseContent` and `contentSignatures` removed so the response still
+/// matches the typed contract it is read into.
 pub fn take_release_entries(value: &mut Value, shape: ReleaseShape) -> Vec<ReleaseEntry> {
     let mut entries = Vec::new();
-    for_each_release(value, shape, &mut |object| {
+    for_each_release(value, shape, &mut |object, observed| {
         let identity = object
             .get("packageReleaseHash")
             .and_then(Value::as_str)
             .unwrap_or_default()
             .to_string();
-        let label = match (
-            object.get("package").and_then(Value::as_str),
-            object.get("version").and_then(Value::as_str),
-        ) {
+        let package = object
+            .get("package")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let version = object
+            .get("version")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        let label = match (&package, &version) {
             (Some(package), Some(version)) => format!("{package}@{version}"),
-            (Some(package), None) => package.to_string(),
+            (Some(package), None) => package.clone(),
             _ => identity.clone(),
         };
         entries.push(ReleaseEntry {
             label,
             identity,
+            package,
+            version,
             signatures: object.remove("signatures"),
             published_at: object
                 .get("publishedAt")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            content: object.remove("releaseContent"),
+            content_signatures: object.remove("contentSignatures"),
+            observed,
         });
     });
     entries
+}
+
+/// Check an entry's release content signatures, then the descriptor against
+/// the entry and what the response installs for it.
+pub fn verify_content(entry: &ReleaseEntry, keys: &KeySet) -> Verdict {
+    let present = |value: &Option<Value>| value.as_ref().is_some_and(|value| !value.is_null());
+    if !present(&entry.content) && !present(&entry.content_signatures) {
+        return Verdict::Unsigned;
+    }
+    let invalid = |reason: String| Verdict::Invalid { reason };
+    let Some(value) = entry.content.as_ref().filter(|value| !value.is_null()) else {
+        return invalid("content signatures without `releaseContent`".into());
+    };
+    let descriptor: content::ReleaseContent = match serde_json::from_value(value.clone()) {
+        Ok(descriptor) => descriptor,
+        Err(error) => return invalid(format!("invalid `releaseContent`: {error}")),
+    };
+    let digest = match descriptor.digest() {
+        Ok(digest) => digest,
+        Err(error) => return invalid(format!("{error} (rule: {})", error.code())),
+    };
+    let verdict = verify_signed(
+        content::signed_message,
+        &digest,
+        entry.content_signatures.as_ref(),
+        entry.published_at.as_deref(),
+        keys,
+    );
+    let verdict = match verdict {
+        Verdict::Unsigned => return invalid("`releaseContent` without content signatures".into()),
+        Verdict::Verified { .. } | Verdict::VerifiedRetired { .. } => verdict,
+        other => return other,
+    };
+    let mut problems = Vec::new();
+    for (field, signed, served) in [
+        (
+            "package release",
+            &descriptor.package_release_hash,
+            Some(&entry.identity),
+        ),
+        ("package", &descriptor.package, entry.package.as_ref()),
+        ("version", &descriptor.version, entry.version.as_ref()),
+    ] {
+        if Some(signed) != served {
+            problems.push(format!(
+                "the signed release content names {field} {signed}, but the response names {}",
+                served.map(String::as_str).unwrap_or("none")
+            ));
+        }
+    }
+    problems.extend(entry.observed.check(&descriptor));
+    if problems.is_empty() {
+        verdict
+    } else {
+        invalid(problems.join("; "))
+    }
 }
 
 /// One checked release.
@@ -460,7 +566,11 @@ pub fn take_release_entries(value: &mut Value, shape: ReleaseShape) -> Vec<Relea
 pub struct ReleaseCheck {
     pub label: String,
     pub identity: String,
+    /// The release identity signature (`signatures`).
     pub verdict: Verdict,
+    /// The release content signature (`releaseContent`,
+    /// `contentSignatures`), checked against the response.
+    pub content: Verdict,
 }
 
 /// Check every entry. Keys are loaded only when an entry is signed; when a
@@ -470,12 +580,10 @@ pub fn check_entries(
     entries: Vec<ReleaseEntry>,
     load_keys: &mut dyn FnMut(bool) -> KeySet,
 ) -> Vec<ReleaseCheck> {
-    let signed = entries.iter().any(|entry| {
-        entry
-            .signatures
-            .as_ref()
-            .is_some_and(|signatures| !signatures.is_null())
-    });
+    let present = |value: &Option<Value>| value.as_ref().is_some_and(|value| !value.is_null());
+    let signed = entries
+        .iter()
+        .any(|entry| present(&entry.signatures) || present(&entry.content_signatures));
     let mut keys = if signed {
         load_keys(false)
     } else {
@@ -493,21 +601,25 @@ pub fn check_entries(
                     entry.published_at.as_deref(),
                     keys,
                 ),
+                content: verify_content(entry, keys),
             })
             .collect()
     };
     let mut checks = verify(&keys);
-    let unknown = checks
-        .iter()
-        .any(|check| matches!(check.verdict, Verdict::UnknownKeys { .. }));
+    let unknown = checks.iter().any(|check| {
+        matches!(check.verdict, Verdict::UnknownKeys { .. })
+            || matches!(check.content, Verdict::UnknownKeys { .. })
+    });
     if unknown && keys.from_cache {
         keys = load_keys(true);
         checks = verify(&keys);
     }
     if let Some(problem) = keys.problem.as_deref() {
         for check in &mut checks {
-            if let Verdict::UnknownKeys { key_ids } = &mut check.verdict {
-                key_ids.push(format!("({problem})"));
+            for verdict in [&mut check.verdict, &mut check.content] {
+                if let Verdict::UnknownKeys { key_ids } = verdict {
+                    key_ids.push(format!("({problem})"));
+                }
             }
         }
     }
@@ -515,14 +627,22 @@ pub fn check_entries(
 }
 
 /// The warnings for `checks`, or, when `require` is set, an error naming
-/// every release without a current valid signature. Retired keys require
-/// re-signing with an active authority, even for allegedly historical releases.
+/// every release without a current valid content signature that matches the
+/// response. Retired keys require re-signing with an active authority, even
+/// for allegedly historical releases.
+///
+/// Without `require`, a release whose registry sent no content signature is
+/// judged by its identity signature, as before content signatures existed.
 pub fn enforce(checks: &[ReleaseCheck], require: bool) -> Result<Vec<String>> {
     let mut unsigned = Vec::new();
     let mut refusals = Vec::new();
     let mut warnings = Vec::new();
     for check in checks {
-        match &check.verdict {
+        let verdict = match (&check.content, require) {
+            (Verdict::Unsigned, false) => &check.verdict,
+            (content, _) => content,
+        };
+        match verdict {
             Verdict::Verified { .. } => {}
             Verdict::VerifiedRetired { key_id } => {
                 let message = format!("{} is signed only by retired registry key '{key_id}'; re-sign with a current key", check.label);
@@ -545,10 +665,15 @@ pub fn enforce(checks: &[ReleaseCheck], require: bool) -> Result<Vec<String>> {
         }
     }
     if !unsigned.is_empty() {
-        refusals.insert(
-            0,
-            format!("the registry sent no signature for {}", unsigned.join(", ")),
-        );
+        let message = if require {
+            format!(
+                "the registry sent no signed release content for {} (this a4 verifies signatures over each release's artifacts)",
+                unsigned.join(", ")
+            )
+        } else {
+            format!("the registry sent no signature for {}", unsigned.join(", "))
+        };
+        refusals.insert(0, message);
     }
     if require && !refusals.is_empty() {
         bail!(
@@ -754,6 +879,20 @@ pub(crate) mod tests {
 
     pub(crate) fn sign(key_id: &str, key: &SigningKey, identity: &str) -> Value {
         let signature = key.sign(signed_message(key_id, identity).as_bytes());
+        json!({
+            "keyId": key_id,
+            "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+        })
+    }
+
+    /// A `contentSignatures` entry by `key` over the release content
+    /// descriptor `content`.
+    pub(crate) fn sign_content(key_id: &str, key: &SigningKey, content: &Value) -> Value {
+        let digest = serde_json::from_value::<content::ReleaseContent>(content.clone())
+            .unwrap()
+            .digest()
+            .unwrap();
+        let signature = key.sign(content::signed_message(key_id, &digest).as_bytes());
         json!({
             "keyId": key_id,
             "signature": base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
@@ -1044,6 +1183,9 @@ pub(crate) mod tests {
             verdict: Verdict::VerifiedRetired {
                 key_id: "old".into(),
             },
+            content: Verdict::VerifiedRetired {
+                key_id: "old".into(),
+            },
         }];
         assert!(enforce(&checks, true).is_err());
         let warnings = enforce(&checks, false).unwrap();
@@ -1167,5 +1309,305 @@ pub(crate) mod tests {
         let mut no_pins = KeySet::default();
         no_pins.merge(keys(vec![key_entry("new", &attacker, None)]));
         assert!(no_pins.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Release content
+    // -----------------------------------------------------------------------
+
+    const PROGRAM_ID: &str = "11111111111111111111111111111111";
+
+    fn typed(kind: &str, byte: char) -> String {
+        format!("arete:h1:{kind}:sha256:{}", byte.to_string().repeat(64))
+    }
+
+    fn release_hash(byte: char) -> String {
+        format!(
+            "arete:registry-package-release:v2:sha256:{}",
+            byte.to_string().repeat(64)
+        )
+    }
+
+    /// A served SDK extension bundle whose content hash is that of its bytes.
+    fn extension_artifact(language: Option<&str>, source: &str) -> Value {
+        let mut artifact = json!({
+            "artifactHash": "",
+            "manifest": { "entry": "index.ts", "files": ["index.ts"] },
+            "files": { "index.ts": source },
+            "createdAt": "2026-11-01T00:00:00Z",
+        });
+        if let Some(language) = language {
+            artifact["manifest"]["language"] = json!(language);
+        }
+        let hash = crate::commands::sdk::registry_extension_content_hash(
+            &serde_json::from_value(artifact.clone()).unwrap(),
+        );
+        artifact["artifactHash"] = json!(hash);
+        artifact
+    }
+
+    fn resolved_extension(target: &str, source: &str) -> Value {
+        let artifact = extension_artifact(None, source);
+        json!({ "target": target, "contentHash": artifact["artifactHash"], "artifact": artifact })
+    }
+
+    /// A resolved stack whose program embeds a program package, both with a
+    /// TypeScript SDK extension.
+    fn stack_dependency() -> Value {
+        let program_extension = resolved_extension("typescript", "export const p = 1;");
+        json!({
+            "kind": "stack",
+            "alias": "ore",
+            "package": "ore",
+            "version": "1.1.0",
+            "packageReleaseHash": release_hash('a'),
+            "generatorContract": "sdk-generator-v1",
+            "stackManifestHash": typed("stack-manifest", '1'),
+            "stackManifest": {},
+            "liveSpecs": [],
+            "programs": [{
+                "installName": "ore-program",
+                "definition": {
+                    "programId": PROGRAM_ID,
+                    "programSpecHash": typed("program-spec", '2'),
+                    "extensions": program_extension["artifact"],
+                },
+                "release": {
+                    "programReleaseHash": typed("program-release", '3'),
+                    "programSpecHash": typed("program-spec", '2'),
+                },
+                "programPackage": {
+                    "package": "ore-program",
+                    "version": "1.0.0",
+                    "packageReleaseHash": release_hash('b'),
+                },
+                "sdkExtensions": [program_extension],
+            }],
+            "sdkExtensions": [resolved_extension("typescript", "export const s = 1;")],
+        })
+    }
+
+    /// The descriptors the registry signs for [`stack_dependency`].
+    fn stack_contents(dependency: &Value) -> (Value, Value) {
+        let program = &dependency["programs"][0];
+        let stack = json!({
+            "schema": content::RELEASE_CONTENT_SCHEMA,
+            "kind": "stack",
+            "owner": "public",
+            "package": "ore",
+            "version": "1.1.0",
+            "packageReleaseHash": release_hash('a'),
+            "artifacts": [
+                { "role": "stack-manifest", "hash": typed("stack-manifest", '1') },
+                { "role": "program-spec", "name": PROGRAM_ID, "hash": typed("program-spec", '2') },
+                { "role": "program-release", "name": PROGRAM_ID, "hash": typed("program-release", '3') },
+                { "role": "program-package", "name": PROGRAM_ID, "hash": release_hash('b') },
+                { "role": "sdk-extension", "name": "typescript", "hash": dependency["sdkExtensions"][0]["contentHash"] },
+                // Published, not requested.
+                { "role": "sdk-extension", "name": "rust", "hash": "5".repeat(64) },
+            ],
+        });
+        let package = json!({
+            "schema": content::RELEASE_CONTENT_SCHEMA,
+            "kind": "program",
+            "owner": "public",
+            "package": "ore-program",
+            "version": "1.0.0",
+            "packageReleaseHash": release_hash('b'),
+            "artifacts": [
+                { "role": "program-release", "hash": typed("program-release", '3') },
+                { "role": "program-spec", "hash": typed("program-spec", '2') },
+                { "role": "sdk-extension", "name": "typescript", "hash": program["sdkExtensions"][0]["contentHash"] },
+            ],
+        });
+        (stack, package)
+    }
+
+    /// `dependency` as the registry serves it: each release entry with its
+    /// signed descriptor (`contents` = stack, program package).
+    fn signed_response(dependency: &Value, contents: &(Value, Value)) -> Value {
+        let key = signing_key(7);
+        let mut dependency = dependency.clone();
+        dependency["releaseContent"] = contents.0.clone();
+        dependency["contentSignatures"] = json!([sign_content("k7", &key, &contents.0)]);
+        let package = &mut dependency["programs"][0]["programPackage"];
+        package["releaseContent"] = contents.1.clone();
+        package["contentSignatures"] = json!([sign_content("k7", &key, &contents.1)]);
+        json!({ "resolverContract": "x", "dependencies": [dependency] })
+    }
+
+    fn checked(mut response: Value, require: bool) -> Result<Vec<String>> {
+        let entries = take_release_entries(&mut response, ReleaseShape::ResolveResponse);
+        let checks = check_entries(entries, &mut |_| {
+            keys(vec![key_entry("k7", &signing_key(7), None)])
+        });
+        enforce(&checks, require)
+    }
+
+    fn refusal(response: Value) -> String {
+        format!("{:#}", checked(response, true).unwrap_err())
+    }
+
+    #[test]
+    fn signed_release_content_matching_the_response_passes() {
+        let dependency = stack_dependency();
+        let mut response = signed_response(&dependency, &stack_contents(&dependency));
+        let entries = take_release_entries(&mut response, ReleaseShape::ResolveResponse);
+        assert_eq!(entries.len(), 2);
+        let stack = &response["dependencies"][0];
+        assert!(stack.get("releaseContent").is_none());
+        assert!(stack.get("contentSignatures").is_none());
+        assert!(stack["programs"][0]["programPackage"]
+            .get("releaseContent")
+            .is_none());
+        let checks = check_entries(entries, &mut |_| {
+            keys(vec![key_entry("k7", &signing_key(7), None)])
+        });
+        for check in &checks {
+            assert_eq!(
+                check.content,
+                Verdict::Verified {
+                    key_id: "k7".into()
+                },
+                "{}",
+                check.label
+            );
+        }
+        assert!(enforce(&checks, true).unwrap().is_empty());
+    }
+
+    #[test]
+    fn swapping_any_installed_artifact_under_the_same_signature_is_refused() {
+        let dependency = stack_dependency();
+        let contents = stack_contents(&dependency);
+        let other_extension = resolved_extension("typescript", "export const evil = 1;");
+        type Swap = Box<dyn Fn(&mut Value)>;
+        let swaps: Vec<(&str, Swap, &str)> = vec![
+            (
+                "StackManifest",
+                Box::new(|d| d["stackManifestHash"] = json!(typed("stack-manifest", 'f'))),
+                "stack-manifest - is",
+            ),
+            (
+                "ProgramSpec",
+                Box::new(|d| {
+                    d["programs"][0]["definition"]["programSpecHash"] =
+                        json!(typed("program-spec", 'f'))
+                }),
+                "program-spec",
+            ),
+            (
+                "Program Release",
+                Box::new(|d| {
+                    d["programs"][0]["release"]["programReleaseHash"] =
+                        json!(typed("program-release", 'f'))
+                }),
+                "program-release",
+            ),
+            (
+                "program package",
+                Box::new(|d| {
+                    d["programs"][0]["programPackage"]["packageReleaseHash"] =
+                        json!(release_hash('f'))
+                }),
+                "program-package",
+            ),
+            (
+                "stack extension bytes",
+                Box::new(|d| {
+                    d["sdkExtensions"][0]["artifact"]["files"]["index.ts"] =
+                        json!("export const evil = 1;")
+                }),
+                "files hash to",
+            ),
+            (
+                "stack extension bundle",
+                Box::new(move |d| d["sdkExtensions"][0] = other_extension.clone()),
+                "sdk-extension typescript",
+            ),
+            (
+                "program extension bytes",
+                Box::new(|d| {
+                    d["programs"][0]["definition"]["extensions"]["files"]["index.ts"] =
+                        json!("export const evil = 1;")
+                }),
+                "files hash to",
+            ),
+            (
+                "extension without a program package",
+                Box::new(|d| {
+                    d["programs"][0]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("programPackage");
+                }),
+                "names no program package release",
+            ),
+        ];
+        for (what, swap, expected) in swaps {
+            let mut swapped = dependency.clone();
+            swap(&mut swapped);
+            let error = refusal(signed_response(&swapped, &contents));
+            assert!(error.contains(expected), "{what}: {error}");
+        }
+    }
+
+    #[test]
+    fn a_signed_release_cannot_be_relabelled_or_its_descriptor_edited() {
+        let dependency = stack_dependency();
+        let contents = stack_contents(&dependency);
+        for (field, value) in [
+            ("package", json!("ore-fork")),
+            ("version", json!("9.9.9")),
+            ("packageReleaseHash", json!(release_hash('e'))),
+        ] {
+            let mut relabelled = dependency.clone();
+            relabelled[field] = value;
+            let error = refusal(signed_response(&relabelled, &contents));
+            assert!(
+                error.contains("the signed release content names"),
+                "{field}: {error}"
+            );
+        }
+        // Served as another kind of release.
+        let mut as_program = contents.clone();
+        as_program.0["kind"] = json!("program");
+        let error = refusal(signed_response(&dependency, &as_program));
+        assert!(error.contains("installs it as stack"), "{error}");
+
+        // The descriptor edited after signing: the signature no longer
+        // covers it.
+        let mut response = signed_response(&dependency, &contents);
+        response["dependencies"][0]["releaseContent"]["artifacts"][0]["hash"] =
+            json!(typed("stack-manifest", 'f'));
+        response["dependencies"][0]["stackManifestHash"] = json!(typed("stack-manifest", 'f'));
+        let error = refusal(response);
+        assert!(error.contains("does not verify"), "{error}");
+    }
+
+    #[test]
+    fn identity_only_signatures_are_refused_when_required_and_judged_alone_otherwise() {
+        let key = signing_key(7);
+        let mut dependency = stack_dependency();
+        dependency["signatures"] = json!([sign("k7", &key, &release_hash('a'))]);
+        dependency["programs"][0]["programPackage"]["signatures"] =
+            json!([sign("k7", &key, &release_hash('b'))]);
+        let response = json!({ "resolverContract": "x", "dependencies": [dependency] });
+        let error = refusal(response.clone());
+        assert!(
+            error.contains("no signed release content for ore@1.1.0, ore-program@1.0.0"),
+            "{error}"
+        );
+        assert!(checked(response, false).unwrap().is_empty());
+
+        // A descriptor without signatures, or signatures without one, is
+        // invalid rather than unsigned.
+        let dependency = stack_dependency();
+        let mut response = signed_response(&dependency, &stack_contents(&dependency));
+        response["dependencies"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("contentSignatures");
+        assert!(refusal(response).contains("without content signatures"));
     }
 }
