@@ -654,7 +654,7 @@ pub fn remove_and_install(
     let original = fs::read(manifest_path)
         .with_context(|| format!("Failed to read {}", manifest_path.display()))?;
     let mut existing = ProjectManifest::load(manifest_path)?;
-    recover_interrupted_install(&existing.root)?;
+    recover_interrupted_install(&existing, options.allow_outside_project)?;
     existing = ProjectManifest::load(manifest_path)?;
     if existing.dependency(kind, alias).is_none() {
         bail!("No {kind} dependency named '{alias}'");
@@ -1279,7 +1279,11 @@ fn install_loaded_project(
     requested: &[(DependencyKind, String)],
     previous: Option<&ProjectManifest>,
 ) -> Result<()> {
-    recover_interrupted_install(&manifest.root)?;
+    if options.dry_run {
+        report_interrupted_install(&manifest, options.allow_outside_project)?;
+    } else {
+        recover_interrupted_install(&manifest, options.allow_outside_project)?;
+    }
     let plan = InstallPlan::build(&manifest, options.allow_outside_project)?;
     let lock_path = manifest.root.join("arete.lock");
     let previous_lock = ProjectLock::load_optional(&lock_path)?;
@@ -5187,13 +5191,18 @@ fn remove_journal(project_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn recover_interrupted_install(project_root: &Path) -> Result<()> {
-    let path = project_root.join(INSTALL_JOURNAL);
-    if !path.exists() {
+/// Finish or undo an install a previous run left half done, as its journal
+/// records. The journal sits in the project tree, so a repository can ship
+/// one: [`load_install_journal`] refuses any journal naming a path this
+/// installer would not write, before anything is touched.
+fn recover_interrupted_install(
+    manifest: &ProjectManifest,
+    allow_outside_project: bool,
+) -> Result<()> {
+    let project_root = manifest.root.as_path();
+    let Some(journal) = load_install_journal(manifest, allow_outside_project)? else {
         return Ok(());
-    }
-    let journal: InstallJournal = serde_json::from_slice(&fs::read(&path)?)
-        .with_context(|| format!("Invalid install journal {}", path.display()))?;
+    };
     let lock_matches = fs::read(project_root.join("arete.lock"))
         .ok()
         .is_some_and(|contents| sha256(&contents) == journal.expected_lock_sha256);
@@ -5212,6 +5221,180 @@ fn recover_interrupted_install(project_root: &Path) -> Result<()> {
     }
     status_line("Recovered an interrupted Arete install");
     Ok(())
+}
+
+/// `--dry-run` with an install journal present: check it as recovery would,
+/// and say the next install recovers it. Nothing is changed.
+fn report_interrupted_install(
+    manifest: &ProjectManifest,
+    allow_outside_project: bool,
+) -> Result<()> {
+    if load_install_journal(manifest, allow_outside_project)?.is_some() {
+        status_line(
+            "Found an interrupted Arete install; `a4 install` recovers it first (--dry-run recovered nothing)",
+        );
+    }
+    Ok(())
+}
+
+/// Read the install journal, refusing one an install in this project could
+/// not have written. Every path it names must be one recovery may touch: the
+/// staging tree `.arete/install-staging-<uuid>`, its backups and staged
+/// outputs, and SDK outputs inside the project with no symlinked directory on
+/// the way (never under `.git`). An output outside the project needs the
+/// consent an install needs and must be one the manifest configures.
+fn load_install_journal(
+    manifest: &ProjectManifest,
+    allow_outside_project: bool,
+) -> Result<Option<InstallJournal>> {
+    let path = manifest.root.join(INSTALL_JOURNAL);
+    let refuse = |reason: String| {
+        anyhow::anyhow!(
+            "Refusing to recover the install journal {}: {reason}. An interrupted install in this project does not write that, so the journal may have come with the repository. Nothing was changed; inspect the journal, delete it and repeat",
+            path.display()
+        )
+    };
+    let state = manifest.root.join(".arete");
+    match fs::symlink_metadata(&state) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(refuse(format!("{} is not a directory", state.display()))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    match fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Err(refuse("it is not a regular file".into())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let journal: InstallJournal = serde_json::from_slice(&fs::read(&path)?)
+        .with_context(|| format!("Invalid install journal {}", path.display()))?;
+
+    let staging = &journal.staging_root;
+    let staging_named = staging.parent() == Some(state.as_path())
+        && staging
+            .file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .and_then(|name| name.strip_prefix("install-staging-"))
+            .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok());
+    if !staging_named {
+        return Err(refuse(format!(
+            "its staging tree {} is not an install staging directory in {}",
+            staging.display(),
+            state.display()
+        )));
+    }
+    let backups = staging.join("backups");
+    for directory in [staging, &backups] {
+        if fs::symlink_metadata(directory).is_ok_and(|metadata| !metadata.is_dir()) {
+            return Err(refuse(format!(
+                "{} is not a directory",
+                directory.display()
+            )));
+        }
+    }
+
+    let mut outside = Vec::new();
+    for entry in &journal.entries {
+        let backup_named = entry.backup_path.parent() == Some(backups.as_path())
+            && entry
+                .backup_path
+                .file_name()
+                .and_then(std::ffi::OsStr::to_str)
+                .is_some_and(|name| {
+                    !name.is_empty() && name.bytes().all(|byte| byte.is_ascii_digit())
+                });
+        if !backup_named {
+            return Err(refuse(format!(
+                "backup {} is not in {}",
+                entry.backup_path.display(),
+                backups.display()
+            )));
+        }
+        if let Some(staged) = &entry.staged_path {
+            if !strictly_within(staged, staging) {
+                return Err(refuse(format!(
+                    "staged output {} is not in {}",
+                    staged.display(),
+                    staging.display()
+                )));
+            }
+        }
+        let output = &entry.final_path;
+        if !output.is_absolute()
+            || output.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::CurDir | std::path::Component::ParentDir
+                )
+            })
+        {
+            return Err(refuse(format!(
+                "output {} is not a normalized absolute path",
+                output.display()
+            )));
+        }
+        let Ok(relative) = output.strip_prefix(&manifest.root) else {
+            outside.push(output);
+            continue;
+        };
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| component.as_os_str() == ".git")
+        {
+            return Err(refuse(format!(
+                "output {} is not an SDK output path",
+                output.display()
+            )));
+        }
+        // A symlinked directory between the root and the output would point
+        // the output outside the project.
+        let mut ancestor = manifest.root.clone();
+        for component in relative.parent().into_iter().flat_map(Path::components) {
+            ancestor.push(component);
+            match fs::symlink_metadata(&ancestor) {
+                Ok(metadata) if metadata.is_dir() => {}
+                Ok(_) => {
+                    return Err(refuse(format!(
+                        "output {} passes through {}, which is not a directory",
+                        output.display(),
+                        ancestor.display()
+                    )))
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    if !outside.is_empty() {
+        let planned = InstallPlan::build(manifest, allow_outside_project)
+            .ok()
+            .map(|plan| {
+                plan.outputs
+                    .into_iter()
+                    .map(|output| output.path)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        if let Some(output) = outside.iter().find(|output| !planned.contains(**output)) {
+            return Err(refuse(format!(
+                "output {} is outside the project and is not an SDK output this install configures",
+                output.display()
+            )));
+        }
+    }
+    Ok(Some(journal))
+}
+
+/// `path` is below `directory` by normal components only.
+fn strictly_within(path: &Path, directory: &Path) -> bool {
+    path.strip_prefix(directory).is_ok_and(|relative| {
+        !relative.as_os_str().is_empty()
+            && relative
+                .components()
+                .all(|component| matches!(component, std::path::Component::Normal(_)))
+    })
 }
 
 fn rollback_journal(journal: &InstallJournal) -> Result<()> {
@@ -5432,7 +5615,7 @@ pub fn install_local_extensions(
     selected: &[(DependencyKind, String)],
 ) -> Result<Vec<LocalExtensionInstall>> {
     let manifest = ProjectManifest::load(manifest_path)?;
-    recover_interrupted_install(&manifest.root)?;
+    recover_interrupted_install(&manifest, false)?;
     let lock_path = manifest.root.join("arete.lock");
     let lock = ProjectLock::load_optional(&lock_path)?
         .filter(|lock| lock.is_fresh(&manifest.manifest_hash))
@@ -5701,7 +5884,7 @@ pub fn install_local_protocol_build(
     lock_was_fresh: bool,
 ) -> Result<LocalProtocolInstall> {
     let manifest = ProjectManifest::load(manifest_path)?;
-    recover_interrupted_install(&manifest.root)?;
+    recover_interrupted_install(&manifest, false)?;
     let dependency = manifest
         .dependency(DependencyKind::Protocol, alias)
         .ok_or_else(|| anyhow::anyhow!("arete.toml has no protocol dependency '{alias}'"))?;
@@ -6598,6 +6781,266 @@ version = "^1.0.0"
 
         assert!(!root.join("generated/typescript/programs/demo").exists());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    /// A project with no dependencies, its canonical root and manifest path.
+    fn journal_project() -> (tempfile::TempDir, ProjectManifest) {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("arete.toml"),
+            "manifest_version = 1\n\n[project]\nname = \"journal\"\n",
+        )
+        .unwrap();
+        let manifest = ProjectManifest::load(dir.path().join("arete.toml")).unwrap();
+        (dir, manifest)
+    }
+
+    fn write_raw_journal(root: &Path, journal: serde_json::Value) {
+        fs::create_dir_all(root.join(".arete")).unwrap();
+        fs::write(
+            root.join(INSTALL_JOURNAL),
+            serde_json::to_vec_pretty(&journal).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn assert_refused(manifest: &ProjectManifest, error: anyhow::Error) {
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Refusing to recover the install journal"),
+            "{message}"
+        );
+        assert!(
+            manifest.root.join(INSTALL_JOURNAL).is_file(),
+            "a refused journal is kept"
+        );
+    }
+
+    fn install_options(dry_run: bool) -> InstallOptions<'static> {
+        InstallOptions {
+            dry_run,
+            quiet: true,
+            ..InstallOptions::default()
+        }
+    }
+
+    #[test]
+    fn install_and_dry_run_refuse_a_journal_naming_paths_outside_the_project() {
+        let (_dir, manifest) = journal_project();
+        let victim = tempfile::tempdir().unwrap();
+        let victim = fs::canonicalize(victim.path()).unwrap();
+        fs::create_dir_all(victim.join("keep")).unwrap();
+        fs::write(victim.join("keep/file.txt"), "keep\n").unwrap();
+        fs::write(victim.join("rc"), "keep\n").unwrap();
+        let staging = manifest
+            .root
+            .join(".arete")
+            .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+
+        let entry = |final_path: &Path, backup: &Path| {
+            serde_json::json!({
+                "finalPath": final_path,
+                "stagedPath": null,
+                "backupPath": backup,
+                "hadPrevious": true,
+                "committed": true,
+            })
+        };
+        let journals = [
+            // The staging tree is removed outright.
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": victim.join("keep"),
+                "entries": [],
+            }),
+            // Relative paths would resolve from the working directory.
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": "keep",
+                "entries": [],
+            }),
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": staging.join("..").join("..").join("..").join("keep"),
+                "entries": [],
+            }),
+            // Rollback removes the output and renames the backup over it.
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": staging,
+                "entries": [entry(&victim.join("rc"), &staging.join("backups/0000"))],
+            }),
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": staging,
+                "entries": [entry(
+                    &manifest.root.join("..").join(victim.file_name().unwrap()).join("rc"),
+                    &staging.join("backups/0000"),
+                )],
+            }),
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": staging,
+                "entries": [entry(&manifest.root.join("sdk"), &victim.join("keep"))],
+            }),
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": staging,
+                "entries": [entry(&manifest.root.join(".git/hooks"), &staging.join("backups/0000"))],
+            }),
+        ];
+        for journal in journals {
+            for dry_run in [true, false] {
+                write_raw_journal(&manifest.root, journal.clone());
+                let error = install_project(&manifest.path, install_options(dry_run)).unwrap_err();
+                assert_refused(&manifest, error);
+                assert_eq!(fs::read_to_string(victim.join("rc")).unwrap(), "keep\n");
+                assert_eq!(
+                    fs::read_to_string(victim.join("keep/file.txt")).unwrap(),
+                    "keep\n"
+                );
+                assert!(!manifest.root.join("arete.lock").exists(), "{journal}");
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_refuses_outputs_behind_a_symlinked_directory() {
+        let (_dir, manifest) = journal_project();
+        let victim = tempfile::tempdir().unwrap();
+        fs::create_dir_all(victim.path().join("sdk")).unwrap();
+        fs::write(victim.path().join("sdk/index.ts"), "keep\n").unwrap();
+        std::os::unix::fs::symlink(victim.path(), manifest.root.join("generated")).unwrap();
+        let staging = manifest
+            .root
+            .join(".arete")
+            .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+        write_raw_journal(
+            &manifest.root,
+            serde_json::json!({
+                "expectedLockSha256": "0",
+                "stagingRoot": staging,
+                "entries": [{
+                    "finalPath": manifest.root.join("generated/sdk"),
+                    "stagedPath": staging.join("0000"),
+                    "backupPath": staging.join("backups/0000"),
+                    "hadPrevious": false,
+                    "committed": true,
+                }],
+            }),
+        );
+
+        let error = recover_interrupted_install(&manifest, false).unwrap_err();
+        assert_refused(&manifest, error);
+        assert!(victim.path().join("sdk/index.ts").exists());
+
+        // A symlinked state directory points the staging tree elsewhere.
+        fs::remove_file(manifest.root.join("generated")).unwrap();
+        let journal = fs::read(manifest.root.join(INSTALL_JOURNAL)).unwrap();
+        fs::remove_dir_all(manifest.root.join(".arete")).unwrap();
+        fs::write(victim.path().join("install-journal.json"), journal).unwrap();
+        std::os::unix::fs::symlink(victim.path(), manifest.root.join(".arete")).unwrap();
+        let error = recover_interrupted_install(&manifest, false).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Refusing to recover"),
+            "{error:#}"
+        );
+        assert!(victim.path().join("install-journal.json").exists());
+        assert!(victim.path().join("sdk/index.ts").exists());
+    }
+
+    /// The journal [`commit_install`] leaves when the process dies after the
+    /// first output moved: the previous output is in the backups and the new
+    /// one is in place.
+    fn interrupted_install(manifest: &ProjectManifest) -> (PathBuf, PathBuf) {
+        let output = manifest.root.join("generated/typescript/programs/demo");
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("index.ts"), "export const version = 1;\n").unwrap();
+        fs::write(
+            output.join("sdk-provenance.json"),
+            r#"{"artifacts":["index.ts"]}"#,
+        )
+        .unwrap();
+        let staging = manifest
+            .root
+            .join(".arete")
+            .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+        let staged = staging.join("0000");
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("index.ts"), "export const version = 2;\n").unwrap();
+        fs::write(
+            staged.join("sdk-provenance.json"),
+            r#"{"artifacts":["index.ts"]}"#,
+        )
+        .unwrap();
+        let lock = ProjectLock::empty(manifest.manifest_hash.clone());
+        let journal = prepare_journal(
+            &manifest.root,
+            &lock,
+            vec![StagedOutput {
+                final_path: output.clone(),
+                staged_path: staged.clone(),
+            }],
+            Vec::new(),
+            &staging,
+        )
+        .unwrap();
+        let entry = &journal.entries[0];
+        fs::rename(&entry.final_path, &entry.backup_path).unwrap();
+        fs::rename(&staged, &entry.final_path).unwrap();
+        (output, staging)
+    }
+
+    #[test]
+    fn an_interrupted_install_rolls_back_when_the_lock_was_not_written() {
+        let (_dir, manifest) = journal_project();
+        let (output, staging) = interrupted_install(&manifest);
+
+        recover_interrupted_install(&manifest, false).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(output.join("index.ts")).unwrap(),
+            "export const version = 1;\n"
+        );
+        assert!(!manifest.root.join(INSTALL_JOURNAL).exists());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn an_interrupted_install_keeps_its_outputs_when_the_lock_was_written() {
+        let (_dir, manifest) = journal_project();
+        let (output, staging) = interrupted_install(&manifest);
+        let lock = ProjectLock::empty(manifest.manifest_hash.clone());
+        lock.write_atomic(&manifest.root.join("arete.lock"))
+            .unwrap();
+
+        recover_interrupted_install(&manifest, false).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(output.join("index.ts")).unwrap(),
+            "export const version = 2;\n"
+        );
+        assert!(!manifest.root.join(INSTALL_JOURNAL).exists());
+        assert!(!staging.exists());
+    }
+
+    #[test]
+    fn dry_run_leaves_an_interrupted_install_for_the_next_install() {
+        let (_dir, manifest) = journal_project();
+        let (output, staging) = interrupted_install(&manifest);
+
+        install_project(&manifest.path, install_options(true)).unwrap();
+        assert_eq!(
+            fs::read_to_string(output.join("index.ts")).unwrap(),
+            "export const version = 2;\n"
+        );
+        assert!(manifest.root.join(INSTALL_JOURNAL).exists());
+        assert!(staging.join("backups/0000").exists());
+
+        install_project(&manifest.path, install_options(false)).unwrap();
+        assert!(!manifest.root.join(INSTALL_JOURNAL).exists());
+        assert!(!staging.exists());
     }
 
     #[test]
