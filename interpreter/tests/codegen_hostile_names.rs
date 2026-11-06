@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use arete_artifacts::{load_live_spec_v2, load_program_spec, load_stack_manifest_v2};
-use arete_interpreter::ast::SerializableStackSpec;
+use arete_interpreter::ast::{PdaSeedDef, SerializableStackSpec};
 use arete_interpreter::program_sdk::build_program_only_stack_spec_from_idl_bytes;
 use arete_interpreter::public_artifacts::stack_spec_from_artifacts_v2;
 use arete_interpreter::{python, rust, typescript};
@@ -241,10 +241,13 @@ enum StackPosition {
     View,
     IdlInstruction,
     IdlTypeDocs,
+    /// A PDA renamed `docs` whose first seed literal is hostile.
+    PdaSeed,
+    PdaName,
 }
 
 impl StackPosition {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 10] = [
         Self::StackName,
         Self::Entity,
         Self::Section,
@@ -253,11 +256,13 @@ impl StackPosition {
         Self::View,
         Self::IdlInstruction,
         Self::IdlTypeDocs,
+        Self::PdaSeed,
+        Self::PdaName,
     ];
 
     fn kind(self) -> Kind {
         match self {
-            Self::StackName => Kind::DisplayName,
+            Self::StackName | Self::PdaSeed => Kind::DisplayName,
             Self::IdlTypeDocs => Kind::FreeText,
             _ => Kind::Identifier,
         }
@@ -278,6 +283,30 @@ impl StackPosition {
             }
             Self::View => entity.views[0].id = hostile.to_string(),
             Self::IdlInstruction => spec.idls[0].instructions[0].name = hostile.to_string(),
+            Self::PdaSeed => {
+                let pdas = spec
+                    .pdas
+                    .values_mut()
+                    .find(|pdas| !pdas.is_empty())
+                    .unwrap();
+                let name = pdas.keys().next().unwrap().clone();
+                let mut pda = pdas.remove(&name).unwrap();
+                pda.seeds[0] = PdaSeedDef::Literal {
+                    value: hostile.to_string(),
+                };
+                pdas.insert("docs".to_string(), pda);
+            }
+            Self::PdaName => {
+                let pdas = spec
+                    .pdas
+                    .values_mut()
+                    .find(|pdas| !pdas.is_empty())
+                    .unwrap();
+                let name = pdas.keys().next().unwrap().clone();
+                let mut pda = pdas.remove(&name).unwrap();
+                pda.name = hostile.to_string();
+                pdas.insert(hostile.to_string(), pda);
+            }
             Self::IdlTypeDocs => {
                 for idl in &mut spec.idls {
                     for type_def in &mut idl.types {

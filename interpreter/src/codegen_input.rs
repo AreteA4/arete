@@ -21,7 +21,7 @@
 //! 2. **Identifiers.** The names the generators also use to build
 //!    identifiers must be identifiers (`[A-Za-z_][A-Za-z0-9_]*`): an IDL's
 //!    instruction, argument, account, type, field, variant, event and error
-//!    names, and an entity's name and section names. IDL account, type and
+//!    names, PDA names, and an entity's name and section names. IDL account, type and
 //!    event names may be path-qualified (`module::Name`, identifiers joined
 //!    by `::`), instruction account names may also be written `$(Name)` (the
 //!    form IDLs use for sysvar accounts), field names and field paths are
@@ -29,7 +29,9 @@
 //!    letters, digits, `_`, `.` and `-`.
 //!
 //! Free text is exempt: `docs`, error `msg` and `description` entries may
-//! hold any text. The generators render it through escaping helpers instead
+//! hold any text (but not a PDA or field mapping that happens to be named
+//! `docs`), and so is data only the runtime reads, such as a field
+//! mapping's constant. The generators render it through escaping helpers instead
 //! ([`comment_text`] and the per-language doc comment and string literal
 //! renderers), so it stays inside its comment or literal.
 
@@ -39,8 +41,53 @@ use crate::ast::{
 };
 use serde_json::Value;
 
-/// Keys whose string values are free text, exempt from the inert-text rule.
+/// Fields holding free text, exempt from the inert-text rule: `docs` (a
+/// list of lines) and an error's `msg` or a field's `description` (a string).
 const FREE_TEXT_KEYS: &[&str] = &["docs", "msg", "description"];
+
+/// Spec fields whose keys are names chosen by the stack or IDL author rather
+/// than field names of the spec format. Below them a key such as `docs` is a
+/// name like any other, so nothing there is treated as free text.
+const AUTHOR_KEYED_MAPS: &[&str] = &["pdas", "field_mappings", "required_fields"];
+
+/// Entity spec data that only the runtime reads, never copied into a
+/// generated SDK: resolver, hook and computed-field specs, view pipelines,
+/// handler conditions, and the constants and defaults a field mapping
+/// supplies (the generators only infer a type from a constant). Paths are
+/// relative to an entity spec; `None` matches any list index. They hold
+/// literal values such as `"don't"` that need no restriction.
+const RUNTIME_ONLY_ENTITY_PATHS: &[&[Option<&str>]] = &[
+    &[Some("resolver_specs")],
+    &[Some("resolver_hooks")],
+    &[Some("instruction_hooks")],
+    &[Some("computed_field_specs")],
+    &[Some("views"), None, Some("pipeline")],
+    &[Some("handlers"), None, Some("conditions")],
+    &[
+        Some("handlers"),
+        None,
+        Some("mappings"),
+        None,
+        Some("condition"),
+    ],
+    &[
+        Some("handlers"),
+        None,
+        Some("mappings"),
+        None,
+        Some("source"),
+        Some("Constant"),
+    ],
+    &[
+        Some("handlers"),
+        None,
+        Some("mappings"),
+        None,
+        Some("source"),
+        Some("FromSource"),
+        Some("default"),
+    ],
+];
 
 /// Refuse a stack spec whose text could escape the code the SDK generators
 /// place it in; see the module documentation for the rules.
@@ -59,6 +106,12 @@ pub fn validate_stack_spec(spec: &SerializableStackSpec) -> Result<(), String> {
     }
     for instruction in &spec.instructions {
         check_instruction_def(instruction)?;
+    }
+    for (program, pdas) in &spec.pdas {
+        for (name, pda) in pdas {
+            require_identifier(&format!("program '{program}' PDA"), name)?;
+            require_identifier(&format!("program '{program}' PDA"), &pda.name)?;
+        }
     }
     for entity in &spec.entities {
         check_entity_names(entity)?;
@@ -154,6 +207,45 @@ fn render_path(root: &str, path: &[Step<'_>]) -> String {
     rendered
 }
 
+/// Whether `path` (from the root of a stack spec, or of an entity spec) is
+/// one of [`RUNTIME_ONLY_ENTITY_PATHS`]. Every step of these paths is a
+/// field of the spec format, so no author-chosen name can match one.
+fn is_runtime_only(path: &[Step<'_>]) -> bool {
+    let relative = match path {
+        [Step::Key("entities"), Step::Index(_), rest @ ..] => rest,
+        _ => path,
+    };
+    RUNTIME_ONLY_ENTITY_PATHS.iter().any(|pattern| {
+        pattern.len() == relative.len()
+            && pattern
+                .iter()
+                .zip(relative)
+                .all(|(expected, step)| match (expected, step) {
+                    (Some(field), Step::Key(key)) => field == key,
+                    (None, Step::Index(_)) => true,
+                    _ => false,
+                })
+    })
+}
+
+/// Whether `item`, found under `key`, is free text: one of
+/// [`FREE_TEXT_KEYS`] with the shape of free text, outside any
+/// [`AUTHOR_KEYED_MAPS`].
+fn is_free_text(key: &str, item: &Value, path: &[Step<'_>]) -> bool {
+    let shaped = match key {
+        "docs" => item
+            .as_array()
+            .is_some_and(|lines| lines.iter().all(Value::is_string)),
+        "msg" | "description" => item.is_string() || item.is_null(),
+        _ => false,
+    };
+    FREE_TEXT_KEYS.contains(&key)
+        && shaped
+        && !path
+            .iter()
+            .any(|step| matches!(step, Step::Key(key) if AUTHOR_KEYED_MAPS.contains(key)))
+}
+
 /// Check every string and key under `value`; the path of an offending entry
 /// is only rendered when there is one.
 fn check_inert_value<'a>(
@@ -181,11 +273,13 @@ fn check_inert_value<'a>(
                 if inert_violation(key).is_some() {
                     return validate_text(&format!("key of {}", render_path(root, path)), key);
                 }
-                if FREE_TEXT_KEYS.contains(&key.as_str()) {
+                if is_free_text(key, item, path) {
                     continue;
                 }
                 path.push(Step::Key(key));
-                check_inert_value(item, root, path)?;
+                if !is_runtime_only(path) {
+                    check_inert_value(item, root, path)?;
+                }
                 path.pop();
             }
             Ok(())
@@ -429,6 +523,44 @@ mod tests {
             error.starts_with("stack spec.entities[0].views[0].id \"a'b\" contains"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn author_named_map_entries_are_never_free_text() {
+        let seed = serde_json::json!({"seeds": [{"Literal": {"value": "' + run() + '"}}]});
+        for value in [
+            serde_json::json!({"pdas": {"ore": {"docs": seed.clone()}}}),
+            serde_json::json!({"pdas": {"ore": {"msg": "' + run() + '"}}}),
+            serde_json::json!({"entities": [{"field_mappings": {"docs": {"field_name": "a'b"}}}]}),
+            serde_json::json!({"entities": [{"docs": {"nested": "a'b"}}]}),
+        ] {
+            assert!(
+                check_inert_value(&value, "stack spec", &mut Vec::new()).is_err(),
+                "{value}"
+            );
+        }
+    }
+
+    #[test]
+    fn runtime_only_data_is_not_restricted() {
+        let constant = serde_json::json!({"mappings": [{
+            "target_path": "status.label",
+            "source": {"Constant": "don't"}
+        }]});
+        let value = serde_json::json!({"entities": [{
+            "handlers": [constant.clone()],
+            "resolver_specs": [{"input_value": "it's"}],
+            "views": [{"id": "E/list", "pipeline": [{"Filter": {"Literal": "a'b"}}]}]
+        }]});
+        assert!(check_inert_value(&value, "stack spec", &mut Vec::new()).is_ok());
+        let entity = serde_json::json!({"handlers": [constant]});
+        assert!(check_inert_value(&entity, "entity spec", &mut Vec::new()).is_ok());
+        // The same value where the generators copy it into code is refused.
+        let bad = serde_json::json!({"entities": [{"handlers": [{"mappings": [{
+            "target_path": "status.label'",
+            "source": {"Constant": "fine"}
+        }]}]}]});
+        assert!(check_inert_value(&bad, "stack spec", &mut Vec::new()).is_err());
     }
 
     #[test]
