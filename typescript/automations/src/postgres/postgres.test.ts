@@ -8,6 +8,7 @@ import { runStoreConformance } from '../store/conformance';
 import { fakeProtocol, feeOnlySimulator, policy, fakeClock, DEPLOYMENT } from '../test-support/fake-protocol';
 import { ALICE, BOB, storedGrant, walletsSigner } from '../test-support/harness';
 import { type AutomationOutcome, createAutomations } from '../runtime/automations';
+import type { StepJob } from '../runtime/types';
 import { LATEST_SCHEMA_VERSION, migrationFiles, runtimeRoleGrants } from './migrations';
 import { postgresStore, SchemaVersionError } from './store';
 
@@ -217,6 +218,77 @@ suite('postgresStore: transactions and concurrency', () => {
       first.release();
       second.release();
     }
+  });
+
+  describe('orders a consent-conditional transition against a concurrent consent change', () => {
+    const NONCE = 'nonce-1';
+    /** A store with ALICE's grant and her step job `s` claimed by worker `w`. */
+    const claimed = async () => {
+      const store = await migratedStore();
+      await store.consent.put(storedGrant(ALICE, 0, { proof: { message: '', signature: '', nonce: NONCE, issuedAt: 0 } }));
+      await store.deliveries.accept({ id: 'd', name: 'n', source: 'dispatch', payload: {}, receivedAt: 0 }, 0);
+      await store.jobs.claimNext({ worker: 'seed', leaseMs: 1000, now: 0 });
+      await store.jobs.completeDelivery('d', 'seed', [{ id: 's', deploymentId: DEPLOYMENT, request: { step: 'deposit', wallet: ALICE, args: {} } }], 0);
+      await store.jobs.claimNext({ worker: 'w', leaseMs: 60_000, now: 1 });
+      return store;
+    };
+    const sign = (store: Awaited<ReturnType<typeof claimed>>) =>
+      store.jobs.transition('s', {
+        worker: 'w',
+        from: 'running',
+        to: 'signed',
+        now: 2,
+        keepLease: { until: 60_000 },
+        progress: { signed: ['AAAA'] },
+        ledger: { record: [{ wallet: ALICE, deploymentId: DEPLOYMENT, asset: 'SOL', amount: '5000' }] },
+        consent: { wallet: ALICE, deploymentId: DEPLOYMENT, step: 'deposit', instanceId: null, nonce: NONCE },
+      });
+    const settledWithin = (promise: Promise<unknown>, ms: number) =>
+      Promise.race([promise.then(() => true), new Promise((resolve) => setTimeout(() => resolve(false), ms))]);
+
+    // A store that read the grant and then wrote the job separately would
+    // read the still-committed grant here, and move the job to signed.
+    for (const [change, apply] of [
+      ['a revoke', (store: Awaited<ReturnType<typeof claimed>>) => store.consent.revoke({ wallet: ALICE, deploymentId: DEPLOYMENT, now: 2 })],
+      [
+        'a replacement grant',
+        (store: Awaited<ReturnType<typeof claimed>>) =>
+          store.consent.put(storedGrant(ALICE, 0, { proof: { message: '', signature: '', nonce: 'nonce-2', issuedAt: 0 } })),
+      ],
+    ] as const) {
+      it(`waits for ${change} in flight and then refuses`, async () => {
+        const store = await claimed();
+        const other = await pool.connect();
+        try {
+          await other.query('BEGIN');
+          await apply(store.using(other));
+          const signing = sign(store);
+          expect(await settledWithin(signing, 300)).toBe(false);
+          await other.query('COMMIT');
+          expect(await signing).toBe(false);
+        } finally {
+          other.release();
+        }
+        expect(((await store.jobs.get('s')) as StepJob).state).toBe('running');
+        expect(await store.ledger.list({ wallet: ALICE })).toEqual([]);
+      });
+    }
+
+    it('makes a revoke wait for a transition in flight', async () => {
+      const store = await claimed();
+      const other = await pool.connect();
+      try {
+        await other.query('BEGIN');
+        expect(await sign(store.using(other))).toBe(true);
+        const revoking = store.consent.revoke({ wallet: ALICE, deploymentId: DEPLOYMENT, now: 3 });
+        expect(await settledWithin(revoking, 300)).toBe(false);
+        await other.query('COMMIT');
+        expect(await revoking).toBe(1);
+      } finally {
+        other.release();
+      }
+      expect(((await store.jobs.get('s')) as StepJob).state).toBe('signed');
+    });
   });
 
   it('round-trips a saved intent exactly, nested nulls included', async () => {
