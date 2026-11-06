@@ -720,7 +720,7 @@ fn spawn_connection_loop(
                         store.begin_refresh(&sub.subscription_id).await;
                         let client_msg = ClientMessage::Subscribe(sub);
                         if let Ok(msg) = serde_json::to_string(&client_msg) {
-                            let _ = ws_tx.send(Message::Text(msg)).await;
+                            let _ = ws_tx.send(Message::Text(msg.into())).await;
                         }
                     }
 
@@ -829,7 +829,7 @@ fn spawn_connection_loop(
                                     Some(ConnectionCommand::Subscribe(sub)) => {
                                         let client_msg = ClientMessage::Subscribe(sub);
                                         if let Ok(msg) = serde_json::to_string(&client_msg) {
-                                            let _ = ws_tx.send(Message::Text(msg)).await;
+                                            let _ = ws_tx.send(Message::Text(msg.into())).await;
                                         }
                                     }
                                     Some(ConnectionCommand::Release(subscription_id)) => {
@@ -838,7 +838,7 @@ fn spawn_connection_loop(
                                             store.unregister_subscription(&subscription_id).await;
                                             let client_msg = ClientMessage::Unsubscribe(unsub);
                                             if let Ok(msg) = serde_json::to_string(&client_msg) {
-                                                let _ = ws_tx.send(Message::Text(msg)).await;
+                                                let _ = ws_tx.send(Message::Text(msg.into())).await;
                                             }
                                         }
                                     }
@@ -847,7 +847,7 @@ fn spawn_connection_loop(
                                         store.unregister_subscription(&unsub.subscription_id).await;
                                         let client_msg = ClientMessage::Unsubscribe(unsub);
                                         if let Ok(msg) = serde_json::to_string(&client_msg) {
-                                            let _ = ws_tx.send(Message::Text(msg)).await;
+                                            let _ = ws_tx.send(Message::Text(msg.into())).await;
                                         }
                                     }
                                     Some(ConnectionCommand::Disconnect) => {
@@ -864,7 +864,7 @@ fn spawn_connection_loop(
                             }
                             _ = ping_timer.tick() => {
                                 if let Ok(msg) = serde_json::to_string(&ClientMessage::Ping) {
-                                    let _ = ws_tx.send(Message::Text(msg)).await;
+                                    let _ = ws_tx.send(Message::Text(msg.into())).await;
                                 }
                             }
                             _ = wait_for_refresh_timer(&mut refresh_timer) => {
@@ -875,7 +875,7 @@ fn spawn_connection_loop(
                                         if previous_token.as_deref() != Some(token.as_str()) {
                                             match serde_json::to_string(&ClientMessage::RefreshAuth { token }) {
                                                 Ok(message) => {
-                                                    if ws_tx.send(Message::Text(message)).await.is_err() {
+                                                    if ws_tx.send(Message::Text(message.into())).await.is_err() {
                                                         immediate_reconnect = true;
                                                         break;
                                                     }

@@ -1273,7 +1273,7 @@ mod tests {
                     }
                 }
                 socket
-                    .send(Message::Text(
+                    .send(Message::text(
                         json!({"success": true, "expiresAt": unix_now() + 3_600}).to_string(),
                     ))
                     .await

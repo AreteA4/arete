@@ -770,7 +770,7 @@ async fn spawn_socket_issue_server(issue_payload: Value) -> WebSocketServerHandl
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         ws_stream
-            .send(Message::Text(issue_payload.to_string()))
+            .send(Message::text(issue_payload.to_string()))
             .await
             .expect("socket issue message should send");
 

@@ -730,7 +730,7 @@ impl AreteError {
     #[cfg(feature = "client")]
     pub(crate) fn from_tungstenite(error: tungstenite::Error) -> Self {
         match error {
-            tungstenite::Error::Http(response) => Self::from_http_response(response),
+            tungstenite::Error::Http(response) => Self::from_http_response(*response),
             other => Self::WebSocket {
                 message: other.to_string(),
                 code: None,

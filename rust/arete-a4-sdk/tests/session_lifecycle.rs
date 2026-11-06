@@ -320,7 +320,9 @@ async fn close_disconnects_websocket_members() {
             }
             if message.is_ping() {
                 let _ = socket
-                    .send(tokio_tungstenite::tungstenite::Message::Pong(Vec::new()))
+                    .send(tokio_tungstenite::tungstenite::Message::Pong(
+                        Default::default(),
+                    ))
                     .await;
             }
         }

@@ -1,0 +1,78 @@
+name: Rust advisories
+
+# Fails when a Cargo.lock resolves a crate with a RustSec advisory that
+# deny.toml does not explicitly accept. Checks the root workspace and the
+# separate ORE workspaces, all against the root deny.toml. Runs when
+# dependencies change, and weekly so new advisories against an unchanged
+# lockfile still surface.
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/rust-advisories.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "**/Cargo.lock"
+      - "**/Cargo.toml"
+      - "deny.toml"
+      - ".github/workflows/rust-advisories.yml"
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  cargo-deny:
+    name: cargo deny advisories
+    runs-on: ubuntu-latest
+    env:
+      CARGO_DENY_VERSION: "0.20.2"
+      CARGO_DENY_SHA256: 9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      # cargo-deny reads the dependency graph through `cargo metadata`, which
+      # uses the toolchain pinned in rust-toolchain.toml.
+      - name: Install pinned Rust toolchain
+        run: |
+          channel="$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$channel" >> "$GITHUB_ENV"
+
+      - name: Install cargo-deny
+        run: |
+          name="cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl"
+          curl -fsSL -o "$RUNNER_TEMP/cargo-deny.tar.gz" \
+            "https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/${name}.tar.gz"
+          echo "${CARGO_DENY_SHA256}  $RUNNER_TEMP/cargo-deny.tar.gz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/cargo-deny.tar.gz" -C "$RUNNER_TEMP" "${name}/cargo-deny"
+          install -m 0755 "$RUNNER_TEMP/${name}/cargo-deny" "$HOME/.cargo/bin/cargo-deny"
+          cargo deny --version
+
+      # The ORE stack and examples are separate workspaces with their own
+      # lockfiles, so the root run does not see them.
+      - name: Check advisories
+        run: |
+          failed=0
+          for manifest in Cargo.toml stacks/ore/Cargo.toml examples/ore-server/Cargo.toml examples/ore-rust/Cargo.toml; do
+            echo "::group::$manifest"
+            if ! cargo deny --locked --manifest-path "$manifest" --config "$GITHUB_WORKSPACE/deny.toml" check advisories; then
+              echo "::error::advisories failed for $manifest"
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          exit "$failed"

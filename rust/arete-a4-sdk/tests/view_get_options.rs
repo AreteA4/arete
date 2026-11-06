@@ -50,7 +50,7 @@ impl Stack for TestStack {
 }
 
 async fn send_json(socket: &mut WebSocketStream<tokio::net::TcpStream>, value: Value) {
-    socket.send(Message::Text(value.to_string())).await.unwrap();
+    socket.send(Message::text(value.to_string())).await.unwrap();
 }
 
 /// A protocol v2 server that forwards every client message (pings aside) and
