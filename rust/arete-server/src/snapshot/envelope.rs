@@ -39,6 +39,12 @@ pub struct SnapshotHeader {
     /// make an explicit decision about rebuilding projections.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection_contract: Option<SnapshotContract>,
+    /// Row-scope policy (scoped entities and their scope fields) at write time.
+    /// Absent when no entity was scoped, and on snapshots written before the
+    /// policy was recorded. Cached rows and retained frames were scoped under
+    /// it, so a restore under a different policy rebuilds them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_scope_contract: Option<SnapshotContract>,
     pub program_ids: Vec<String>,
     /// Highest slot among mutation batches the projector had applied when the
     /// VM was dumped. Safe `from_slot` resume point.
@@ -175,6 +181,7 @@ mod tests {
                 schema: "arete.snapshot-projection-contract/v1".to_string(),
                 hash: "projection123".to_string(),
             }),
+            row_scope_contract: None,
             program_ids: vec!["Program111".to_string()],
             resume_watermark: 42,
             observed_slot: 50,

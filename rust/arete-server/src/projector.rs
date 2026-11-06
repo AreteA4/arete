@@ -1169,7 +1169,12 @@ impl Projector {
         match spec.mode {
             Mode::State => {
                 self.bus_manager
-                    .publish_state(&spec.id, &message.key, message.payload.clone())
+                    .publish_state(
+                        &spec.id,
+                        &message.key,
+                        message.payload.clone(),
+                        message.row_scope.clone(),
+                    )
                     .await;
             }
             Mode::List | Mode::Append => {

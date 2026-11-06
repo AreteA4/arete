@@ -71,6 +71,7 @@ fn scoped_index() -> ViewIndex {
 struct Harness {
     addr: SocketAddr,
     tx: mpsc::Sender<MutationBatch>,
+    bus: BusManager,
     signer: TokenSigner,
     journal: Option<Arc<EventJournal>>,
     slot: std::sync::atomic::AtomicU64,
@@ -128,6 +129,7 @@ impl Harness {
             TokenVerifier::new(signing_key.verifying_key(), "test-issuer", "test-audience");
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let bus = bus_manager.clone();
         let mut server = WebSocketServer::new(
             addr,
             bus_manager,
@@ -145,6 +147,7 @@ impl Harness {
         Self {
             addr,
             tx,
+            bus,
             signer: TokenSigner::new(signing_key, "test-issuer"),
             journal,
             slot: std::sync::atomic::AtomicU64::new(100),
@@ -911,4 +914,105 @@ async fn replacing_a_scope_parent_publishes_the_public_transition_live_and_in_re
         .await;
     assert_eq!(next_frame(&mut live).await["data"]["trade"], 4);
     assert_eq!(next_frame(&mut replay).await["data"]["trade"], 4);
+}
+
+/// A source frame as the projector publishes it.
+fn source_frame(view: &str, mode: &str, key: &str, data: Value) -> Arc<bytes::Bytes> {
+    Arc::new(bytes::Bytes::from(
+        json!({"mode": mode, "entity": view, "op": "patch", "key": key, "data": data}).to_string(),
+    ))
+}
+
+/// A subscriber reads a queued frame after the projector has already moved
+/// on: the cache holds the row's later public state, but the frame was
+/// published while the row was in scope B. Simulated deterministically by
+/// publishing the B-scoped frame after the public write reached the cache.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lagging_list_subscriber_never_receives_a_patch_from_a_private_period() {
+    let harness = Harness::start(Options::default()).await;
+    seed(&harness).await;
+    let mut socket = harness.connect(Some(&["A"])).await;
+    subscribe(&mut socket, "things", json!({"view": "Thing/list"})).await;
+    snapshot(&mut socket).await;
+
+    // The row is public now, and the session holds it.
+    harness.patch("p1", json!({"count": 50})).await;
+    let frames = frames_until_key(&mut socket, "p1").await;
+    assert_eq!(frames.last().unwrap()["data"]["count"], 50, "{frames:?}");
+
+    // A patch from while the row was in scope B, read only now.
+    harness
+        .bus
+        .publish_list(
+            "Thing/list",
+            Arc::new(crate::bus::BusMessage {
+                row_scope: Some(crate::row_scope::RowScope::Scoped("B".into())),
+                key: "p1".into(),
+                entity: "Thing/list".into(),
+                payload: source_frame(
+                    "Thing/list",
+                    "list",
+                    "p1",
+                    json!({"scope": "B", "secret": "private-period"}),
+                ),
+            }),
+        )
+        .await;
+    // A later patch to another row marks the end of what the frame produced.
+    harness.patch("a1", json!({"count": 60})).await;
+
+    let frames = frames_until_key(&mut socket, "a1").await;
+    let text = serde_json::to_string(&frames).unwrap();
+    assert!(
+        !text.contains("private-period"),
+        "private bytes leaked: {text}"
+    );
+    // What the session gets instead is the row as it is now.
+    let row = frames
+        .iter()
+        .find(|frame| frame["key"] == "p1")
+        .unwrap_or_else(|| panic!("the row is resent from the cache: {frames:?}"));
+    assert_eq!(row["op"], "upsert", "{row}");
+    assert_eq!(row["data"]["count"], 50, "{row}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_lagging_state_subscriber_never_receives_a_patch_from_a_private_period() {
+    let harness = Harness::start(Options::default()).await;
+    seed(&harness).await;
+    let mut socket = harness.connect(Some(&["A"])).await;
+    subscribe(
+        &mut socket,
+        "thing",
+        json!({"view": "Thing/state", "key": "p1"}),
+    )
+    .await;
+    let (keys, _) = snapshot(&mut socket).await;
+    assert_eq!(keys, ["p1"]);
+
+    harness
+        .bus
+        .publish_state(
+            "Thing/state",
+            "p1",
+            source_frame(
+                "Thing/state",
+                "state",
+                "p1",
+                json!({"scope": "B", "secret": "private-period"}),
+            ),
+            Some(crate::row_scope::RowScope::Scoped("B".into())),
+        )
+        .await;
+    harness.patch("p1", json!({"count": 70})).await;
+
+    // The withheld frame leaves the session behind, so the next one is a
+    // catch-up from the cache, which never held the private value.
+    let frame = next_frame(&mut socket).await;
+    let text = frame.to_string();
+    assert!(
+        !text.contains("private-period"),
+        "private bytes leaked: {text}"
+    );
+    assert_eq!(frame["data"]["count"], 70, "{frame}");
 }

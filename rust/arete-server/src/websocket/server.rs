@@ -1930,10 +1930,24 @@ async fn attach_state_subscription(
                         if changed.is_err() {
                             break;
                         }
-                        let (payload, published, replaced_at) = {
+                        let (payload, published, replaced_at, row_scope) = {
                             let update = receiver.borrow_and_update();
-                            (update.payload.clone(), update.published, update.replaced)
+                            (
+                                update.payload.clone(),
+                                update.published,
+                                update.replaced,
+                                update.row_scope.clone(),
+                            )
                         };
+                        // Authorise the frame against the scope it was
+                        // published under. The cache may already hold a later
+                        // state of the row in this session's scopes; a frame
+                        // from before that is still not this session's to see.
+                        let in_scope = frame_in_row_scopes(
+                            task_context.row_filter.as_ref(),
+                            row_scope.as_ref(),
+                            &payload,
+                        );
                         // The bus keeps only the latest frame. If more than one
                         // was published since the last read, the earlier ones
                         // were overwritten and the latest patch alone would
@@ -2009,6 +2023,14 @@ async fn attach_state_subscription(
                                 }
                                 continue;
                             }
+                            // A frame outside this session's scopes is
+                            // withheld; the client is then behind, and the
+                            // next frame that finds the entity cached sends
+                            // what it lacks from the cache.
+                            if member && !in_scope {
+                                behind = true;
+                                continue;
+                            }
                             // A copy of a replaced entity takes no patch: it
                             // waits for the whole entity to replace it.
                             if member && !replaced {
@@ -2032,7 +2054,9 @@ async fn attach_state_subscription(
                             false,
                         );
                         let is_member = !selected.is_empty();
-                        let caught_up = !std::mem::take(&mut behind);
+                        // A withheld frame is caught up from the cache, which
+                        // `selected` has just shown to be in scope.
+                        let caught_up = !std::mem::take(&mut behind) && in_scope;
                         let replace = std::mem::take(&mut replaced);
                         let result = match (member, selected.into_iter().next()) {
                             (true, Some(_)) if caught_up => {
@@ -3206,13 +3230,28 @@ fn emit_collection_delta(
 
     for (key, data) in next.iter() {
         let in_window = current_keys.contains(key.as_str());
-        match member_action(
+        let action = match member_action(
             in_window,
             in_window && !undelivered.contains(key),
             key == &envelope.key,
             view_spec.is_derived(),
             &metadata.op,
         ) {
+            // The row is in this session's scopes now (it is in `next`), but
+            // the patch was published under the scope it had then. If that
+            // scope is not this session's, send the row as it is now instead.
+            MemberAction::ForwardPatch
+                if !frame_in_row_scopes(
+                    context.row_filter.as_ref(),
+                    envelope.row_scope.as_ref(),
+                    &envelope.payload,
+                ) =>
+            {
+                MemberAction::Upsert
+            }
+            action => action,
+        };
+        match action {
             MemberAction::Skip => {}
             MemberAction::ForwardPatch => {
                 // The upsert that brought the key into the window may already
@@ -4407,6 +4446,7 @@ mod tests {
             "Thing/state",
             "one",
             Arc::new(Bytes::from_static(br#"{"op":"patch"}"#)),
+            None,
         )
         .await;
         release_snapshot_tx.send(()).unwrap();
@@ -5267,7 +5307,7 @@ mod tests {
                     "seq": seq,
                 });
                 self.bus_manager
-                    .publish_state(ROUND, key, Arc::new(Bytes::from(frame.to_string())))
+                    .publish_state(ROUND, key, Arc::new(Bytes::from(frame.to_string())), None)
                     .await;
             }
 
@@ -5498,7 +5538,7 @@ mod tests {
             ));
             server
                 .bus_manager
-                .publish_state(ROUND, "7", frame.clone())
+                .publish_state(ROUND, "7", frame.clone(), None)
                 .await;
             for socket in &mut sockets {
                 assert_eq!(next_frame(socket).await["op"], "upsert");

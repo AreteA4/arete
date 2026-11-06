@@ -105,6 +105,15 @@ impl ViewIndex {
         Ok(())
     }
 
+    /// Every scoped entity (by export) and its scope field's dotted path, in a
+    /// stable order: the row-scope policy a snapshot records.
+    pub(crate) fn entity_scope_paths(&self) -> std::collections::BTreeMap<String, String> {
+        self.entity_scopes
+            .iter()
+            .map(|(export, field)| (export.clone(), field.path().join(".")))
+            .collect()
+    }
+
     /// Whether any entity is row-scoped.
     pub fn has_scoped_entities(&self) -> bool {
         !self.entity_scopes.is_empty()
