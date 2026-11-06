@@ -1,0 +1,41 @@
+# cargo-deny configuration. CI runs only the advisories check
+# (`cargo deny check advisories`) against Cargo.lock, so a dependency with a
+# RustSec advisory fails the build unless it is listed below.
+#
+# Every ignore must name the advisory and say why it is accepted for now.
+# Remove an entry as soon as the affected crate is updated: cargo-deny warns
+# about ignores that no longer match anything.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+    # Already in the dependency graph when this check was added, outside the
+    # TLS stack. Each is a separate follow-up; most clear with `cargo update`.
+    { id = "RUSTSEC-2024-0436", reason = "paste unmaintained (via ratatui); no maintained release to move to yet" },
+    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile unmaintained (via object_store); needs an object_store update, tracked separately" },
+    { id = "RUSTSEC-2026-0194", reason = "quick-xml duplicate attribute check (via object_store); needs an object_store update, tracked separately" },
+    { id = "RUSTSEC-2026-0195", reason = "quick-xml NsReader allocation (via object_store); needs an object_store update, tracked separately" },
+    { id = "RUSTSEC-2026-0385", reason = "ctutils non-constant-time comparisons (via digest, optional Solana adapter); pending a separate dependency refresh" },
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml unmaintained (via serde_yaml); no maintained release to move to yet" },
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix unmaintained (via indicatif); no maintained release to move to yet" },
+    { id = "RUSTSEC-2026-0002", reason = "lru 0.12 IterMut unsoundness; needs an lru major bump, tracked separately" },
+    { id = "RUSTSEC-2026-0007", reason = "bytes BytesMut::reserve overflow; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0067", reason = "tar unpack_in symlink chmod; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0068", reason = "tar PAX size header handling; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0097", reason = "rand 0.8 unsound only with a custom logger; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0189", reason = "rmcp DNS rebinding in the Streamable HTTP server transport; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0253", reason = "lru 0.12 LruCache::pop panic safety; needs an lru major bump, tracked separately" },
+    { id = "RUSTSEC-2026-0258", reason = "h2 unbounded empty DATA frames; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0386", reason = "tokio AsyncFd I/O safety; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0391", reason = "zstd stream reuse; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0398", reason = "zstd-safe seekable decompress; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0403", reason = "zstd-safe legacy frame decompress; pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0410", reason = "zstd-sys WebAssembly allocator shim; affects wasm builds only, pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0414", reason = "pulldown-cmark wikilinks event growth; build-time only (prost-build), pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0433", reason = "pulldown-cmark nested image wikilinks; build-time only (prost-build), pending a separate dependency refresh" },
+    { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained (via futures-util); no maintained release to move to yet" },
+]

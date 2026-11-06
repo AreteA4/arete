@@ -126,7 +126,7 @@ pub enum StreamEnd {
 #[derive(Debug)]
 pub enum Loss {
     /// The server sent a close frame other than a policy close.
-    Closed(Option<CloseFrame<'static>>),
+    Closed(Option<CloseFrame>),
     /// Reading the socket failed, for example because the connection was reset
     /// without a closing handshake.
     Failed(WsError),
@@ -330,7 +330,7 @@ impl StreamSession {
     async fn subscribe_all(&self, socket: &mut Socket) -> Result<()> {
         for message in &self.subscribe {
             socket
-                .send(Message::Text(message.clone()))
+                .send(Message::text(message.clone()))
                 .await
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
         }
@@ -600,11 +600,11 @@ where
                 }
                 Some(Ok(Message::Close(Some(frame)))) if frame.code == CloseCode::Policy => {
                     return Ok(StreamEnd::Failed(StreamFailure::Refused(
-                        frame.reason.into_owned(),
+                        frame.reason.to_string(),
                     )));
                 }
                 Some(Ok(Message::Close(frame))) => {
-                    return Ok(StreamEnd::Lost(Loss::Closed(frame.map(CloseFrame::into_owned))));
+                    return Ok(StreamEnd::Lost(Loss::Closed(frame)));
                 }
                 Some(Err(error)) => return Ok(StreamEnd::Lost(Loss::Failed(error))),
                 None => return Ok(StreamEnd::Lost(Loss::Ended)),
@@ -612,13 +612,13 @@ where
             },
             _ = ping_interval.tick() => {
                 if let Ok(message) = serde_json::to_string(&ClientMessage::Ping) {
-                    let _ = sink.send(Message::Text(message)).await;
+                    let _ = sink.send(Message::text(message)).await;
                 }
             }
             event = refresher.next() => match event {
                 token::RefreshEvent::Token(token) => {
                     if let Ok(message) = serde_json::to_string(&ClientMessage::RefreshAuth { token }) {
-                        let _ = sink.send(Message::Text(message)).await;
+                        let _ = sink.send(Message::text(message)).await;
                     }
                 }
                 token::RefreshEvent::Failed(error) => {
@@ -663,7 +663,7 @@ pub(crate) mod tests {
             seq: None,
             offset: None,
         };
-        Message::Text(serde_json::to_string(&frame).expect("frame serializes"))
+        Message::text(serde_json::to_string(&frame).expect("frame serializes"))
     }
 
     /// Records what the session hands the output side.
@@ -723,8 +723,8 @@ pub(crate) mod tests {
         let mut handler = Recorder::default();
         let end = read(
             vec![
-                Ok(Message::Text(
-                    r#"{"success":false,"error":"token-invalid"}"#.to_string(),
+                Ok(Message::text(
+                    r#"{"success":false,"error":"token-invalid"}"#,
                 )),
                 Ok(Message::Close(Some(CloseFrame {
                     code: CloseCode::Policy,
@@ -763,10 +763,7 @@ pub(crate) mod tests {
     async fn frames_reach_the_handler_until_the_socket_ends() {
         let mut handler = Recorder::default();
         let end = read(
-            vec![
-                Ok(upsert("cli:test", "1")),
-                Ok(Message::Text("not json".to_string())),
-            ],
+            vec![Ok(upsert("cli:test", "1")), Ok(Message::text("not json"))],
             &mut handler,
         )
         .await

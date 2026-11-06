@@ -58,7 +58,7 @@ tokio = { version = "1.0", features = ["rt-multi-thread", "sync", "time", "macro
 futures-util = { version = "0.3", features = ["sink"] }
 # Use OS trust store (e.g. Windows) so WSS handshakes match browsers / native TLS clients.
 # webpki-roots alone can fail against some production TLS chains.
-tokio-tungstenite = { version = "0.21", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
+tokio-tungstenite = { version = "0.28", default-features = false, features = ["connect", "rustls-tls-native-roots"] }
 ratatui = { version = "0.29", optional = true }
 crossterm = { version = "0.28", optional = true }
 url = "2"

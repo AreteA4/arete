@@ -59,7 +59,7 @@ async fn send_snapshot(
 ) {
     let subscription_id = subscribe["subscriptionId"].as_str().unwrap();
     socket
-        .send(Message::Text(
+        .send(Message::text(
             json!({
                 "protocolVersion": 2,
                 "subscriptionId": subscription_id,
@@ -72,7 +72,7 @@ async fn send_snapshot(
         .await
         .unwrap();
     socket
-        .send(Message::Text(
+        .send(Message::text(
             json!({
                 "protocolVersion": 2,
                 "subscriptionId": subscription_id,
@@ -249,7 +249,7 @@ async fn send_append_record(
 ) {
     let subscription_id = subscribe["subscriptionId"].as_str().unwrap();
     socket
-        .send(Message::Text(
+        .send(Message::text(
             json!({
                 "protocolVersion": 2,
                 "subscriptionId": subscription_id,
@@ -267,7 +267,7 @@ async fn send_append_record(
         .await
         .unwrap();
     socket
-        .send(Message::Text(
+        .send(Message::text(
             json!({
                 "protocolVersion": 2,
                 "subscriptionId": subscription_id,

@@ -1119,14 +1119,14 @@ async fn relay(socket: WebSocket, url: &str, token: &str) -> Result<()> {
 
 fn to_upstream(message: ws::Message) -> Option<tungstenite::Message> {
     Some(match message {
-        ws::Message::Text(text) => tungstenite::Message::Text(text),
-        ws::Message::Binary(bytes) => tungstenite::Message::Binary(bytes),
-        ws::Message::Ping(bytes) => tungstenite::Message::Ping(bytes),
-        ws::Message::Pong(bytes) => tungstenite::Message::Pong(bytes),
+        ws::Message::Text(text) => tungstenite::Message::Text(text.into()),
+        ws::Message::Binary(bytes) => tungstenite::Message::Binary(bytes.into()),
+        ws::Message::Ping(bytes) => tungstenite::Message::Ping(bytes.into()),
+        ws::Message::Pong(bytes) => tungstenite::Message::Pong(bytes.into()),
         ws::Message::Close(frame) => {
             tungstenite::Message::Close(frame.map(|frame| tungstenite::protocol::CloseFrame {
                 code: frame.code.into(),
-                reason: frame.reason,
+                reason: frame.reason.into_owned().into(),
             }))
         }
     })
@@ -1134,14 +1134,14 @@ fn to_upstream(message: ws::Message) -> Option<tungstenite::Message> {
 
 fn to_downstream(message: tungstenite::Message) -> Option<ws::Message> {
     Some(match message {
-        tungstenite::Message::Text(text) => ws::Message::Text(text),
-        tungstenite::Message::Binary(bytes) => ws::Message::Binary(bytes),
-        tungstenite::Message::Ping(bytes) => ws::Message::Ping(bytes),
-        tungstenite::Message::Pong(bytes) => ws::Message::Pong(bytes),
+        tungstenite::Message::Text(text) => ws::Message::Text(text.as_str().to_owned()),
+        tungstenite::Message::Binary(bytes) => ws::Message::Binary(bytes.into()),
+        tungstenite::Message::Ping(bytes) => ws::Message::Ping(bytes.into()),
+        tungstenite::Message::Pong(bytes) => ws::Message::Pong(bytes.into()),
         tungstenite::Message::Close(frame) => {
             ws::Message::Close(frame.map(|frame| ws::CloseFrame {
                 code: frame.code.into(),
-                reason: frame.reason,
+                reason: frame.reason.as_str().to_owned().into(),
             }))
         }
         tungstenite::Message::Frame(_) => return None,
