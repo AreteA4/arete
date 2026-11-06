@@ -2122,12 +2122,12 @@ impl AreteMcp {
         };
         let cwd = std::env::current_dir()
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        let path = crate::dev_capture::resolve_file_path(&output, &cwd)
+        crate::dev_capture::resolve_file_path(&output, &cwd)
             .map_err(|error| McpError::invalid_params(format!("{error:#}"), None))?;
         let bytes = serde_json::to_vec_pretty(&result)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        crate::dev_capture::write_file_replacing(&path, &bytes)
-            .map_err(|error| McpError::internal_error(format!("{error:#}"), None))?;
+        let path = crate::dev_capture::write_confined(&cwd, &output, &mut bytes.as_slice())
+            .map_err(|error| McpError::invalid_params(format!("{error:#}"), None))?;
         shaped_result(&json!({
             "output": path.display().to_string(),
             "bytes": bytes.len(),
@@ -2273,19 +2273,37 @@ impl AreteMcp {
                 None,
             )
         })?;
-        let output =
-            crate::dev_capture::resolve_capture_output(&args.output, &cwd).map_err(invalid)?;
-        let mut options = RpcCaptureOptions::new(rpc_url.clone(), args.programs, from, to, output);
-        options.confine_to = Some(cwd);
+        crate::dev_capture::resolve_capture_output(&args.output, &cwd).map_err(invalid)?;
+        // Recorded in a private directory, then written into the working
+        // directory through checked directory handles: the capture can take
+        // minutes after the path was checked.
+        let recording = tempfile::tempdir().map_err(|error| {
+            McpError::internal_error(
+                format!("Failed to create a temporary directory: {error}"),
+                None,
+            )
+        })?;
+        let mut options = RpcCaptureOptions::new(
+            rpc_url.clone(),
+            args.programs,
+            from,
+            to,
+            recording.path().join("capture.arcap"),
+        );
         options.accounts = args.accounts;
         if let Some(max) = args.max_transactions {
             options.max_transactions = max;
         }
         let rpc = HttpRpc::new(rpc_url, options.requests_per_second).map_err(invalid)?;
         let mut progress = |_: &str| {};
-        let summary = capture_from_rpc(&rpc, &options, &mut progress)
+        let mut summary = capture_from_rpc(&rpc, &options, &mut progress)
             .await
             .map_err(dev_error)?;
+        let mut recorded = std::fs::File::open(&options.output)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let path = crate::dev_capture::write_confined(&cwd, &args.output, &mut recorded)
+            .map_err(invalid)?;
+        summary.path = path.display().to_string();
         shaped_result(&serde_json::to_value(&summary).unwrap_or_default())
     }
 
