@@ -144,21 +144,33 @@ fn parse_origins(value: &str) -> Vec<String> {
         .collect()
 }
 
-/// Tighten a signing key file to owner-only (`0600`) if other users can
-/// read or write it.
+/// Tighten an existing signing key file to owner-only (`0600`) if other
+/// users can read or write it.
+///
+/// Keys supplied externally, such as on a read-only secret mount, may not be
+/// changeable by the server; it then logs a warning and keeps the key's
+/// permissions as they are instead of refusing to start.
 fn restrict_to_owner(path: &std::path::Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let mode = std::fs::metadata(path)?.permissions().mode();
+        let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
         if mode & 0o077 != 0 {
-            tracing::warn!(
-                path = %path.display(),
-                mode = format!("{:o}", mode & 0o777),
-                "signing key file was readable by other users; restricting it to 0600"
-            );
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            match std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+                Ok(()) => tracing::warn!(
+                    path = %path.display(),
+                    mode = format!("{mode:o}"),
+                    "signing key file was readable by other users; restricted it to 0600"
+                ),
+                Err(error) => tracing::warn!(
+                    path = %path.display(),
+                    mode = format!("{mode:o}"),
+                    %error,
+                    "signing key file is readable by other users and could not be restricted; \
+                     restrict it where it is provisioned"
+                ),
+            }
         }
     }
     #[cfg(not(unix))]

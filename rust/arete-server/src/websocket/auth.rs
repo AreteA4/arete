@@ -555,20 +555,45 @@ impl SignedSessionAuthPlugin {
     /// This is used when a client wants to refresh their auth without reconnecting.
     /// The origin is NOT validated here - we assume the client has already proven
     /// origin at connection time, and we're just refreshing the session token.
+    ///
+    /// No client IP is known here, so a verifier with client IP validation
+    /// refuses every token; use [`Self::verify_refresh_token_from`] instead.
     #[allow(clippy::result_large_err)]
     pub async fn verify_refresh_token(&self, token: &str) -> Result<AuthContext, AuthDeny> {
+        self.verify_refresh(token, None).await
+    }
+
+    /// Verify a token for in-band refresh on a connection from `remote_addr`.
+    ///
+    /// Like [`Self::verify_refresh_token`], but IP-bound tokens are checked
+    /// against the connection's peer IP.
+    #[allow(clippy::result_large_err)]
+    pub async fn verify_refresh_token_from(
+        &self,
+        token: &str,
+        remote_addr: SocketAddr,
+    ) -> Result<AuthContext, AuthDeny> {
+        let peer_ip = remote_addr.ip().to_string();
+        self.verify_refresh(token, Some(peer_ip.as_str())).await
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn verify_refresh(
+        &self,
+        token: &str,
+        client_ip: Option<&str>,
+    ) -> Result<AuthContext, AuthDeny> {
         let result = match &self.verifier {
-            SignedSessionVerifier::Static(verifier) => verifier.verify(token, None, None),
+            SignedSessionVerifier::Static(verifier) => verifier.verify(token, None, client_ip),
             SignedSessionVerifier::CachedJwks(verifier) => {
-                verifier.verify_with_cache(token, None, None).await
+                verifier.verify_with_cache(token, None, client_ip).await
             }
-            SignedSessionVerifier::MultiKey(verifier) => verifier.verify(token, None, None).await,
+            SignedSessionVerifier::MultiKey(verifier) => {
+                verifier.verify(token, None, client_ip).await
+            }
         };
 
-        match result {
-            Ok(context) => Ok(context),
-            Err(e) => Err(AuthDeny::from_verify_error(e)),
-        }
+        result.map_err(AuthDeny::from_verify_error)
     }
 }
 
@@ -1036,6 +1061,19 @@ mod tests {
             .authorize(&plugin_request(&token, None, "198.51.100.7:4000"))
             .await;
         assert!(decision.is_allowed());
+
+        // In-band refresh checks the same binding against the peer IP.
+        let same_peer: SocketAddr = "198.51.100.7:4000".parse().unwrap();
+        let other_peer: SocketAddr = "203.0.113.9:4000".parse().unwrap();
+        assert!(plugin
+            .verify_refresh_token_from(&token, same_peer)
+            .await
+            .is_ok());
+        assert!(plugin
+            .verify_refresh_token_from(&token, other_peer)
+            .await
+            .is_err());
+        assert!(plugin.verify_refresh_token(&token).await.is_err());
     }
 
     #[tokio::test]

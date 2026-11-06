@@ -294,6 +294,7 @@ impl WsMetrics {
 
 async fn handle_refresh_auth(
     client_id: Uuid,
+    remote_addr: SocketAddr,
     refresh_req: &RefreshAuthRequest,
     client_manager: &ClientManager,
     auth_plugin: &Arc<dyn WebSocketAuthPlugin>,
@@ -303,7 +304,7 @@ async fn handle_refresh_auth(
         .downcast_ref::<crate::websocket::auth::SignedSessionAuthPlugin>()
     {
         signed_plugin
-            .verify_refresh_token(&refresh_req.token)
+            .verify_refresh_token_from(&refresh_req.token, remote_addr)
             .await
             .map_err(|error| error.reason)
     } else {
@@ -1245,8 +1246,14 @@ async fn handle_connection(
             ClientMessage::RefreshAuth(request) => {
                 let row_scopes_before =
                     session_row_scopes(context.client_manager.get_auth_context(client_id).as_ref());
-                handle_refresh_auth(client_id, &request, &context.client_manager, &auth_plugin)
-                    .await;
+                handle_refresh_auth(
+                    client_id,
+                    remote_addr,
+                    &request,
+                    &context.client_manager,
+                    &auth_plugin,
+                )
+                .await;
                 // A successful refresh replaces the verified context. Keep
                 // every later usage event on the same current identity used
                 // by snapshots and updates; on failure the manager still

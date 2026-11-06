@@ -26,7 +26,9 @@ By default the reference server stores keys at:
 
 If those files do not exist, the server generates them automatically on startup.
 The signing key is written owner-only (`0600`); an existing signing key that
-other users can read is tightened to `0600` on startup.
+other users can read is tightened to `0600` on startup. If the file cannot be
+changed (for example a read-only secret mount), the server logs a warning and
+starts with it as is, so restrict it where it is provisioned.
 
 ### 2. Configure Environment
 
