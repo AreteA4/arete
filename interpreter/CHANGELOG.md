@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.53.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.53.0...arete-interpreter-v0.53.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **runtime:** decode program events only from the program's own logs ([e9b0fac](https://github.com/AreteA4/arete/commit/e9b0face6cfdc89a37f20642561b35c8008a9dbb))
+* **runtime:** decode program events only from the program's own logs ([c09051b](https://github.com/AreteA4/arete/commit/c09051bdf5a8c734fc36c7b05fdd49ab1b0c5c4a))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.53.0 to 0.53.1
+
 ## [0.53.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.52.0...arete-interpreter-v0.53.0) (2026-11-05)
 
 

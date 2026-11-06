@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## [0.53.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.53.0...a4-cli-v0.53.1) (2026-11-06)
+
+
+### Bug Fixes
+
+* **cli:** a4 install trusted a repository-supplied install journal; refuse paths outside the project ([3ec906f](https://github.com/AreteA4/arete/commit/3ec906fb2df1b1046254881cfdf82cde3aca4c92))
+* **cli:** publish verified templates with one rename instead of clearing the cache ([887e43c](https://github.com/AreteA4/arete/commit/887e43c82f06bfc404caafd99bff16f676997717))
+* **cli:** refuse an install journal naming paths the installer never writes ([9f1561f](https://github.com/AreteA4/arete/commit/9f1561f85aed33b12b448cc26a131bf3cbfb06ee))
+* **cli:** refuse symlinked journal backups and nested outputs; leave consented outside removals ([97f1ed2](https://github.com/AreteA4/arete/commit/97f1ed2fb0191ee857580e40b57dc8f8211461be))
+* **cli:** registry signatures covered an opaque release hash; sign and verify release content ([7aee212](https://github.com/AreteA4/arete/commit/7aee212a51dff9afa2d23cfc04875bcaca2d9f62))
+* **cli:** signed member artifacts must stay in the response ([ffa9a1b](https://github.com/AreteA4/arete/commit/ffa9a1b1ccda6e0932fcc8d3add61ac3464cde4b))
+* **cli:** verify registry signatures over release content, not an opaque release hash ([511a338](https://github.com/AreteA4/arete/commit/511a3385054e4a3d5f2c4f3db708591432578c30))
+* **deps:** move TLS clients onto patched rustls-webpki and webpki-roots ([a38ffe5](https://github.com/AreteA4/arete/commit/a38ffe55e8c9514ce9d3b779d9269ac6973296fd))
+* **deps:** move TLS clients onto patched rustls-webpki and webpki-roots ([4885e2b](https://github.com/AreteA4/arete/commit/4885e2b1fb616b3ce56ee9d151ffdc44166611f6))
+* unsigned templates, unbound release tags and installers that ran unverified binaries ([63210de](https://github.com/AreteA4/arete/commit/63210de5991f90b4e2808dc2aa3a86582a333ccc))
+* verify templates and release tags; installers never run an unverified binary ([21052bf](https://github.com/AreteA4/arete/commit/21052bfa82e73bcda21be49708111f2f5fb4c48c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.53.0 to 0.53.1
+    * arete-mcp bumped from 0.53.0 to 0.53.1
+
 ## [0.53.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.52.0...a4-cli-v0.53.0) (2026-11-05)
 
 
