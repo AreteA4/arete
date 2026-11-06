@@ -5240,9 +5240,11 @@ fn report_interrupted_install(
 /// Read the install journal, refusing one an install in this project could
 /// not have written. Every path it names must be one recovery may touch: the
 /// staging tree `.arete/install-staging-<uuid>`, its backups and staged
-/// outputs, and SDK outputs inside the project with no symlinked directory on
-/// the way (never under `.git`). An output outside the project needs the
-/// consent an install needs and must be one the manifest configures.
+/// outputs (backups are directories, never symlinks), and SDK outputs inside
+/// the project with no symlinked directory on the way (never under `.git`),
+/// none nested in another. An output outside the project needs the consent an
+/// install needs and must be one the manifest configures; an interrupted
+/// removal of one the manifest no longer has is left as it is.
 fn load_install_journal(
     manifest: &ProjectManifest,
     allow_outside_project: bool,
@@ -5267,7 +5269,7 @@ fn load_install_journal(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error.into()),
     }
-    let journal: InstallJournal = serde_json::from_slice(&fs::read(&path)?)
+    let mut journal: InstallJournal = serde_json::from_slice(&fs::read(&path)?)
         .with_context(|| format!("Invalid install journal {}", path.display()))?;
 
     let staging = &journal.staging_root;
@@ -5294,6 +5296,21 @@ fn load_install_journal(
         }
     }
 
+    // Outputs never nest (the install plan refuses overlapping outputs), so
+    // restoring one output cannot change the path to another.
+    for (index, left) in journal.entries.iter().enumerate() {
+        for right in &journal.entries[index + 1..] {
+            let (left, right) = (&left.final_path, &right.final_path);
+            if left.starts_with(right) || right.starts_with(left) {
+                return Err(refuse(format!(
+                    "outputs {} and {} overlap",
+                    left.display(),
+                    right.display()
+                )));
+            }
+        }
+    }
+
     let mut outside = Vec::new();
     for entry in &journal.entries {
         let backup_named = entry.backup_path.parent() == Some(backups.as_path())
@@ -5309,6 +5326,14 @@ fn load_install_journal(
                 "backup {} is not in {}",
                 entry.backup_path.display(),
                 backups.display()
+            )));
+        }
+        // A backup is a moved SDK output directory. A symlink restored by
+        // rollback would redirect the outputs below it.
+        if fs::symlink_metadata(&entry.backup_path).is_ok_and(|metadata| !metadata.is_dir()) {
+            return Err(refuse(format!(
+                "backup {} is not a directory",
+                entry.backup_path.display()
             )));
         }
         if let Some(staged) = &entry.staged_path {
@@ -5377,12 +5402,32 @@ fn load_install_journal(
                     .collect::<BTreeSet<_>>()
             })
             .unwrap_or_default();
-        if let Some(output) = outside.iter().find(|output| !planned.contains(**output)) {
-            return Err(refuse(format!(
-                "output {} is outside the project and is not an SDK output this install configures",
-                output.display()
-            )));
+        let consented = manifest.document.install.allow_outside_project && allow_outside_project;
+        let mut unplanned = BTreeSet::new();
+        for output in outside {
+            if planned.contains(output) {
+                continue;
+            }
+            let removal = journal
+                .entries
+                .iter()
+                .find(|entry| &entry.final_path == output)
+                .is_some_and(|entry| entry.staged_path.is_none());
+            // `a4 remove` drops the dependency from arete.toml before it
+            // removes the output, so an interrupted removal names an output
+            // the plan no longer has. With consent, recovery leaves that
+            // path alone (the removal stands) rather than restoring it.
+            if !(removal && consented) {
+                return Err(refuse(format!(
+                    "output {} is outside the project and is not an SDK output this install configures",
+                    output.display()
+                )));
+            }
+            unplanned.insert(output.clone());
         }
+        journal
+            .entries
+            .retain(|entry| !unplanned.contains(&entry.final_path));
     }
     Ok(Some(journal))
 }
@@ -6948,6 +6993,108 @@ version = "^1.0.0"
         );
         assert!(victim.path().join("install-journal.json").exists());
         assert!(victim.path().join("sdk/index.ts").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_refuses_symlinked_backups_and_nested_outputs() {
+        let (_dir, manifest) = journal_project();
+        let victim = tempfile::tempdir().unwrap();
+        fs::write(victim.path().join("file"), "keep\n").unwrap();
+        let staging = manifest
+            .root
+            .join(".arete")
+            .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(staging.join("backups")).unwrap();
+        std::os::unix::fs::symlink(victim.path(), staging.join("backups/0001")).unwrap();
+        fs::create_dir_all(manifest.root.join("generated")).unwrap();
+        let entry = |output: &str, backup: &str| {
+            serde_json::json!({
+                "finalPath": manifest.root.join(output),
+                "stagedPath": null,
+                "backupPath": staging.join(backup),
+                "hadPrevious": true,
+                "committed": true,
+            })
+        };
+        // Rollback runs in reverse: restoring `generated` as the symlink
+        // would point `generated/file` outside the project.
+        for (entries, reason) in [
+            (
+                serde_json::json!([entry("generated", "backups/0001")]),
+                "is not a directory",
+            ),
+            (
+                serde_json::json!([
+                    entry("generated/file", "backups/0000"),
+                    entry("generated", "backups/0002")
+                ]),
+                "overlap",
+            ),
+        ] {
+            write_raw_journal(
+                &manifest.root,
+                serde_json::json!({
+                    "expectedLockSha256": "0",
+                    "stagingRoot": staging,
+                    "entries": entries,
+                }),
+            );
+            let error = recover_interrupted_install(&manifest, false).unwrap_err();
+            assert!(format!("{error:#}").contains(reason), "{error:#}");
+            assert_refused(&manifest, error);
+            assert_eq!(
+                fs::read_to_string(victim.path().join("file")).unwrap(),
+                "keep\n"
+            );
+            assert!(manifest.root.join("generated").is_dir());
+        }
+    }
+
+    #[test]
+    fn an_interrupted_removal_outside_the_project_is_left_with_consent() {
+        let (_dir, mut manifest) = journal_project();
+        let outside = tempfile::tempdir().unwrap();
+        let output = fs::canonicalize(outside.path()).unwrap().join("sdk");
+        let staging = manifest
+            .root
+            .join(".arete")
+            .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
+        // The output was moved to its backup when the removal stopped.
+        fs::create_dir_all(staging.join("backups/0000")).unwrap();
+        let journal = serde_json::json!({
+            "expectedLockSha256": "0",
+            "stagingRoot": staging,
+            "entries": [{
+                "finalPath": output,
+                "stagedPath": null,
+                "backupPath": staging.join("backups/0000"),
+                "hadPrevious": true,
+                "committed": true,
+            }],
+        });
+
+        write_raw_journal(&manifest.root, journal.clone());
+        let error = recover_interrupted_install(&manifest, true).unwrap_err();
+        assert_refused(&manifest, error);
+        assert!(!output.exists());
+
+        manifest.document.install.allow_outside_project = true;
+        let error = recover_interrupted_install(&manifest, false).unwrap_err();
+        assert_refused(&manifest, error);
+
+        recover_interrupted_install(&manifest, true).unwrap();
+        assert!(!output.exists(), "the removal stands");
+        assert!(!manifest.root.join(INSTALL_JOURNAL).exists());
+        assert!(!staging.exists());
+
+        // An output to create there is still refused.
+        let mut staged = journal;
+        staged["entries"][0]["stagedPath"] = serde_json::json!(staging.join("0000"));
+        write_raw_journal(&manifest.root, staged);
+        let error = recover_interrupted_install(&manifest, true).unwrap_err();
+        assert_refused(&manifest, error);
+        assert!(!output.exists());
     }
 
     /// The journal [`commit_install`] leaves when the process dies after the
