@@ -318,7 +318,52 @@ impl ExprBudget {
         self.depth += 1;
         Ok(())
     }
+
+    /// Charge for copying `value`, before copying it: one unit per JSON
+    /// value plus one per byte of string or key. Copies are what an
+    /// expression allocates, so charging them keeps memory, not just node
+    /// visits, within the budget. Stops walking once the budget runs out.
+    fn charge_copy(&mut self, value: &Value) -> Result<()> {
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            let cost = match value {
+                Value::String(text) => 1 + text.len() as u64,
+                Value::Array(items) => {
+                    pending.extend(items);
+                    1
+                }
+                Value::Object(fields) => {
+                    for (key, field) in fields {
+                        self.charge(1 + key.len() as u64)?;
+                        pending.push(field);
+                    }
+                    1
+                }
+                _ => 1,
+            };
+            self.charge(cost)?;
+        }
+        Ok(())
+    }
+
+    fn charge(&mut self, cost: u64) -> Result<()> {
+        self.fuel = self
+            .fuel
+            .checked_sub(cost)
+            .ok_or("computed expression exceeded its evaluation budget")?;
+        Ok(())
+    }
+
+    /// A copy of `value`, charged first.
+    fn copy(&mut self, value: &Value) -> Result<Value> {
+        self.charge_copy(value)?;
+        Ok(value.clone())
+    }
 }
+
+/// Variables in scope while evaluating a computed expression. Values are
+/// shared, so entering a `let` or closure body does not copy them.
+type ExprEnv = std::collections::HashMap<String, std::rc::Rc<Value>>;
 
 // Smaller cache for instruction deduplication - provides shorter effective TTL
 // since we don't expect instruction duplicates to arrive much later
@@ -7270,12 +7315,7 @@ impl VmContext {
             depth: 0,
             max_depth,
         };
-        self.evaluate_computed_expr_with_env(
-            expr,
-            state,
-            &std::collections::HashMap::new(),
-            &mut budget,
-        )
+        self.evaluate_computed_expr_with_env(expr, state, &ExprEnv::new(), &mut budget)
     }
 
     /// Evaluate a computed expression with a variable environment (for let
@@ -7284,7 +7324,7 @@ impl VmContext {
         &self,
         expr: &ComputedExpr,
         state: &Value,
-        env: &std::collections::HashMap<String, Value>,
+        env: &ExprEnv,
         budget: &mut ExprBudget,
     ) -> Result<Value> {
         budget.enter()?;
@@ -7297,21 +7337,25 @@ impl VmContext {
         &self,
         expr: &ComputedExpr,
         state: &Value,
-        env: &std::collections::HashMap<String, Value>,
+        env: &ExprEnv,
         budget: &mut ExprBudget,
     ) -> Result<Value> {
         match expr {
-            ComputedExpr::FieldRef { path } => self.get_field_from_state(state, path),
+            ComputedExpr::FieldRef { path } => match field_in_state(state, path) {
+                Some(value) => budget.copy(value),
+                None => Ok(Value::Null),
+            },
 
-            ComputedExpr::Var { name } => env
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("Undefined variable: {}", name).into()),
+            ComputedExpr::Var { name } => match env.get(name) {
+                Some(value) => budget.copy(value),
+                None => Err(format!("Undefined variable: {}", name).into()),
+            },
 
             ComputedExpr::Let { name, value, body } => {
                 let val = self.evaluate_computed_expr_with_env(value, state, env, budget)?;
+                budget.charge(env.len() as u64)?;
                 let mut new_env = env.clone();
-                new_env.insert(name.clone(), val);
+                new_env.insert(name.clone(), std::rc::Rc::new(val));
                 self.evaluate_computed_expr_with_env(body, state, &new_env, budget)
             }
 
@@ -7391,6 +7435,7 @@ impl VmContext {
             }
 
             ComputedExpr::ByteArray { bytes } => {
+                budget.charge(bytes.len() as u64)?;
                 Ok(Value::Array(bytes.iter().map(|b| json!(*b)).collect()))
             }
 
@@ -7420,7 +7465,7 @@ impl VmContext {
             ComputedExpr::UnwrapOr { expr, default } => {
                 let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 if val.is_null() {
-                    Ok(default.clone())
+                    budget.copy(default)
                 } else {
                     Ok(val)
                 }
@@ -7464,8 +7509,8 @@ impl VmContext {
                                 let results: Result<Vec<Value>> = arr
                                     .iter()
                                     .map(|elem| {
-                                        let mut closure_env = env.clone();
-                                        closure_env.insert(param.clone(), elem.clone());
+                                        let closure_env =
+                                            bind_closure_param(env, param, elem, budget)?;
                                         self.evaluate_computed_expr_with_env(
                                             body,
                                             state,
@@ -7477,8 +7522,7 @@ impl VmContext {
                                 return Ok(Value::Array(results?));
                             }
 
-                            let mut closure_env = env.clone();
-                            closure_env.insert(param.clone(), val);
+                            let closure_env = bind_closure_param(env, param, &val, budget)?;
                             return self.evaluate_computed_expr_with_env(
                                 body,
                                 state,
@@ -7491,8 +7535,11 @@ impl VmContext {
                             let results: Result<Vec<Value>> = arr
                                 .iter()
                                 .filter_map(|elem| {
-                                    let mut closure_env = env.clone();
-                                    closure_env.insert(param.clone(), elem.clone());
+                                    let closure_env =
+                                        match bind_closure_param(env, param, elem, budget) {
+                                            Ok(closure_env) => closure_env,
+                                            Err(error) => return Some(Err(error)),
+                                        };
                                     match self.evaluate_computed_expr_with_env(
                                         body,
                                         state,
@@ -7510,8 +7557,7 @@ impl VmContext {
                             return Ok(Value::Array(results?));
                         }
 
-                        let mut closure_env = env.clone();
-                        closure_env.insert(param.clone(), val.clone());
+                        let closure_env = bind_closure_param(env, param, &val, budget)?;
                         let predicate = self.evaluate_computed_expr_with_env(
                             body,
                             state,
@@ -7532,7 +7578,7 @@ impl VmContext {
                 self.apply_method_call(&val, method, &evaluated_args)
             }
 
-            ComputedExpr::Literal { value } => Ok(value.clone()),
+            ComputedExpr::Literal { value } => budget.copy(value),
 
             ComputedExpr::Paren { expr } => {
                 self.evaluate_computed_expr_with_env(expr, state, env, budget)
@@ -7599,30 +7645,6 @@ impl VmContext {
                 },
             },
         }
-    }
-
-    /// Get a field value from state by path (e.g., "section.field" or just "field")
-    /// Read a dotted path. A numeric segment indexes an array
-    /// (`curve.points.3.rate`); anything missing or out of range is null.
-    fn get_field_from_state(&self, state: &Value, path: &str) -> Result<Value> {
-        let segments: Vec<&str> = path.split('.').collect();
-        let mut current = state;
-
-        for segment in segments {
-            let next = match current {
-                Value::Array(items) => segment
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|index| items.get(index)),
-                _ => current.get(segment),
-            };
-            match next {
-                Some(v) => current = v,
-                None => return Ok(Value::Null),
-            }
-        }
-
-        Ok(current.clone())
     }
 
     /// Apply a binary operation to two values
@@ -8271,6 +8293,34 @@ fn json_integer(value: &Value) -> Option<i128> {
         .as_i64()
         .map(i128::from)
         .or_else(|| value.as_u64().map(i128::from))
+}
+
+/// The value at a dotted path in state (e.g. "section.field" or just
+/// "field"). A numeric segment indexes an array (`curve.points.3.rate`);
+/// anything missing or out of range is `None`.
+fn field_in_state<'a>(state: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.')
+        .try_fold(state, |current, segment| match current {
+            Value::Array(items) => segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get(index)),
+            _ => current.get(segment),
+        })
+}
+
+/// `env` with a closure's parameter bound to a charged copy of `value`.
+fn bind_closure_param(
+    env: &ExprEnv,
+    param: &str,
+    value: &Value,
+    budget: &mut ExprBudget,
+) -> Result<ExprEnv> {
+    let value = budget.copy(value)?;
+    budget.charge(env.len() as u64)?;
+    let mut closure_env = env.clone();
+    closure_env.insert(param.to_string(), std::rc::Rc::new(value));
+    Ok(closure_env)
 }
 
 /// A shift result as JSON, or an error when the shift amount was out of range.
@@ -9520,8 +9570,10 @@ mod tests {
     fn computed_expression_fuel_is_bounded_per_evaluation() {
         let vm = VmContext::new();
         let (expr, state) = map_increment(4);
-        // Two nodes outside the closure, three per element.
-        let needed = 2 + 3 * 4;
+        // Outside the closure: two nodes plus copying the five-value array.
+        // Per element: binding it (one value), three nodes, and copying the
+        // variable and the literal (one value each).
+        let needed = 2 + 5 + 6 * 4;
         assert_eq!(
             vm.evaluate_computed_expr_with_limits(&expr, &state, needed, 16)
                 .unwrap(),
@@ -9544,6 +9596,67 @@ mod tests {
                 json!(1_000)
             );
         }
+    }
+
+    #[test]
+    fn computed_expression_fuel_charges_for_copied_values() {
+        let var = |name: &str| {
+            Box::new(ComputedExpr::Var {
+                name: name.to_string(),
+            })
+        };
+        // `source.map(|_| source)`: an array of `source.len()` copies.
+        let square = |source: Box<ComputedExpr>| ComputedExpr::MethodCall {
+            expr: source.clone(),
+            method: "map".to_string(),
+            args: vec![ComputedExpr::Closure {
+                param: "_".to_string(),
+                body: source,
+            }],
+        };
+        // let a = items.map(|_| items); let b = a.map(|_| a); b.map(|_| b)
+        // visits a few hundred nodes but would build 100^4 values.
+        let expr = ComputedExpr::Let {
+            name: "a".to_string(),
+            value: Box::new(square(Box::new(ComputedExpr::FieldRef {
+                path: "items".to_string(),
+            }))),
+            body: Box::new(ComputedExpr::Let {
+                name: "b".to_string(),
+                value: Box::new(square(var("a"))),
+                body: Box::new(square(var("b"))),
+            }),
+        };
+        let state = json!({ "items": vec![0; 100] });
+        let error = VmContext::new()
+            .evaluate_computed_expr(&expr, &state)
+            .unwrap_err();
+        assert!(error.to_string().contains("evaluation budget"), "{error}");
+
+        // Doubling a string with `concat` is charged by length.
+        let mut expr = *var("s");
+        for _ in 0..24 {
+            expr = ComputedExpr::Let {
+                name: "s".to_string(),
+                value: Box::new(ComputedExpr::MethodCall {
+                    expr: var("s"),
+                    method: "concat".to_string(),
+                    args: vec![*var("s")],
+                }),
+                body: Box::new(expr),
+            };
+        }
+        let expr = ComputedExpr::Let {
+            name: "s".to_string(),
+            value: Box::new(ComputedExpr::FieldRef {
+                path: "text".to_string(),
+            }),
+            body: Box::new(expr),
+        };
+        let error = VmContext::new()
+            .evaluate_computed_expr(&expr, &json!({ "text": "abcdefgh" }))
+            .unwrap_err();
+        assert!(error.to_string().contains("evaluation budget"), "{error}");
     }
 
     #[test]
