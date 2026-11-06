@@ -2678,8 +2678,9 @@ pub fn generate_instruction_handler_impl(
                         }
 
                         use arete::runtime::base64::Engine as _;
-                        let log_offset = raw_update.log_range.start;
-                        for (log_position, log_line) in raw_update.log_messages().iter().enumerate() {
+                        // Only lines this program logged itself: a program it
+                        // calls could otherwise print this program's events.
+                        for (log_index, log_line) in arete::transaction_metadata::own_log_lines(raw_update) {
                             let Some(encoded) = log_line
                                 .strip_prefix("Program data: ")
                                 .or_else(|| log_line.strip_prefix("Program log: ray_log: "))
@@ -2738,7 +2739,7 @@ pub fn generate_instruction_handler_impl(
                             // Each decoded event is one occurrence: index it by its
                             // absolute log position so several events under one
                             // signature stay distinct across replay.
-                            let event_index = (log_offset + log_position) as u64;
+                            let event_index = log_index as u64;
                             let event_context = context
                                 .clone()
                                 .at_log_event(ix_path.clone(), event_index);
@@ -3378,5 +3379,14 @@ mod tests {
         assert!(code_str.contains("Program log: ray_log: "));
         assert!(code_str.contains("bytes . len () >= 6") || code_str.contains("bytes.len() >= 6"));
         assert!(code_str.contains("zero_prefixed"));
+    }
+
+    #[test]
+    fn instruction_handler_decodes_only_its_own_program_logs() {
+        let code = generate_instruction_handler_impl("parser_mod", "InstructionEnum", "program");
+        let compact: String = code.to_string().split_whitespace().collect();
+
+        assert!(compact.contains("arete::transaction_metadata::own_log_lines(raw_update)"));
+        assert!(!compact.contains("raw_update.log_messages()"));
     }
 }

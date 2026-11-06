@@ -145,9 +145,8 @@ impl UpdateContext {
 
     /// Locate this context at one event decoded from a transaction log line.
     ///
-    /// `event_index` is the line's absolute index, which is why the same line
-    /// decoded by both an outer instruction and its inner CPI resolves to one
-    /// occurrence rather than two.
+    /// `event_index` is the line's absolute index, so each line is one
+    /// occurrence however often it is replayed.
     pub fn at_log_event(mut self, ix_path: String, event_index: u64) -> Self {
         self.ix_path = Some(ix_path);
         self.event_index = Some(event_index);
