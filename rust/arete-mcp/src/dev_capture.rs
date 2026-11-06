@@ -495,6 +495,8 @@ mod confined {
             NEXT.fetch_add(1, Ordering::Relaxed)
         ))
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name contains NUL"))?;
+        // Owner-only, like the capture writer's files: exports hold account
+        // state from a dev environment.
         // SAFETY: as in `open_directory`; the mode is the variadic argument
         // `O_CREAT` needs.
         let fd = unsafe {
@@ -502,7 +504,7 @@ mod confined {
                 directory.as_raw_fd(),
                 temporary.as_ptr(),
                 libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-                0o644 as libc::c_uint,
+                0o600 as libc::c_uint,
             )
         };
         if fd < 0 {
@@ -1723,6 +1725,11 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
     }
 
     #[cfg(unix)]
