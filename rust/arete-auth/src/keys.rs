@@ -1,6 +1,6 @@
 use crate::error::AuthError;
 use ed25519_dalek::{
-    Signature, Signer, SigningKey as EdSigningKey, Verifier, VerifyingKey as EdVerifyingKey,
+    Signature, Signer, SigningKey as EdSigningKey, VerifyingKey as EdVerifyingKey,
 };
 use std::fs;
 use std::path::Path;
@@ -88,10 +88,14 @@ impl VerifyingKey {
         Ok(Self { inner: key })
     }
 
-    /// Verify a signature
+    /// Verify a signature.
+    ///
+    /// Uses strict verification, which rejects small-order public keys and
+    /// signature points: with such a key a signature can be forged without
+    /// the private key.
     pub fn verify(&self, message: &[u8], signature: &Signature) -> Result<(), AuthError> {
         self.inner
-            .verify(message, signature)
+            .verify_strict(message, signature)
             .map_err(|e| AuthError::InvalidKeyFormat(format!("Verification failed: {:?}", e)))
     }
 
