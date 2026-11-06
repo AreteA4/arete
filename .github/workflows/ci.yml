@@ -1217,14 +1217,14 @@ jobs:
         shell: pwsh
         run: ./scripts/test-install-ps1-verify.ps1
 
-  # Records that this exact tree passed every job above. A pull_request run
-  # checks out the merge commit GitHub would create, so when the base branch
-  # has not moved before the merge, main gets this same tree and the release
-  # workflow can accept this run instead of waiting for main's CI. Main pushes
-  # always run in full. A run that skipped any job records nothing, because a
-  # job is skipped when one it needs was: the release gate then waits for
-  # main's full run. scripts/check-verified-tree-needs.sh keeps `needs`
-  # complete.
+  # Records that this exact tree passed every job above, so the release
+  # workflow can accept a main commit with the same tree as one whose push or
+  # dispatch run already passed. Pull request runs record nothing:
+  # scripts/find-verified-tree.sh never accepts their markers, because they
+  # run the pull request's own workflow files against a merge base the API
+  # does not record, so a marker from one proves nothing about main. A run
+  # that skipped any job records nothing, because a job is skipped when one it
+  # needs was. scripts/check-verified-tree-needs.sh keeps `needs` complete.
   record-verified-tree:
     name: Record verified tree
     needs:
@@ -1255,7 +1255,7 @@ jobs:
       - docs
       - rust-solana-adapter
       - benchmarks
-    if: github.event_name != 'push'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
