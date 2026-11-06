@@ -296,9 +296,9 @@ impl Mutation {
 /// `ix_path` is always present for a transaction-sourced event and identifies
 /// the instruction it came from, so two same-type events under one signature
 /// stay distinct. `event_index` is the absolute log-line index and appears
-/// only for events decoded from a log: it is what makes one log line decoded
-/// by both an outer instruction and its inner CPI resolve to a single
-/// occurrence. An `emit_cpi!` event arrives as its own instruction and is
+/// only for events decoded from a log. A log line is decoded only by the
+/// instruction whose program logged it, never by an instruction that invoked
+/// that program. An `emit_cpi!` event arrives as its own instruction and is
 /// therefore identified by `ix_path` alone.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventWrapper<T = Value> {

@@ -142,8 +142,15 @@ mod multi {
 }
 
 fn fixture(config: Option<TransactionConfig>, versioned: bool) -> SubscribeUpdateTransaction {
+    fixture_with_inner(config, versioned, 2)
+}
+fn fixture_with_inner(
+    config: Option<TransactionConfig>,
+    versioned: bool,
+    inner: u8,
+) -> SubscribeUpdateTransaction {
     let outer_program = arete::runtime::bs58::encode([1u8; 32]).into_string();
-    let inner_program = arete::runtime::bs58::encode([2u8; 32]).into_string();
+    let inner_program = arete::runtime::bs58::encode([inner; 32]).into_string();
     SubscribeUpdateTransaction {
         slot: 123,
         transaction: Some(SubscribeUpdateTransactionInfo {
@@ -154,7 +161,7 @@ fn fixture(config: Option<TransactionConfig>, versioned: bool) -> SubscribeUpdat
                 signatures: vec![vec![3; 64]],
                 message: Some(Message {
                     header: Some(MessageHeader::default()),
-                    account_keys: vec![vec![1; 32], vec![2; 32], vec![4; 32]],
+                    account_keys: vec![vec![1; 32], vec![inner; 32], vec![4; 32]],
                     recent_blockhash: vec![5; 32],
                     instructions: vec![CompiledInstruction {
                         program_id_index: 0,
@@ -469,9 +476,10 @@ async fn run() {
                 .map(|(event, _)| event.as_str())
                 .collect::<Vec<_>>();
             let mut expected_names = if variant {
+                // Each `Program data:` line is decoded once, by the instruction
+                // whose program logged it: the nested line belongs to the CPI.
                 vec![
                     "OuterIxState",
-                    "LogCpiEvent",
                     "LogCpiEvent",
                     "InnerCpiEvent",
                     "LogCpiEvent",
@@ -498,9 +506,14 @@ async fn run() {
                     .expect("transaction event carries ix_path");
                 let event_index = context.get("event_index").and_then(|value| value.as_u64());
                 if event == "LogCpiEvent" {
-                    assert!(
-                        event_index.is_some(),
-                        "a log-decoded event carries its log index"
+                    let expected_path = match event_index {
+                        Some(1) => "0",
+                        Some(3) => "0.0",
+                        other => panic!("unexpected log-decoded event index {other:?}"),
+                    };
+                    assert_eq!(
+                        ix_path, expected_path,
+                        "a log line is attributed only to the instruction that logged it"
                     );
                 } else {
                     assert!(
@@ -535,6 +548,56 @@ async fn run() {
         }
     }
 }
+/// The indexed program CPIs into a program nobody indexes, which logs bytes
+/// matching the indexed program's event. Only the indexed program's own line
+/// may decode.
+async fn nested_program_cannot_forge_events() {
+    let observations = OBS.get().unwrap().clone();
+    let decoded = fixture_with_inner(None, false, 9);
+    let state = Arc::new(Mutex::new(vm::vm::VmContext::new()));
+    state.lock().unwrap().set_debugger(observations.clone());
+    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+    let handler = multi::VmHandler::new(
+        state.clone(),
+        Arc::new(bytecode()),
+        tx,
+        None,
+        arete::server::SlotTracker::new(),
+        None,
+        observations.clone(),
+        Arc::new(Mutex::new(vm::scheduler::SlotScheduler::new())),
+        Arc::new(tokio::sync::Semaphore::new(2)),
+    );
+    let pipeline = shipstern::instruction::InstructionPipeline::new(vec![Box::new(
+        shipstern::Pipeline::new(ProgramParser(1), [handler]),
+    )])
+    .unwrap();
+    pipeline.handle(&decoded).await.unwrap();
+    while rx.try_recv().is_ok() {}
+
+    let events = std::mem::take(&mut *observations.events.lock().unwrap());
+    let decoded_logs = events
+        .iter()
+        .filter(|(event, _)| event == "LogCpiEvent")
+        .map(|(_, context)| {
+            let context = context.as_ref().unwrap();
+            (
+                context
+                    .get("ix_path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                context.get("event_index").and_then(Value::as_u64),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        decoded_logs,
+        [(Some("0".to_string()), Some(1))],
+        "the nested program's spoofed `Program data:` must not decode"
+    );
+}
 fn main() {
-    tokio::runtime::Runtime::new().unwrap().block_on(run());
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(run());
+    runtime.block_on(nested_program_cannot_forge_events());
 }
