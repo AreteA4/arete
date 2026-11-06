@@ -1836,9 +1836,10 @@ replace a pinned public key. New keys require an approved CLI release or an
 operator-managed trust file.
 
 The registry returns signatures only to clients that ask for them: `a4`
-(and `a4 mcp`) send `X-Arete-Registry-Signatures: v1,v2` on the registry
-requests whose responses carry package releases. `v1` signatures cover the
-`package_release_hash` alone; `v2` adds the signed release content.
+sends `X-Arete-Registry-Signatures: v1,v2` on the registry requests whose
+responses carry package releases. `v1` signatures cover the
+`package_release_hash` alone; `v2` adds the signed release content. The
+read-only registry tools of `a4 mcp` ask for `v1` only; they install nothing.
 
 Official builds enforce signatures by default: every release needs a valid
 content signature that matches the response. Missing or invalid signatures,

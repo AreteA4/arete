@@ -40,9 +40,11 @@
 //!
 //! a4 recomputes the digest from the descriptor it receives, verifies the
 //! signatures over it, then checks the descriptor against the response:
-//! kind, package, version and release must match the entry, and every
-//! artifact hash the response would install must be the one the descriptor
-//! names for that role. The SDK extension bundles' bytes are re-hashed here;
+//! kind, package, version and release must match the entry, every artifact
+//! hash the response would install must be the one the descriptor names for
+//! that role, and every artifact of a known role the descriptor names must
+//! be in the response (only SDK extensions may be a subset: a response
+//! carries just the requested targets). The SDK extension bundles' bytes are re-hashed here;
 //! the other artifacts (StackManifest, LiveSpecs, ProgramSpecs, protocol
 //! spec) are re-hashed by the install path before anything is generated.
 //!
@@ -87,14 +89,18 @@ pub const CONTENT_SIGNATURE_DOMAIN: &str = "arete.registry-package-release/v2";
 const NO_NAME: &str = "-";
 const KINDS: [&str; 3] = ["program", "protocol", "stack"];
 const OWNERS: [&str; 2] = ["private", "public"];
-/// Roles that occur once, without a name, and that a4 always observes when
-/// the descriptor names them.
-const SINGLETON_ROLES: [&str; 6] = [
+/// Roles a4 observes whenever the response carries what they name: every
+/// one the descriptor names must be in the response. Only `sdk-extension`
+/// may be a subset (a response carries just the requested targets), and
+/// unknown roles are not cross-checked.
+const REQUIRED_ROLES: [&str; 8] = [
     "deployment",
+    "program-package",
     "program-release",
     "program-spec",
     "protocol-release",
     "protocol-spec",
+    "stack",
     "stack-manifest",
 ];
 const MAX_TOKEN_LEN: usize = 256;
@@ -329,10 +335,9 @@ impl Observed {
             }
         }
         for (role, name) in attested.keys() {
-            if *name == NO_NAME && SINGLETON_ROLES.contains(role) && !seen.contains(&(*role, *name))
-            {
+            if REQUIRED_ROLES.contains(role) && !seen.contains(&(*role, *name)) {
                 problems.push(format!(
-                    "the response omits the {role} the signed release content names"
+                    "the response omits {role} {name}, which the signed release content names"
                 ));
             }
         }
@@ -854,7 +859,14 @@ pub(crate) mod tests {
 
         let mut missing = observed.clone();
         missing.artifacts.remove(0);
-        assert!(missing.check(&signed)[0].contains("omits the stack-manifest"));
+        assert!(missing.check(&signed)[0].contains("omits stack-manifest -"));
+
+        // A named member artifact cannot disappear either.
+        let mut member = observed.clone();
+        member
+            .artifacts
+            .retain(|(role, _, _)| role != "program-spec");
+        assert!(member.check(&signed)[0].contains("omits program-spec P1"));
 
         let mut kind = observed;
         kind.kind = Some("program".into());

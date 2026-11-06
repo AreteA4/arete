@@ -1610,4 +1610,77 @@ pub(crate) mod tests {
             .remove("contentSignatures");
         assert!(refusal(response).contains("without content signatures"));
     }
+
+    #[test]
+    fn a_signed_protocol_program_cannot_be_moved_to_unpinned() {
+        let program = &stack_dependency()["programs"][0];
+        let mut protocol = json!({
+            "kind": "protocol",
+            "alias": "tip-jar",
+            "package": "tip-jar",
+            "version": "1.0.0",
+            "packageReleaseHash": release_hash('c'),
+            "protocol": {
+                "protocolReleaseHash": typed("protocol-release", '7'),
+                "protocolSpecHash": typed("protocol-spec", '8'),
+                "deployment": { "deploymentId": "dep-1" },
+            },
+            "stacks": [],
+            "programs": [{
+                "installName": "ore-program",
+                "definition": { "programId": PROGRAM_ID, "programSpecHash": typed("program-spec", '2') },
+                "release": program["release"],
+                "programPackage": program["programPackage"],
+            }],
+        });
+        let content = json!({
+            "schema": content::RELEASE_CONTENT_SCHEMA,
+            "kind": "protocol",
+            "owner": "private",
+            "package": "tip-jar",
+            "version": "1.0.0",
+            "packageReleaseHash": release_hash('c'),
+            "artifacts": [
+                { "role": "protocol-release", "hash": typed("protocol-release", '7') },
+                { "role": "protocol-spec", "hash": typed("protocol-spec", '8') },
+                { "role": "deployment", "hash": "dep-1" },
+                { "role": "program-spec", "name": PROGRAM_ID, "hash": typed("program-spec", '2') },
+                { "role": "program-release", "name": PROGRAM_ID, "hash": typed("program-release", '3') },
+                { "role": "program-package", "name": PROGRAM_ID, "hash": release_hash('b') },
+            ],
+        });
+        let key = signing_key(7);
+        protocol["releaseContent"] = content.clone();
+        protocol["contentSignatures"] = json!([sign_content("k7", &key, &content)]);
+        let check = |protocol: &Value| {
+            let mut value = protocol.clone();
+            let entries: Vec<_> = take_release_entries(&mut value, ReleaseShape::Dependency)
+                .into_iter()
+                // The program package entry is checked on its own elsewhere.
+                .filter(|entry| entry.package.as_deref() == Some("tip-jar"))
+                .collect();
+            let checks = check_entries(entries, &mut |_| {
+                keys(vec![key_entry("k7", &signing_key(7), None)])
+            });
+            enforce(&checks, true)
+        };
+        assert!(check(&protocol).unwrap().is_empty());
+
+        let mut moved = protocol.clone();
+        moved["programs"] = json!([]);
+        moved["unpinnedPrograms"] = json!([{
+            "key": "ore",
+            "programId": PROGRAM_ID,
+            "programSpecHash": typed("program-spec", '2'),
+        }]);
+        let error = format!("{:#}", check(&moved).unwrap_err());
+        assert!(
+            error.contains(&format!("omits program-release {PROGRAM_ID}")),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("omits program-package {PROGRAM_ID}")),
+            "{error}"
+        );
+    }
 }
