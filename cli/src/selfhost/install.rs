@@ -55,6 +55,7 @@ pub fn run(args: InstallArgs, json: bool) -> Result<()> {
                 &src,
                 &asset,
                 keys::MINISIGN_PUBLIC_KEY,
+                &format!("a4-cli-v{}", current_version()),
             )?;
             log(&format!(
                 "{} Verified minisign signature and sha256 for {asset}",

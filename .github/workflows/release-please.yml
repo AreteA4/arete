@@ -574,6 +574,18 @@ jobs:
             ore-rust \
             ore-typescript
 
+      # `a4 create` checks the tarball against the signed checksums.txt.
+      - name: Write templates checksum
+        run: |
+          VERSION="${{ needs.release-please.outputs.cli_version }}"
+          sha256sum "arete-templates-v${VERSION}.tar.gz" > "arete-templates-v${VERSION}.tar.gz.sha256"
+
+      - name: Upload templates checksum artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-sha256-arete-templates
+          path: arete-templates-v${{ needs.release-please.outputs.cli_version }}.tar.gz.sha256
+
       - name: Upload templates to CLI release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -738,7 +750,8 @@ jobs:
 
   publish-cli-checksums:
     name: Publish CLI Checksums
-    needs: [release-please, build-cli-binaries]
+    # checksums.txt also covers the templates tarball.
+    needs: [release-please, build-cli-binaries, bundle-templates]
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:

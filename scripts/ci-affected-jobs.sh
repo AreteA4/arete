@@ -59,6 +59,7 @@ jobs_for_path() {
     README.md | CONTRIBUTING.md | packages/*) ;; # The always-on jobs cover these.
 
     docs/src/data/*) echo docs typescript-protocol ;;
+    docs/public/install.ps1) echo docs windows-cli-lifecycle ;; # It tests the embedded verifier.
     docs/*) echo docs ;;
     benchmarks/*) echo benchmarks ;;
 

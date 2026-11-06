@@ -218,6 +218,7 @@ fn download_and_verify(version: &str, asset: &str, dir: &Path) -> Result<PathBuf
         &asset_path,
         asset,
         keys::MINISIGN_PUBLIC_KEY,
+        &format!("a4-cli-v{version}"),
     )?;
     eprintln!(
         "{} Verified minisign signature and sha256 for {asset}",

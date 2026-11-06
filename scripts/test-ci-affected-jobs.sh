@@ -32,6 +32,7 @@ check() {
 check "root README" "" README.md
 check "npm wrapper" "" packages/arete/bin/a4.js
 check "docs page" "docs" docs/src/content/docs/index.mdx
+check "the Windows installer" "docs windows-cli-lifecycle" docs/public/install.ps1
 check "docs data the protocol tests read" "docs typescript-protocol" docs/src/data/protocol-expressions.json
 check "benchmarks" "benchmarks" benchmarks/src/env.ts
 check "Python tests" "python-matrix" python/arete-sdk/tests/test_views.py

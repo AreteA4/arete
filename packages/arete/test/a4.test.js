@@ -15,6 +15,8 @@ const MINISIGN = path.join(FIXTURES, "minisign");
 const RELEASE = path.join(FIXTURES, "release");
 const LAUNCHER = path.join(__dirname, "..", "bin", "a4.js");
 const TEST_PUBLIC_KEY = fs.readFileSync(path.join(MINISIGN, "test-minisign.pub"), "utf8");
+// The fixture release is signed for a4-cli-v0.0.0-test.
+const TEST_VERSION = "0.0.0-test";
 const notWindows = { skip: process.platform === "win32" ? "fake a4 asset is a shell script" : false };
 
 const read = (dir, name) => fs.readFileSync(path.join(dir, name));
@@ -227,7 +229,7 @@ test("a project install without a receipt installs the CLI first, then forwards"
   const logs = [];
   let result;
   const status = await a4.launch(["install", "stack", "ore", "--ts"], {
-    env: installEnv(home, base), homedir: home, publicKey: TEST_PUBLIC_KEY, stdio: "pipe", log: (m) => logs.push(m), onResult: (r) => { result = r; },
+    env: installEnv(home, base), homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, stdio: "pipe", log: (m) => logs.push(m), onResult: (r) => { result = r; },
   });
   assert.equal(status, 0);
   assert.match(logs[0], /not installed yet/);
@@ -243,7 +245,7 @@ test("install: downloads, verifies and hands over to a4 self install --source np
   const base = await serveRelease(t);
   const logs = [];
   const env = installEnv(home, base);
-  const status = await a4.launch(["install", "--no-modify-path"], { env, homedir: home, publicKey: TEST_PUBLIC_KEY, stdio: "pipe", log: (m) => logs.push(m) });
+  const status = await a4.launch(["install", "--no-modify-path"], { env, homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, stdio: "pipe", log: (m) => logs.push(m) });
   assert.equal(status, 0);
   const args = readArgs(home);
   assert.equal(args.length, 1);
@@ -254,13 +256,13 @@ test("install: downloads, verifies and hands over to a4 self install --source np
   const receipt = JSON.parse(fs.readFileSync(path.join(home, ".arete", "receipt.json"), "utf8"));
   assert.equal(receipt.source, "npm");
   assert.equal(receipt.binary, path.join(home, "bin", "a4"));
-  assert.match(logs[0], new RegExp(`^Installing a4 ${require("../package.json").version.replace(/\./g, "\\.")} .* from ${base}/a4-cli-v`));
+  assert.match(logs[0], new RegExp(`^Installing a4 0\\.0\\.0-test .* from ${base}/a4-cli-v`));
 });
 
 test("install follows redirects", notWindows, async (t) => {
   const home = tempHome(t);
   const base = await serveRelease(t);
-  const status = await a4.launch(["install"], { env: installEnv(home, `${base}/redirect`), homedir: home, publicKey: TEST_PUBLIC_KEY, stdio: "pipe", log() {} });
+  const status = await a4.launch(["install"], { env: installEnv(home, `${base}/redirect`), homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, stdio: "pipe", log() {} });
   assert.equal(status, 0);
   assert.equal(readArgs(home).length, 1);
 });
@@ -272,7 +274,7 @@ test("first run without a receipt installs silently, then only the command's std
   const logs = [];
   let result;
   const status = await a4.launch(["explore", "--json"], {
-    env, homedir: home, publicKey: TEST_PUBLIC_KEY, stdio: "pipe", log: (m) => logs.push(m), onResult: (r) => { result = r; },
+    env, homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, stdio: "pipe", log: (m) => logs.push(m), onResult: (r) => { result = r; },
   });
   assert.equal(status, 0);
   assert.equal(result.stdout, '{"schemaVersion":1,"fake":true,"argv":["explore","--json"]}\n');
@@ -283,7 +285,7 @@ test("first run without a receipt installs silently, then only the command's std
   assert.equal(args[1], "explore --json");
 
   // Second run uses the receipt; no reinstall.
-  const again = await a4.launch(["--version"], { env, homedir: home, publicKey: TEST_PUBLIC_KEY, stdio: "pipe", log() {}, onResult: (r) => { result = r; } });
+  const again = await a4.launch(["--version"], { env, homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, stdio: "pipe", log() {}, onResult: (r) => { result = r; } });
   assert.equal(again, 0);
   assert.equal(result.stdout, "a4 0.0.0-test\n");
   assert.equal(readArgs(home).length, 3);
@@ -293,7 +295,7 @@ test("install fails clearly when the release is not published yet (404)", async 
   const home = tempHome(t);
   const base = await serveRelease(t);
   await assert.rejects(
-    a4.launch(["install"], { env: installEnv(home, `${base}/missing`), homedir: home, publicKey: TEST_PUBLIC_KEY, log() {} }),
+    a4.launch(["install"], { env: installEnv(home, `${base}/missing`), homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, log() {} }),
     /Release \S+ is still publishing; retry in a few minutes/
   );
 });
@@ -303,17 +305,22 @@ test("install rejects tampered checksums and mismatching binaries", async (t) =>
   const good = fs.readFileSync(path.join(RELEASE, "checksums.txt"), "utf8");
   const tamperedBase = await serveRelease(t, { "checksums.txt": Buffer.from(good.replace("1725", "0725")) });
   await assert.rejects(
-    a4.launch(["install"], { env: installEnv(home, tamperedBase), homedir: home, publicKey: TEST_PUBLIC_KEY, log() {} }),
+    a4.launch(["install"], { env: installEnv(home, tamperedBase), homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, log() {} }),
     /signature does not match/
   );
   const asset = a4.pickAsset();
   if (asset) {
     const swappedBase = await serveRelease(t, { [asset]: Buffer.from("#!/bin/sh\necho evil\n") });
     await assert.rejects(
-      a4.launch(["install"], { env: installEnv(home, swappedBase), homedir: home, publicKey: TEST_PUBLIC_KEY, log() {} }),
+      a4.launch(["install"], { env: installEnv(home, swappedBase), homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, log() {} }),
       /sha256 mismatch/
     );
   }
+  // Checksums signed for another release (an older a4) do not pass.
+  await assert.rejects(
+    a4.launch(["install"], { env: installEnv(home, await serveRelease(t)), homedir: home, publicKey: TEST_PUBLIC_KEY, version: "0.0.1", log() {} }),
+    /signed for "a4-cli-v0\.0\.0-test", not "a4-cli-v0\.0\.1"/
+  );
   // The production key must reject the test-signed fixture.
   await assert.rejects(
     a4.launch(["install"], { env: installEnv(home, await serveRelease(t)), homedir: home, log() {} }),

@@ -255,7 +255,13 @@ async function downloadRelease({ version = pkg.version, env = process.env, platf
   }
 
   const checksumText = fs.readFileSync(checksums, "utf8");
-  verifyMinisign({ publicKey, signature: fs.readFileSync(signature, "utf8"), message: Buffer.from(checksumText, "utf8") });
+  const { trustedComment } = verifyMinisign({ publicKey, signature: fs.readFileSync(signature, "utf8"), message: Buffer.from(checksumText, "utf8") });
+  // The trusted comment is the release tag; another release's signed
+  // checksums (an older, vulnerable a4) must not pass for this one.
+  const tag = `a4-cli-v${version}`;
+  if (trustedComment.trim() !== tag) {
+    throw new InstallError(`minisign signature: checksums.txt was signed for ${JSON.stringify(trustedComment.trim())}, not ${JSON.stringify(tag)}`);
+  }
   const expected = parseChecksums(checksumText).get(asset);
   if (!expected) throw new InstallError(`checksums.txt has no entry for ${asset}; the release may be incomplete, retry in a few minutes`);
   const actual = await sha256File(binary);

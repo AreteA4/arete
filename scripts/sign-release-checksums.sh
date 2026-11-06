@@ -10,10 +10,11 @@
 # Writes <checksums.txt>.minisig next to the input. The trusted comment is the
 # release tag: `a4-cli-v<version>` for the first form, <release-tag> for the
 # second (e.g. `surfpool-geyser-v1.6.0`). The signature authenticates that
-# comment, but existing installers do not compare it with an expected tag.
-# Consumers requiring release binding must also make that comparison. Used by
-# release-please.yml and release-recovery.yml (a4), and by
-# scripts/sign-and-upload-external-assets.sh. The secret key is stored
+# comment, and every a4 verifier (install.sh, install.ps1, the npm launcher,
+# `a4 self install|update` and `a4 create`'s templates) requires it to equal
+# the tag of the release it downloaded from, so one release's checksums cannot
+# stand in for another's. Used by release-please.yml and release-recovery.yml
+# (a4), and by scripts/sign-and-upload-external-assets.sh. The secret key is stored
 # unencrypted (minisign -G -W); A4_MINISIGN_PASSWORD is piped in for forward
 # compatibility should the key ever be regenerated with one.
 
