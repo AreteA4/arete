@@ -752,11 +752,20 @@ async fn handle_contextual_accounts(
     .and_then(|result| contextual_accounts_json(&addresses, single, options, &result))
     {
         Ok(value) => json_response(StatusCode::OK, value),
-        Err(error) => capability_error(
-            StatusCode::BAD_GATEWAY,
-            "invalid_upstream_response",
-            error.to_string(),
-        ),
+        Err(error) => {
+            let (message, correlation_id) = upstream_error_message(&error);
+            let code = "invalid_upstream_response";
+            let mut response = json_response(
+                StatusCode::BAD_GATEWAY,
+                json!({ "code": code, "error": message, "correlationId": correlation_id }),
+            );
+            let headers = response.headers_mut();
+            headers.insert("X-Error-Code", HeaderValue::from_static(code));
+            if let Ok(value) = HeaderValue::from_str(&correlation_id) {
+                headers.insert(CORRELATION_ID_HEADER, value);
+            }
+            response
+        }
     }
 }
 
@@ -862,6 +871,66 @@ fn json_response(status: StatusCode, value: Value) -> Response<Full<Bytes>> {
 
 fn error_response(status: StatusCode, message: impl Into<String>) -> Response<Full<Bytes>> {
     json_response(status, json!({ "error": message.into() }))
+}
+
+const CORRELATION_ID_HEADER: &str = "X-Correlation-Id";
+const UPSTREAM_RPC_FAILED: &str = "Upstream RPC request failed";
+
+/// A failure that came from the read RPC itself: transport, HTTP status, body or JSON-RPC error.
+///
+/// Its detail can name the upstream endpoint, which may carry a credential in its path or
+/// query, so it is logged server-side and never returned to the caller.
+#[derive(Debug)]
+struct UpstreamRpcError(String);
+
+impl std::fmt::Display for UpstreamRpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UpstreamRpcError {}
+
+impl From<reqwest::Error> for UpstreamRpcError {
+    fn from(error: reqwest::Error) -> Self {
+        // reqwest's Display includes the request URL; drop it before anything formats it.
+        let error = error.without_url();
+        Self(format!(
+            "{error} (timeout: {}, connect: {}, status: {:?})",
+            error.is_timeout(),
+            error.is_connect(),
+            error.status().map(|status| status.as_u16()),
+        ))
+    }
+}
+
+/// The caller-safe message for a failed chain read, plus a correlation id for the server log.
+fn upstream_error_message(error: &anyhow::Error) -> (String, String) {
+    let correlation_id = uuid::Uuid::new_v4().to_string();
+    warn!(
+        correlation_id = %correlation_id,
+        error = %error,
+        "Chain read upstream request failed"
+    );
+    let message = if error.downcast_ref::<UpstreamRpcError>().is_some() {
+        UPSTREAM_RPC_FAILED.to_string()
+    } else {
+        // Our own validation of the upstream result; these messages are static.
+        error.to_string()
+    };
+    (message, correlation_id)
+}
+
+fn upstream_error_response(error: &anyhow::Error) -> Response<Full<Bytes>> {
+    let (message, correlation_id) = upstream_error_message(error);
+    let mut response = json_response(
+        StatusCode::BAD_GATEWAY,
+        json!({ "error": message, "correlationId": correlation_id }),
+    );
+    if let Ok(value) = HeaderValue::from_str(&correlation_id) {
+        response.headers_mut().insert(CORRELATION_ID_HEADER, value);
+    }
+    response
 }
 
 fn parse_min_context_slot(value: Option<&str>) -> std::result::Result<Option<u64>, &'static str> {
@@ -1199,7 +1268,7 @@ async fn handle_chain_request_inner(
             let address = path.trim_start_matches("/chain/exists/");
             match rpc_get_account_info(&rpc_client, rpc_url, address).await {
                 Ok(value) => json_response(StatusCode::OK, json!({ "exists": !value.is_null() })),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                Err(err) => upstream_error_response(&err),
             }
         }
         ("GET", path) if path.starts_with("/chain/lamports/") => {
@@ -1216,7 +1285,7 @@ async fn handle_chain_request_inner(
                     StatusCode::OK,
                     json!({ "lamports": value.pointer("/value").and_then(Value::as_u64).unwrap_or(0) }),
                 ),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                Err(err) => upstream_error_response(&err),
             }
         }
         ("POST", "/chain/native-balance") => match read_json_body::<NativeBalanceBody>(req).await {
@@ -1230,7 +1299,7 @@ async fn handle_chain_request_inner(
                     .await
                 {
                     Ok(balance) => json_response(StatusCode::OK, balance),
-                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                    Err(err) => upstream_error_response(&err),
                 }
             }
             Err(response) => response,
@@ -1255,7 +1324,7 @@ async fn handle_chain_request_inner(
                     StatusCode::OK,
                     json!({ "lamports": value.as_u64().unwrap_or(0) }),
                 ),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                Err(err) => upstream_error_response(&err),
             }
         }
         ("GET", "/chain/clock") => {
@@ -1292,9 +1361,7 @@ async fn handle_chain_request_inner(
                         }),
                     )
                 }
-                (Err(err), _) | (_, Err(err)) => {
-                    error_response(StatusCode::BAD_GATEWAY, err.to_string())
-                }
+                (Err(err), _) | (_, Err(err)) => upstream_error_response(&err),
             }
         }
         ("GET", path) if path.starts_with("/chain/accounts/") => {
@@ -1302,7 +1369,7 @@ async fn handle_chain_request_inner(
             match rpc_get_account_info(&rpc_client, rpc_url, address).await {
                 Ok(value) if value.is_null() => json_response(StatusCode::OK, Value::Null),
                 Ok(value) => json_response(StatusCode::OK, raw_account_json(address, &value)),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                Err(err) => upstream_error_response(&err),
             }
         }
         ("GET", path) if path.starts_with("/chain/mints/") => {
@@ -1310,7 +1377,7 @@ async fn handle_chain_request_inner(
             match rpc_get_parsed_account_info(&rpc_client, rpc_url, address).await {
                 Ok(Some(value)) => json_response(StatusCode::OK, mint_info_json(address, &value)),
                 Ok(None) => json_response(StatusCode::OK, Value::Null),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                Err(err) => upstream_error_response(&err),
             }
         }
         ("GET", path) if path.starts_with("/chain/token-accounts/") => {
@@ -1320,7 +1387,7 @@ async fn handle_chain_request_inner(
                     json_response(StatusCode::OK, token_account_json(address, &value))
                 }
                 Ok(None) => json_response(StatusCode::OK, Value::Null),
-                Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                Err(err) => upstream_error_response(&err),
             }
         }
         ("POST", "/chain/accounts") => match read_json_body::<AccountsBody>(req).await {
@@ -1353,7 +1420,7 @@ async fn handle_chain_request_inner(
                             body.addresses.len()
                         ),
                     ),
-                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                    Err(err) => upstream_error_response(&err),
                 }
             }
             Err(response) => response,
@@ -1376,7 +1443,7 @@ async fn handle_chain_request_inner(
                 .await
                 {
                     Ok(balance) => json_response(StatusCode::OK, balance),
-                    Err(err) => error_response(StatusCode::BAD_GATEWAY, err.to_string()),
+                    Err(err) => upstream_error_response(&err),
                 }
             }
             Err(response) => response,
@@ -2010,11 +2077,15 @@ async fn rpc_call(
             "params": params,
         }))
         .send()
-        .await?
-        .error_for_status()?;
-    let value = response.json::<Value>().await?;
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(UpstreamRpcError::from)?;
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(UpstreamRpcError::from)?;
     if let Some(error) = value.get("error") {
-        return Err(anyhow::anyhow!(error.to_string()));
+        return Err(UpstreamRpcError(format!("JSON-RPC error: {error}")).into());
     }
     Ok(value.get("result").cloned().unwrap_or(Value::Null))
 }
@@ -2826,5 +2897,75 @@ mod tests {
         assert_eq!(within.status(), StatusCode::OK);
         assert_eq!(rpc.requests.lock().unwrap().len(), 2);
         shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn chain_read_upstream_failures_never_reveal_the_rpc_url() {
+        type Responder = crate::http::fork::tests::Responder;
+        let leaky: [(&str, Responder); 3] = [
+            (
+                "http status",
+                Arc::new(|_| (429, "rate limited at /secret-token".into())),
+            ),
+            (
+                "json-rpc error",
+                Arc::new(|_| {
+                    (
+                        200,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "id": "arete-read",
+                            "error": { "code": -32005, "message": "see /secret-token" }
+                        })
+                        .to_string(),
+                    )
+                }),
+            ),
+            (
+                "malformed body",
+                Arc::new(|_| (200, "<html>/secret-token</html>".into())),
+            ),
+        ];
+        let unreachable = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            drop(listener);
+            url
+        };
+        let mut upstreams = Vec::new();
+        for (label, responder) in leaky {
+            let rpc = crate::http::fork::tests::mock_rpc(responder).await;
+            upstreams.push((label, rpc.url));
+        }
+        upstreams.push(("unreachable", unreachable));
+
+        let client = Client::new();
+        for (label, upstream) in upstreams {
+            let rpc_url = format!("{upstream}/secret-token?api-key=hunter2");
+            let port = upstream.rsplit(':').next().unwrap().to_string();
+            let (base, shutdown) = start_gateway(&rpc_url).await;
+            for request in [
+                client.get(format!("{base}/chain/clock")),
+                client.get(format!("{base}/chain/exists/{}", "1".repeat(32))),
+                client
+                    .post(format!("{base}/chain/v1/account"))
+                    .json(&json!({ "address": "11111111111111111111111111111111" })),
+            ] {
+                let response = request.bearer_auth("read").send().await.unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_GATEWAY, "{label}");
+                let correlation_id = response.headers()[CORRELATION_ID_HEADER]
+                    .to_str()
+                    .unwrap()
+                    .to_string();
+                let text = response.text().await.unwrap();
+                for secret in ["secret-token", "hunter2", "api-key", "127.0.0.1", &port] {
+                    assert!(!text.contains(secret), "{label}: {secret} in {text}");
+                }
+                let value: Value = serde_json::from_str(&text).unwrap();
+                assert_eq!(value["error"], UPSTREAM_RPC_FAILED, "{label}");
+                assert!(text.contains(&correlation_id), "{label}");
+            }
+            shutdown.cancel();
+        }
     }
 }

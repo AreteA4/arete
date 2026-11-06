@@ -779,7 +779,7 @@ pub(crate) mod tests {
         }
     }
 
-    type Responder = Arc<dyn Fn(&Value) -> (u16, String) + Send + Sync>;
+    pub(crate) type Responder = Arc<dyn Fn(&Value) -> (u16, String) + Send + Sync>;
 
     /// A mock read RPC that answers every connection through `responder` and records requests.
     pub(crate) struct MockRpc {
