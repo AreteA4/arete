@@ -52,41 +52,26 @@ const AUTHOR_KEYED_MAPS: &[&str] = &["pdas", "field_mappings", "required_fields"
 
 /// Entity spec data that only the runtime reads, never copied into a
 /// generated SDK: resolver, hook and computed-field specs, view pipelines,
-/// handler conditions, and the constants and defaults a field mapping
-/// supplies (the generators only infer a type from a constant). Paths are
-/// relative to an entity spec; `None` matches any list index. They hold
-/// literal values such as `"don't"` that need no restriction.
-const RUNTIME_ONLY_ENTITY_PATHS: &[&[Option<&str>]] = &[
-    &[Some("resolver_specs")],
-    &[Some("resolver_hooks")],
-    &[Some("instruction_hooks")],
-    &[Some("computed_field_specs")],
-    &[Some("views"), None, Some("pipeline")],
-    &[Some("handlers"), None, Some("conditions")],
-    &[
-        Some("handlers"),
-        None,
-        Some("mappings"),
-        None,
-        Some("condition"),
-    ],
-    &[
-        Some("handlers"),
-        None,
-        Some("mappings"),
-        None,
-        Some("source"),
-        Some("Constant"),
-    ],
-    &[
-        Some("handlers"),
-        None,
-        Some("mappings"),
-        None,
-        Some("source"),
-        Some("FromSource"),
-        Some("default"),
-    ],
+/// handler conditions and key resolution, a field mapping's condition,
+/// `when`/`stop` events, format and custom sources, and the constants and
+/// defaults it supplies (the generators only infer a type from a constant).
+/// Paths are relative to an entity spec, `*` matching any list index. They
+/// hold literal values such as `"don't"` that need no restriction.
+const RUNTIME_ONLY_ENTITY_PATHS: &[&str] = &[
+    "resolver_specs",
+    "resolver_hooks",
+    "instruction_hooks",
+    "computed_field_specs",
+    "views.*.pipeline",
+    "handlers.*.conditions",
+    "handlers.*.key_resolution",
+    "handlers.*.mappings.*.condition",
+    "handlers.*.mappings.*.when",
+    "handlers.*.mappings.*.stop",
+    "handlers.*.mappings.*.source.Constant",
+    "handlers.*.mappings.*.source.FromSource.default",
+    "handlers.*.mappings.*.source.Format",
+    "handlers.*.mappings.*.source.Custom",
 ];
 
 /// Refuse a stack spec whose text could escape the code the SDK generators
@@ -216,14 +201,13 @@ fn is_runtime_only(path: &[Step<'_>]) -> bool {
         _ => path,
     };
     RUNTIME_ONLY_ENTITY_PATHS.iter().any(|pattern| {
-        pattern.len() == relative.len()
+        pattern.split('.').count() == relative.len()
             && pattern
-                .iter()
+                .split('.')
                 .zip(relative)
-                .all(|(expected, step)| match (expected, step) {
-                    (Some(field), Step::Key(key)) => field == key,
-                    (None, Step::Index(_)) => true,
-                    _ => false,
+                .all(|(expected, step)| match step {
+                    Step::Key(key) => expected != "*" && expected == *key,
+                    Step::Index(_) => expected == "*",
                 })
     })
 }
@@ -548,7 +532,11 @@ mod tests {
             "source": {"Constant": "don't"}
         }]});
         let value = serde_json::json!({"entities": [{
-            "handlers": [constant.clone()],
+            "handlers": [constant.clone(), {"mappings": [{
+                "target_path": "status.note",
+                "source": {"Format": "{a}'s {b}"},
+                "when": "it's"
+            }]}],
             "resolver_specs": [{"input_value": "it's"}],
             "views": [{"id": "E/list", "pipeline": [{"Filter": {"Literal": "a'b"}}]}]
         }]});
