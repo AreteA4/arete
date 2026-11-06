@@ -1277,3 +1277,113 @@ async fn an_unclean_restart_retires_cursors_it_cannot_honour() {
 
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// `Token/list` and `Token/append`, with `Token` rows scoped by `field`.
+fn make_scoped_view_index(field: &str) -> ViewIndex {
+    let mut index = make_append_view_index();
+    index.add_spec(ViewSpec {
+        id: "Token/list".to_string(),
+        export: "Token".to_string(),
+        mode: Mode::List,
+        wire_format: Default::default(),
+        projection: Projection::all(),
+        filters: Filters::all(),
+        delivery: Delivery::default(),
+        pipeline: None,
+        source_view: None,
+    });
+    index.set_entity_scope("Token", arete_server::ScopeField::new(field));
+    index
+}
+
+/// Start a server lifetime from the latest snapshot under the row-scope
+/// policy that scopes `Token` by `field`.
+async fn restore_scoped(
+    config: &SnapshotConfig,
+    spec: &Spec,
+    field: &str,
+) -> (EntityCache, Arc<EventJournal>) {
+    let view_index = make_scoped_view_index(field);
+    let entity_cache = EntityCache::new();
+    let (tx, _projector) = make_projector(&view_index, &entity_cache);
+    let journal = enabled_journal();
+    let _service = SnapshotService::initialize(
+        config.clone(),
+        spec,
+        entity_cache.clone(),
+        &view_index,
+        journal.clone(),
+        tx,
+    )
+    .await
+    .unwrap();
+    (entity_cache, journal)
+}
+
+/// Cached rows and retained frames carry scopes decided under the policy in
+/// force when they were written. A snapshot taken under one policy restores
+/// them only under the same policy; under another, the projections are
+/// rebuilt from live input instead.
+#[tokio::test]
+async fn a_snapshot_is_not_restored_under_a_different_row_scope_policy() {
+    let _guard = GLOBAL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+    let dir = temp_dir("row-scope-policy");
+    let config = config_for(&dir);
+    let spec = make_spec("Token");
+
+    let view_index = make_scoped_view_index("scope");
+    let entity_cache = EntityCache::new();
+    let (tx, projector) = make_projector(&view_index, &entity_cache);
+    let journal = enabled_journal();
+    let service = SnapshotService::initialize(
+        config.clone(),
+        &spec,
+        entity_cache.clone(),
+        &view_index,
+        journal.clone(),
+        tx.clone(),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(
+        projector
+            .with_snapshot_runtime(service.runtime())
+            .with_journal(journal.clone())
+            .run(),
+    );
+    let vm = Arc::new(StdMutex::new(VmContext::new()));
+    let slot_tracker = SlotTracker::new();
+    slot_tracker.record(120);
+    service.runtime().register_runtime(vm, slot_tracker);
+    for index in 0..10u64 {
+        tx.send(token_batch(&format!("mint{index}"), index, 100 + index))
+            .await
+            .unwrap();
+    }
+    flush_projector(&tx).await;
+    let window_before = journal.window("Token/append").await;
+    assert_eq!(window_before.next, 10);
+    assert_eq!(entity_cache.len("Token/list").await, 10);
+    assert!(service
+        .snapshot_now(SnapshotTrigger::Shutdown)
+        .await
+        .unwrap());
+
+    // Same policy: cache and tape come back.
+    let (cache, journal) = restore_scoped(&config, &spec, "scope").await;
+    assert_eq!(cache.len("Token/list").await, 10);
+    assert_eq!(journal.window("Token/append").await, window_before);
+
+    // Different policy, same bytecode: neither does.
+    let (cache, journal) = restore_scoped(&config, &spec, "owner").await;
+    assert_eq!(
+        cache.len("Token/list").await,
+        0,
+        "cached rows scoped under another policy were restored"
+    );
+    assert!(
+        journal.window("Token/append").await.is_empty(),
+        "retained frames stamped under another policy were restored"
+    );
+}

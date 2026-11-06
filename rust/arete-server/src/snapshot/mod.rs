@@ -53,6 +53,7 @@ const ESTIMATED_SLOT_MILLIS: u64 = 200;
 const CONSISTENCY_CUT_TIMEOUT: Duration = Duration::from_secs(10);
 const STATE_CONTRACT_SCHEMA_V1: &str = "arete.snapshot-state-contract/v1";
 const PROJECTION_CONTRACT_SCHEMA_V1: &str = "arete.snapshot-projection-contract/v1";
+const ROW_SCOPE_CONTRACT_SCHEMA_V1: &str = "arete.snapshot-row-scope-contract/v1";
 
 /// Configuration for state snapshots. Disabled by default; enable via
 /// `ServerBuilder::snapshots(...)` or `ARETE_SNAPSHOT_*` env vars.
@@ -228,6 +229,14 @@ fn state_contract(spec: &crate::Spec) -> Option<SnapshotContract> {
 
 fn projection_contract(view_index: &ViewIndex) -> SnapshotContract {
     contract_hash(PROJECTION_CONTRACT_SCHEMA_V1, &view_index.snapshot_specs())
+}
+
+/// The row-scope policy, or `None` when no entity is scoped. Kept out of the
+/// projection contract so that a policy change is detected even when the
+/// stack's bytecode is unchanged.
+fn row_scope_contract(view_index: &ViewIndex) -> Option<SnapshotContract> {
+    let scopes = view_index.entity_scope_paths();
+    (!scopes.is_empty()).then(|| contract_hash(ROW_SCOPE_CONTRACT_SCHEMA_V1, &scopes))
 }
 
 fn state_ids_by_entity(spec: &crate::Spec) -> HashMap<String, u32> {
@@ -510,6 +519,7 @@ pub struct SnapshotService {
     bytecode_hash: String,
     state_contract: Option<SnapshotContract>,
     projection_contract: SnapshotContract,
+    row_scope_contract: Option<SnapshotContract>,
     state_ids: HashMap<String, u32>,
     program_ids: Vec<String>,
     entity_cache: EntityCache,
@@ -545,6 +555,7 @@ impl SnapshotService {
             bytecode_hash: spec.bytecode.fingerprint(),
             state_contract: state_contract(spec),
             projection_contract: projection_contract(view_index),
+            row_scope_contract: row_scope_contract(view_index),
             state_ids: state_ids_by_entity(spec),
             program_ids,
             entity_cache,
@@ -637,7 +648,17 @@ impl SnapshotService {
             remap_snapshot_states(&mut payload.vm, &self.state_ids)
                 .with_context(|| format!("snapshot {name} state contract is incompatible"))?;
         }
-        if legacy_migration {
+        // Retained frames carry the row scope they were published under, and
+        // replay authorises them by it. Under a different policy those scopes
+        // are wrong, so the projections are rebuilt as for a legacy snapshot.
+        let row_scopes_changed = header.row_scope_contract != self.row_scope_contract;
+        if row_scopes_changed {
+            warn!(
+                snapshot = %name,
+                "Snapshot was taken under a different row-scope policy; rebuilding projections from live input"
+            );
+        }
+        if legacy_migration || row_scopes_changed {
             // A pre-contract snapshot cannot prove that its materialized views
             // still match the current projections. Preserve only durable VM
             // state and let live input rebuild every projection cache.
@@ -862,6 +883,7 @@ impl SnapshotService {
             bytecode_hash: self.bytecode_hash.clone(),
             state_contract: self.state_contract.clone(),
             projection_contract: Some(self.projection_contract.clone()),
+            row_scope_contract: self.row_scope_contract.clone(),
             program_ids: self.program_ids.clone(),
             resume_watermark,
             observed_slot,

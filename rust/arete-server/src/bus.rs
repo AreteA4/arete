@@ -28,6 +28,8 @@ pub struct StateUpdate {
     /// longer has, which no patch removes. Zero until one is published.
     pub replaced: u64,
     pub payload: Arc<Bytes>,
+    /// Effective scope of `payload` at publication, like [`BusMessage::row_scope`].
+    pub row_scope: Option<crate::row_scope::RowScope>,
 }
 
 /// Whether a state frame replaces its entity (`upsert`, `delete`) rather than
@@ -95,8 +97,16 @@ impl BusManager {
         tx.subscribe()
     }
 
-    /// Publish to a state bus (latest-value)
-    pub async fn publish_state(&self, view_id: &str, key: &str, frame: Arc<Bytes>) {
+    /// Publish to a state bus (latest-value). `row_scope` is the frame's scope
+    /// at publication; subscribers authorise the frame against it, never
+    /// against later row state.
+    pub async fn publish_state(
+        &self,
+        view_id: &str,
+        key: &str,
+        frame: Arc<Bytes>,
+        row_scope: Option<crate::row_scope::RowScope>,
+    ) {
         let buses = self.state_buses.read().await;
         if let Some(tx) = buses.get(&(view_id.to_string(), key.to_string())) {
             let replaces = replaces_entity(&frame);
@@ -106,6 +116,7 @@ impl BusManager {
                     update.replaced = update.published;
                 }
                 update.payload = frame;
+                update.row_scope = row_scope;
             });
         }
     }
@@ -165,18 +176,23 @@ mod tests {
     async fn a_state_bus_records_its_latest_replacing_frame() {
         let bus = BusManager::new();
         let receiver = bus.get_or_create_state_bus("Round/state", "7").await;
-        bus.publish_state("Round/state", "7", frame("patch")).await;
+        bus.publish_state("Round/state", "7", frame("patch"), None)
+            .await;
         assert_eq!(receiver.borrow().replaced, 0);
-        bus.publish_state("Round/state", "7", frame("upsert")).await;
-        bus.publish_state("Round/state", "7", frame("patch")).await;
+        bus.publish_state("Round/state", "7", frame("upsert"), None)
+            .await;
+        bus.publish_state("Round/state", "7", frame("patch"), None)
+            .await;
         assert_eq!(receiver.borrow().replaced, 2);
-        bus.publish_state("Round/state", "7", frame("delete")).await;
+        bus.publish_state("Round/state", "7", frame("delete"), None)
+            .await;
         assert_eq!(receiver.borrow().replaced, 4);
         assert_eq!(receiver.borrow().published, 4);
         bus.publish_state(
             "Round/state",
             "7",
             Arc::new(Bytes::from_static(b"not json")),
+            None,
         )
         .await;
         assert_eq!(receiver.borrow().replaced, 4, "unparsed frames are patches");
