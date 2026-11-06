@@ -752,7 +752,8 @@ pub struct DevConfirmArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DevScenarioArgs {
     /// An `arete.scenario/v1` document (JSON), or the path of a file holding
-    /// one (relative to the server's working directory).
+    /// one (relative to the server's working directory, no `..`, no
+    /// symlinks).
     pub scenario: serde_json::Value,
     /// Only encode the writes; change nothing.
     #[serde(default)]
@@ -774,7 +775,7 @@ pub struct DevReproArgs {
     /// The signature of a transaction sent in this environment.
     pub signature: String,
     /// Also write the bundle to this file (relative to the server's working
-    /// directory, no `..`).
+    /// directory, no `..`, no symlinks).
     #[serde(default)]
     pub output: Option<String>,
     #[serde(flatten)]
@@ -802,8 +803,8 @@ pub struct DevCaptureArgs {
     /// Window end: a slot, a time, or `+5m` relative to `from` (default now).
     #[serde(default)]
     pub to: Option<String>,
-    /// The `.arcap` file to write: absolute, or relative to the server's
-    /// working directory (no `..`).
+    /// The `.arcap` file to write, relative to the server's working
+    /// directory (no `..`, no symlinks).
     pub output: String,
     /// JSON-RPC node (default the public mainnet RPC, which rate-limits hard).
     #[serde(default)]
@@ -2125,9 +2126,8 @@ impl AreteMcp {
             .map_err(|error| McpError::invalid_params(format!("{error:#}"), None))?;
         let bytes = serde_json::to_vec_pretty(&result)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        std::fs::write(&path, &bytes).map_err(|error| {
-            McpError::internal_error(format!("{}: {error}", path.display()), None)
-        })?;
+        crate::dev_capture::write_file_replacing(&path, &bytes)
+            .map_err(|error| McpError::internal_error(format!("{error:#}"), None))?;
         shaped_result(&json!({
             "output": path.display().to_string(),
             "bytes": bytes.len(),
