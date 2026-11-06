@@ -40,7 +40,7 @@ pub use solana_gateway::{
     SolanaGatewayAuthorization, SolanaGatewayAuthorizationError, SolanaGatewayScope,
 };
 pub use token::{TokenError, TokenSigner, TokenVerifier};
-pub use verifier::{AsyncVerifier, SimpleVerifier};
+pub use verifier::{AsyncVerifier, SimpleVerifier, DEFAULT_MIN_JWKS_REFRESH_INTERVAL};
 
 /// Stable JWT audience for the shared program-read service.
 pub const PROGRAM_READ_AUDIENCE: &str = "arete:program-read";
