@@ -25,6 +25,8 @@ By default the reference server stores keys at:
 - `./.arete-auth/verifying.key`
 
 If those files do not exist, the server generates them automatically on startup.
+The signing key is written owner-only (`0600`); an existing signing key that
+other users can read is tightened to `0600` on startup.
 
 ### 2. Configure Environment
 
@@ -42,13 +44,23 @@ export VERIFYING_KEY_PATH="./.arete-auth/verifying.key"
 export SECRET_KEYS="a4_sk_dev_secret"
 export PUBLISHABLE_KEYS="a4_pk_dev_public"
 
+# Origins publishable keys may mint tokens for (comma-separated).
+# Unset means any origin; set it for browser apps.
+export PUBLISHABLE_KEY_ORIGINS="https://your-domain.com"
+
 # Session limits embedded in minted tokens
 export MAX_CONNECTIONS_PER_SUBJECT="10"
 export MAX_SUBSCRIPTIONS_PER_CONNECTION="100"
 
 # Enable real in-memory token mint rate limiting
 export ENABLE_RATE_LIMIT="true"
+# Mints per minute for one API key from one client IP
 export RATE_LIMIT_PER_MINUTE="60"
+# Mints per minute for one API key across all client IPs (0 disables)
+export RATE_LIMIT_PER_KEY_PER_MINUTE="600"
+# Take the client IP from X-Forwarded-For / X-Real-IP. Set to false when the
+# server is reachable without a proxy that sets these headers.
+export TRUST_PROXY_HEADERS="true"
 ```
 
 ### 3. Run the Server
@@ -145,7 +157,8 @@ The auth server supports two types of API keys:
 ### Publishable Keys (a4_pk_..., legacy hspk_...)
 - Safe for browser/client use
 - Can be exposed in frontend code
-- Constrained by origin allowlist
+- Constrained by origin allowlist (`PUBLISHABLE_KEY_ORIGINS`): the `Origin`
+  header and the origin the token is bound to must both be listed
 - Maximum TTL: 5 minutes
 - Lower resource limits
 

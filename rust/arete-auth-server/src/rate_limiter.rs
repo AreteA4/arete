@@ -19,7 +19,14 @@ impl MintRateLimiter {
         }
     }
 
+    #[cfg(test)]
     pub fn check(&self, key: &str, limit: u32) -> bool {
+        self.check_all(&[(key, limit)])
+    }
+
+    /// Record one request against every `(bucket, limit)` pair, or none of
+    /// them if any bucket is already full.
+    pub fn check_all(&self, buckets_to_check: &[(&str, u32)]) -> bool {
         let now = Instant::now();
         let mut buckets = self
             .buckets
@@ -32,13 +39,16 @@ impl MintRateLimiter {
             !bucket.is_empty()
         });
 
-        let bucket = buckets.entry(key.to_string()).or_default();
-
-        if bucket.len() >= limit as usize {
+        let full = buckets_to_check
+            .iter()
+            .any(|(key, limit)| buckets.get(*key).map_or(0, Vec::len) >= *limit as usize);
+        if full {
             return false;
         }
 
-        bucket.push(now);
+        for (key, _) in buckets_to_check {
+            buckets.entry((*key).to_string()).or_default().push(now);
+        }
         true
     }
 }
@@ -61,6 +71,25 @@ mod tests {
         assert!(limiter.check("key-a", 1));
         assert!(!limiter.check("key-a", 1));
         assert!(limiter.check("key-b", 1));
+    }
+
+    #[test]
+    fn check_all_consumes_nothing_when_any_bucket_is_full() {
+        let limiter = MintRateLimiter::new(Duration::from_secs(60));
+        assert!(limiter.check_all(&[("ip", 5), ("key", 1)]));
+        assert!(!limiter.check_all(&[("ip", 5), ("key", 1)]));
+
+        let buckets = limiter
+            .buckets
+            .lock()
+            .expect("mint rate limiter lock poisoned");
+        assert_eq!(buckets.get("ip").map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn zero_limit_denies() {
+        let limiter = MintRateLimiter::new(Duration::from_secs(60));
+        assert!(!limiter.check_all(&[("key", 0)]));
     }
 
     #[test]

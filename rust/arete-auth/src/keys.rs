@@ -154,7 +154,10 @@ impl KeyLoader {
         VerifyingKey::from_bytes(&key_bytes)
     }
 
-    /// Generate and save a new key pair to files (base64-encoded)
+    /// Generate and save a new key pair to files (base64-encoded).
+    ///
+    /// On Unix the signing key file is owner-only (`0600`), including when it
+    /// already existed with looser permissions.
     pub fn generate_and_save_keys(
         signing_key_path: impl AsRef<Path>,
         verifying_key_path: impl AsRef<Path>,
@@ -167,7 +170,7 @@ impl KeyLoader {
             &base64::engine::general_purpose::STANDARD,
             signing_key.to_bytes(),
         );
-        fs::write(signing_key_path, signing_b64)?;
+        write_owner_only(signing_key_path.as_ref(), signing_b64.as_bytes())?;
 
         // Save verifying key (base64)
         let verifying_b64 = base64::Engine::encode(
@@ -202,9 +205,69 @@ impl KeyLoader {
     }
 }
 
+/// Write `contents` to `path`, readable and writable by the owner only.
+///
+/// Permissions are set on the open handle before any secret byte is
+/// written, so a pre-existing file with looser permissions is tightened too.
+fn write_owner_only(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(contents)?;
+    file.sync_all()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn mode(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn generated_signing_key_is_owner_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let signing = dir.path().join("signing.key");
+        let verifying = dir.path().join("verifying.key");
+
+        let (signing_key, _) = KeyLoader::generate_and_save_keys(&signing, &verifying).unwrap();
+
+        assert_eq!(mode(&signing), 0o600);
+        let loaded = KeyLoader::signing_key_from_file(&signing).unwrap();
+        assert_eq!(loaded.to_bytes(), signing_key.to_bytes());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn regenerating_over_a_world_readable_signing_key_tightens_it() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let signing = dir.path().join("signing.key");
+        let verifying = dir.path().join("verifying.key");
+        fs::write(&signing, "stale").unwrap();
+        fs::set_permissions(&signing, fs::Permissions::from_mode(0o644)).unwrap();
+
+        KeyLoader::generate_and_save_keys(&signing, &verifying).unwrap();
+
+        assert_eq!(mode(&signing), 0o600);
+    }
 
     #[test]
     fn test_generate_and_sign() {
