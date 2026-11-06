@@ -31,6 +31,12 @@ export function stepKeyPrefix(deliveryId: string, request: Pick<StepRequest, 'st
 export const DEPLOYMENT = 'dep-1';
 export const PROGRAM = encodeBase58(new Uint8Array(32).fill(40));
 export const VAULT = encodeBase58(new Uint8Array(32).fill(30));
+/**
+ * The account a partly failing step's second transaction writes. It is not
+ * `VAULT`: a transaction using an account an earlier one in the step writes is
+ * refused, since it is simulated against state from before that write.
+ */
+export const SECOND_VAULT = encodeBase58(new Uint8Array(32).fill(31));
 
 export function walletSeed(n: number): Uint8Array {
   return Uint8Array.from({ length: 32 }, (_, index) => (index * 7 + n) % 256);
@@ -175,7 +181,16 @@ export function fakeProtocol(options: FakeProtocolOptions = {}) {
       const partial = options.partialFailure?.(key) ?? false;
       const all = [wire(message, format)];
       if (partial) {
-        all.push(wire({ ...message, instructions: [{ program: 2, accounts: [0, 1], data: [2, ...keyBytes] }] }, format));
+        all.push(
+          wire(
+            {
+              ...message,
+              keys: [wallet, SECOND_VAULT, options.program ?? PROGRAM],
+              instructions: [{ program: 2, accounts: [0, 1], data: [2, ...keyBytes] }],
+            },
+            format,
+          ),
+        );
       }
       executions += 1;
       const executionId = `exec-${executions}`;
