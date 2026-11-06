@@ -326,7 +326,8 @@ done
 [[ -z "$(ls -A "$PACK_DIR")" ]]
 
 # The credential-free pack step installs only from lockfiles and writes the
-# packages in publish order.
+# packages in publish order. (The fixture has had no protocol package since
+# the historical-source case above.)
 : >"$NPM_LOG"
 env -u NPM_TOKEN -u NODE_AUTH_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   PATH="$FAKE_BIN:$PATH" FAKE_CURL_STATUS=404 NPM_LOG="$NPM_LOG" \
@@ -336,7 +337,7 @@ assert_contains "$npm_calls" "ci --ignore-scripts"
 assert_not_contains "$npm_calls" "install"
 assert_not_contains "$npm_calls" "publish"
 packed_names="$(cut -d'|' -f1 "$PACK_DIR/packages.txt" | tr '\n' ' ')"
-if [[ "$packed_names" != "@usearete/hash @usearete/protocol @usearete/sdk @usearete/adapter-kit @usearete/react @usearete/adapter-web3js @usearete/automations @usearete/a4 @usearete/mcp " ]]; then
+if [[ "$packed_names" != "@usearete/hash @usearete/sdk @usearete/adapter-kit @usearete/react @usearete/adapter-web3js @usearete/automations @usearete/a4 @usearete/mcp " ]]; then
   printf 'Unexpected pack order: %s\n' "$packed_names" >&2
   exit 1
 fi
@@ -359,16 +360,16 @@ assert_contains "$publish_packed_output" "Using npm trusted publishing"
 assert_contains "$publish_packed_output" "Publish flow completed"
 assert_contains "$npm_calls" "view @usearete/hash@0.7.0 version"
 assert_contains "$npm_calls" "view @usearete/sdk@0.3.0 version"
-if [[ "$(grep -c '^publish ' "$NPM_LOG")" != 9 ]]; then
-  printf 'Expected nine tarball publishes, got:\n%s\n' "$npm_calls" >&2
+if [[ "$(grep -c '^publish ' "$NPM_LOG")" != 8 ]]; then
+  printf 'Expected eight tarball publishes, got:\n%s\n' "$npm_calls" >&2
   exit 1
 fi
-assert_contains "$npm_calls" "publish $PACK_DIR/09/usearete-mcp-0.3.0.tgz --access public --provenance --ignore-scripts"
+assert_contains "$npm_calls" "publish $PACK_DIR/08/usearete-mcp-0.3.0.tgz --access public --provenance --ignore-scripts"
 
 # Anything else in the directory is refused before it reaches npm.
 TAMPERED_DIR="$TEST_DIR/tampered"
 cp -R "$PACK_DIR" "$TAMPERED_DIR"
-printf '@usearete/sdk|9.9.9|03/usearete-sdk-0.3.0.tgz\n' >"$TAMPERED_DIR/packages.txt"
+printf '@usearete/sdk|9.9.9|02/usearete-sdk-0.3.0.tgz\n' >"$TAMPERED_DIR/packages.txt"
 rm -f "$PUBLISH_MARKER"
 if tampered_output="$(
   env -u NPM_TOKEN PATH="$FAKE_BIN:$PATH" NPM_TOKEN="test-token" NPM_PUBLISH_MARKER="$PUBLISH_MARKER" FAKE_CURL_STATUS=404 \
@@ -380,7 +381,7 @@ fi
 assert_contains "$tampered_output" "expected version 0.3.0"
 [[ ! -e "$PUBLISH_MARKER" ]]
 
-printf '@evil/package|0.3.0|03/usearete-sdk-0.3.0.tgz\n' >"$TAMPERED_DIR/packages.txt"
+printf '@evil/package|0.3.0|02/usearete-sdk-0.3.0.tgz\n' >"$TAMPERED_DIR/packages.txt"
 if tampered_output="$(
   env PATH="$FAKE_BIN:$PATH" NPM_TOKEN="test-token" NPM_PUBLISH_MARKER="$PUBLISH_MARKER" FAKE_CURL_STATUS=404 \
     "$VERSION_ROOT/scripts/publish-npm-version.sh" 0.3.0 --publish-packed "$TAMPERED_DIR" 2>&1
@@ -391,7 +392,7 @@ fi
 assert_contains "$tampered_output" "unexpected package @evil/package"
 [[ ! -e "$PUBLISH_MARKER" ]]
 
-printf '@usearete/react|0.3.0|03/usearete-sdk-0.3.0.tgz\n' >"$TAMPERED_DIR/packages.txt"
+printf '@usearete/react|0.3.0|02/usearete-sdk-0.3.0.tgz\n' >"$TAMPERED_DIR/packages.txt"
 if tampered_output="$(
   env PATH="$FAKE_BIN:$PATH" NPM_TOKEN="test-token" NPM_PUBLISH_MARKER="$PUBLISH_MARKER" FAKE_CURL_STATUS=404 \
     "$VERSION_ROOT/scripts/publish-npm-version.sh" 0.3.0 --publish-packed "$TAMPERED_DIR" 2>&1
