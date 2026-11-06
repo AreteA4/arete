@@ -1807,9 +1807,27 @@ needs no key.
 The registry signs the package releases it publishes, and `a4` checks those
 signatures on everything it installs: the packages `a4 install` and
 `a4 update` resolve, the program SDK releases a stack references, and the
-stacks and programs a protocol hoists. A signature is an Ed25519 signature by
-a trusted registry key over a domain-separated message binding the key id
-and release's `package_release_hash`. Trust anchors are compiled into each
+stacks and programs a protocol hoists.
+
+Each release entry carries a release content descriptor (`releaseContent`):
+its kind, owner (`public` or `private`), package, version,
+`package_release_hash`, and the hash of every artifact the release is made of
+(StackManifest, ProgramSpecs, Program Releases, embedded program package
+releases, protocol release, protocol spec and deployment, hoisted stacks, and
+each SDK extension bundle). The registry keys sign an Ed25519 signature
+(`contentSignatures`) over the message
+`arete.registry-package-release/v2\n<keyId>\n<digest>`, where the digest is a
+SHA-256 over a canonical encoding of the descriptor
+(`arete:registry-release-content:v1:sha256:…`). `a4` recomputes the digest
+itself, verifies the signature, then checks the descriptor against the
+response: the package, version, release and kind must match, every artifact
+it installs must have the hash the descriptor names, and every SDK extension
+bundle must re-hash to its content hash. The other artifacts are re-hashed
+before anything is generated. Swapping an artifact, or relabelling a signed
+release as another package or version, is refused. The encoding and shared
+test vectors are in `test-vectors/registry-release-content-v1.json`.
+
+Trust anchors are compiled into each
 CLI release or explicitly provisioned through
 `ARETE_REGISTRY_TRUSTED_KEYS_FILE`. The public key endpoint
 `GET /api/registry/v1/keys` is cached in `~/.arete` for a day; its metadata
@@ -1818,14 +1836,20 @@ replace a pinned public key. New keys require an approved CLI release or an
 operator-managed trust file.
 
 The registry returns signatures only to clients that ask for them: `a4`
-(and `a4 mcp`) send `X-Arete-Registry-Signatures: v1` on the registry
-requests whose responses carry package releases.
+sends `X-Arete-Registry-Signatures: v1,v2` on the registry requests whose
+responses carry package releases. `v1` signatures cover the
+`package_release_hash` alone; `v2` adds the signed release content. The
+read-only registry tools of `a4 mcp` ask for `v1` only; they install nothing.
 
-Official builds enforce signatures by default. Missing or invalid signatures,
-unknown keys, and releases signed only by retired keys are refused. An unsigned
-publication timestamp cannot restore trust in a retired key. Bootstrap builds
-without provisioned trust anchors warn instead; set
-`ARETE_REQUIRE_REGISTRY_SIGNATURES=1` to require signatures explicitly.
+Official builds enforce signatures by default: every release needs a valid
+content signature that matches the response. Missing or invalid signatures,
+releases signed only over their identity (a registry that predates release
+content), unknown keys, and releases signed only by retired keys are refused.
+An unsigned publication timestamp cannot restore trust in a retired key.
+Bootstrap builds without provisioned trust anchors warn instead (judging a
+release without release content by its identity signature); set
+`ARETE_REQUIRE_REGISTRY_SIGNATURES=1` to require signatures explicitly, or
+`ARETE_REQUIRE_REGISTRY_SIGNATURES=0` to turn refusals into warnings.
 
 ### Programs from a local IDL
 

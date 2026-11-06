@@ -1,0 +1,439 @@
+{
+  "cases": [
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:stack-manifest:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "role": "stack-manifest"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "name": "11111111111111111111111111111111",
+            "role": "program-spec"
+          },
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "name": "11111111111111111111111111111111",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "name": "11111111111111111111111111111111",
+            "role": "program-package"
+          },
+          {
+            "hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "name": "typescript",
+            "role": "sdk-extension"
+          },
+          {
+            "hash": "5555555555555555555555555555555555555555555555555555555555555555",
+            "name": "rust",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "stack",
+        "owner": "public",
+        "package": "ore",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.1.0"
+      },
+      "expected": {
+        "canonicalText": "arete.registry-release-content/v1\nkind stack\nowner public\npackage ore\nversion 1.1.0\nrelease arete:registry-package-release:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nartifact program-package 11111111111111111111111111111111 arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nartifact program-release 11111111111111111111111111111111 arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333\nartifact program-spec 11111111111111111111111111111111 arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222\nartifact sdk-extension rust 5555555555555555555555555555555555555555555555555555555555555555\nartifact sdk-extension typescript 4444444444444444444444444444444444444444444444444444444444444444\nartifact stack-manifest - arete:h1:stack-manifest:sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+        "digest": "arete:registry-release-content:v1:sha256:6b7a508344e3076b9b66d2692d826081e4cd1d1bfaef37ee78f8622eb2b543ba",
+        "signature": "d7mIqYPWTpcxfZQtnbLIkRCbWVJCPYnxFV8HESbapPr6H923Og8+aoncuBlvoNcE1BwKmLYg432KEjSOND0/DA==",
+        "signedMessage": "arete.registry-package-release/v2\nregistry-test-1\narete:registry-release-content:v1:sha256:6b7a508344e3076b9b66d2692d826081e4cd1d1bfaef37ee78f8622eb2b543ba"
+      },
+      "name": "stack"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "5555555555555555555555555555555555555555555555555555555555555555",
+            "name": "rust",
+            "role": "sdk-extension"
+          },
+          {
+            "hash": "4444444444444444444444444444444444444444444444444444444444444444",
+            "name": "typescript",
+            "role": "sdk-extension"
+          },
+          {
+            "hash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "name": "11111111111111111111111111111111",
+            "role": "program-package"
+          },
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "name": "11111111111111111111111111111111",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "name": "11111111111111111111111111111111",
+            "role": "program-spec"
+          },
+          {
+            "hash": "arete:h1:stack-manifest:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "role": "stack-manifest"
+          }
+        ],
+        "kind": "stack",
+        "owner": "public",
+        "package": "ore",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.1.0"
+      },
+      "expected": {
+        "canonicalText": "arete.registry-release-content/v1\nkind stack\nowner public\npackage ore\nversion 1.1.0\nrelease arete:registry-package-release:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nartifact program-package 11111111111111111111111111111111 arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nartifact program-release 11111111111111111111111111111111 arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333\nartifact program-spec 11111111111111111111111111111111 arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222\nartifact sdk-extension rust 5555555555555555555555555555555555555555555555555555555555555555\nartifact sdk-extension typescript 4444444444444444444444444444444444444444444444444444444444444444\nartifact stack-manifest - arete:h1:stack-manifest:sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+        "digest": "arete:registry-release-content:v1:sha256:6b7a508344e3076b9b66d2692d826081e4cd1d1bfaef37ee78f8622eb2b543ba",
+        "signature": "d7mIqYPWTpcxfZQtnbLIkRCbWVJCPYnxFV8HESbapPr6H923Og8+aoncuBlvoNcE1BwKmLYg432KEjSOND0/DA==",
+        "signedMessage": "arete.registry-package-release/v2\nregistry-test-1\narete:registry-release-content:v1:sha256:6b7a508344e3076b9b66d2692d826081e4cd1d1bfaef37ee78f8622eb2b543ba"
+      },
+      "name": "stack-artifacts-in-any-order"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "program",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0"
+      },
+      "expected": {
+        "canonicalText": "arete.registry-release-content/v1\nkind program\nowner private\npackage ore-program\nversion 1.0.0\nrelease arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nartifact program-release - arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333\nartifact program-spec - arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222\nartifact sdk-extension python 6666666666666666666666666666666666666666666666666666666666666666\n",
+        "digest": "arete:registry-release-content:v1:sha256:dc5ea1a2da7c10ee626bbd0ad5ee6baef6caace86c5c4c06d06e4c48f83d325b",
+        "signature": "Rt/n9NcZ1Xqa6T0EzJCC6O0Eewa3eryp0cGTebnJZQ68bCn0wBxMpR8V3TP3GtGdUxHO2WyFMkjtZZ3RiSDuDQ==",
+        "signedMessage": "arete.registry-package-release/v2\nregistry-test-1\narete:registry-release-content:v1:sha256:dc5ea1a2da7c10ee626bbd0ad5ee6baef6caace86c5c4c06d06e4c48f83d325b"
+      },
+      "name": "program-owner-private"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:protocol-release:sha256:7777777777777777777777777777777777777777777777777777777777777777",
+            "role": "protocol-release"
+          },
+          {
+            "hash": "arete:h1:protocol-spec:sha256:8888888888888888888888888888888888888888888888888888888888888888",
+            "role": "protocol-spec"
+          },
+          {
+            "hash": "0f8e2d6c-3b1a-4e5f-9a7b-1c2d3e4f5a6b",
+            "role": "deployment"
+          },
+          {
+            "hash": "arete:registry-package-release:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name": "tips",
+            "role": "stack"
+          },
+          {
+            "hash": "arete:h1:stack-manifest:sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "name": "tips",
+            "role": "stack-manifest"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "name": "11111111111111111111111111111111",
+            "role": "program-spec"
+          },
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "name": "11111111111111111111111111111111",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "name": "11111111111111111111111111111111",
+            "role": "program-package"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:9999999999999999999999999999999999999999999999999999999999999999",
+            "name": "Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo",
+            "role": "program-spec"
+          }
+        ],
+        "kind": "protocol",
+        "owner": "public",
+        "package": "tip-jar",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "schema": "arete.registry-release-content/v1",
+        "version": "2.0.0-rc.1"
+      },
+      "expected": {
+        "canonicalText": "arete.registry-release-content/v1\nkind protocol\nowner public\npackage tip-jar\nversion 2.0.0-rc.1\nrelease arete:registry-package-release:v2:sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\nartifact deployment - 0f8e2d6c-3b1a-4e5f-9a7b-1c2d3e4f5a6b\nartifact program-package 11111111111111111111111111111111 arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\nartifact program-release 11111111111111111111111111111111 arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333\nartifact program-spec 11111111111111111111111111111111 arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222\nartifact program-spec Memo1UhkJRfHyvLMcVucJwxXeuD728EqVDDwQDxFMNo arete:h1:program-spec:sha256:9999999999999999999999999999999999999999999999999999999999999999\nartifact protocol-release - arete:h1:protocol-release:sha256:7777777777777777777777777777777777777777777777777777777777777777\nartifact protocol-spec - arete:h1:protocol-spec:sha256:8888888888888888888888888888888888888888888888888888888888888888\nartifact stack tips arete:registry-package-release:v2:sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\nartifact stack-manifest tips arete:h1:stack-manifest:sha256:1111111111111111111111111111111111111111111111111111111111111111\n",
+        "digest": "arete:registry-release-content:v1:sha256:a832b31cec0674a923fe93aea9dfa2e7a72ac4ab04a2d7d1355acfb93dc9e211",
+        "signature": "c2ScwFhBbKFDNosuwF71BpPW7wcboo+rPrFb+gscQrhJJmUUR9fc96uxAcDyahwQu1PbhAM/nN/ln2SHCR/PBg==",
+        "signedMessage": "arete.registry-package-release/v2\nregistry-test-1\narete:registry-release-content:v1:sha256:a832b31cec0674a923fe93aea9dfa2e7a72ac4ab04a2d7d1355acfb93dc9e211"
+      },
+      "name": "protocol"
+    },
+    {
+      "content": {
+        "artifacts": [],
+        "kind": "program",
+        "owner": "public",
+        "package": "legacy",
+        "packageReleaseHash": "arete:registry-package-release:v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "schema": "arete.registry-release-content/v1",
+        "version": "0.1.0"
+      },
+      "expected": {
+        "canonicalText": "arete.registry-release-content/v1\nkind program\nowner public\npackage legacy\nversion 0.1.0\nrelease arete:registry-package-release:v1:sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n",
+        "digest": "arete:registry-release-content:v1:sha256:61524bafa36942af0240cbf34a012cb7ad0a8c4d77b46283b84d2c1160b91210",
+        "signature": "13LLh6/4jQTJi0zxmIyRKXDVue0s6ktmyjvxRIlvqWQu+gWMF6hjfiN/g52Wg9jwOscfaQS7KDPXkv34UZROBg==",
+        "signedMessage": "arete.registry-package-release/v2\nregistry-test-1\narete:registry-release-content:v1:sha256:61524bafa36942af0240cbf34a012cb7ad0a8c4d77b46283b84d2c1160b91210"
+      },
+      "name": "v1-release-identity-without-artifacts"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "program",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v2",
+        "version": "1.0.0"
+      },
+      "error": "schema",
+      "name": "error-schema"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "bundle",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0"
+      },
+      "error": "kind",
+      "name": "error-kind"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "program",
+        "owner": "user:17",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0"
+      },
+      "error": "owner",
+      "name": "error-owner"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "program",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0 beta"
+      },
+      "error": "field",
+      "name": "error-space-in-version"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "a\nb",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "program",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0"
+      },
+      "error": "field",
+      "name": "error-newline-in-hash"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "role": "program release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "program",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0"
+      },
+      "error": "role",
+      "name": "error-role"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "name": "-",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          }
+        ],
+        "kind": "program",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0"
+      },
+      "error": "name",
+      "name": "error-explicit-dash-name"
+    },
+    {
+      "content": {
+        "artifacts": [
+          {
+            "hash": "arete:h1:program-release:sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "role": "program-release"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "role": "program-spec"
+          },
+          {
+            "hash": "6666666666666666666666666666666666666666666666666666666666666666",
+            "name": "python",
+            "role": "sdk-extension"
+          },
+          {
+            "hash": "arete:h1:program-spec:sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            "role": "program-spec"
+          }
+        ],
+        "kind": "program",
+        "owner": "private",
+        "package": "ore-program",
+        "packageReleaseHash": "arete:registry-package-release:v2:sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "schema": "arete.registry-release-content/v1",
+        "version": "1.0.0"
+      },
+      "error": "duplicate",
+      "name": "error-duplicate-artifact"
+    }
+  ],
+  "description": "Registry release content descriptors (arete.registry-release-content/v1). The canonical text is the schema line, then `kind`, `owner`, `package`, `version` and `release` lines, then one `artifact <role> <name> <hash>` line per artifact sorted bytewise by (role, name), `-` standing for an absent name; every line ends with \\n. The digest is arete:registry-release-content:v1:sha256:<lowercase hex SHA-256 of the canonical text>. Each registry key signs the UTF-8 message `arete.registry-package-release/v2\\n<keyId>\\n<digest>` with Ed25519 (64 bytes, padded standard base64). kind is program, protocol or stack; owner is public or private; package, version, packageReleaseHash and hash are printable ASCII without spaces (1-256 bytes); role and name match [A-Za-z0-9_.-]{1,128} and name is omitted rather than '-'. Error cases name the rule they break: schema, kind, owner, field, role, name or duplicate (a repeated role and name).",
+  "schema": "arete.registry-release-content-vectors/v1",
+  "signingKey": {
+    "keyId": "registry-test-1",
+    "publicKey": "FVen3X669xLzsi6N2V91DoiyzHzg1uAgqiT8jZ9nS96Z",
+    "seedHex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+  }
+}
