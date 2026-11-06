@@ -9,8 +9,10 @@
 //!   the connection uses exactly the checked addresses, so a DNS answer that
 //!   changes between check and connect cannot reach an internal address;
 //! - IP-literal hosts are checked directly (they skip DNS);
-//! - every redirect hop goes through the same checks;
 //! - concurrent requests are capped overall and per host.
+//!
+//! The URL resolver client follows redirects itself, so every hop goes
+//! through the same checks and takes its own host's concurrency slot.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -86,7 +88,7 @@ fn embedded_ipv4(ip: Ipv6Addr) -> Option<Ipv4Addr> {
 
 /// The error returned when a URL resolver request is refused before it is sent.
 #[derive(Debug)]
-pub struct BlockedUrlError(String);
+pub struct BlockedUrlError(pub(crate) String);
 
 impl std::fmt::Display for BlockedUrlError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -181,25 +183,6 @@ impl Resolve for GuardedResolver {
             Ok(addrs)
         })
     }
-}
-
-/// Follows at most `max_redirects` redirects, checking each target the same
-/// way as the original URL.
-pub(crate) fn redirect_policy(
-    policy: Arc<AddressPolicy>,
-    max_redirects: usize,
-) -> reqwest::redirect::Policy {
-    reqwest::redirect::Policy::custom(move |attempt| {
-        if attempt.previous().len() > max_redirects {
-            return attempt.error(BlockedUrlError(format!(
-                "more than {max_redirects} redirects"
-            )));
-        }
-        match policy.check_url(attempt.url()) {
-            Ok(()) => attempt.follow(),
-            Err(err) => attempt.error(err),
-        }
-    })
 }
 
 /// Caps concurrent requests overall and per host. Hosts share a fixed set of

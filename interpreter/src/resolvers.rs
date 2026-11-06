@@ -608,7 +608,9 @@ pub struct UrlResolverClient {
     client: reqwest::Client,
     policy: std::sync::Arc<crate::url_guard::AddressPolicy>,
     limiter: crate::url_guard::HostLimiter,
+    timeout: std::time::Duration,
     max_body_bytes: usize,
+    max_redirects: usize,
 }
 
 impl Default for UrlResolverClient {
@@ -653,10 +655,8 @@ impl UrlResolverClient {
                 lookup,
                 policy.clone(),
             )))
-            .redirect(crate::url_guard::redirect_policy(
-                policy.clone(),
-                options.max_redirects,
-            ))
+            // Redirects are followed in `fetch`, which checks every hop.
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .expect("Failed to create HTTP client for URL resolver");
 
@@ -667,7 +667,9 @@ impl UrlResolverClient {
                 options.max_concurrent_requests,
                 options.max_concurrent_per_host,
             ),
+            timeout: options.timeout,
             max_body_bytes: options.max_body_bytes,
+            max_redirects: options.max_redirects,
         }
     }
 
@@ -682,24 +684,62 @@ impl UrlResolverClient {
         }
 
         let url = reqwest::Url::parse(url)?;
-        self.policy.check_url(&url)?;
-        let host = url.host_str().unwrap_or_default().to_string();
-        let _permits = self.limiter.acquire(&host).await;
+        // One deadline covers waiting for a concurrency slot, every redirect
+        // hop and the body, so a busy or slow host cannot hold a batch for
+        // longer than the request timeout.
+        tokio::time::timeout(self.timeout, self.fetch(url, method.clone()))
+            .await
+            .map_err(|_| format!("URL resolver request timed out after {:?}", self.timeout))?
+    }
 
-        let request = match method {
-            crate::ast::HttpMethod::Get => self.client.get(url),
-            crate::ast::HttpMethod::Post => self.client.post(url),
-        };
-        let response = request.send().await?.error_for_status()?;
-        if response.status().is_redirection() {
-            // A redirect the client could not follow, e.g. to an unsupported scheme.
-            return Err(
-                format!("URL resolver redirect not followed ({})", response.status()).into(),
-            );
+    async fn fetch(
+        &self,
+        mut url: reqwest::Url,
+        mut method: crate::ast::HttpMethod,
+    ) -> Result<Value, Box<dyn std::error::Error + Send + Sync>> {
+        let mut redirects = 0usize;
+        loop {
+            self.policy.check_url(&url)?;
+            let host = url.host_str().unwrap_or_default().to_string();
+            let permits = self.limiter.acquire(&host).await;
+
+            let request = match method {
+                crate::ast::HttpMethod::Get => self.client.get(url.clone()),
+                crate::ast::HttpMethod::Post => self.client.post(url.clone()),
+            };
+            let response = request.send().await?;
+            let status = response.status();
+
+            if status.is_redirection() {
+                let location = response
+                    .headers()
+                    .get(reqwest::header::LOCATION)
+                    .and_then(|value| value.to_str().ok())
+                    .ok_or_else(|| format!("URL resolver redirect ({status}) has no Location"))?;
+                let next = url.join(location)?;
+                redirects += 1;
+                if redirects > self.max_redirects {
+                    return Err(crate::url_guard::BlockedUrlError(format!(
+                        "more than {} redirects",
+                        self.max_redirects
+                    ))
+                    .into());
+                }
+                // Like browsers, 301/302/303 continue as GET; 307/308 keep the method.
+                if matches!(status.as_u16(), 301..=303) {
+                    method = crate::ast::HttpMethod::Get;
+                }
+                // Release this host's slot before waiting for the next one.
+                drop(response);
+                drop(permits);
+                url = next;
+                continue;
+            }
+
+            let response = response.error_for_status()?;
+            let body = Self::read_body_capped(response, self.max_body_bytes).await?;
+            return Ok(serde_json::from_slice(&body)?);
         }
-        let body = Self::read_body_capped(response, self.max_body_bytes).await?;
-
-        Ok(serde_json::from_slice(&body)?)
     }
 
     async fn read_body_capped(
@@ -1539,6 +1579,7 @@ mod url_resolver_tests {
 
     const HOSTS: &[(&str, &str)] = &[
         ("origin.test", "127.0.0.1"),
+        ("other.test", "127.0.0.1"),
         ("internal.test", "10.0.0.1"),
         ("metadata.test", "169.254.169.254"),
     ];
@@ -1612,7 +1653,12 @@ mod url_resolver_tests {
         let client = client(lookup(HOSTS), UrlResolverOptions::default());
         let base = format!("http://origin.test:{port}");
 
-        for path in ["/to-metadata", "/to-loopback", "/to-internal-name"] {
+        for path in [
+            "/to-metadata",
+            "/to-loopback",
+            "/to-internal-name",
+            "/to-file",
+        ] {
             assert_blocked(
                 client
                     .resolve(&format!("{base}{path}"), &HttpMethod::Get)
@@ -1620,19 +1666,70 @@ mod url_resolver_tests {
             );
         }
 
-        // A redirect to another scheme is never followed.
-        let err = client
-            .resolve(&format!("{base}/to-file"), &HttpMethod::Get)
-            .await
-            .expect_err("redirect to file:// should fail");
-        assert!(err.to_string().contains("redirect not followed"), "{err}");
-
         // Redirects between permitted destinations are still followed.
         let value = client
             .resolve(&format!("{base}/to-ok"), &HttpMethod::Get)
             .await
             .unwrap();
         assert_eq!(value, serde_json::json!({}));
+    }
+
+    #[tokio::test]
+    async fn waiting_for_a_host_slot_counts_toward_the_deadline() {
+        let port = serve(|_| vec![("/data", json("{}"))]).await;
+        let options = UrlResolverOptions {
+            timeout: std::time::Duration::from_millis(300),
+            max_concurrent_per_host: 1,
+            ..UrlResolverOptions::default()
+        };
+        let client = client(lookup(HOSTS), options);
+
+        // Another request holds the host's only slot.
+        let held = client.limiter.acquire("origin.test").await;
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            client.resolve(&format!("http://origin.test:{port}/data"), &HttpMethod::Get),
+        )
+        .await
+        .expect("a queued request must give up at the request deadline");
+        let err = result.expect_err("queued request should time out");
+        assert!(err.to_string().contains("timed out"), "{err}");
+
+        drop(held);
+        client
+            .resolve(&format!("http://origin.test:{port}/data"), &HttpMethod::Get)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn redirects_take_the_destination_host_slot() {
+        let port = serve(|port| {
+            vec![
+                ("/data", json("{}")),
+                ("/hop", redirect(&format!("http://origin.test:{port}/data"))),
+            ]
+        })
+        .await;
+        let options = UrlResolverOptions {
+            timeout: std::time::Duration::from_millis(300),
+            max_concurrent_per_host: 1,
+            ..UrlResolverOptions::default()
+        };
+        let client = client(lookup(HOSTS), options);
+        let _held = client.limiter.acquire("origin.test").await;
+
+        // other.test itself is not limited by the held slot...
+        client
+            .resolve(&format!("http://other.test:{port}/data"), &HttpMethod::Get)
+            .await
+            .unwrap();
+        // ...but its redirect to origin.test has to wait for origin.test's slot.
+        let err = client
+            .resolve(&format!("http://other.test:{port}/hop"), &HttpMethod::Get)
+            .await
+            .expect_err("redirect should wait for the destination's slot");
+        assert!(err.to_string().contains("timed out"), "{err}");
     }
 
     #[tokio::test]
