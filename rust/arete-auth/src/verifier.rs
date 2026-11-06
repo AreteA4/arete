@@ -44,6 +44,17 @@ struct JwksCache {
     fetch: tokio::sync::Mutex<()>,
 }
 
+/// Records a fetch attempt when dropped, however the fetch ended.
+#[cfg(feature = "jwks")]
+struct MarkAttemptOnDrop<'a>(&'a JwksCache);
+
+#[cfg(feature = "jwks")]
+impl Drop for MarkAttemptOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.mark_attempt();
+    }
+}
+
 #[cfg_attr(not(feature = "jwks"), allow(dead_code))]
 impl JwksCache {
     fn current(&self) -> Option<Arc<CachedJwks>> {
@@ -303,22 +314,26 @@ impl AsyncVerifier {
         if !self.jwks_cache.refresh_due(self.min_refresh_interval) {
             return;
         }
-        let _ = self.fetch_and_store(jwks_url).await;
+        if let Err(error) = self.fetch_and_store(jwks_url).await {
+            tracing::warn!(%error, "JWKS refresh failed; keeping the cached keys");
+        }
     }
 
     /// Fetch and cache the JWKS. The caller holds the fetch lock.
     #[cfg(feature = "jwks")]
     async fn fetch_and_store(&self, jwks_url: &str) -> Result<(), VerifyError> {
-        let fetched = tokio::time::timeout(
+        // The interval runs from the end of a fetch, failed or not. Marking on
+        // drop also covers a fetch cancelled with its request (for example by
+        // a handshake deadline), which would otherwise let the next request
+        // fetch at once.
+        let _mark = MarkAttemptOnDrop(&self.jwks_cache);
+        let jwks = tokio::time::timeout(
             JWKS_FETCH_TIMEOUT,
             crate::token::JwksVerifier::fetch_jwks(jwks_url),
         )
-        .await;
-        // The interval runs from the end of a fetch, failed or not.
-        self.jwks_cache.mark_attempt();
-        let jwks = fetched
-            .map_err(|_| VerifyError::InvalidFormat("Failed to fetch JWKS: timed out".to_string()))?
-            .map_err(|e| VerifyError::InvalidFormat(format!("Failed to fetch JWKS: {}", e)))?;
+        .await
+        .map_err(|_| VerifyError::InvalidFormat("Failed to fetch JWKS: timed out".to_string()))?
+        .map_err(|e| VerifyError::InvalidFormat(format!("Failed to fetch JWKS: {}", e)))?;
 
         let verifier = JwksVerifier::with_audience_set(jwks, &self.issuer, self.audiences.clone());
         let verifier = if self.require_origin {
@@ -742,6 +757,89 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(context.subject, "test-subject");
+        assert_eq!(server.hits(), 1);
+    }
+
+    #[cfg(feature = "jwks")]
+    async fn wait_for_hits(server: &CountingJwks, hits: usize) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while server.hits() < hits {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("JWKS request never arrived");
+    }
+
+    #[cfg(feature = "jwks")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cached_tokens_do_not_wait_behind_a_due_refresh() {
+        let trusted = SigningKey::generate();
+        let fetch_time = Duration::from_secs(2);
+        let server = CountingJwks::start(jwks_json(&[&trusted.verifying_key()]), fetch_time).await;
+        let interval = Duration::from_millis(100);
+        // Keys go stale at once, so every request after the interval is due
+        // to refresh.
+        let verifier = Arc::new(
+            AsyncVerifier::with_jwks_url(server.url(), "test-issuer", "test-audience")
+                .with_cache_duration(Duration::ZERO)
+                .with_min_refresh_interval(interval),
+        );
+        verifier.refresh_cache().await.unwrap();
+        tokio::time::sleep(interval + Duration::from_millis(50)).await;
+
+        // One request starts the due refresh and holds it open.
+        let refreshing = {
+            let verifier = verifier.clone();
+            let token = signed_token(copy_key(&trusted));
+            tokio::spawn(async move { verifier.verify(&token, None, None).await })
+        };
+        wait_for_hits(&server, 2).await;
+
+        // Requests arriving meanwhile use the cached keys at once and start
+        // no fetch of their own.
+        let tokens = (0..16).map(|_| signed_token(copy_key(&trusted))).collect();
+        let results = tokio::time::timeout(fetch_time / 2, verify_concurrently(&verifier, tokens))
+            .await
+            .expect("requests waited behind the in-flight fetch");
+        assert!(results.iter().all(Result::is_ok));
+        assert!(!refreshing.is_finished());
+        assert_eq!(server.hits(), 2);
+
+        refreshing.await.unwrap().unwrap();
+        assert_eq!(server.hits(), 2);
+    }
+
+    #[cfg(feature = "jwks")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelled_fetch_still_counts_against_the_interval() {
+        let server = CountingJwks::start(
+            jwks_json(&[&SigningKey::generate().verifying_key()]),
+            Duration::from_secs(2),
+        )
+        .await;
+        let verifier = Arc::new(AsyncVerifier::with_jwks_url(
+            server.url(),
+            "test-issuer",
+            "test-audience",
+        ));
+
+        // A request is dropped mid-fetch, as a handshake deadline would.
+        let cancelled = {
+            let verifier = verifier.clone();
+            let token = signed_token(SigningKey::generate());
+            tokio::spawn(async move { verifier.verify(&token, None, None).await })
+        };
+        wait_for_hits(&server, 1).await;
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+
+        // The next unknown kid does not fetch again inside the interval.
+        assert!(verifier
+            .verify(&signed_token(SigningKey::generate()), None, None)
+            .await
+            .is_err());
+        tokio::time::sleep(Duration::from_millis(100)).await;
         assert_eq!(server.hits(), 1);
     }
 
