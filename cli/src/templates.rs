@@ -1,13 +1,17 @@
 //! Template fetching, caching, and extraction for `a4 create`.
 //!
-//! Templates are downloaded from GitHub releases and cached locally
-//! in `~/.arete/templates/{version}/`.
+//! Templates are downloaded from the CLI's own GitHub release and cached
+//! locally in `~/.arete/templates/{version}/`. The tarball must match its
+//! entry in the release's `checksums.txt`, whose minisign signature (for the
+//! tag `a4-cli-v{version}`) is verified with the release key, and it is
+//! extracted only as plain files and directories under the template
+//! directories.
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use std::fs::{self, File};
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use tar::Archive;
 
 /// Available project templates.
@@ -130,49 +134,92 @@ impl TemplateManager {
         self.cache_dir.join(template.dir_name())
     }
 
-    /// Fetch templates from GitHub releases and cache them.
+    /// Fetch templates from the CLI release, verify them and cache them.
     pub fn fetch_templates(&self) -> Result<()> {
-        let url = format!(
-            "https://github.com/AreteA4/arete/releases/download/a4-cli-v{}/arete-templates-v{}.tar.gz",
-            self.version, self.version
-        );
-
+        let tag = format!("a4-cli-v{}", self.version);
+        let base = format!("https://github.com/AreteA4/arete/releases/download/{tag}");
+        let client = reqwest::blocking::Client::new();
+        let download = |name: &str| -> Result<Vec<u8>> {
+            let url = format!("{base}/{name}");
+            let response = client
+                .get(&url)
+                .header("User-Agent", format!("a4-cli/{}", self.version))
+                .send()
+                .with_context(|| format!("Failed to download templates from {url}"))?;
+            if !response.status().is_success() {
+                bail!(
+                    "Failed to download {url}: HTTP {} - {}",
+                    response.status(),
+                    response
+                        .status()
+                        .canonical_reason()
+                        .unwrap_or("Unknown error")
+                );
+            }
+            Ok(response
+                .bytes()
+                .with_context(|| format!("Failed to read {url}"))?
+                .to_vec())
+        };
+        let tarball = download(&self.tarball_name())?;
+        let checksums = download("checksums.txt")?;
+        let signature = String::from_utf8(download("checksums.txt.minisig")?)
+            .context("checksums.txt.minisig is not UTF-8")?;
         crate::arete_home::ensure_arete_home()?;
-        fs::create_dir_all(&self.cache_dir)
-            .with_context(|| format!("Failed to create cache directory: {:?}", self.cache_dir))?;
-
-        let response = reqwest::blocking::Client::new()
-            .get(&url)
-            .header("User-Agent", format!("a4-cli/{}", self.version))
-            .send()
-            .with_context(|| format!("Failed to download templates from {}", url))?;
-
-        if !response.status().is_success() {
-            anyhow::bail!(
-                "Failed to download templates: HTTP {} - {}",
-                response.status(),
-                response
-                    .status()
-                    .canonical_reason()
-                    .unwrap_or("Unknown error")
-            );
-        }
-
-        let bytes = response
-            .bytes()
-            .context("Failed to read template tarball")?;
-
-        self.extract_tarball(&bytes[..])
-            .context("Failed to extract templates")?;
-
-        let version_file = self.cache_dir.join(".version");
-        fs::write(&version_file, &self.version)
-            .with_context(|| format!("Failed to write version file: {:?}", version_file))?;
-
-        Ok(())
+        self.install_verified(
+            &tarball,
+            checksums,
+            &signature,
+            crate::selfhost::keys::MINISIGN_PUBLIC_KEY,
+        )
     }
 
-    /// Extract a gzipped tarball to the cache directory.
+    fn tarball_name(&self) -> String {
+        format!("arete-templates-v{}.tar.gz", self.version)
+    }
+
+    /// Verify `tarball` against the release's signed checksums, then extract
+    /// it into the cache. Nothing is extracted unless both checks pass; a
+    /// failed extraction leaves no cache behind.
+    fn install_verified(
+        &self,
+        tarball: &[u8],
+        checksums: Vec<u8>,
+        signature: &str,
+        public_key: &str,
+    ) -> Result<()> {
+        use crate::selfhost::verify;
+        let tag = format!("a4-cli-v{}", self.version);
+        let checksums = verify::verify_release_checksums(checksums, signature, public_key, &tag)
+            .context("The template download failed verification; nothing was extracted")?;
+        verify::verify_sha256_bytes(&checksums, tarball, &self.tarball_name())
+            .context("The template download failed verification; nothing was extracted")?;
+
+        if self.cache_dir.exists() {
+            fs::remove_dir_all(&self.cache_dir).with_context(|| {
+                format!("Failed to remove cache directory: {:?}", self.cache_dir)
+            })?;
+        }
+        fs::create_dir_all(&self.cache_dir)
+            .with_context(|| format!("Failed to create cache directory: {:?}", self.cache_dir))?;
+        let extracted = self
+            .extract_tarball(tarball)
+            .context("Failed to extract templates")
+            .and_then(|()| {
+                let version_file = self.cache_dir.join(".version");
+                fs::write(&version_file, &self.version)
+                    .with_context(|| format!("Failed to write version file: {:?}", version_file))
+            });
+        if extracted.is_err() {
+            let _ = fs::remove_dir_all(&self.cache_dir);
+        }
+        extracted
+    }
+
+    /// Extract a gzipped tarball to the cache directory. Only regular files
+    /// and directories at relative paths without `..` are accepted; any
+    /// other entry (a link, a device, an absolute or escaping path) fails
+    /// the extraction.
     fn extract_tarball<R: Read>(&self, reader: R) -> Result<()> {
         let decoder = GzDecoder::new(reader);
         let mut archive = Archive::new(decoder);
@@ -182,21 +229,47 @@ impl TemplateManager {
             .context("Failed to read tarball entries")?
         {
             let mut entry = entry.context("Failed to read tarball entry")?;
-            let path = entry.path().context("Failed to get entry path")?;
+            let path = entry
+                .path()
+                .context("Failed to get entry path")?
+                .into_owned();
+            let entry_type = entry.header().entry_type();
 
-            let path_str = path.to_string_lossy();
+            let mut components = path.components().peekable();
+            while components.peek() == Some(&Component::CurDir) {
+                components.next();
+            }
+            let relative: PathBuf = components
+                .map(|component| match component {
+                    Component::Normal(part) => Ok(part),
+                    _ => Err(anyhow::anyhow!(
+                        "template archive entry {} is not a relative path inside the archive",
+                        path.display()
+                    )),
+                })
+                .collect::<Result<_>>()?;
+            if !(entry_type.is_file() || entry_type.is_dir()) {
+                bail!(
+                    "template archive entry {} is a {:?}, not a regular file or directory",
+                    path.display(),
+                    entry_type
+                );
+            }
+
+            let Some(Component::Normal(top)) = relative.components().next() else {
+                continue;
+            };
             let is_template = Template::ALL
                 .iter()
                 .filter(|t| !t.is_protocol())
-                .any(|t| path_str.starts_with(t.dir_name()));
-
+                .any(|t| top == t.dir_name());
             if !is_template {
                 continue;
             }
 
-            let dest = self.cache_dir.join(&*path);
+            let dest = self.cache_dir.join(&relative);
 
-            if entry.header().entry_type().is_dir() {
+            if entry_type.is_dir() {
                 fs::create_dir_all(&dest)
                     .with_context(|| format!("Failed to create directory: {:?}", dest))?;
             } else {
@@ -429,5 +502,150 @@ pub fn start_command(pm: &str) -> &'static str {
         "pnpm" => "pnpm start",
         "bun" => "bun start",
         _ => "npm start",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TEST_PUBLIC_KEY: &str = "RWSD+pKuMle9GDuXt7KwcW0cF6M+NhhAH31FkxTMNh72Ldc2jkOL0XB0";
+
+    fn fixture(name: &str) -> Vec<u8> {
+        fs::read(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/fixtures/templates")
+                .join(name),
+        )
+        .unwrap()
+    }
+
+    /// A manager for the fixture release `a4-cli-v0.0.0-test`, caching in a
+    /// temporary directory.
+    fn manager(version: &str) -> (tempfile::TempDir, TemplateManager) {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = TemplateManager {
+            cache_dir: dir.path().join("templates").join(version),
+            version: version.to_string(),
+        };
+        (dir, manager)
+    }
+
+    fn install(manager: &TemplateManager, tarball: &[u8], public_key: &str) -> Result<()> {
+        let signature = String::from_utf8(fixture("checksums.txt.minisig")).unwrap();
+        manager.install_verified(tarball, fixture("checksums.txt"), &signature, public_key)
+    }
+
+    #[test]
+    fn a_signed_template_tarball_is_extracted() {
+        let (_dir, manager) = manager("0.0.0-test");
+        install(
+            &manager,
+            &fixture("arete-templates-v0.0.0-test.tar.gz"),
+            TEST_PUBLIC_KEY,
+        )
+        .unwrap();
+        assert!(manager.is_cached());
+        assert_eq!(
+            fs::read_to_string(manager.template_path(Template::React).join("src/index.ts"))
+                .unwrap(),
+            "export const ok = true;\n"
+        );
+        assert!(!manager.cache_dir.join("unrelated").exists());
+    }
+
+    #[test]
+    fn a_tampered_or_unsigned_template_tarball_is_rejected() {
+        let mut tampered = fixture("arete-templates-v0.0.0-test.tar.gz");
+        let last = tampered.len() - 1;
+        tampered[last] ^= 1;
+        let (_dir, manager) = manager("0.0.0-test");
+        let error = install(&manager, &tampered, TEST_PUBLIC_KEY).unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Checksum check failed"),
+            "{error:#}"
+        );
+        assert!(!manager.cache_dir.exists());
+
+        // Not signed by the release key.
+        let error = install(
+            &manager,
+            &fixture("arete-templates-v0.0.0-test.tar.gz"),
+            crate::selfhost::keys::MINISIGN_PUBLIC_KEY,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Signature check failed"),
+            "{error:#}"
+        );
+        assert!(!manager.cache_dir.exists());
+    }
+
+    #[test]
+    fn templates_signed_for_another_release_are_rejected() {
+        let (_dir, manager) = manager("0.0.1");
+        let error = install(
+            &manager,
+            &fixture("arete-templates-v0.0.0-test.tar.gz"),
+            TEST_PUBLIC_KEY,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error:#}")
+                .contains("checksums.txt was signed for 'a4-cli-v0.0.0-test', not 'a4-cli-v0.0.1'"),
+            "{error:#}"
+        );
+        assert!(!manager.cache_dir.exists());
+    }
+
+    /// A gzipped tarball of one entry with a raw (unvalidated) name.
+    fn crafted(name: &str, entry_type: tar::EntryType, link: &str) -> Vec<u8> {
+        let mut header = tar::Header::new_gnu();
+        let raw = header.as_old_mut();
+        raw.name[..name.len()].copy_from_slice(name.as_bytes());
+        raw.linkname[..link.len()].copy_from_slice(link.as_bytes());
+        let contents: &[u8] = if entry_type.is_file() {
+            b"owned\n"
+        } else {
+            b""
+        };
+        header.set_entry_type(entry_type);
+        header.set_size(contents.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        let mut builder = tar::Builder::new(Vec::new());
+        builder.append(&header, contents).unwrap();
+        let tar = builder.into_inner().unwrap();
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+        std::io::Write::write_all(&mut gz, &tar).unwrap();
+        gz.finish().unwrap()
+    }
+
+    #[test]
+    fn archive_entries_outside_the_cache_or_links_are_rejected() {
+        let (dir, manager) = manager("0.0.0-test");
+        fs::create_dir_all(&manager.cache_dir).unwrap();
+        let escaped = dir.path().join("escaped");
+        let cases = [
+            crafted("ore-react/../../../escaped", tar::EntryType::Regular, ""),
+            crafted(
+                &format!("{}", escaped.display()),
+                tar::EntryType::Regular,
+                "",
+            ),
+            crafted("ore-react/link", tar::EntryType::Symlink, "/"),
+            crafted("ore-react/hard", tar::EntryType::Link, "/etc/hosts"),
+            crafted("ore-react/fifo", tar::EntryType::Fifo, ""),
+        ];
+        for archive in cases {
+            let error = manager.extract_tarball(&archive[..]).unwrap_err();
+            assert!(
+                error.to_string().contains("template archive entry"),
+                "{error:#}"
+            );
+        }
+        assert!(!escaped.exists());
+        assert!(!manager.template_path(Template::React).join("link").exists());
+        assert!(!manager.template_path(Template::React).join("hard").exists());
     }
 }

@@ -1,5 +1,6 @@
-//! Release verification: minisign signature over `checksums.txt`, then the
-//! SHA-256 of a downloaded asset against that file.
+//! Release verification: minisign signature over `checksums.txt`, bound to
+//! the release tag by its trusted comment, then the SHA-256 of a downloaded
+//! asset against that file.
 //!
 //! Every function takes the public key as a parameter so tests can use the
 //! fixture key in `cli/tests/fixtures/selfhost/`; production callers pass
@@ -138,22 +139,48 @@ pub fn verify_sha256(checksums: &str, asset: &Path, asset_name: &str) -> Result<
     Ok(())
 }
 
-/// Full release verification: signature over the checksums file, then the
-/// asset hash. Reads all three files from disk.
+/// Verify a release's `checksums.txt` (signed for `tag`) and return it.
+pub fn verify_release_checksums(
+    checksums: Vec<u8>,
+    signature: &str,
+    public_key_b64: &str,
+    tag: &str,
+) -> Result<String> {
+    verify_signature_for_tag(&checksums, signature, public_key_b64, tag)?;
+    String::from_utf8(checksums)
+        .map_err(|_| VerifyError::Checksum("checksums.txt is not UTF-8".to_string()).into())
+}
+
+/// Check in-memory `contents` against the entry for `asset_name` in
+/// verified `checksums`.
+pub fn verify_sha256_bytes(checksums: &str, contents: &[u8], asset_name: &str) -> Result<()> {
+    let expected = expected_sha256(checksums, asset_name)?;
+    let actual = format!("{:x}", Sha256::digest(contents));
+    if actual != expected {
+        return Err(VerifyError::Checksum(format!(
+            "sha256 of {asset_name} is {actual} but checksums.txt says {expected}"
+        ))
+        .into());
+    }
+    Ok(())
+}
+
+/// Full release verification: signature over the checksums file, signed for
+/// release `tag` (`a4-cli-v<version>`), then the asset hash. Reads all three
+/// files from disk.
 pub fn verify_release_asset(
     checksums_path: &Path,
     signature_path: &Path,
     asset: &Path,
     asset_name: &str,
     public_key_b64: &str,
+    tag: &str,
 ) -> Result<()> {
     let checksums = fs::read(checksums_path)
         .with_context(|| format!("Failed to read {}", checksums_path.display()))?;
     let signature = fs::read_to_string(signature_path)
         .with_context(|| format!("Failed to read {}", signature_path.display()))?;
-    verify_signature(&checksums, &signature, public_key_b64)?;
-    let checksums = String::from_utf8(checksums)
-        .map_err(|_| VerifyError::Checksum("checksums.txt is not UTF-8".to_string()))?;
+    let checksums = verify_release_checksums(checksums, &signature, public_key_b64, tag)?;
     verify_sha256(&checksums, asset, asset_name)
 }
 
@@ -163,6 +190,8 @@ mod tests {
     use std::path::PathBuf;
 
     const TEST_PUBLIC_KEY: &str = "RWSD+pKuMle9GDuXt7KwcW0cF6M+NhhAH31FkxTMNh72Ldc2jkOL0XB0";
+    /// The fixture checksums are signed for this tag.
+    const TEST_TAG: &str = "a4-cli-v0.0.0-test";
 
     fn fixture(name: &str) -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -178,6 +207,7 @@ mod tests {
             &fixture("a4-linux-x64"),
             "a4-linux-x64",
             TEST_PUBLIC_KEY,
+            TEST_TAG,
         )
         .unwrap();
         // Every platform's asset is in the fixture.
@@ -193,6 +223,7 @@ mod tests {
                 &fixture(name),
                 name,
                 TEST_PUBLIC_KEY,
+                TEST_TAG,
             )
             .unwrap();
         }
@@ -206,6 +237,7 @@ mod tests {
             &fixture("a4-linux-x64"),
             "a4-linux-x64",
             TEST_PUBLIC_KEY,
+            TEST_TAG,
         )
         .unwrap_err();
         assert!(matches!(
@@ -226,10 +258,46 @@ mod tests {
             &fixture("a4-linux-x64"),
             "a4-linux-x64",
             super::super::keys::MINISIGN_PUBLIC_KEY,
+            TEST_TAG,
         )
         .unwrap_err();
         assert!(
             error.to_string().starts_with("Signature check failed"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn checksums_signed_for_another_release_are_rejected() {
+        let error = verify_release_asset(
+            &fixture("checksums.txt"),
+            &fixture("checksums.txt.minisig"),
+            &fixture("a4-linux-x64"),
+            "a4-linux-x64",
+            TEST_PUBLIC_KEY,
+            "a4-cli-v0.0.1",
+        )
+        .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Signature check failed: checksums.txt was signed for 'a4-cli-v0.0.0-test', not 'a4-cli-v0.0.1'"
+        );
+    }
+
+    #[test]
+    fn in_memory_contents_are_checked_against_verified_checksums() {
+        let checksums = verify_release_checksums(
+            fs::read(fixture("checksums.txt")).unwrap(),
+            &fs::read_to_string(fixture("checksums.txt.minisig")).unwrap(),
+            TEST_PUBLIC_KEY,
+            TEST_TAG,
+        )
+        .unwrap();
+        let asset = fs::read(fixture("a4-linux-x64")).unwrap();
+        verify_sha256_bytes(&checksums, &asset, "a4-linux-x64").unwrap();
+        let error = verify_sha256_bytes(&checksums, b"tampered", "a4-linux-x64").unwrap_err();
+        assert!(
+            error.to_string().starts_with("Checksum check failed"),
             "{error}"
         );
     }
@@ -257,6 +325,7 @@ mod tests {
             &asset,
             "a4-linux-x64",
             TEST_PUBLIC_KEY,
+            TEST_TAG,
         )
         .unwrap_err();
         assert!(matches!(

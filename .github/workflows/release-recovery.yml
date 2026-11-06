@@ -559,7 +559,8 @@ jobs:
   publish-checksums:
     name: Publish binary checksums
     if: ${{ inputs.publish }}
-    needs: [validate, build-binaries]
+    # checksums.txt also covers the templates tarball.
+    needs: [validate, build-binaries, bundle-templates]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -717,6 +718,19 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: ./scripts/upload-release-asset.sh "a4-cli-v${VERSION}" "arete-templates-v${VERSION}.tar.gz"
+
+      # `a4 create` checks the tarball (new or reused) against the signed
+      # checksums.txt.
+      - name: Write templates checksum
+        env:
+          VERSION: ${{ inputs.version }}
+        run: sha256sum "arete-templates-v${VERSION}.tar.gz" > "arete-templates-v${VERSION}.tar.gz.sha256"
+
+      - name: Upload templates checksum artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cli-sha256-arete-templates
+          path: arete-templates-v${{ inputs.version }}.tar.gz.sha256
 
   publish-npm:
     name: Publish missing npm packages

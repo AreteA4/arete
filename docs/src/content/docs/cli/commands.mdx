@@ -22,7 +22,7 @@ irm https://arete.run/install.ps1 | iex             # Windows PowerShell
 npx @usearete/a4 install                            # if you prefer npm (same as npm install -g @usearete/a4)
 ```
 
-The bootstrapper downloads the release asset for your platform plus `checksums.txt` and its minisign signature, verifies the SHA-256 (and the signature when `minisign` is available), then hands off to `a4 self install`, which copies the binary to `~/.local/bin/a4` (`%USERPROFILE%\.local\bin\a4.exe` on Windows), writes `~/.arete/receipt.json`, adds the directory to your shell profile, and prints these two lines last on stdout:
+The bootstrapper downloads the release asset for your platform plus `checksums.txt` and its minisign signature, verifies the signature (it must be for that release's tag, `a4-cli-v<version>`) and the SHA-256, then hands off to `a4 self install`, which copies the binary to `~/.local/bin/a4` (`%USERPROFILE%\.local\bin\a4.exe` on Windows), writes `~/.arete/receipt.json`, adds the directory to your shell profile, and prints these two lines last on stdout:
 
 ```text
 A4_BIN=/Users/x/.local/bin/a4
@@ -183,7 +183,8 @@ npx @usearete/a4 create my-app --template protocol-app
 
 The protocol templates are built into the CLI; they install the System
 Program from the registry, so they need your login. The ORE templates are
-downloaded from GitHub releases and cached in `~/.arete/templates/`.
+downloaded from the CLI's GitHub release, checked against its signed
+`checksums.txt` and cached in `~/.arete/templates/`.
 
 ---
 
@@ -376,7 +377,7 @@ a4 self update --check --json     # {"current","latest","updateAvailable"}
 a4 self update --dry-run          # download and verify, print the plan, change nothing
 ```
 
-The download is verified (SHA-256 and the minisign signature; mandatory here) before the binary at the receipt path is swapped in place and the receipt updated. Requires the install receipt: a Cargo-built `a4` gets `a4 was not installed by the Arete installer` and must be rebuilt with `cargo install a4-cli --force`.
+The download is verified (the minisign signature, for the release's tag, and the SHA-256; mandatory here) before the binary at the receipt path is swapped in place and the receipt updated. Requires the install receipt: a Cargo-built `a4` gets `a4 was not installed by the Arete installer` and must be rebuilt with `cargo install a4-cli --force`.
 
 Once a day, when stderr is a terminal, `a4` prints `a4 0.14.0 is available (you have 0.13.0). Run: a4 self update` after a command. Set `A4_NO_UPDATE_CHECK=1` to disable this notice; it is never shown under `CI`, with `--json`, or for `self`, `upgrade`, `mcp`, and `stream`. There is no background auto-update.
 

@@ -1,0 +1,1 @@
+71f5bf5e9e29f91e311a37edae1be69ac0f73b4b08e6f7eb3bde9b74ca606279  arete-templates-v0.0.0-test.tar.gz

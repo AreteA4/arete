@@ -156,6 +156,9 @@ jobs:
       - name: Syntax-check install.sh (POSIX sh)
         run: sh -n docs/public/install.sh
 
+      - name: Test install.sh signature verification
+        run: bash ./scripts/test-install-sh-verify.sh
+
       # Release Recovery rejects a rust_toolchain input that differs from
       # rust-toolchain.toml, so its default must move with every toolchain bump.
       - name: Check Release Recovery defaults to the pinned Rust toolchain
@@ -1205,6 +1208,14 @@ jobs:
 
       - name: Test relative protocol compiler paths
         run: cargo test --locked -p a4-cli --bin a4 commands::protocol_bin::tests
+
+      - name: Test install.ps1 signature verification (Windows PowerShell)
+        shell: powershell
+        run: ./scripts/test-install-ps1-verify.ps1
+
+      - name: Test install.ps1 signature verification (PowerShell 7)
+        shell: pwsh
+        run: ./scripts/test-install-ps1-verify.ps1
 
   # Records that this exact tree passed every job above. A pull_request run
   # checks out the merge commit GitHub would create, so when the base branch
