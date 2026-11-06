@@ -910,6 +910,7 @@ async fn accept_authorized_connection(
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     client_manager: ClientManager,
     limits: &WebSocketLimitsConfig,
+    deadline: tokio::time::Instant,
 ) -> Result<
     Option<(
         tokio_tungstenite::WebSocketStream<TcpStream>,
@@ -933,16 +934,29 @@ async fn accept_authorized_connection(
     let callback = move |request: &Request, response| {
         let request = ConnectionAuthRequest::from_http_request(remote_addr, request);
         let result = tokio::task::block_in_place(|| {
+            // This callback blocks its caller, so the handshake deadline
+            // outside cannot interrupt it: bound authentication and admission
+            // by the same deadline here.
             tokio::runtime::Handle::current().block_on(async {
-                match auth_plugin_ref.authorize(&request).await {
-                    AuthDecision::Allow(context) => manager_ref
-                        .check_connection_allowed(remote_addr, &Some(context.clone()))
-                        .await
-                        .and_then(|()| manager_ref.reserve_connection_admission(&context))
-                        .map(|permit| (context, permit))
-                        .map_err(|deny| HandshakeReject::from_deny(&deny)),
-                    AuthDecision::Deny(deny) => Err(HandshakeReject::from_deny(&deny)),
-                }
+                let admission = async {
+                    match auth_plugin_ref.authorize(&request).await {
+                        AuthDecision::Allow(context) => manager_ref
+                            .check_connection_allowed(remote_addr, &Some(context.clone()))
+                            .await
+                            .and_then(|()| manager_ref.reserve_connection_admission(&context))
+                            .map(|permit| (context, permit))
+                            .map_err(|deny| HandshakeReject::from_deny(&deny)),
+                        AuthDecision::Deny(deny) => Err(HandshakeReject::from_deny(&deny)),
+                    }
+                };
+                tokio::time::timeout_at(deadline, admission)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(HandshakeReject::from_deny(&AuthDeny::new(
+                            crate::websocket::auth::AuthErrorCode::InternalError,
+                            "Authentication did not complete in time",
+                        )))
+                    })
             })
         });
         *capture_ref.lock().expect("capture lock poisoned") = Some(result.clone());
@@ -978,16 +992,18 @@ async fn handle_connection(
 ) -> Result<()> {
     // The handshake is raced against shutdown and a deadline: a peer that
     // stalls it must not keep a socket and a task alive.
+    let deadline = tokio::time::Instant::now() + limits.handshake_timeout;
     let accepted = tokio::select! {
         _ = context.shutdown.cancelled() => return Ok(()),
-        accepted = tokio::time::timeout(
-            limits.handshake_timeout,
+        accepted = tokio::time::timeout_at(
+            deadline,
             accept_authorized_connection(
                 stream,
                 remote_addr,
                 auth_plugin.clone(),
                 context.client_manager.clone(),
                 limits,
+                deadline,
             ),
         ) => match accepted {
             Ok(accepted) => accepted?,
@@ -997,7 +1013,6 @@ async fn handle_connection(
             }
         },
     };
-    drop(pending);
     let Some((ws_stream, auth_context, admission_permit)) = accepted else {
         return Ok(());
     };
@@ -1025,6 +1040,10 @@ async fn handle_connection(
         remote_addr,
         admission_permit,
     );
+    // Registered: the connection now counts as a client, so its pending
+    // place can go. Released earlier, a concurrent handshake could pass the
+    // client limit in between.
+    drop(pending);
     emit_usage_event(
         &context.usage_emitter,
         WebSocketUsageEvent::ConnectionEstablished {
@@ -6835,6 +6854,56 @@ mod limits_tests {
         let started = Instant::now();
         closed_within(&mut stream, Duration::from_secs(5)).await;
         assert!(started.elapsed() >= Duration::from_millis(250));
+    }
+
+    /// Allows every connection, but only after `delay`.
+    struct SlowAuthPlugin {
+        delay: Duration,
+    }
+
+    #[async_trait::async_trait]
+    impl WebSocketAuthPlugin for SlowAuthPlugin {
+        async fn authorize(&self, request: &ConnectionAuthRequest) -> AuthDecision {
+            tokio::time::sleep(self.delay).await;
+            crate::websocket::auth::AllowAllAuthPlugin
+                .authorize(request)
+                .await
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authentication_slower_than_the_deadline_is_cut_off() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = WebSocketServer::new(
+            addr,
+            BusManager::new(),
+            EntityCache::new(),
+            Arc::new(ViewIndex::new()),
+            #[cfg(feature = "otel")]
+            None,
+        )
+        .with_auth_plugin(Arc::new(SlowAuthPlugin {
+            delay: Duration::from_secs(30),
+        }))
+        .with_limits(limits());
+        let (acceptor, _cleanup) = server.into_acceptor();
+        tokio::spawn(async move { acceptor.serve_listener(listener).await });
+
+        let started = Instant::now();
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let handshake = tokio::time::timeout(
+            Duration::from_secs(5),
+            client_async(format!("ws://{addr}/"), stream),
+        )
+        .await
+        .expect("the server ends the handshake before the test deadline");
+        assert!(handshake.is_err(), "the upgrade is refused");
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
