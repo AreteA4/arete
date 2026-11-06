@@ -18,7 +18,7 @@ use crate::websocket::subscription::{
     SubscriptionQuery, Unsubscription, PROTOCOL_VERSION,
 };
 use crate::websocket::usage::{UsageIdentity, WebSocketUsageEmitter, WebSocketUsageEvent};
-use crate::WebSocketDeliveryConfig;
+use crate::{WebSocketDeliveryConfig, WebSocketLimitsConfig};
 use anyhow::Result;
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -27,15 +27,17 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, watch};
 use tokio_tungstenite::{
-    accept_hdr_async,
+    accept_hdr_async_with_config,
     tungstenite::{
         handshake::server::{ErrorResponse as HandshakeErrorResponse, Request, Response},
         http::{header::CONTENT_TYPE, StatusCode},
+        protocol::WebSocketConfig,
         Error as WsError,
     },
 };
@@ -525,6 +527,7 @@ pub struct WebSocketServer {
     admission_provider: Option<Arc<dyn WebSocketAdmissionProvider>>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     delivery: WebSocketDeliveryConfig,
+    limits: WebSocketLimitsConfig,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<Metrics>>,
 }
@@ -551,6 +554,7 @@ impl WebSocketServer {
             admission_provider: None,
             journal: None,
             delivery: WebSocketDeliveryConfig::default(),
+            limits: WebSocketLimitsConfig::default(),
             metrics,
         }
     }
@@ -575,6 +579,7 @@ impl WebSocketServer {
             admission_provider: None,
             journal: None,
             delivery: WebSocketDeliveryConfig::default(),
+            limits: WebSocketLimitsConfig::default(),
         }
     }
 
@@ -610,6 +615,12 @@ impl WebSocketServer {
         provider: Arc<dyn WebSocketAdmissionProvider>,
     ) -> Self {
         self.admission_provider = Some(provider);
+        self
+    }
+
+    /// Message, frame and handshake limits; see [`WebSocketLimitsConfig`].
+    pub fn with_limits(mut self, limits: WebSocketLimitsConfig) -> Self {
+        self.limits = limits;
         self
     }
 
@@ -661,6 +672,8 @@ impl WebSocketServer {
             usage_emitter: self.usage_emitter,
             journal: self.journal,
             delivery: self.delivery,
+            limits: self.limits,
+            pending_handshakes: Arc::new(AtomicUsize::new(0)),
             metrics,
             shutdown: CancellationToken::new(),
             sessions: TaskTracker::new(),
@@ -687,6 +700,10 @@ pub(crate) struct ConnectionAcceptor {
     usage_emitter: Option<UsageEmitterHandle>,
     journal: Option<Arc<crate::journal::EventJournal>>,
     delivery: WebSocketDeliveryConfig,
+    limits: WebSocketLimitsConfig,
+    /// Connections accepted but not yet upgraded. They count against `max_clients` too, so
+    /// stalled handshakes cannot hold more sockets than established sessions could.
+    pending_handshakes: Arc<AtomicUsize>,
     metrics: WsMetrics,
     shutdown: CancellationToken,
     /// Sessions spawned by [`serve_listener`](Self::serve_listener), so a
@@ -739,7 +756,16 @@ impl ConnectionAcceptor {
     /// Returns `Ok(())` without serving when the server is at its client
     /// limit, exactly as the listener loop does.
     pub(crate) async fn serve(&self, stream: TcpStream, remote_addr: SocketAddr) -> Result<()> {
-        if self.client_manager.client_count() >= self.max_clients {
+        let Some(pending) =
+            PendingHandshake::reserve(&self.pending_handshakes, self.limits.max_pending_handshakes)
+        else {
+            warn!(
+                "Rejecting connection from {}: too many pending handshakes",
+                remote_addr
+            );
+            return Ok(());
+        };
+        if self.client_manager.client_count() + pending.count() > self.max_clients {
             warn!(
                 "Rejecting connection from {}: max clients reached",
                 remote_addr
@@ -762,7 +788,15 @@ impl ConnectionAcceptor {
             row_filter: None,
             resnapshot: false,
         };
-        handle_connection(stream, context, remote_addr, self.auth_plugin.clone()).await
+        handle_connection(
+            stream,
+            context,
+            remote_addr,
+            self.auth_plugin.clone(),
+            &self.limits,
+            pending,
+        )
+        .await
     }
 
     /// Accept from `listener` until [`shutdown`](Self::shutdown), serving each
@@ -788,6 +822,37 @@ impl ConnectionAcceptor {
                 Err(error) => error!("Failed to accept connection: {}", error),
             }
         }
+    }
+}
+
+/// One connection's place among the pending handshakes, released when dropped.
+pub(crate) struct PendingHandshake {
+    counter: Arc<AtomicUsize>,
+    count: usize,
+}
+
+impl PendingHandshake {
+    fn reserve(counter: &Arc<AtomicUsize>, max: usize) -> Option<Self> {
+        let previous = counter
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |pending| {
+                (pending < max).then_some(pending + 1)
+            })
+            .ok()?;
+        Some(Self {
+            counter: counter.clone(),
+            count: previous + 1,
+        })
+    }
+
+    /// Pending handshakes, this one included, when it was reserved.
+    fn count(&self) -> usize {
+        self.count
+    }
+}
+
+impl Drop for PendingHandshake {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
@@ -844,6 +909,7 @@ async fn accept_authorized_connection(
     remote_addr: SocketAddr,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
     client_manager: ClientManager,
+    limits: &WebSocketLimitsConfig,
 ) -> Result<
     Option<(
         tokio_tungstenite::WebSocketStream<TcpStream>,
@@ -860,7 +926,11 @@ async fn accept_authorized_connection(
     let auth_plugin_ref = auth_plugin.clone();
     let manager_ref = client_manager.clone();
 
-    let handshake_result = accept_hdr_async(stream, move |request: &Request, response| {
+    // A message or frame past these limits closes the connection rather than being buffered.
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(limits.max_message_bytes))
+        .max_frame_size(Some(limits.max_frame_bytes));
+    let callback = move |request: &Request, response| {
         let request = ConnectionAuthRequest::from_http_request(remote_addr, request);
         let result = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(async {
@@ -880,8 +950,8 @@ async fn accept_authorized_connection(
             Ok(_) => Ok(response),
             Err(reject) => Err(build_handshake_error_response(&response, &reject)),
         }
-    })
-    .await;
+    };
+    let handshake_result = accept_hdr_async_with_config(stream, callback, Some(config)).await;
 
     let auth_result = capture.lock().expect("capture lock poisoned").take();
     match handshake_result {
@@ -903,18 +973,31 @@ async fn handle_connection(
     mut context: SubscriptionContext,
     remote_addr: SocketAddr,
     auth_plugin: Arc<dyn WebSocketAuthPlugin>,
+    limits: &WebSocketLimitsConfig,
+    pending: PendingHandshake,
 ) -> Result<()> {
-    // The handshake is raced against shutdown too: a peer that stalls it must
-    // not keep a task alive after the server has stopped.
+    // The handshake is raced against shutdown and a deadline: a peer that
+    // stalls it must not keep a socket and a task alive.
     let accepted = tokio::select! {
         _ = context.shutdown.cancelled() => return Ok(()),
-        accepted = accept_authorized_connection(
-            stream,
-            remote_addr,
-            auth_plugin.clone(),
-            context.client_manager.clone(),
-        ) => accepted?,
+        accepted = tokio::time::timeout(
+            limits.handshake_timeout,
+            accept_authorized_connection(
+                stream,
+                remote_addr,
+                auth_plugin.clone(),
+                context.client_manager.clone(),
+                limits,
+            ),
+        ) => match accepted {
+            Ok(accepted) => accepted?,
+            Err(_) => {
+                debug!("WebSocket handshake from {} timed out", remote_addr);
+                return Ok(());
+            }
+        },
     };
+    drop(pending);
     let Some((ws_stream, auth_context, admission_permit)) = accepted else {
         return Ok(());
     };
@@ -6693,5 +6776,107 @@ mod retained_scope_regressions {
         assert!(!frame_in_row_scopes(Some(&public), None, patch));
         assert!(!frame_in_row_scopes(Some(&entitled), None, patch));
         assert!(frame_in_row_scopes(None, None, patch));
+    }
+}
+
+#[cfg(test)]
+mod limits_tests {
+    use super::*;
+    use futures_util::SinkExt;
+    use tokio::io::AsyncReadExt;
+    use tokio_tungstenite::client_async;
+    use tokio_tungstenite::tungstenite::Message;
+
+    fn limits() -> WebSocketLimitsConfig {
+        WebSocketLimitsConfig {
+            max_message_bytes: 16 * 1024,
+            max_frame_bytes: 16 * 1024,
+            handshake_timeout: Duration::from_millis(300),
+            max_pending_handshakes: 1,
+        }
+    }
+
+    async fn start(limits: WebSocketLimitsConfig) -> SocketAddr {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = WebSocketServer::new(
+            addr,
+            BusManager::new(),
+            EntityCache::new(),
+            Arc::new(ViewIndex::new()),
+            #[cfg(feature = "otel")]
+            None,
+        )
+        .with_limits(limits);
+        let (acceptor, _cleanup) = server.into_acceptor();
+        tokio::spawn(async move { acceptor.serve_listener(listener).await });
+        addr
+    }
+
+    /// Resolves once the server closes `stream`, or fails the test after `within`.
+    async fn closed_within(stream: &mut TcpStream, within: Duration) {
+        let mut buffer = [0; 1024];
+        tokio::time::timeout(within, async {
+            loop {
+                match stream.read(&mut buffer).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await
+        .expect("the server closes the connection");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connection_that_never_upgrades_is_dropped_at_the_deadline() {
+        let addr = start(limits()).await;
+        let mut stream = TcpStream::connect(addr).await.unwrap();
+        let started = Instant::now();
+        closed_within(&mut stream, Duration::from_secs(5)).await;
+        assert!(started.elapsed() >= Duration::from_millis(250));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_handshakes_past_the_cap_are_refused() {
+        let addr = start(WebSocketLimitsConfig {
+            handshake_timeout: Duration::from_secs(30),
+            ..limits()
+        })
+        .await;
+        let mut stalled = TcpStream::connect(addr).await.unwrap();
+        // Let the server register the first connection as pending.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let mut refused = TcpStream::connect(addr).await.unwrap();
+        closed_within(&mut refused, Duration::from_secs(5)).await;
+
+        // The first is still held open within its own deadline.
+        let mut buffer = [0; 16];
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), stalled.read(&mut buffer))
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_message_over_the_limit_closes_the_socket() {
+        let addr = start(limits()).await;
+        let stream = TcpStream::connect(addr).await.unwrap();
+        let (mut socket, _) = client_async(format!("ws://{addr}/"), stream).await.unwrap();
+        socket
+            .send(Message::Text("x".repeat(64 * 1024).into()))
+            .await
+            .unwrap();
+        let ended = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match socket.next().await {
+                    None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                    Some(Ok(_)) => continue,
+                }
+            }
+        })
+        .await;
+        assert!(ended.is_ok(), "the server ends the session");
     }
 }

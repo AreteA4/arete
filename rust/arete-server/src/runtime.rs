@@ -411,6 +411,13 @@ impl Runtime {
 
             ws_server = ws_server.with_journal(journal.clone());
             ws_server = ws_server.with_delivery_config(websocket_delivery);
+            ws_server = ws_server.with_limits(match self.config.websocket_limits.clone() {
+                Some(limits) => {
+                    limits.validate()?;
+                    limits
+                }
+                None => crate::config::WebSocketLimitsConfig::from_env()?,
+            });
             if let Some(max_clients) = self.websocket_max_clients {
                 ws_server = ws_server.with_max_clients(max_clients);
             }
@@ -536,7 +543,15 @@ impl Runtime {
         // tokio runtime so liveness remains responsive under projection load.
         let http_shutdown = CancellationToken::new();
         let http_health_thread = if let Some(http_health_config) = &self.config.http_health {
+            let http_limits = match self.config.http_limits.clone() {
+                Some(limits) => {
+                    limits.validate()?;
+                    limits
+                }
+                None => crate::config::HttpLimitsConfig::from_env()?,
+            };
             let mut http_server = HttpServer::new(http_health_config.bind_address)
+                .with_limits(http_limits)
                 .with_runtime_plan(plan)
                 .with_program_runtime_catalog(program_runtime_catalog)
                 .with_shutdown(http_shutdown.clone());

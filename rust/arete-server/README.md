@@ -205,6 +205,30 @@ once with provider retries disabled and is never automatically replayed. For
 hosted V1 deployments, keep transaction-enabled runtimes at one replica
 because admission counters are process-local.
 
+### Connection Limits
+
+These limits apply before authentication, so they bound what any client that
+can reach the listeners can make the process hold. Set them with
+`ServerBuilder::http_limits` / `ServerBuilder::websocket_limits`
+(`HttpLimitsConfig`, `WebSocketLimitsConfig`) or with these variables:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `ARETE_HTTP_MAX_BODY_BYTES` | `1048576` | Largest JSON request body; larger bodies get `413`. |
+| `ARETE_HTTP_HEADER_TIMEOUT_MS` | `10000` | Time to receive request headers before the connection is closed. |
+| `ARETE_HTTP_BODY_TIMEOUT_MS` | `30000` | Time to receive a request body; slower bodies get `408`. |
+| `ARETE_READ_RPC_CONNECT_TIMEOUT_MS` | `5000` | Connect timeout for the read RPC. |
+| `ARETE_READ_RPC_TIMEOUT_MS` | `30000` | Total time for one read RPC call; a slower call fails as `502`. |
+| `ARETE_READ_RPC_MAX_RESPONSE_BYTES` | `67108864` | Largest read RPC response; a larger one fails as `502`. |
+| `ARETE_WS_MAX_MESSAGE_BYTES` | `1048576` | Largest inbound WebSocket message; a larger one closes the connection. |
+| `ARETE_WS_MAX_FRAME_BYTES` | `1048576` | Largest inbound WebSocket frame; a larger one closes the connection. |
+| `ARETE_WS_HANDSHAKE_TIMEOUT_MS` | `10000` | Time from TCP accept to a completed upgrade, authentication included. |
+| `ARETE_WS_MAX_PENDING_HANDSHAKES` | `1024` | Connections allowed mid-handshake at once; each also counts against the client limit. |
+
+Upstream failures on chain reads return a generic `502` body with a
+`correlationId` (also sent as `X-Correlation-Id`); the detail is logged
+server-side under the same id.
+
 ### With Configuration
 
 ```rust

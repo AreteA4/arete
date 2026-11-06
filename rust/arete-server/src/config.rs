@@ -215,6 +215,142 @@ pub(crate) fn env_bool(key: &str) -> Result<Option<bool>> {
     }
 }
 
+/// Resource limits for the HTTP listener (health, chain reads, program reads, fork reads) and
+/// its read RPC client.
+///
+/// Every limit applies before authentication can reject a request, so each one bounds what an
+/// unauthenticated client can make the process hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HttpLimitsConfig {
+    /// Largest JSON request body accepted; larger bodies get `413`. `ARETE_HTTP_MAX_BODY_BYTES`.
+    pub max_body_bytes: usize,
+    /// Time allowed to receive a request's headers before the connection is closed.
+    /// `ARETE_HTTP_HEADER_TIMEOUT_MS`.
+    pub header_read_timeout: Duration,
+    /// Time allowed to receive a request body once its handler starts reading it.
+    /// `ARETE_HTTP_BODY_TIMEOUT_MS`.
+    pub body_read_timeout: Duration,
+    /// Time allowed to connect to the read RPC. `ARETE_READ_RPC_CONNECT_TIMEOUT_MS`.
+    pub upstream_connect_timeout: Duration,
+    /// Time allowed for one read RPC call, response body included. `ARETE_READ_RPC_TIMEOUT_MS`.
+    pub upstream_timeout: Duration,
+    /// Largest read RPC response body accepted; larger responses fail as a `502`.
+    /// `ARETE_READ_RPC_MAX_RESPONSE_BYTES`.
+    pub max_upstream_response_bytes: usize,
+}
+
+impl Default for HttpLimitsConfig {
+    fn default() -> Self {
+        Self {
+            max_body_bytes: 1024 * 1024,
+            header_read_timeout: Duration::from_secs(10),
+            body_read_timeout: Duration::from_secs(30),
+            upstream_connect_timeout: Duration::from_secs(5),
+            upstream_timeout: Duration::from_secs(30),
+            // A full chain-read batch of large accounts, base64-encoded, fits comfortably.
+            max_upstream_response_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+impl HttpLimitsConfig {
+    pub fn from_env() -> Result<Self> {
+        let mut config = Self::default();
+        config.max_body_bytes =
+            env_parse("ARETE_HTTP_MAX_BODY_BYTES")?.unwrap_or(config.max_body_bytes);
+        config.header_read_timeout =
+            env_millis("ARETE_HTTP_HEADER_TIMEOUT_MS")?.unwrap_or(config.header_read_timeout);
+        config.body_read_timeout =
+            env_millis("ARETE_HTTP_BODY_TIMEOUT_MS")?.unwrap_or(config.body_read_timeout);
+        config.upstream_connect_timeout = env_millis("ARETE_READ_RPC_CONNECT_TIMEOUT_MS")?
+            .unwrap_or(config.upstream_connect_timeout);
+        config.upstream_timeout =
+            env_millis("ARETE_READ_RPC_TIMEOUT_MS")?.unwrap_or(config.upstream_timeout);
+        config.max_upstream_response_bytes = env_parse("ARETE_READ_RPC_MAX_RESPONSE_BYTES")?
+            .unwrap_or(config.max_upstream_response_bytes);
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.max_body_bytes == 0 || self.max_upstream_response_bytes == 0 {
+            bail!("HTTP body and read RPC response limits must be greater than zero");
+        }
+        if [
+            self.header_read_timeout,
+            self.body_read_timeout,
+            self.upstream_connect_timeout,
+            self.upstream_timeout,
+        ]
+        .contains(&Duration::ZERO)
+        {
+            bail!("HTTP and read RPC timeouts must be greater than zero");
+        }
+        Ok(())
+    }
+}
+
+/// Resource limits for WebSocket connections, applied before and during the handshake.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WebSocketLimitsConfig {
+    /// Largest inbound message; a larger one closes the connection.
+    /// `ARETE_WS_MAX_MESSAGE_BYTES`.
+    pub max_message_bytes: usize,
+    /// Largest inbound frame; a larger one closes the connection. `ARETE_WS_MAX_FRAME_BYTES`.
+    pub max_frame_bytes: usize,
+    /// Time allowed from TCP accept to a completed upgrade, authentication included.
+    /// `ARETE_WS_HANDSHAKE_TIMEOUT_MS`.
+    pub handshake_timeout: Duration,
+    /// Connections allowed to be mid-handshake at once. Each also counts against the server's
+    /// client limit while it is pending. `ARETE_WS_MAX_PENDING_HANDSHAKES`.
+    pub max_pending_handshakes: usize,
+}
+
+impl Default for WebSocketLimitsConfig {
+    fn default() -> Self {
+        Self {
+            // Client messages are subscription requests: a few hundred bytes.
+            max_message_bytes: 1024 * 1024,
+            max_frame_bytes: 1024 * 1024,
+            handshake_timeout: Duration::from_secs(10),
+            max_pending_handshakes: 1024,
+        }
+    }
+}
+
+impl WebSocketLimitsConfig {
+    pub fn from_env() -> Result<Self> {
+        let mut config = Self::default();
+        config.max_message_bytes =
+            env_parse("ARETE_WS_MAX_MESSAGE_BYTES")?.unwrap_or(config.max_message_bytes);
+        config.max_frame_bytes =
+            env_parse("ARETE_WS_MAX_FRAME_BYTES")?.unwrap_or(config.max_frame_bytes);
+        config.handshake_timeout =
+            env_millis("ARETE_WS_HANDSHAKE_TIMEOUT_MS")?.unwrap_or(config.handshake_timeout);
+        config.max_pending_handshakes =
+            env_parse("ARETE_WS_MAX_PENDING_HANDSHAKES")?.unwrap_or(config.max_pending_handshakes);
+        config.validate()?;
+        Ok(config)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.max_message_bytes == 0
+            || self.max_frame_bytes == 0
+            || self.max_pending_handshakes == 0
+            || self.handshake_timeout.is_zero()
+        {
+            bail!(
+                "WebSocket size, handshake and pending-handshake limits must be greater than zero"
+            );
+        }
+        Ok(())
+    }
+}
+
+fn env_millis(key: &str) -> Result<Option<Duration>> {
+    Ok(env_parse::<u64>(key)?.map(Duration::from_millis))
+}
+
 /// Configuration for gRPC stream reconnection with exponential backoff
 #[derive(Clone, Debug)]
 pub struct ReconnectionConfig {
@@ -419,6 +555,12 @@ pub struct ServerConfig {
     /// WebSocket buffering and latest-state delivery settings. `None` falls
     /// back to [`WebSocketDeliveryConfig::from_env`].
     pub websocket_delivery: Option<WebSocketDeliveryConfig>,
+    /// WebSocket message, frame and handshake limits. `None` falls back to
+    /// [`WebSocketLimitsConfig::from_env`].
+    pub websocket_limits: Option<WebSocketLimitsConfig>,
+    /// HTTP body, header and read RPC limits. `None` falls back to
+    /// [`HttpLimitsConfig::from_env`].
+    pub http_limits: Option<HttpLimitsConfig>,
 }
 
 impl ServerConfig {
@@ -436,6 +578,16 @@ impl ServerConfig {
     pub fn with_websocket_delivery(mut self, config: WebSocketDeliveryConfig) -> Self {
         self.websocket_delivery = Some(config);
         self.runtime_plan.live_runtime = true;
+        self
+    }
+
+    pub fn with_websocket_limits(mut self, config: WebSocketLimitsConfig) -> Self {
+        self.websocket_limits = Some(config);
+        self
+    }
+
+    pub fn with_http_limits(mut self, config: HttpLimitsConfig) -> Self {
+        self.http_limits = Some(config);
         self
     }
 
