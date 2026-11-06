@@ -86,7 +86,7 @@ pub struct AsyncVerifier {
     jwks_url: Option<String>,
     cache_duration: Duration,
     min_refresh_interval: Duration,
-    jwks_cache: JwksCache,
+    jwks_cache: Arc<JwksCache>,
     /// Issuer for JWKS-based verification
     issuer: String,
     /// Audience for JWKS-based verification
@@ -121,7 +121,7 @@ impl AsyncVerifier {
             jwks_url: None,
             cache_duration: Duration::from_secs(3600), // 1 hour default
             min_refresh_interval: DEFAULT_MIN_JWKS_REFRESH_INTERVAL,
-            jwks_cache: JwksCache::default(),
+            jwks_cache: Arc::default(),
             issuer: issuer_str,
             audiences: crate::AudienceSet::single(audience_str),
             require_origin: false,
@@ -146,7 +146,7 @@ impl AsyncVerifier {
             jwks_url: None,
             cache_duration: Duration::from_secs(3600),
             min_refresh_interval: DEFAULT_MIN_JWKS_REFRESH_INTERVAL,
-            jwks_cache: JwksCache::default(),
+            jwks_cache: Arc::default(),
             issuer: issuer_str,
             audiences: crate::AudienceSet::single(audience_str),
             require_origin: false,
@@ -168,7 +168,7 @@ impl AsyncVerifier {
             audiences: crate::AudienceSet::single(audience.into()),
             cache_duration: Duration::from_secs(3600),
             min_refresh_interval: DEFAULT_MIN_JWKS_REFRESH_INTERVAL,
-            jwks_cache: JwksCache::default(),
+            jwks_cache: Arc::default(),
             require_origin: false,
             claim_seal_keys: None,
         }
@@ -185,7 +185,7 @@ impl AsyncVerifier {
             #[cfg(feature = "jwks")]
             VerifierInner::Remote => VerifierInner::Remote,
         };
-        self.jwks_cache = JwksCache::default();
+        self.jwks_cache = Arc::default();
         self
     }
 
@@ -204,7 +204,7 @@ impl AsyncVerifier {
         };
         self.claim_seal_keys = Some(keys);
         // A verifier cached before this call would still open with the old keys.
-        self.jwks_cache = JwksCache::default();
+        self.jwks_cache = Arc::default();
         self
     }
 
