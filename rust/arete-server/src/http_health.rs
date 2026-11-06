@@ -1,7 +1,7 @@
 use crate::http::fork;
 use crate::http::transactions::{self, TransactionState};
 use crate::{
-    config::{RuntimePlan, TransactionConfig},
+    config::{HttpLimitsConfig, RuntimePlan, TransactionConfig},
     health::HealthMonitor,
     ProgramRuntimeCatalog, ProgramRuntimeDefinition, SolanaGatewayUsageObservation,
     SolanaGatewayUsageObserver, SolanaGatewayUsageSurface,
@@ -20,7 +20,7 @@ use hyper::header::{
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::rt::TokioIo;
+use hyper_util::rt::{TokioIo, TokioTimer};
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -70,7 +70,8 @@ struct HttpRequestState {
     snapshot_runtime: Option<crate::snapshot::SnapshotRuntime>,
     runtime_plan: RuntimePlan,
     rpc_url: Arc<Option<String>>,
-    rpc_client: Client,
+    rpc_client: ReadRpcClient,
+    body_limits: BodyLimits,
     program_runtime_catalog: Arc<ProgramRuntimeCatalog>,
     auth_plugin: Arc<Option<Arc<dyn WebSocketAuthPlugin>>>,
     limit_state: Arc<HttpLimitState>,
@@ -98,6 +99,7 @@ pub struct HttpHealthServer {
     program_read_binding_target_id: Option<String>,
     /// Read RPC used instead of the process environment; set only by tests.
     read_rpc_url: Option<String>,
+    limits: HttpLimitsConfig,
     #[cfg(feature = "otel")]
     metrics: Option<Arc<crate::metrics::Metrics>>,
 }
@@ -118,6 +120,7 @@ impl HttpHealthServer {
             solana_gateway_target_id: None,
             program_read_binding_target_id: None,
             read_rpc_url: None,
+            limits: HttpLimitsConfig::default(),
             #[cfg(feature = "otel")]
             metrics: None,
         }
@@ -126,6 +129,12 @@ impl HttpHealthServer {
     #[cfg(test)]
     pub(crate) fn with_read_rpc_url(mut self, rpc_url: impl Into<String>) -> Self {
         self.read_rpc_url = Some(rpc_url.into());
+        self
+    }
+
+    /// Body, header and read RPC limits; see [`HttpLimitsConfig`].
+    pub fn with_limits(mut self, limits: HttpLimitsConfig) -> Self {
+        self.limits = limits;
         self
     }
 
@@ -204,6 +213,7 @@ impl HttpHealthServer {
 
     pub async fn start(self) -> Result<()> {
         info!("Starting HTTP health server on {}", self.bind_addr);
+        self.limits.validate()?;
 
         let listener = TcpListener::bind(&self.bind_addr).await?;
         info!("HTTP health server listening on {}", self.bind_addr);
@@ -230,7 +240,17 @@ impl HttpHealthServer {
             snapshot_runtime: self.snapshot_runtime,
             runtime_plan: self.runtime_plan,
             rpc_url: Arc::new(self.read_rpc_url.or_else(resolve_rpc_url)),
-            rpc_client: Client::builder().build()?,
+            rpc_client: ReadRpcClient {
+                client: Client::builder()
+                    .connect_timeout(self.limits.upstream_connect_timeout)
+                    .timeout(self.limits.upstream_timeout)
+                    .build()?,
+                max_response_bytes: self.limits.max_upstream_response_bytes,
+            },
+            body_limits: BodyLimits {
+                max_bytes: self.limits.max_body_bytes,
+                read_timeout: self.limits.body_read_timeout,
+            },
             program_runtime_catalog: Arc::new(self.program_runtime_catalog),
             auth_plugin: Arc::new(self.auth_plugin),
             limit_state: Arc::new(HttpLimitState::default()),
@@ -256,13 +276,18 @@ impl HttpHealthServer {
                     let io = TokioIo::new(stream);
                     let request_state = request_state.clone();
                     let connection_shutdown = shutdown.clone();
+                    let header_read_timeout = self.limits.header_read_timeout;
 
                     connections.spawn(async move {
                         let service = service_fn(move |req| {
                             let request_state = request_state.clone();
                             async move { handle_request(remote_addr, req, request_state).await }
                         });
-                        let connection = http1::Builder::new().serve_connection(io, service);
+                        // A client that never finishes its headers is dropped at the deadline.
+                        let connection = http1::Builder::new()
+                            .timer(TokioTimer::new())
+                            .header_read_timeout(header_read_timeout)
+                            .serve_connection(io, service);
                         tokio::pin!(connection);
                         let result = tokio::select! {
                             result = &mut connection => result,
@@ -302,9 +327,11 @@ impl HttpHealthServer {
 
 async fn handle_request(
     remote_addr: SocketAddr,
-    req: Request<hyper::body::Incoming>,
+    mut req: Request<hyper::body::Incoming>,
     state: HttpRequestState,
 ) -> Result<Response<Full<Bytes>>, Infallible> {
+    // Every body reader finds its limits on the request itself.
+    req.extensions_mut().insert(state.body_limits);
     if req.method() == Method::OPTIONS {
         return Ok(with_cors(
             Response::builder()
@@ -350,6 +377,7 @@ async fn handle_request_inner(
         runtime_plan,
         rpc_url,
         rpc_client,
+        body_limits,
         program_runtime_catalog,
         auth_plugin,
         limit_state,
@@ -508,10 +536,12 @@ async fn handle_request_inner(
                 Ok(context) => context,
                 Err(response) => return Ok(response),
             };
-            let body = match fork::read_body(req).await {
-                Ok(body) => body,
-                Err(response) => return Ok(response),
-            };
+            let body =
+                match tokio::time::timeout(body_limits.read_timeout, fork::read_body(req)).await {
+                    Ok(Ok(body)) => body,
+                    Ok(Err(response)) => return Ok(response),
+                    Err(_) => return Ok(body_timeout_response()),
+                };
             let payload = fork::parse_payload(&body);
             // A batch forwards up to one upstream call per entry, so it is charged per entry.
             // `authorize_http_request` already charged the first.
@@ -619,6 +649,7 @@ async fn handle_owner_token_accounts(
 ) -> Response<Full<Bytes>> {
     let request = match read_json_body::<OwnerTokenAccountsRequest>(req).await {
         Ok(request) => request,
+        Err(response) if response.status() != StatusCode::BAD_REQUEST => return response,
         Err(_) => {
             return capability_error(
                 StatusCode::BAD_REQUEST,
@@ -688,13 +719,14 @@ async fn handle_contextual_accounts(
     req: Request<hyper::body::Incoming>,
     path: &str,
     rpc_url: Option<&str>,
-    client: &Client,
+    client: &ReadRpcClient,
     auth: Option<&crate::websocket::auth::AuthContext>,
 ) -> Response<Full<Bytes>> {
     let single = path == "/chain/v1/account";
     let (addresses, options) = if single {
         match read_json_body::<ContextualAccountBody>(req).await {
             Ok(body) => (vec![body.address], body.options),
+            Err(response) if response.status() != StatusCode::BAD_REQUEST => return response,
             Err(_) => {
                 return capability_error(
                     StatusCode::BAD_REQUEST,
@@ -706,6 +738,7 @@ async fn handle_contextual_accounts(
     } else {
         match read_json_body::<ContextualAccountsBody>(req).await {
             Ok(body) => (body.addresses, body.options),
+            Err(response) if response.status() != StatusCode::BAD_REQUEST => return response,
             Err(_) => {
                 return capability_error(
                     StatusCode::BAD_REQUEST,
@@ -1078,15 +1111,72 @@ fn enforce_http_limits_weighted(
     Ok(())
 }
 
+/// How much request body a handler may read, and for how long. Attached to every request by
+/// [`handle_request`].
+#[derive(Clone, Copy, Debug)]
+struct BodyLimits {
+    max_bytes: usize,
+    read_timeout: Duration,
+}
+
+impl Default for BodyLimits {
+    fn default() -> Self {
+        let limits = HttpLimitsConfig::default();
+        Self {
+            max_bytes: limits.max_body_bytes,
+            read_timeout: limits.body_read_timeout,
+        }
+    }
+}
+
+fn body_too_large_response() -> Response<Full<Bytes>> {
+    error_response(
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "Request body exceeds the endpoint limit",
+    )
+}
+
+fn body_timeout_response() -> Response<Full<Bytes>> {
+    error_response(
+        StatusCode::REQUEST_TIMEOUT,
+        "Request body was not received in time",
+    )
+}
+
+/// Read and parse a JSON body within the request's [`BodyLimits`]: `413` past the size limit,
+/// `408` past the read deadline, `400` for anything that is not the expected JSON.
 #[allow(clippy::result_large_err)]
 async fn read_json_body<T: for<'de> Deserialize<'de>>(
     req: Request<hyper::body::Incoming>,
 ) -> std::result::Result<T, Response<Full<Bytes>>> {
-    let collected = req
-        .into_body()
-        .collect()
-        .await
-        .map_err(|err| error_response(StatusCode::BAD_REQUEST, err.to_string()))?;
+    let limits = req
+        .extensions()
+        .get::<BodyLimits>()
+        .copied()
+        .unwrap_or_default();
+    if req
+        .headers()
+        .get(hyper::header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .is_some_and(|length| length > limits.max_bytes as u64)
+    {
+        return Err(body_too_large_response());
+    }
+    let body = http_body_util::Limited::new(req.into_body(), limits.max_bytes);
+    let collected = match tokio::time::timeout(limits.read_timeout, body.collect()).await {
+        Ok(Ok(collected)) => collected,
+        Ok(Err(error)) if error.is::<http_body_util::LengthLimitError>() => {
+            return Err(body_too_large_response())
+        }
+        Ok(Err(_)) => {
+            return Err(error_response(
+                StatusCode::BAD_REQUEST,
+                "Request body could not be read",
+            ))
+        }
+        Err(_) => return Err(body_timeout_response()),
+    };
     serde_json::from_slice::<T>(&collected.to_bytes())
         .map_err(|err| error_response(StatusCode::BAD_REQUEST, err.to_string()))
 }
@@ -1180,7 +1270,7 @@ impl ChainUsageOperation {
 
 struct ChainRequestServices<'a> {
     rpc_url: Arc<Option<String>>,
-    rpc_client: Client,
+    rpc_client: ReadRpcClient,
     auth_context: Option<crate::websocket::auth::AuthContext>,
     usage_observer: Option<&'a Arc<dyn SolanaGatewayUsageObserver>>,
     solana_gateway_target_id: Option<&'a str>,
@@ -1239,7 +1329,7 @@ async fn handle_chain_request_inner(
     req: Request<hyper::body::Incoming>,
     path: &str,
     rpc_url: Arc<Option<String>>,
-    rpc_client: Client,
+    rpc_client: ReadRpcClient,
     auth_context: Option<crate::websocket::auth::AuthContext>,
     provider: Option<&Arc<dyn OwnerTokenAccountsProvider>>,
 ) -> Response<Full<Bytes>> {
@@ -1456,7 +1546,7 @@ async fn handle_program_account_request(
     req: Request<hyper::body::Incoming>,
     path: &str,
     rpc_url: Arc<Option<String>>,
-    rpc_client: Client,
+    rpc_client: ReadRpcClient,
     program_runtime_catalog: Arc<ProgramRuntimeCatalog>,
     auth_context: Option<crate::websocket::auth::AuthContext>,
     program_read_binding_target_id: Arc<Option<String>>,
@@ -1505,6 +1595,7 @@ async fn handle_program_account_request(
         ProgramReadOperation::ContextualFetch { address } => {
             let options = match read_json_body::<ProgramContextOptionsBody>(req).await {
                 Ok(body) => body.options,
+                Err(response) if response.status() != StatusCode::BAD_REQUEST => return response,
                 Err(_) => return program_read_error_response(ProgramReadError::InvalidRequest),
             };
             handle_contextual_program_accounts(
@@ -1524,6 +1615,7 @@ async fn handle_program_account_request(
         ProgramReadOperation::ContextualBatch => {
             let body = match read_json_body::<ContextualAccountsBody>(req).await {
                 Ok(body) => body,
+                Err(response) if response.status() != StatusCode::BAD_REQUEST => return response,
                 Err(_) => return program_read_error_response(ProgramReadError::InvalidRequest),
             };
             handle_contextual_program_accounts(
@@ -1606,6 +1698,7 @@ async fn handle_program_account_request(
         ProgramReadOperation::Batch => {
             let body = match read_json_body::<AddressesBody>(req).await {
                 Ok(body) => body,
+                Err(response) if response.status() != StatusCode::BAD_REQUEST => return response,
                 Err(_) => return program_read_error_response(ProgramReadError::InvalidRequest),
             };
             let configured_limit =
@@ -1701,7 +1794,7 @@ async fn handle_contextual_program_accounts(
     account: &str,
     read: ContextualProgramRead,
     rpc_url: &str,
-    client: &Client,
+    client: &ReadRpcClient,
     auth: Option<&crate::websocket::auth::AuthContext>,
 ) -> Response<Full<Bytes>> {
     let ContextualProgramRead {
@@ -2062,8 +2155,48 @@ fn with_release_metadata(
     response
 }
 
+/// The read RPC client and the largest response body it accepts. Connect and total timeouts
+/// are set on the client itself.
+#[derive(Clone)]
+struct ReadRpcClient {
+    client: Client,
+    max_response_bytes: usize,
+}
+
+impl std::ops::Deref for ReadRpcClient {
+    type Target = Client;
+
+    fn deref(&self) -> &Client {
+        &self.client
+    }
+}
+
+/// Read a response body, failing once it passes `max_bytes` instead of buffering the rest.
+async fn read_capped_response(
+    response: reqwest::Response,
+    max_bytes: usize,
+) -> std::result::Result<Vec<u8>, UpstreamRpcError> {
+    let too_large = || UpstreamRpcError(format!("response exceeds {max_bytes} bytes"));
+    if response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64)
+    {
+        return Err(too_large());
+    }
+    let mut stream = response.bytes_stream();
+    let mut bytes = Vec::new();
+    while let Some(chunk) = futures_util::StreamExt::next(&mut stream).await {
+        let chunk = chunk.map_err(UpstreamRpcError::from)?;
+        if bytes.len().saturating_add(chunk.len()) > max_bytes {
+            return Err(too_large());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
 async fn rpc_call(
-    client: &Client,
+    client: &ReadRpcClient,
     rpc_url: &str,
     method: &str,
     params: Value,
@@ -2080,10 +2213,9 @@ async fn rpc_call(
         .await
         .and_then(reqwest::Response::error_for_status)
         .map_err(UpstreamRpcError::from)?;
-    let value = response
-        .json::<Value>()
-        .await
-        .map_err(UpstreamRpcError::from)?;
+    let body = read_capped_response(response, client.max_response_bytes).await?;
+    let value = serde_json::from_slice::<Value>(&body)
+        .map_err(|error| UpstreamRpcError(format!("invalid JSON-RPC response: {error}")))?;
     if let Some(error) = value.get("error") {
         return Err(UpstreamRpcError(format!("JSON-RPC error: {error}")).into());
     }
@@ -2105,7 +2237,7 @@ fn rpc_read_config(encoding: Option<&str>, min_context_slot: Option<u64>) -> Val
 }
 
 async fn rpc_get_native_balance(
-    client: &Client,
+    client: &ReadRpcClient,
     rpc_url: &str,
     address: &str,
     min_context_slot: Option<u64>,
@@ -2136,7 +2268,7 @@ fn contextual_native_balance_json(result: &Value) -> anyhow::Result<Value> {
 }
 
 async fn rpc_get_account_info(
-    client: &Client,
+    client: &ReadRpcClient,
     rpc_url: &str,
     address: &str,
 ) -> anyhow::Result<Value> {
@@ -2151,7 +2283,7 @@ async fn rpc_get_account_info(
 }
 
 async fn rpc_get_multiple_accounts(
-    client: &Client,
+    client: &ReadRpcClient,
     rpc_url: &str,
     addresses: &[String],
 ) -> anyhow::Result<Vec<Value>> {
@@ -2170,7 +2302,7 @@ async fn rpc_get_multiple_accounts(
 }
 
 async fn rpc_get_parsed_account_info(
-    client: &Client,
+    client: &ReadRpcClient,
     rpc_url: &str,
     address: &str,
 ) -> anyhow::Result<Option<Value>> {
@@ -2188,7 +2320,7 @@ async fn rpc_get_parsed_account_info(
 }
 
 async fn rpc_get_token_balance(
-    client: &Client,
+    client: &ReadRpcClient,
     rpc_url: &str,
     owner: &str,
     mint: &str,
@@ -2787,6 +2919,13 @@ mod tests {
     }
 
     async fn start_gateway(rpc_url: &str) -> (String, CancellationToken) {
+        start_gateway_with_limits(rpc_url, HttpLimitsConfig::default()).await
+    }
+
+    async fn start_gateway_with_limits(
+        rpc_url: &str,
+        limits: HttpLimitsConfig,
+    ) -> (String, CancellationToken) {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
@@ -2799,6 +2938,7 @@ mod tests {
             .with_auth_plugin(Arc::new(ScopeTokenPlugin))
             .with_solana_gateway_target("gateway-1")
             .with_read_rpc_url(rpc_url)
+            .with_limits(limits)
             .with_shutdown(shutdown.clone());
         tokio::spawn(server.start());
         for _ in 0..100 {
@@ -2967,5 +3107,168 @@ mod tests {
             }
             shutdown.cancel();
         }
+    }
+
+    fn small_limits() -> HttpLimitsConfig {
+        HttpLimitsConfig {
+            max_body_bytes: 1024,
+            header_read_timeout: Duration::from_millis(300),
+            body_read_timeout: Duration::from_millis(300),
+            upstream_connect_timeout: Duration::from_millis(300),
+            upstream_timeout: Duration::from_millis(300),
+            max_upstream_response_bytes: 1024,
+        }
+    }
+
+    #[tokio::test]
+    async fn oversized_request_bodies_are_refused_with_413() {
+        let rpc = crate::http::fork::tests::mock_rpc(crate::http::fork::tests::result_responder(
+            json!(1),
+        ))
+        .await;
+        let (base, shutdown) = start_gateway_with_limits(&rpc.url, small_limits()).await;
+        let client = Client::new();
+        let padding = " ".repeat(4096);
+        let oversized = format!(r#"{{"address":"11111111111111111111111111111111"{padding}}}"#);
+        for path in [
+            "/chain/v1/account",
+            "/chain/native-balance",
+            "/chain/accounts",
+        ] {
+            // Declared length over the limit.
+            let response = client
+                .post(format!("{base}{path}"))
+                .bearer_auth("read")
+                .header("Content-Type", "application/json")
+                .body(oversized.clone())
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE, "{path}");
+
+            // No declared length: refused once the streamed bytes pass the limit.
+            let chunks = futures_util::stream::iter(
+                oversized
+                    .as_bytes()
+                    .chunks(512)
+                    .map(|chunk| Ok::<_, std::io::Error>(Bytes::copy_from_slice(chunk)))
+                    .collect::<Vec<_>>(),
+            );
+            let response = client
+                .post(format!("{base}{path}"))
+                .bearer_auth("read")
+                .body(reqwest::Body::wrap_stream(chunks))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "{path} chunked"
+            );
+        }
+        assert!(rpc.requests.lock().unwrap().is_empty());
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stalls_is_answered_with_408() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let rpc = crate::http::fork::tests::mock_rpc(crate::http::fork::tests::result_responder(
+            json!(1),
+        ))
+        .await;
+        let (base, shutdown) = start_gateway_with_limits(&rpc.url, small_limits()).await;
+        let addr = base.trim_start_matches("http://");
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream
+            .write_all(
+                format!(
+                    "POST /chain/v1/account HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer read\r\nContent-Type: application/json\r\nContent-Length: 200\r\n\r\n{{\"addr"
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+        let mut response = vec![0; 1024];
+        let read = tokio::time::timeout(Duration::from_secs(5), stream.read(&mut response))
+            .await
+            .expect("the server answers a stalled body before the test deadline")
+            .unwrap();
+        let response = String::from_utf8_lossy(&response[..read]);
+        assert!(response.starts_with("HTTP/1.1 408"), "{response}");
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn a_client_that_never_finishes_its_headers_is_disconnected() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let (base, shutdown) =
+            start_gateway_with_limits("http://127.0.0.1:9/unused", small_limits()).await;
+        let addr = base.trim_start_matches("http://");
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+        stream.write_all(b"GET /health HTTP/1.1\r\n").await.unwrap();
+        let mut buffer = vec![0; 1024];
+        let closed = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                match stream.read(&mut buffer).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => continue,
+                }
+            }
+        })
+        .await;
+        assert!(
+            closed.is_ok(),
+            "the connection is closed at the header deadline"
+        );
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn a_slow_upstream_times_out_as_a_502() {
+        // Accepts connections and never answers them.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let upstream = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let (base, shutdown) = start_gateway_with_limits(&upstream, small_limits()).await;
+        let started = std::time::Instant::now();
+        let response = Client::new()
+            .get(format!("{base}/chain/clock"))
+            .bearer_auth("read")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert!(started.elapsed() < Duration::from_secs(5));
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(value["error"], UPSTREAM_RPC_FAILED);
+        shutdown.cancel();
+    }
+
+    #[tokio::test]
+    async fn an_oversized_upstream_response_is_refused() {
+        let rpc = crate::http::fork::tests::mock_rpc(crate::http::fork::tests::result_responder(
+            json!("x".repeat(4096)),
+        ))
+        .await;
+        let (base, shutdown) = start_gateway_with_limits(&rpc.url, small_limits()).await;
+        let response = Client::new()
+            .get(format!("{base}/chain/clock"))
+            .bearer_auth("read")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let value: Value = response.json().await.unwrap();
+        assert_eq!(value["error"], UPSTREAM_RPC_FAILED);
+        shutdown.cancel();
     }
 }

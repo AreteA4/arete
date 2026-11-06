@@ -240,6 +240,22 @@ impl Runtime {
                 "the runtime plan enables transactions but transaction configuration is disabled"
             );
         }
+        // Resolved before any task starts, so a bad limit fails startup
+        // without leaving background work running.
+        let websocket_limits = match self.config.websocket_limits.clone() {
+            Some(limits) => {
+                limits.validate()?;
+                limits
+            }
+            None => crate::config::WebSocketLimitsConfig::from_env()?,
+        };
+        let http_limits = match self.config.http_limits.clone() {
+            Some(limits) => {
+                limits.validate()?;
+                limits
+            }
+            None => crate::config::HttpLimitsConfig::from_env()?,
+        };
         let program_runtime_catalog = self.program_runtime_catalog.clone();
 
         let health_monitor = if plan.health {
@@ -411,6 +427,7 @@ impl Runtime {
 
             ws_server = ws_server.with_journal(journal.clone());
             ws_server = ws_server.with_delivery_config(websocket_delivery);
+            ws_server = ws_server.with_limits(websocket_limits.clone());
             if let Some(max_clients) = self.websocket_max_clients {
                 ws_server = ws_server.with_max_clients(max_clients);
             }
@@ -537,6 +554,7 @@ impl Runtime {
         let http_shutdown = CancellationToken::new();
         let http_health_thread = if let Some(http_health_config) = &self.config.http_health {
             let mut http_server = HttpServer::new(http_health_config.bind_address)
+                .with_limits(http_limits.clone())
                 .with_runtime_plan(plan)
                 .with_program_runtime_catalog(program_runtime_catalog)
                 .with_shutdown(http_shutdown.clone());

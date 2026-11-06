@@ -64,8 +64,9 @@ pub use arete_auth::{
 pub use bus::{BusManager, BusMessage, StateUpdate};
 pub use cache::{CacheWrite, EntityCache, EntityCacheConfig, PatchOrigin};
 pub use config::{
-    HealthConfig, HttpHealthConfig, HttpServerConfig, ReconnectionConfig, RuntimePlan,
-    ServerConfig, TransactionConfig, WebSocketConfig, WebSocketDeliveryConfig, YellowstoneConfig,
+    HealthConfig, HttpHealthConfig, HttpLimitsConfig, HttpServerConfig, ReconnectionConfig,
+    RuntimePlan, ServerConfig, TransactionConfig, WebSocketConfig, WebSocketDeliveryConfig,
+    WebSocketLimitsConfig, YellowstoneConfig,
 };
 pub use health::{HealthMonitor, SlotTracker, StreamStatus};
 pub use http_health::HttpHealthServer;
@@ -220,6 +221,12 @@ impl SolanaGatewayBuilder {
     /// Set the auth plugin for chain and transaction requests.
     pub fn auth_plugin(mut self, plugin: Arc<dyn WebSocketAuthPlugin>) -> Self {
         self.inner.http_auth_plugin = Some(plugin);
+        self
+    }
+
+    /// Configure HTTP body, header and read RPC limits.
+    pub fn http_limits(mut self, config: HttpLimitsConfig) -> Self {
+        self.inner.config.http_limits = Some(config);
         self
     }
 
@@ -405,6 +412,18 @@ impl ServerBuilder {
     pub fn websocket_delivery_config(mut self, config: WebSocketDeliveryConfig) -> Self {
         self.config.websocket_delivery = Some(config);
         self.config.runtime_plan.live_runtime = true;
+        self
+    }
+
+    /// Configure WebSocket message, frame and handshake limits.
+    pub fn websocket_limits(mut self, config: WebSocketLimitsConfig) -> Self {
+        self.config.websocket_limits = Some(config);
+        self
+    }
+
+    /// Configure HTTP body, header and read RPC limits.
+    pub fn http_limits(mut self, config: HttpLimitsConfig) -> Self {
+        self.config.http_limits = Some(config);
         self
     }
 
