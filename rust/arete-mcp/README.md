@@ -524,15 +524,21 @@ or a package reference `protocol`; `dev: true` targets the project's dev deploym
   (`deployments`, `maxSolPerTransaction`, optional `programs`,
   `maxTokenAmounts`, `clusters`), signs, submits and waits. A refusal names
   the rule. The keypair never appears in output, errors or logs. The caps
-  hold per transaction. Without `maxTokenAmounts` no token may leave the
+  hold per transaction and in total over the step; a transaction that uses
+  an account an earlier transaction of the step writes is refused, since it
+  is simulated against state from before that write. `programs` covers CPI
+  callees (from the simulation's inner instructions; unresolved ones are
+  refused). Without `maxTokenAmounts` no token may leave the
   signer; wrapped SOL and the lamports of a token account closed to another
   account count against `maxSolPerTransaction`. Token approvals, authority
-  changes, System `Assign`/`AssignWithSeed`/`Allocate` of the signer, nonce
+  changes, System `Assign`/`AssignWithSeed`/`Allocate`/`AllocateWithSeed`
+  of the signer or an account derived from it, nonce
   and stake authority changes or withdrawals, and upgradeable-loader
   instructions the signer takes part in are refused (`rule: "authority"`),
   top-level always and inner when the RPC's simulation returns inner
   instructions. A transaction writing more accounts than the simulation
-  reports on (64) is refused as unknown. With `dev: true` a `project`
+  reports on (64) is refused as unknown. With `dev: true` the signer signs
+  only for the dev environment's own deployment, a `project`
   argument must be at or below the server's working directory, the signer
   is funded in the dev environment when it has no SOL, and simulation uses
   the signer's `rpcUrl` unless the policy lists `dev` in `clusters`

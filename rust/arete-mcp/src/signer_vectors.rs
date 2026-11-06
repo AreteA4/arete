@@ -66,11 +66,14 @@ fn signer() -> String {
 }
 
 const OTHER_WALLET: u8 = 3;
+const THIRD_WALLET: u8 = 4;
 const MINT: u8 = 20;
 const OTHER_MINT: u8 = 21;
 const TOKEN_ACCOUNT: u8 = 30;
 const OTHER_TOKEN_ACCOUNT: u8 = 31;
 const WRAPPED_ACCOUNT: u8 = 32;
+const SECOND_TOKEN_ACCOUNT: u8 = 33;
+const SECOND_OTHER_TOKEN_ACCOUNT: u8 = 34;
 const PROGRAM: u8 = 40;
 const OTHER_PROGRAM: u8 = 41;
 const LOOKUP_TABLE: u8 = 50;
@@ -340,7 +343,12 @@ fn prepared(deployment: &str, transactions: &[Vec<u8>]) -> Value {
 
 /// The signer sends lamports to another wallet.
 fn sol_transfer() -> Vec<u8> {
-    Message::new(&[seed(1)], &[seed(OTHER_WALLET)], &[raw(SYSTEM_PROGRAM)])
+    sol_transfer_to(OTHER_WALLET)
+}
+
+/// The signer sends lamports to `wallet`.
+fn sol_transfer_to(wallet: u8) -> Vec<u8> {
+    Message::new(&[seed(1)], &[seed(wallet)], &[raw(SYSTEM_PROGRAM)])
         .with(ix(
             2,
             &[0, 1],
@@ -351,9 +359,14 @@ fn sol_transfer() -> Vec<u8> {
 
 /// The protocol program moves tokens out of the signer's token account.
 fn program_token_move() -> Vec<u8> {
+    program_token_move_between(TOKEN_ACCOUNT, OTHER_TOKEN_ACCOUNT)
+}
+
+/// The protocol program moves tokens from `from` (the signer's) to `to`.
+fn program_token_move_between(from: u8, to: u8) -> Vec<u8> {
     Message::new(
         &[seed(1)],
-        &[seed(TOKEN_ACCOUNT), seed(OTHER_TOKEN_ACCOUNT)],
+        &[seed(from), seed(to)],
         &[seed(PROGRAM), raw(TOKEN_PROGRAMS[0])],
     )
     .with(ix(3, &[0, 1, 2, 4], &[1]))
@@ -416,6 +429,14 @@ fn top_level_approve() -> Vec<u8> {
     )
     .with(ix(3, &[1, 2, 0], &[4, 1, 0, 0, 0, 0, 0, 0, 0]))
     .unsigned()
+}
+
+/// The signer, as base, allocates a seeded account and assigns it to
+/// another program.
+fn allocate_with_seed() -> Vec<u8> {
+    Message::new(&[seed(1)], &[seed(OTHER_WALLET)], &[raw(SYSTEM_PROGRAM)])
+        .with(ix(2, &[1, 0], &u32_data(9)))
+        .unsigned()
 }
 
 fn base_policy() -> Value {
@@ -568,6 +589,43 @@ fn inner_approve_chain() -> Value {
         { "programId": TOKEN_PROGRAMS[0], "program": "spl-token", "parsed": {
             "type": "approve", "info": { "source": addr(TOKEN_ACCOUNT), "delegate": addr(OTHER_WALLET), "owner": signer(), "amount": "1" } } },
     ] }]);
+    value
+}
+
+/// A token move whose protocol program calls the token program and another
+/// program by CPI; `unresolved` adds a CPI naming an account index the
+/// transaction does not have.
+fn inner_programs_chain(unresolved: bool) -> Value {
+    let mut value = token_move_chain(400);
+    let mut instructions = vec![
+        json!({ "programId": TOKEN_PROGRAMS[0], "program": "spl-token", "parsed": {
+            "type": "transfer", "info": { "source": addr(TOKEN_ACCOUNT), "destination": addr(OTHER_TOKEN_ACCOUNT), "authority": signer(), "amount": "600" } } }),
+        json!({ "programId": addr(OTHER_PROGRAM), "accounts": [addr(TOKEN_ACCOUNT)], "data": "" }),
+    ];
+    if unresolved {
+        instructions.push(json!({ "programIdIndex": 99, "accounts": [], "data": "" }));
+    }
+    value["simulation"]["innerInstructions"] =
+        json!([{ "index": 0, "instructions": instructions }]);
+    value
+}
+
+/// Two token moves of 600 out of two of the signer's token accounts.
+fn two_token_moves_chain() -> Value {
+    let mut value = token_move_chain(400);
+    value["accounts"][addr(SECOND_TOKEN_ACCOUNT)] = spl(&signer(), 1000);
+    value["accounts"][addr(SECOND_OTHER_TOKEN_ACCOUNT)] = spl(&addr(OTHER_WALLET), 0);
+    value["simulation"]["accounts"][addr(SECOND_TOKEN_ACCOUNT)] = spl(&signer(), 400);
+    value["simulation"]["accounts"][addr(SECOND_OTHER_TOKEN_ACCOUNT)] =
+        spl(&addr(OTHER_WALLET), 600);
+    value
+}
+
+/// Two SOL transfers to different wallets, each simulated against the same
+/// state.
+fn two_transfers_chain() -> Value {
+    let mut value = sol_transfer_chain();
+    value["simulation"]["accounts"][addr(THIRD_WALLET)] = system_account(10_000_000);
     value
 }
 
@@ -1302,6 +1360,21 @@ fn summary_inputs() -> Vec<(&'static str, Value, Value)> {
             with_roles,
             token_move_chain(400),
         ),
+        (
+            "programs invoked by CPI",
+            prepared("dep-1", &[program_token_move()]),
+            inner_programs_chain(false),
+        ),
+        (
+            "a CPI whose program is not resolved",
+            prepared("dep-1", &[program_token_move()]),
+            inner_programs_chain(true),
+        ),
+        (
+            "a transaction using an account an earlier one writes",
+            prepared("dep-1", &[program_wrapped_move(), close_to_other()]),
+            wrapping_chain(),
+        ),
     ]
 }
 
@@ -1523,6 +1596,74 @@ async fn check_cases() -> Vec<Value> {
             "dep-1",
             prepared("dep-1", &[sol_transfer(), program_token_move()]),
             two_chains,
+        ),
+        (
+            "two transactions within the SOL cap each and over it in total",
+            policy_with(json!({ "maxSolPerTransaction": "0.015" })),
+            "dep-1",
+            prepared("dep-1", &[sol_transfer(), sol_transfer_to(THIRD_WALLET)]),
+            two_transfers_chain(),
+        ),
+        (
+            "two transactions within the SOL cap in total",
+            policy_with(json!({ "maxSolPerTransaction": "0.02001" })),
+            "dep-1",
+            prepared("dep-1", &[sol_transfer(), sol_transfer_to(THIRD_WALLET)]),
+            two_transfers_chain(),
+        ),
+        (
+            "two transactions within a token cap each and over it in total",
+            policy_with(caps("1000")),
+            "dep-1",
+            prepared(
+                "dep-1",
+                &[
+                    program_token_move(),
+                    program_token_move_between(SECOND_TOKEN_ACCOUNT, SECOND_OTHER_TOKEN_ACCOUNT),
+                ],
+            ),
+            two_token_moves_chain(),
+        ),
+        (
+            "a transaction using an account an earlier one writes",
+            policy_with(json!({ "maxSolPerTransaction": "0.01" })),
+            "dep-1",
+            prepared("dep-1", &[program_wrapped_move(), close_to_other()]),
+            wrapping_chain(),
+        ),
+        (
+            "a program invoked by CPI outside the allow-list",
+            token_policy.clone(),
+            "dep-1",
+            token_move(),
+            inner_programs_chain(false),
+        ),
+        (
+            "a program invoked by CPI in the allow-list",
+            policy_with(json!({
+                "programs": [addr(PROGRAM), addr(OTHER_PROGRAM)],
+                "maxTokenAmounts": { mint.clone(): "1000" },
+            })),
+            "dep-1",
+            token_move(),
+            inner_programs_chain(false),
+        ),
+        (
+            "a CPI whose program is not resolved",
+            policy_with(json!({
+                "programs": [addr(PROGRAM), addr(OTHER_PROGRAM)],
+                "maxTokenAmounts": { mint.clone(): "1000" },
+            })),
+            "dep-1",
+            token_move(),
+            inner_programs_chain(true),
+        ),
+        (
+            "an allocateWithSeed based on the signer",
+            base_policy(),
+            "dep-1",
+            prepared("dep-1", &[allocate_with_seed()]),
+            sol_transfer_chain(),
         ),
     ];
     let mut out = Vec::new();

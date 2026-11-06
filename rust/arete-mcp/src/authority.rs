@@ -3,7 +3,9 @@
 //!
 //! The signer's caps measure balance changes, and some instructions change
 //! no balance yet give the funds away: a token delegation (`Approve`), a new
-//! owner or authority (`SetAuthority`, System `Assign`), or lamports leaving
+//! owner or authority (`SetAuthority`, System `Assign`, or `AllocateWithSeed`
+//! and `AssignWithSeed`, which give an account derived from the signer, and
+//! any lamports already in it, to another program), or lamports leaving
 //! an account the signer controls that is not the signer's own (a nonce or
 //! stake withdrawal, a token account closed to someone else). This module
 //! names those instructions in the System, SPL Token, Token-2022, upgradeable
@@ -64,13 +66,12 @@ pub const DURABLE_NONCE: &str =
     "makes it a durable-nonce transaction, valid until the nonce advances instead of expiring";
 
 /// System instructions the signer may take part in.
-const SYSTEM_ALLOWED: [&str; 7] = [
+const SYSTEM_ALLOWED: [&str; 6] = [
     "createAccount",
     "createAccountWithSeed",
     "transfer",
     "advanceNonce",
     "initializeNonce",
-    "allocateWithSeed",
     "upgradeNonce",
 ];
 
@@ -247,7 +248,7 @@ fn refusal_reason(program: &str, name: &str) -> Option<String> {
         }
     } else if program == SYSTEM_PROGRAM {
         match name {
-            "assign" | "assignWithSeed" => {
+            "assign" | "assignWithSeed" | "allocateWithSeed" => {
                 "changes the owner of an account the signer controls".to_string()
             }
             "allocate" => "allocates data on the signer's account".to_string(),
@@ -534,6 +535,13 @@ mod tests {
         assert_eq!(
             findings(SYSTEM_PROGRAM, vec![1, 0], vec![10, 0, 0, 0]),
             vec!["assignWithSeed"]
+        );
+        // allocateWithSeed(account, base = signer) assigns an account
+        // derived from the signer, with any lamports already in it, to a new
+        // owner.
+        assert_eq!(
+            findings(SYSTEM_PROGRAM, vec![1, 0], vec![9, 0, 0, 0]),
+            vec!["allocateWithSeed"]
         );
         assert_eq!(
             findings(SYSTEM_PROGRAM, vec![1, 1, 0], vec![7, 0, 0, 0]),

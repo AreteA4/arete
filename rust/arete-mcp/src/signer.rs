@@ -22,13 +22,17 @@
 //! ```
 //!
 //! Every transaction is checked against the policy before it is signed, and
-//! a refusal names the rule. The caps hold per transaction, not per step or
-//! over time. Wrapped SOL counts against `maxSolPerTransaction`, as do the
-//! lamports of a token account closed to someone else. Instructions that
-//! hand control of the signer's funds to someone else (token approvals,
-//! authority changes, System assignments; see [`crate::authority`]) are
-//! always refused. The keypair's secret is held only as a signing
-//! key: no `Debug`, output, error or log line contains it.
+//! a refusal names the rule. The caps hold for each transaction and for the
+//! total over the step's transactions, not over time (across steps).
+//! Wrapped SOL counts against `maxSolPerTransaction`, as do the lamports of
+//! a token account closed to someone else. A transaction that uses an
+//! account an earlier transaction of the step writes is refused, since its
+//! simulation against current state does not show its effect. `programs`
+//! covers the programs invoked by CPI as well as the top-level ones.
+//! Instructions that hand control of the signer's funds to someone else
+//! (token approvals, authority changes, System assignments; see
+//! [`crate::authority`]) are always refused. The keypair's secret is held
+//! only as a signing key: no `Debug`, output, error or log line contains it.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -159,7 +163,7 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    fn new(rule: &'static str, reason: impl Into<String>) -> Self {
+    pub(crate) fn new(rule: &'static str, reason: impl Into<String>) -> Self {
         Self {
             rule,
             reason: reason.into(),
@@ -318,10 +322,13 @@ impl SignerPolicy {
     }
 
     /// Check a prepared step against the policy: the intent's deployment,
-    /// every transaction's programs, the instructions that would hand over
-    /// control of the signer's funds, and the simulated SOL and token
-    /// outflows of the signer in `summary`, per transaction. `simulates`
-    /// says whether the summary came from a simulation at all.
+    /// every transaction's programs (top-level and invoked by CPI), the
+    /// instructions that would hand over control of the signer's funds, and
+    /// the simulated SOL and token outflows of the signer in `summary`, per
+    /// transaction and in total over the step. A transaction that uses an
+    /// account an earlier one writes is refused: its simulation ran against
+    /// state from before that write. `simulates` says whether the summary
+    /// came from a simulation at all.
     pub fn check_prepared(
         &self,
         deployment: &str,
@@ -344,6 +351,12 @@ impl SignerPolicy {
             .as_array()
             .cloned()
             .unwrap_or_default();
+        let cap = self.max_lamports_per_transaction as i128;
+        let sol = |lamports: i128| crate::prepared_summary::lamports_to_sol(lamports);
+        // Outflows over the step so far: inflows in one transaction never
+        // offset outflows in another.
+        let mut sol_out_total: i128 = 0;
+        let mut tokens_out_total: BTreeMap<String, u128> = BTreeMap::new();
         for transaction in &transactions {
             let index = &transaction["index"];
             if let Some(allowed) = &self.programs {
@@ -394,6 +407,47 @@ impl SignerPolicy {
                     ),
                 ));
             }
+            if let Some(allowed) = &self.programs {
+                if transaction["innerProgramsComplete"] != true {
+                    return Err(Refusal::new(
+                        "programs",
+                        format!("the programs transaction {index} invokes by CPI could not all be resolved from the simulation, so the programs allow-list cannot be checked"),
+                    ));
+                }
+                for program in transaction["innerPrograms"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
+                    let id = program.as_str().unwrap_or_default();
+                    if !RUNTIME_PROGRAMS.contains(&id) && !allowed.iter().any(|p| p == id) {
+                        return Err(Refusal::new(
+                            "programs",
+                            format!("transaction {index} invokes {id} by CPI, which is not in the signer's programs allow-list"),
+                        ));
+                    }
+                }
+            }
+            if let Some(account) = transaction["earlierWrites"]
+                .as_array()
+                .and_then(|accounts| accounts.first())
+            {
+                return Err(Refusal::new(
+                    "maxSolPerTransaction",
+                    format!(
+                        "transaction {index} uses {}, which an earlier transaction of the step writes, so its simulation against current state does not show its effect and the caps cannot be checked",
+                        account.as_str().unwrap_or_default()
+                    ),
+                ));
+            }
+            if transaction["earlierWritesComplete"] != true {
+                return Err(Refusal::new(
+                    "maxSolPerTransaction",
+                    format!(
+                        "transaction {index} may use accounts an earlier transaction of the step writes (some lookup-table entries are unresolved), so the caps cannot be checked"
+                    ),
+                ));
+            }
             let lamports: i128 = effect["solLamports"]
                 .as_str()
                 .and_then(|value| value.parse().ok())
@@ -418,15 +472,24 @@ impl SignerPolicy {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(0);
             let outflow = (closed - lamports - wrapped).max(0);
-            if outflow > self.max_lamports_per_transaction as i128 {
+            if outflow > cap {
                 return Err(Refusal::new(
                     "maxSolPerTransaction",
                     format!(
                         "transaction {index} moves {} SOL out of the signer (wrapped SOL and closed token accounts included), over the {} SOL cap",
-                        crate::prepared_summary::lamports_to_sol(outflow),
-                        crate::prepared_summary::lamports_to_sol(
-                            self.max_lamports_per_transaction as i128
-                        )
+                        sol(outflow),
+                        sol(cap)
+                    ),
+                ));
+            }
+            sol_out_total += outflow;
+            if sol_out_total > cap {
+                return Err(Refusal::new(
+                    "maxSolPerTransaction",
+                    format!(
+                        "the step's transactions through transaction {index} move {} SOL out of the signer in total (wrapped SOL and closed token accounts included), over the {} SOL cap",
+                        sol(sol_out_total),
+                        sol(cap)
                     ),
                 ));
             }
@@ -446,14 +509,23 @@ impl SignerPolicy {
                         format!("transaction {index} moves {outflow} base units of {mint} out of the signer, and the policy sets no maxTokenAmounts, so no token may leave"),
                     ));
                 };
+                let total = tokens_out_total.entry(mint.to_string()).or_default();
+                *total = total.saturating_add(outflow);
+                let total = *total;
                 match caps.get(mint) {
-                    Some(cap) if outflow <= *cap => {}
-                    Some(cap) => {
+                    Some(cap) if outflow > *cap => {
                         return Err(Refusal::new(
                             "maxTokenAmounts",
                             format!("transaction {index} moves {outflow} base units of {mint} out of the signer, over the cap of {cap}"),
                         ))
                     }
+                    Some(cap) if total > *cap => {
+                        return Err(Refusal::new(
+                            "maxTokenAmounts",
+                            format!("the step's transactions through transaction {index} move {total} base units of {mint} out of the signer in total, over the cap of {cap}"),
+                        ))
+                    }
+                    Some(_) => {}
                     None => {
                         return Err(Refusal::new(
                             "maxTokenAmounts",

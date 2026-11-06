@@ -103,6 +103,20 @@ export interface TransactionSummary {
   }>;
   readonly signerEffect: SignerEffectSummary;
   readonly simulation?: { readonly err: unknown; readonly logsTail: string[] };
+  /**
+   * Accounts this transaction uses that an earlier transaction of the step
+   * writes. Each transaction is simulated on its own against current state,
+   * so such a transaction's simulated effect is not its effect after the
+   * earlier ones land. The signer (every transaction's fee payer) counts only
+   * when the earlier transactions may have raised its balance.
+   */
+  readonly earlierWrites: string[];
+  /** Whether `earlierWrites` is complete (false when lookup-table entries are unresolved). */
+  readonly earlierWritesComplete: boolean;
+  /** Programs invoked by CPI, from the simulation; `null` when it returned no inner instructions. */
+  readonly innerPrograms: string[] | null;
+  /** Whether every CPI's program was resolved. */
+  readonly innerProgramsComplete: boolean;
   readonly unsafeInstructions: AuthorityFinding[];
 }
 
@@ -271,7 +285,38 @@ interface SignerEffect {
   readonly omittedAccounts: number;
   readonly findings: AuthorityFinding[];
   readonly innerChecked: boolean;
+  /** The distinct programs the inner instructions invoke, in first-use order. */
+  readonly innerPrograms: string[];
+  /** Whether every inner instruction's program was resolved. */
+  readonly innerProgramsComplete: boolean;
   readonly slots: [number | null, number | null];
+}
+
+/** The distinct programs `inner` (a simulation's `innerInstructions`) invokes, and whether every one was resolved. */
+function innerProgramsOf(
+  inner: unknown,
+  accountKeys: readonly (string | null)[],
+): [string[], boolean] {
+  if (!Array.isArray(inner)) return [[], false];
+  const programs: string[] = [];
+  let complete = true;
+  for (const group of inner) {
+    const instructions = field(group, 'instructions');
+    if (!Array.isArray(instructions)) {
+      complete = false;
+      continue;
+    }
+    for (const instruction of instructions) {
+      let program = asString(field(instruction, 'programId'));
+      if (program === undefined) {
+        const index = asU64(field(instruction, 'programIdIndex'));
+        program = index === undefined ? undefined : (accountKeys[index] ?? undefined);
+      }
+      if (program === undefined) complete = false;
+      else if (!programs.includes(program)) programs.push(program);
+    }
+  }
+  return [programs, complete];
 }
 
 /**
@@ -331,6 +376,7 @@ async function simulateSignerEffect(
   const err = field(value, 'err') ?? null;
   const inner = field(value, 'innerInstructions');
   const innerChecked = Array.isArray(inner);
+  const [innerPrograms, innerProgramsComplete] = innerProgramsOf(inner, accountKeys);
   mergeChecked(checked, checkInner(inner, signer, accountKeys));
   const slots: [number | null, number | null] = [
     preSlot,
@@ -349,6 +395,8 @@ async function simulateSignerEffect(
       omittedAccounts,
       findings: checked.findings,
       innerChecked,
+      innerPrograms,
+      innerProgramsComplete,
       slots,
     };
   }
@@ -392,6 +440,8 @@ async function simulateSignerEffect(
     omittedAccounts,
     findings: checked.findings,
     innerChecked,
+    innerPrograms,
+    innerProgramsComplete,
     slots,
   };
 }
@@ -442,6 +492,11 @@ export async function summarizePrepared(
   const tokenTotals = new Map<string, bigint>();
   const simulationErrors: PreparedSummary['simulationErrors'] = [];
   const stillRequired: string[] = [];
+  // What the earlier transactions of the step write, whether every write is
+  // known, and their total effect on the signer's lamports.
+  const writtenEarlier: string[] = [];
+  let writtenEarlierComplete = true;
+  let signerLamportsEarlier: bigint | null = 0n;
   for (const [position, [index, bytes]] of transactions.entries()) {
     let decoded: DecodedTransaction;
     try {
@@ -484,15 +539,48 @@ export async function summarizePrepared(
         offset += 1;
       }
     }
+    // Every transaction writes the signer (it pays the fee), so the signer
+    // counts as an earlier write only when the earlier transactions may have
+    // raised its balance: lower than simulated can only shrink what a later
+    // transaction is able to move.
+    const lookupEntries = decoded.lookups.reduce(
+      (sum, lookup) => sum + lookup.writable.length + lookup.readonly.length,
+      0,
+    );
+    const usedComplete =
+      lookups.keys.length === lookupEntries && lookups.keys.every((key) => key !== null);
+    const signerMayHaveRisen = signerLamportsEarlier === null || signerLamportsEarlier > 0n;
+    const earlierWrites: string[] = [];
+    for (const key of [...decoded.staticKeys, ...lookups.keys]) {
+      if (
+        key !== null &&
+        writtenEarlier.includes(key) &&
+        (key !== signer || signerMayHaveRisen) &&
+        !earlierWrites.includes(key)
+      ) {
+        earlierWrites.push(key);
+      }
+    }
+    const earlierWritesComplete = position === 0 || (usedComplete && writtenEarlierComplete);
+    for (const key of accountsWritten) if (!writtenEarlier.includes(key)) writtenEarlier.push(key);
+    if (unresolvedWrites.length > 0) writtenEarlierComplete = false;
     const lookupWritable = decoded.lookups.reduce((sum, lookup) => sum + lookup.writable.length, 0);
     const dependent = field(serverSimulation, 'simulated') === false;
     let unsafeInstructions = checkTopLevel(decoded, signer, []).findings;
     let signerEffect: SignerEffectSummary;
     let simulation: TransactionSummary['simulation'];
+    let signerLamports: bigint | null = null;
+    let innerPrograms: string[] | null = null;
+    let innerProgramsComplete = false;
     if (simulator) {
       try {
         const effect = await simulateSignerEffect(simulator, bytes, decoded, signer, lookups);
         unsafeInstructions = effect.findings;
+        signerLamports = effect.solLamports;
+        if (effect.innerChecked) {
+          innerPrograms = effect.innerPrograms;
+          innerProgramsComplete = effect.innerProgramsComplete;
+        }
         if (effect.err !== null) {
           simulationErrors.push({
             transaction: index,
@@ -527,6 +615,10 @@ export async function summarizePrepared(
       solTotal = null;
       signerEffect = { known: false };
     }
+    signerLamportsEarlier =
+      signerLamportsEarlier !== null && signerLamports !== null
+        ? signerLamportsEarlier + signerLamports
+        : null;
     entries.push({
       index,
       version: decoded.version === null ? 'legacy' : `v${decoded.version}`,
@@ -552,6 +644,10 @@ export async function summarizePrepared(
         : {}),
       signerEffect,
       ...(simulation ? { simulation } : {}),
+      earlierWrites,
+      earlierWritesComplete,
+      innerPrograms,
+      innerProgramsComplete,
       unsafeInstructions,
     });
   }
@@ -563,7 +659,7 @@ export async function summarizePrepared(
         solLamports: solTotal?.toString() ?? null,
         sol: solTotal === null ? null : lamportsToSol(solTotal),
         tokens: sortedTokens(tokenTotals),
-        note: 'Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.',
+        note: 'Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own, and one that uses an account an earlier one writes (earlierWrites) shows its effect before that write.',
       }
     : {
         available: false,

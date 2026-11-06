@@ -27,17 +27,19 @@ RPC and checked:
 
 - the deployment and its cluster are allowed (`dev` for a client `a4 dev`
   generated, `mainnet` for a published one), and every program the transactions
-  call is on the list (the compute budget, memo, system, token and associated
+  call, directly or by CPI, is on the list (the compute budget, memo, system, token and associated
   token programs are always allowed);
 - no transaction hands control of the wallet's funds to someone else: token
   approvals, authority changes, account reassignments, nonce, stake and
   program-upgrade authority changes are always refused, including inside
   other programs' calls;
-- the SOL and tokens leaving the wallet stay under the caps. Wrapped SOL
-  counts as SOL, and a token account closed to someone else counts too. A
-  mint without a cap may not leave.
+- the SOL and tokens leaving the wallet stay under the caps, per transaction
+  and in total over the step. Wrapped SOL counts as SOL, and a token account
+  closed to someone else counts too. A mint without a cap may not leave.
 
-A transaction whose effect cannot be simulated is refused. The rules are the
+A transaction whose effect cannot be simulated is refused, and so is one
+that uses an account an earlier transaction of the step writes: each is
+simulated on its own against current state. The rules are the
 same as the [MCP signer policy](/agent-skills/protocols/#the-optional-signer), and both are tested
 against one shared set of cases.
 

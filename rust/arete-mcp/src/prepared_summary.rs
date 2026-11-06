@@ -16,7 +16,13 @@
 //! - the instructions that would hand control of the signer's funds to
 //!   someone else (`unsafeInstructions`, see [`crate::authority`]): read
 //!   from the top-level instructions always, and from the inner instructions
-//!   when the simulation returns them.
+//!   when the simulation returns them;
+//! - the programs invoked by CPI (`innerPrograms`), from the simulation's
+//!   inner instructions, and whether every one of them could be resolved;
+//! - the accounts a transaction uses that an earlier transaction of the step
+//!   writes (`earlierWrites`). Each transaction is simulated on its own
+//!   against current state, so such a transaction's simulated effect is not
+//!   the effect it has after the earlier ones land.
 //!
 //! Without an RPC URL the balance changes are reported as unavailable, never
 //! as zero.
@@ -486,6 +492,12 @@ pub struct SignerEffect {
     pub findings: Vec<crate::authority::Finding>,
     /// Whether the simulation returned inner instructions to check.
     pub inner_checked: bool,
+    /// The distinct programs the inner instructions invoke, in first-use
+    /// order.
+    pub inner_programs: Vec<String>,
+    /// Whether every inner instruction's program was resolved (false when
+    /// one names a lookup-table entry that was not, or none were returned).
+    pub inner_programs_complete: bool,
     /// The slot the pre-state was read at and the slot simulated at.
     pub slots: (Option<u64>, Option<u64>),
 }
@@ -565,6 +577,36 @@ async fn resolve_lookups(rpc: &Rpc, decoded: &DecodedTransaction) -> ResolvedLoo
     out
 }
 
+/// The distinct programs `inner` (a simulation's `innerInstructions`)
+/// invokes, in first-use order, and whether every one was resolved.
+fn inner_programs(inner: &Value, account_keys: &[Option<String>]) -> (Vec<String>, bool) {
+    let Some(groups) = inner.as_array() else {
+        return (Vec::new(), false);
+    };
+    let mut programs: Vec<String> = Vec::new();
+    let mut complete = true;
+    for group in groups {
+        let Some(instructions) = group["instructions"].as_array() else {
+            complete = false;
+            continue;
+        };
+        for instruction in instructions {
+            let program = match instruction["programId"].as_str() {
+                Some(program) => Some(program.to_string()),
+                None => instruction["programIdIndex"]
+                    .as_u64()
+                    .and_then(|index| account_keys.get(index as usize).cloned().flatten()),
+            };
+            match program {
+                Some(program) if !programs.contains(&program) => programs.push(program),
+                Some(_) => {}
+                None => complete = false,
+            }
+        }
+    }
+    (programs, complete)
+}
+
 /// Simulate `transaction` (wire bytes) and measure its effect on `signer`.
 ///
 /// The pre-state is read with `getMultipleAccounts` and the simulation is
@@ -640,6 +682,8 @@ async fn simulate_signer_effect_with_lookups(
     let logs_tail = logs[logs.len().saturating_sub(LOG_TAIL)..].to_vec();
     let err = value.get("err").cloned().unwrap_or(Value::Null);
     let inner_checked = value["innerInstructions"].is_array();
+    let (inner_programs, inner_programs_complete) =
+        inner_programs(&value["innerInstructions"], &account_keys);
     checked.merge(crate::authority::check_inner(
         &value["innerInstructions"],
         signer,
@@ -655,6 +699,8 @@ async fn simulate_signer_effect_with_lookups(
             omitted_accounts,
             findings: checked.findings,
             inner_checked,
+            inner_programs,
+            inner_programs_complete,
             slots,
             ..SignerEffect::default()
         });
@@ -708,6 +754,8 @@ async fn simulate_signer_effect_with_lookups(
         omitted_accounts,
         findings: checked.findings,
         inner_checked,
+        inner_programs,
+        inner_programs_complete,
         slots,
     })
 }
@@ -760,6 +808,11 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
     let mut token_totals: BTreeMap<String, i128> = BTreeMap::new();
     let mut simulation_errors = Vec::new();
     let mut still_required: Vec<String> = Vec::new();
+    // What the earlier transactions of the step write, whether every write
+    // is known, and their total effect on the signer's lamports.
+    let mut written_earlier: Vec<String> = Vec::new();
+    let mut written_earlier_complete = true;
+    let mut signer_lamports_earlier: Option<i128> = Some(0);
     for (position, (index, bytes)) in transactions.iter().enumerate() {
         let decoded = decode_transaction(bytes)
             .with_context(|| format!("prepared transaction {index} does not decode"))?;
@@ -837,6 +890,42 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
             },
             "serverSimulation": server_simulation,
         });
+        // Every transaction writes the signer (it pays the fee), so the signer
+        // counts as an earlier write only when the earlier transactions may
+        // have raised its balance: lower than simulated can only shrink what
+        // a later transaction is able to move.
+        let lookup_entries: usize = decoded
+            .lookups
+            .iter()
+            .map(|l| l.writable.len() + l.readonly.len())
+            .sum();
+        let used_complete =
+            lookups.keys.len() == lookup_entries && lookups.keys.iter().all(Option::is_some);
+        let signer_may_have_risen = signer_lamports_earlier.is_none_or(|total| total > 0);
+        let mut earlier_writes: Vec<String> = Vec::new();
+        for key in decoded
+            .static_keys
+            .iter()
+            .chain(lookups.keys.iter().flatten())
+        {
+            if written_earlier.contains(key)
+                && (key != signer || signer_may_have_risen)
+                && !earlier_writes.contains(key)
+            {
+                earlier_writes.push(key.clone());
+            }
+        }
+        entry["earlierWrites"] = json!(earlier_writes);
+        entry["earlierWritesComplete"] =
+            json!(position == 0 || (used_complete && written_earlier_complete));
+        for key in &accounts_written {
+            if !written_earlier.contains(key) {
+                written_earlier.push(key.clone());
+            }
+        }
+        if !unresolved_writes.is_empty() {
+            written_earlier_complete = false;
+        }
         let lookup_writable: usize = decoded.lookups.iter().map(|l| l.writable.len()).sum();
         if lookup_writable > 0 {
             entry["lookupTables"] = json!(decoded
@@ -852,6 +941,8 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
         let dependent = server_simulation["simulated"] == Value::Bool(false);
         let mut unsafe_instructions: Vec<crate::authority::Finding> =
             crate::authority::check_top_level(&decoded, signer, &[]).findings;
+        let mut signer_lamports: Option<i128> = None;
+        let mut inner: (Value, bool) = (Value::Null, false);
         match rpc {
             Some(rpc) => {
                 match simulate_signer_effect_with_lookups(rpc, bytes, &decoded, signer, &lookups)
@@ -859,6 +950,10 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
                 {
                     Ok(effect) => {
                         unsafe_instructions = effect.findings.clone();
+                        signer_lamports = effect.sol_lamports;
+                        if effect.inner_checked {
+                            inner = (json!(effect.inner_programs), effect.inner_programs_complete);
+                        }
                         if !effect.err.is_null() {
                             simulation_errors.push(json!({
                                 "transaction": index,
@@ -903,6 +998,11 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
                 entry["signerEffect"] = json!({ "known": false });
             }
         }
+        signer_lamports_earlier = signer_lamports_earlier
+            .zip(signer_lamports)
+            .map(|(total, delta)| total + delta);
+        entry["innerPrograms"] = inner.0;
+        entry["innerProgramsComplete"] = json!(inner.1);
         entry["unsafeInstructions"] = json!(unsafe_instructions
             .iter()
             .map(crate::authority::Finding::to_json)
@@ -920,7 +1020,7 @@ pub async fn summarize(prepared: &Value, signer: &str, rpc: Option<&Rpc>) -> Res
             "solLamports": sol_total.map(|v| v.to_string()),
             "sol": sol_total.map(lamports_to_sol),
             "tokens": token_totals.iter().filter(|(_, d)| **d != 0).map(|(mint, delta)| json!({ "mint": mint, "amount": delta.to_string() })).collect::<Vec<_>>(),
-            "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own.",
+            "note": "Simulated one transaction at a time against current chain state; a transaction that depends on an earlier one may not simulate on its own, and one that uses an account an earlier one writes (earlierWrites) shows its effect before that write.",
         }),
     };
     Ok(json!({

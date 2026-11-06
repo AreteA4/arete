@@ -272,9 +272,12 @@ function display(value: unknown): string {
 
 /**
  * Check a prepared step against the policy: the intent's deployment, every
- * transaction's programs, the instructions that would hand over control of
- * the signer's funds, and the simulated SOL and token outflows of the
- * signer, per transaction. `null` when it may be signed.
+ * transaction's programs (top-level and invoked by CPI), the instructions
+ * that would hand over control of the signer's funds, and the simulated SOL
+ * and token outflows of the signer, per transaction and in total over the
+ * step. A transaction that uses an account an earlier one writes is refused:
+ * its simulation ran against state from before that write. `null` when it
+ * may be signed.
  */
 export function checkPrepared(policy: SignerPolicy, input: CheckPreparedInput): Refusal | null {
   const { deploymentId, prepared, summary, simulates } = input;
@@ -287,6 +290,11 @@ export function checkPrepared(policy: SignerPolicy, input: CheckPreparedInput): 
       reason: `the prepared intent is for deployment ${intentDeployment}, which is not allowed`,
     };
   }
+  const cap = policy.maxLamportsPerTransaction;
+  // Outflows over the step so far: inflows in one transaction never offset
+  // outflows in another.
+  let solOutTotal = 0n;
+  const tokensOutTotal = new Map<string, bigint>();
   for (const transaction of summary.transactions) {
     const index = display(transaction.index);
     if (policy.programs !== null) {
@@ -327,6 +335,35 @@ export function checkPrepared(policy: SignerPolicy, input: CheckPreparedInput): 
         reason: `the signer's balance change in transaction ${index} could not be simulated${why}, so the caps cannot be checked`,
       };
     }
+    if (policy.programs !== null) {
+      if (transaction.innerProgramsComplete !== true) {
+        return {
+          rule: 'programs',
+          reason: `the programs transaction ${index} invokes by CPI could not all be resolved from the simulation, so the programs allow-list cannot be checked`,
+        };
+      }
+      for (const id of transaction.innerPrograms ?? []) {
+        if (!(RUNTIME_PROGRAMS as readonly string[]).includes(id) && !policy.programs.includes(id)) {
+          return {
+            rule: 'programs',
+            reason: `transaction ${index} invokes ${id} by CPI, which is not in the signer's programs allow-list`,
+          };
+        }
+      }
+    }
+    const earlier = (transaction.earlierWrites ?? [])[0];
+    if (earlier !== undefined) {
+      return {
+        rule: 'maxSolPerTransaction',
+        reason: `transaction ${index} uses ${earlier}, which an earlier transaction of the step writes, so its simulation against current state does not show its effect and the caps cannot be checked`,
+      };
+    }
+    if (transaction.earlierWritesComplete !== true) {
+      return {
+        rule: 'maxSolPerTransaction',
+        reason: `transaction ${index} may use accounts an earlier transaction of the step writes (some lookup-table entries are unresolved), so the caps cannot be checked`,
+      };
+    }
     const lamports = parseBigInt(effect.solLamports) ?? -(1n << 126n);
     const tokens = effect.tokens ?? [];
     // Wrapped SOL is SOL: its delta joins the lamports, so wrapping is not
@@ -337,10 +374,17 @@ export function checkPrepared(policy: SignerPolicy, input: CheckPreparedInput): 
     const closed = parseBigInt(effect.closedAccountLamportsOut) ?? 0n;
     let outflow = closed - lamports - wrapped;
     if (outflow < 0n) outflow = 0n;
-    if (outflow > policy.maxLamportsPerTransaction) {
+    if (outflow > cap) {
       return {
         rule: 'maxSolPerTransaction',
-        reason: `transaction ${index} moves ${lamportsToSol(outflow)} SOL out of the signer (wrapped SOL and closed token accounts included), over the ${lamportsToSol(policy.maxLamportsPerTransaction)} SOL cap`,
+        reason: `transaction ${index} moves ${lamportsToSol(outflow)} SOL out of the signer (wrapped SOL and closed token accounts included), over the ${lamportsToSol(cap)} SOL cap`,
+      };
+    }
+    solOutTotal += outflow;
+    if (solOutTotal > cap) {
+      return {
+        rule: 'maxSolPerTransaction',
+        reason: `the step's transactions through transaction ${index} move ${lamportsToSol(solOutTotal)} SOL out of the signer in total (wrapped SOL and closed token accounts included), over the ${lamportsToSol(cap)} SOL cap`,
       };
     }
     for (const token of tokens) {
@@ -355,17 +399,25 @@ export function checkPrepared(policy: SignerPolicy, input: CheckPreparedInput): 
           reason: `transaction ${index} moves ${tokenOutflow} base units of ${mint} out of the signer, and the policy sets no maxTokenAmounts, so no token may leave`,
         };
       }
-      const cap = policy.maxTokenAmounts.get(mint);
-      if (cap === undefined) {
+      const total = (tokensOutTotal.get(mint) ?? 0n) + tokenOutflow;
+      tokensOutTotal.set(mint, total);
+      const tokenCap = policy.maxTokenAmounts.get(mint);
+      if (tokenCap === undefined) {
         return {
           rule: 'maxTokenAmounts',
           reason: `transaction ${index} moves ${tokenOutflow} base units of ${mint} out of the signer, and that mint has no cap`,
         };
       }
-      if (tokenOutflow > cap) {
+      if (tokenOutflow > tokenCap) {
         return {
           rule: 'maxTokenAmounts',
-          reason: `transaction ${index} moves ${tokenOutflow} base units of ${mint} out of the signer, over the cap of ${cap}`,
+          reason: `transaction ${index} moves ${tokenOutflow} base units of ${mint} out of the signer, over the cap of ${tokenCap}`,
+        };
+      }
+      if (total > tokenCap) {
+        return {
+          rule: 'maxTokenAmounts',
+          reason: `the step's transactions through transaction ${index} move ${total} base units of ${mint} out of the signer in total, over the cap of ${tokenCap}`,
         };
       }
     }

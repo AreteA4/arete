@@ -1215,6 +1215,108 @@ fn execute_simulates_with_the_signers_rpc() {
     );
 }
 
+#[test]
+fn a_dev_target_signs_only_for_its_own_deployment() {
+    let dir = tempfile::tempdir().unwrap();
+    let env = "denv_01hzx3k8m9q2r4s5t6v7w8x9yz";
+    let mut session = crate::dev::DevSession::offline(&crate::dev_env::EnvSelection::new(
+        env,
+        "app",
+        "http://127.0.0.1:1",
+    ));
+    let env_rpc = crate::dev_env::EnvRpc::new(
+        crate::dev_env::EnvApi::new(reqwest::Client::new(), "http://127.0.0.1:1", "a4_sk_local")
+            .unwrap(),
+        env,
+    )
+    .unwrap();
+    let dev_target = |session: &crate::dev::DevSession| Target {
+        api: ProtocolApi::new(reqwest::Client::new(), "http://127.0.0.1:1/api", "", ""),
+        cluster: "dev",
+        rpc_url: None,
+        dev: Some(DevClient::new(
+            DevProject::new(dir.path()),
+            session.clone(),
+            env_rpc.clone(),
+        )),
+    };
+    // Without a deployment in the environment nothing binds to dev.
+    session.deployment_id = None;
+    let refusal = dev_deployment_binding(&dev_target(&session), "d-mainnet").unwrap_err();
+    assert_eq!(refusal.rule, "clusters");
+    session.deployment_id = Some("d-dev".into());
+    let target = dev_target(&session);
+    assert!(dev_deployment_binding(&target, "d-dev").is_ok());
+    // An explicit deployment id other than the environment's, a mainnet one
+    // say, is not labelled dev, even when the policy allows both.
+    let refusal = dev_deployment_binding(&target, "d-mainnet").unwrap_err();
+    assert_eq!(refusal.rule, "clusters");
+    assert!(refusal.reason.contains("d-mainnet"), "{}", refusal.reason);
+    // A hosted target is labelled mainnet already.
+    let hosted_target = Target {
+        api: ProtocolApi::new(reqwest::Client::new(), "https://api.arete.run/api", "", ""),
+        cluster: "mainnet",
+        rpc_url: None,
+        dev: None,
+    };
+    assert!(dev_deployment_binding(&hosted_target, "d-mainnet").is_ok());
+}
+
+#[tokio::test]
+async fn execute_checks_programs_invoked_by_cpi() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let (signer, _) = signer(
+        dir.path(),
+        &origin,
+        &format!(
+            "deployments = [\"d-1\"]\nmaxSolPerTransaction = 1\nprograms = [\"{}\"]\n",
+            b58(&PROGRAM)
+        ),
+    );
+    let agent = ProtocolAgent::new(Some(signer)).with_api(&origin, "a4_sk_test");
+    let args = json!({});
+    let call = tip_call(&args);
+    let target = hosted(Some("d-1"));
+    let submits = |state: &Shared| {
+        seen(state)
+            .iter()
+            .filter(|seen| seen.path.ends_with("/submit"))
+            .count()
+    };
+    let before = submits(&state);
+
+    // The listed program calls an unlisted one.
+    state.lock().unwrap().inner = Some(json!([{ "index": 0, "instructions": [
+        { "programId": b58(&[66; 32]), "accounts": [], "data": "" }
+    ] }]));
+    let refused = agent.execute(&target, &call, None, None).await.unwrap();
+    assert_eq!(refused["rule"], "programs", "{refused}");
+    assert!(refused["reason"].as_str().unwrap().contains("by CPI"));
+    assert_eq!(
+        refused["summary"]["transactions"][0]["innerPrograms"],
+        json!([b58(&[66; 32])])
+    );
+
+    // A CPI whose program index does not resolve fails closed.
+    reset(&state);
+    state.lock().unwrap().inner = Some(json!([{ "index": 0, "instructions": [
+        { "programIdIndex": 99, "accounts": [], "data": "" }
+    ] }]));
+    let refused = agent.execute(&target, &call, None, None).await.unwrap();
+    assert_eq!(refused["rule"], "programs", "{refused}");
+    assert!(refused["reason"].as_str().unwrap().contains("resolved"));
+    assert_eq!(submits(&state), before, "a refused step was submitted");
+
+    // Runtime programs by CPI need no listing.
+    reset(&state);
+    state.lock().unwrap().inner = Some(json!([{ "index": 0, "instructions": [
+        { "programId": TOKEN_PROGRAMS[0], "accounts": [], "data": "" }
+    ] }]));
+    let done = agent.execute(&target, &call, None, None).await.unwrap();
+    assert_eq!(done["state"], "completed", "{done}");
+}
+
 #[tokio::test]
 async fn receipts_are_fetched_and_verified_offline_and_on_chain() {
     let (origin, state) = mock_api();
