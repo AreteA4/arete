@@ -151,6 +151,11 @@ pub struct RpcCaptureOptions {
     pub block_order: bool,
     pub requests_per_second: f64,
     pub output: PathBuf,
+    /// When set, `output` must stay inside this directory: it is checked
+    /// again with [`resolve_file_path`] just before the file is created and
+    /// just before it is moved into place, since the capture can take
+    /// minutes after the caller first checked it.
+    pub confine_to: Option<PathBuf>,
     /// The producer version written to the header.
     pub tool_version: String,
 }
@@ -176,6 +181,7 @@ impl RpcCaptureOptions {
             block_order: true,
             requests_per_second: 8.0,
             output: output.into(),
+            confine_to: None,
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }
@@ -1409,7 +1415,26 @@ pub async fn capture_from_rpc<R: JsonRpc>(
     header.limits = limits;
 
     // 7. Write.
-    if let Some(parent) = options
+    let recheck = || -> anyhow::Result<()> {
+        if let Some(base) = &options.confine_to {
+            let relative = options
+                .output
+                .strip_prefix(base)
+                .ok()
+                .and_then(|relative| relative.to_str())
+                .ok_or_else(|| anyhow!("`output` is outside {}", base.display()))?;
+            if resolve_file_path(relative, base)? != options.output {
+                bail!(
+                    "`output` changed while capturing: {}",
+                    options.output.display()
+                );
+            }
+        }
+        Ok(())
+    };
+    if options.confine_to.is_some() {
+        recheck()?;
+    } else if let Some(parent) = options
         .output
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -1428,6 +1453,10 @@ pub async fn capture_from_rpc<R: JsonRpc>(
     if let Err(error) = write_records(&mut writer, state, converted, state_received_at) {
         writer.abandon();
         return Err(anyhow!(error).context(format!("writing {}", options.output.display())));
+    }
+    if let Err(error) = recheck() {
+        writer.abandon();
+        return Err(error);
     }
     let header = writer
         .finish()
@@ -2004,6 +2033,30 @@ mod tests {
             .filter(|r| !r.is_state())
             .map(|r| r.update().signature().unwrap().to_string())
             .collect()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_confined_capture_rechecks_its_directory_before_writing() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let scenario = || Scenario {
+            block_1005_fails: false,
+            pages_of_newer: 0,
+        };
+        std::fs::create_dir(dir.path().join("captures")).unwrap();
+        let mut options = options(dir.path());
+        options.output = resolve_capture_output("captures/window.arcap", dir.path()).unwrap();
+        options.confine_to = Some(dir.path().to_path_buf());
+        run(&mock(scenario()), &options).await.unwrap();
+        assert!(options.output.is_file());
+
+        // The directory is swapped for a symlink after the caller checked it.
+        std::fs::remove_dir_all(dir.path().join("captures")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), dir.path().join("captures")).unwrap();
+        let error = run(&mock(scenario()), &options).await.unwrap_err();
+        assert!(format!("{error:#}").contains("symlink"), "{error:#}");
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
     }
 
     #[tokio::test]

@@ -2276,6 +2276,7 @@ impl AreteMcp {
         let output =
             crate::dev_capture::resolve_capture_output(&args.output, &cwd).map_err(invalid)?;
         let mut options = RpcCaptureOptions::new(rpc_url.clone(), args.programs, from, to, output);
+        options.confine_to = Some(cwd);
         options.accounts = args.accounts;
         if let Some(max) = args.max_transactions {
             options.max_transactions = max;
