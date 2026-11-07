@@ -35,7 +35,7 @@ use anyhow::{anyhow, Result};
 // Profile parsing and lookup live in the SDK so the CLI, this server and SDK
 // scripts resolve `a4` logins identically.
 pub use arete_sdk::credentials::{
-    attach_credentials_path, inferred_profile_for_key, lookup_credentials, normalize_api_url,
+    attach_cli_credentials_path, inferred_profile_for_key, lookup_credentials, normalize_api_url,
     validate_credentials_file, validate_key_for_profile, validate_profile_name, CredentialLookup,
     CredentialsFileError, AGENT_PROFILE, DEFAULT_API_URL, ENV_VAR_CREDENTIALS_PATH,
     ENV_VAR_PROFILE, HUMAN_PROFILE,
@@ -670,6 +670,10 @@ mod tests {
         assert!(error.contains("agent, human"), "{error}");
         assert!(error.contains("ARETE_PROFILE"), "{error}");
         assert!(!error.contains("parse"), "{error}");
+        // The MCP server has no --profile flag and does not read the
+        // project profile file, so neither is suggested.
+        assert!(!error.contains("--profile"), "{error}");
+        assert!(!error.contains("auth.toml"), "{error}");
         // Agent-visible: no key values and no credentials file location.
         assert!(!error.contains("a4_ak_agent") && !error.contains("a4_sk_human"));
         assert!(!error.contains(".arete/credentials"), "{error}");

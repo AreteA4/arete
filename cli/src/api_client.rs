@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use arete_mcp::credentials::{
-    attach_credentials_path, inferred_profile_for_key, lookup_credentials, normalize_api_url,
+    attach_cli_credentials_path, inferred_profile_for_key, lookup_credentials, normalize_api_url,
     validate_credentials_file, validate_key_for_profile, validate_profile_name, ENV_VAR_API_KEY,
     ENV_VAR_CREDENTIALS_PATH, ENV_VAR_PROFILE,
 };
@@ -2811,7 +2811,7 @@ impl ApiClient {
     ) -> Result<Option<String>> {
         lookup_credentials(content, api_url, profile)
             .map(|lookup| lookup.key)
-            .map_err(|error| attach_credentials_path(error, path))
+            .map_err(|error| attach_cli_credentials_path(error, path))
     }
 
     #[cfg(test)]
@@ -2890,7 +2890,7 @@ impl ApiClient {
         let content = fs::read_to_string(&path).context("Failed to read credentials file")?;
 
         validate_credentials_file(&content)
-            .map_err(|error| attach_credentials_path(error.into(), &path))?;
+            .map_err(|error| attach_cli_credentials_path(error.into(), &path))?;
         let creds: toml::Value =
             toml::from_str(&content).context("Failed to parse credentials file")?;
 
@@ -2956,7 +2956,7 @@ impl ApiClient {
 
         let content = fs::read_to_string(&path)?;
         let lookup = lookup_credentials(&content, api_url, profile)
-            .map_err(|error| attach_credentials_path(error, &path))?;
+            .map_err(|error| attach_cli_credentials_path(error, &path))?;
         let mut creds: toml::Value = toml::from_str(&content)?;
         if lookup.key.is_none() {
             anyhow::bail!("No API key found for URL: {api_url}");
