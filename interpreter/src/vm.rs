@@ -285,6 +285,86 @@ const MAX_STRICT_LOOKUP_HOPS: usize = 4;
 
 const DEFAULT_MAX_VERSION_TRACKER_ENTRIES: usize = 2_500;
 
+/// Expression nodes one evaluation of a computed expression may visit,
+/// counting each closure body run once per element. Expressions in real
+/// stacks visit well under a thousand; the cap stops an expression over a
+/// large array, or nested `map`s, from holding the ingest task.
+pub const MAX_COMPUTED_EXPR_FUEL: u64 = 1_000_000;
+
+/// How deeply a computed expression may nest. Bounds the evaluator's
+/// recursion so an over-deep expression is an error, not a stack overflow.
+pub const MAX_COMPUTED_EXPR_DEPTH: usize = 128;
+
+/// What one evaluation of a computed expression has left to spend.
+struct ExprBudget {
+    fuel: u64,
+    depth: usize,
+    max_depth: usize,
+}
+
+impl ExprBudget {
+    fn enter(&mut self) -> Result<()> {
+        if self.fuel == 0 {
+            return Err("computed expression exceeded its evaluation budget".into());
+        }
+        if self.depth >= self.max_depth {
+            return Err(format!(
+                "computed expression exceeded the maximum nesting depth of {}",
+                self.max_depth
+            )
+            .into());
+        }
+        self.fuel -= 1;
+        self.depth += 1;
+        Ok(())
+    }
+
+    /// Charge for copying `value`, before copying it: one unit per JSON
+    /// value plus one per byte of string or key. Copies are what an
+    /// expression allocates, so charging them keeps memory, not just node
+    /// visits, within the budget. Stops walking once the budget runs out.
+    fn charge_copy(&mut self, value: &Value) -> Result<()> {
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            let cost = match value {
+                Value::String(text) => 1 + text.len() as u64,
+                Value::Array(items) => {
+                    pending.extend(items);
+                    1
+                }
+                Value::Object(fields) => {
+                    for (key, field) in fields {
+                        self.charge(1 + key.len() as u64)?;
+                        pending.push(field);
+                    }
+                    1
+                }
+                _ => 1,
+            };
+            self.charge(cost)?;
+        }
+        Ok(())
+    }
+
+    fn charge(&mut self, cost: u64) -> Result<()> {
+        self.fuel = self
+            .fuel
+            .checked_sub(cost)
+            .ok_or("computed expression exceeded its evaluation budget")?;
+        Ok(())
+    }
+
+    /// A copy of `value`, charged first.
+    fn copy(&mut self, value: &Value) -> Result<Value> {
+        self.charge_copy(value)?;
+        Ok(value.clone())
+    }
+}
+
+/// Variables in scope while evaluating a computed expression. Values are
+/// shared, so entering a `let` or closure body does not copy them.
+type ExprEnv = std::collections::HashMap<String, std::rc::Rc<Value>>;
+
 // Smaller cache for instruction deduplication - provides shorter effective TTL
 // since we don't expect instruction duplicates to arrive much later
 const DEFAULT_MAX_INSTRUCTION_DEDUP_ENTRIES: usize = 500;
@@ -7227,31 +7307,73 @@ impl VmContext {
     // ============================================================================
 
     /// Evaluate a computed expression AST against the current state
-    /// This is the core runtime evaluator for computed fields from the AST
+    /// This is the core runtime evaluator for computed fields from the AST.
+    /// Evaluation stays within [`MAX_COMPUTED_EXPR_FUEL`] and
+    /// [`MAX_COMPUTED_EXPR_DEPTH`]: an expression that would exceed either is
+    /// an error.
     pub fn evaluate_computed_expr(&self, expr: &ComputedExpr, state: &Value) -> Result<Value> {
-        self.evaluate_computed_expr_with_env(expr, state, &std::collections::HashMap::new())
+        self.evaluate_computed_expr_with_limits(
+            expr,
+            state,
+            MAX_COMPUTED_EXPR_FUEL,
+            MAX_COMPUTED_EXPR_DEPTH,
+        )
     }
 
-    /// Evaluate a computed expression with a variable environment (for let bindings)
+    fn evaluate_computed_expr_with_limits(
+        &self,
+        expr: &ComputedExpr,
+        state: &Value,
+        fuel: u64,
+        max_depth: usize,
+    ) -> Result<Value> {
+        let mut budget = ExprBudget {
+            fuel,
+            depth: 0,
+            max_depth,
+        };
+        self.evaluate_computed_expr_with_env(expr, state, &ExprEnv::new(), &mut budget)
+    }
+
+    /// Evaluate a computed expression with a variable environment (for let
+    /// bindings), charging one unit of `budget` per node.
     fn evaluate_computed_expr_with_env(
         &self,
         expr: &ComputedExpr,
         state: &Value,
-        env: &std::collections::HashMap<String, Value>,
+        env: &ExprEnv,
+        budget: &mut ExprBudget,
+    ) -> Result<Value> {
+        budget.enter()?;
+        let result = self.evaluate_computed_expr_node(expr, state, env, budget);
+        budget.depth -= 1;
+        result
+    }
+
+    fn evaluate_computed_expr_node(
+        &self,
+        expr: &ComputedExpr,
+        state: &Value,
+        env: &ExprEnv,
+        budget: &mut ExprBudget,
     ) -> Result<Value> {
         match expr {
-            ComputedExpr::FieldRef { path } => self.get_field_from_state(state, path),
+            ComputedExpr::FieldRef { path } => match field_in_state(state, path) {
+                Some(value) => budget.copy(value),
+                None => Ok(Value::Null),
+            },
 
-            ComputedExpr::Var { name } => env
-                .get(name)
-                .cloned()
-                .ok_or_else(|| format!("Undefined variable: {}", name).into()),
+            ComputedExpr::Var { name } => match env.get(name) {
+                Some(value) => budget.copy(value),
+                None => Err(format!("Undefined variable: {}", name).into()),
+            },
 
             ComputedExpr::Let { name, value, body } => {
-                let val = self.evaluate_computed_expr_with_env(value, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(value, state, env, budget)?;
+                budget.charge(env.len() as u64)?;
                 let mut new_env = env.clone();
-                new_env.insert(name.clone(), val);
-                self.evaluate_computed_expr_with_env(body, state, &new_env)
+                new_env.insert(name.clone(), std::rc::Rc::new(val));
+                self.evaluate_computed_expr_with_env(body, state, &new_env, budget)
             }
 
             ComputedExpr::If {
@@ -7259,20 +7381,23 @@ impl VmContext {
                 then_branch,
                 else_branch,
             } => {
-                let cond_val = self.evaluate_computed_expr_with_env(condition, state, env)?;
+                let cond_val =
+                    self.evaluate_computed_expr_with_env(condition, state, env, budget)?;
                 if self.value_to_bool(&cond_val) {
-                    self.evaluate_computed_expr_with_env(then_branch, state, env)
+                    self.evaluate_computed_expr_with_env(then_branch, state, env, budget)
                 } else {
-                    self.evaluate_computed_expr_with_env(else_branch, state, env)
+                    self.evaluate_computed_expr_with_env(else_branch, state, env, budget)
                 }
             }
 
             ComputedExpr::None => Ok(Value::Null),
 
-            ComputedExpr::Some { value } => self.evaluate_computed_expr_with_env(value, state, env),
+            ComputedExpr::Some { value } => {
+                self.evaluate_computed_expr_with_env(value, state, env, budget)
+            }
 
             ComputedExpr::Slice { expr, start, end } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 match val {
                     Value::Array(arr) => {
                         let slice: Vec<Value> = arr.get(*start..*end).unwrap_or(&[]).to_vec();
@@ -7283,7 +7408,7 @@ impl VmContext {
             }
 
             ComputedExpr::Index { expr, index } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 match val {
                     Value::Array(arr) => Ok(arr.get(*index).cloned().unwrap_or(Value::Null)),
                     _ => Err(format!("Cannot index non-array value: {:?}", val).into()),
@@ -7291,7 +7416,7 @@ impl VmContext {
             }
 
             ComputedExpr::U64FromLeBytes { bytes } => {
-                let val = self.evaluate_computed_expr_with_env(bytes, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(bytes, state, env, budget)?;
                 let byte_vec = self.value_to_bytes(&val)?;
                 if byte_vec.len() < 8 {
                     return Err(format!(
@@ -7309,7 +7434,7 @@ impl VmContext {
             }
 
             ComputedExpr::U64FromBeBytes { bytes } => {
-                let val = self.evaluate_computed_expr_with_env(bytes, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(bytes, state, env, budget)?;
                 let byte_vec = self.value_to_bytes(&val)?;
                 if byte_vec.len() < 8 {
                     return Err(format!(
@@ -7327,6 +7452,7 @@ impl VmContext {
             }
 
             ComputedExpr::ByteArray { bytes } => {
+                budget.charge(bytes.len() as u64)?;
                 Ok(Value::Array(bytes.iter().map(|b| json!(*b)).collect()))
             }
 
@@ -7342,34 +7468,34 @@ impl VmContext {
             }
 
             ComputedExpr::Unary { op, expr } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 self.apply_unary_op(op, &val)
             }
 
             ComputedExpr::JsonToBytes { expr } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 // Convert JSON array of numbers to byte array
                 let bytes = self.value_to_bytes(&val)?;
                 Ok(Value::Array(bytes.iter().map(|b| json!(*b)).collect()))
             }
 
             ComputedExpr::UnwrapOr { expr, default } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 if val.is_null() {
-                    Ok(default.clone())
+                    budget.copy(default)
                 } else {
                     Ok(val)
                 }
             }
 
             ComputedExpr::Binary { op, left, right } => {
-                let l = self.evaluate_computed_expr_with_env(left, state, env)?;
-                let r = self.evaluate_computed_expr_with_env(right, state, env)?;
+                let l = self.evaluate_computed_expr_with_env(left, state, env, budget)?;
+                let r = self.evaluate_computed_expr_with_env(right, state, env, budget)?;
                 self.apply_binary_op(op, &l, &r)
             }
 
             ComputedExpr::Cast { expr, to_type } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 self.apply_cast(&val, to_type)
             }
 
@@ -7380,13 +7506,13 @@ impl VmContext {
             } => {
                 let evaluated_args: Vec<Value> = args
                     .iter()
-                    .map(|arg| self.evaluate_computed_expr_with_env(arg, state, env))
+                    .map(|arg| self.evaluate_computed_expr_with_env(arg, state, env, budget))
                     .collect::<Result<Vec<_>>>()?;
                 crate::resolvers::evaluate_resolver_computed(resolver, method, &evaluated_args)
             }
 
             ComputedExpr::MethodCall { expr, method, args } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 // Option/iterator methods need the unevaluated closure body.
                 if (method == "map" || method == "filter") && args.len() == 1 {
                     if let ComputedExpr::Closure { param, body } = &args[0] {
@@ -7400,33 +7526,42 @@ impl VmContext {
                                 let results: Result<Vec<Value>> = arr
                                     .iter()
                                     .map(|elem| {
-                                        let mut closure_env = env.clone();
-                                        closure_env.insert(param.clone(), elem.clone());
+                                        let closure_env =
+                                            bind_closure_param(env, param, elem, budget)?;
                                         self.evaluate_computed_expr_with_env(
                                             body,
                                             state,
                                             &closure_env,
+                                            budget,
                                         )
                                     })
                                     .collect();
                                 return Ok(Value::Array(results?));
                             }
 
-                            let mut closure_env = env.clone();
-                            closure_env.insert(param.clone(), val);
-                            return self.evaluate_computed_expr_with_env(body, state, &closure_env);
+                            let closure_env = bind_closure_param(env, param, &val, budget)?;
+                            return self.evaluate_computed_expr_with_env(
+                                body,
+                                state,
+                                &closure_env,
+                                budget,
+                            );
                         }
 
                         if let Value::Array(arr) = &val {
                             let results: Result<Vec<Value>> = arr
                                 .iter()
                                 .filter_map(|elem| {
-                                    let mut closure_env = env.clone();
-                                    closure_env.insert(param.clone(), elem.clone());
+                                    let closure_env =
+                                        match bind_closure_param(env, param, elem, budget) {
+                                            Ok(closure_env) => closure_env,
+                                            Err(error) => return Some(Err(error)),
+                                        };
                                     match self.evaluate_computed_expr_with_env(
                                         body,
                                         state,
                                         &closure_env,
+                                        budget,
                                     ) {
                                         Ok(predicate) if self.value_to_bool(&predicate) => {
                                             Some(Ok(elem.clone()))
@@ -7439,10 +7574,13 @@ impl VmContext {
                             return Ok(Value::Array(results?));
                         }
 
-                        let mut closure_env = env.clone();
-                        closure_env.insert(param.clone(), val.clone());
-                        let predicate =
-                            self.evaluate_computed_expr_with_env(body, state, &closure_env)?;
+                        let closure_env = bind_closure_param(env, param, &val, budget)?;
+                        let predicate = self.evaluate_computed_expr_with_env(
+                            body,
+                            state,
+                            &closure_env,
+                            budget,
+                        )?;
                         return Ok(if self.value_to_bool(&predicate) {
                             val
                         } else {
@@ -7452,14 +7590,16 @@ impl VmContext {
                 }
                 let evaluated_args: Vec<Value> = args
                     .iter()
-                    .map(|a| self.evaluate_computed_expr_with_env(a, state, env))
+                    .map(|a| self.evaluate_computed_expr_with_env(a, state, env, budget))
                     .collect::<Result<Vec<_>>>()?;
                 self.apply_method_call(&val, method, &evaluated_args)
             }
 
-            ComputedExpr::Literal { value } => Ok(value.clone()),
+            ComputedExpr::Literal { value } => budget.copy(value),
 
-            ComputedExpr::Paren { expr } => self.evaluate_computed_expr_with_env(expr, state, env),
+            ComputedExpr::Paren { expr } => {
+                self.evaluate_computed_expr_with_env(expr, state, env, budget)
+            }
 
             ComputedExpr::ContextSlot => Ok(self
                 .current_context
@@ -7475,7 +7615,7 @@ impl VmContext {
                 .unwrap_or(Value::Null)),
 
             ComputedExpr::Keccak256 { expr } => {
-                let val = self.evaluate_computed_expr_with_env(expr, state, env)?;
+                let val = self.evaluate_computed_expr_with_env(expr, state, env, budget)?;
                 let bytes = self.value_to_bytes(&val)?;
                 use sha3::{Digest, Keccak256};
                 let hash = Keccak256::digest(&bytes);
@@ -7524,30 +7664,6 @@ impl VmContext {
         }
     }
 
-    /// Get a field value from state by path (e.g., "section.field" or just "field")
-    /// Read a dotted path. A numeric segment indexes an array
-    /// (`curve.points.3.rate`); anything missing or out of range is null.
-    fn get_field_from_state(&self, state: &Value, path: &str) -> Result<Value> {
-        let segments: Vec<&str> = path.split('.').collect();
-        let mut current = state;
-
-        for segment in segments {
-            let next = match current {
-                Value::Array(items) => segment
-                    .parse::<usize>()
-                    .ok()
-                    .and_then(|index| items.get(index)),
-                _ => current.get(segment),
-            };
-            match next {
-                Some(v) => current = v,
-                None => return Ok(Value::Null),
-            }
-        }
-
-        Ok(current.clone())
-    }
-
     /// Apply a binary operation to two values
     fn apply_binary_op(&self, op: &BinaryOp, left: &Value, right: &Value) -> Result<Value> {
         match op {
@@ -7570,14 +7686,15 @@ impl VmContext {
                 self.numeric_op(left, right, i128::checked_div, |a, b| a / b)
             }
             BinaryOp::Mod => {
-                // Modulo - only for integers
-                match (left.as_i64(), right.as_i64()) {
-                    (Some(a), Some(b)) if b != 0 => Ok(json!(a % b)),
-                    (None, _) | (_, None) => match (left.as_u64(), right.as_u64()) {
-                        (Some(a), Some(b)) if b != 0 => Ok(json!(a % b)),
-                        _ => Err("Modulo requires non-zero integer operands".into()),
-                    },
-                    _ => Err("Modulo by zero".into()),
+                // Modulo - only for integers. Computed in `i128`, so
+                // `i64::MIN % -1` is `0` and mixed `i64`/`u64` operands work.
+                match (json_integer(left), json_integer(right)) {
+                    (Some(_), Some(0)) => Err("Modulo by zero".into()),
+                    (Some(a), Some(b)) => a
+                        .checked_rem(b)
+                        .and_then(integer_json)
+                        .ok_or_else(|| "Modulo overflow".into()),
+                    _ => Err("Modulo requires non-zero integer operands".into()),
                 }
             }
 
@@ -7623,17 +7740,29 @@ impl VmContext {
                     _ => Err("BitOr requires integer operands".into()),
                 },
             },
+            // A shift by the operand's width or more is an error, not a
+            // panic or a masked shift.
             BinaryOp::Shl => match (left.as_u64(), right.as_u64()) {
-                (Some(a), Some(b)) => Ok(json!(a << b)),
+                (Some(a), Some(b)) => {
+                    checked_shift(u32::try_from(b).ok().and_then(|b| a.checked_shl(b)))
+                }
                 _ => match (left.as_i64(), right.as_i64()) {
-                    (Some(a), Some(b)) => Ok(json!(a << b)),
+                    (Some(a), Some(b)) => {
+                        checked_shift(u32::try_from(b).ok().and_then(|b| a.checked_shl(b)))
+                    }
                     _ => Err("Shl requires integer operands".into()),
                 },
             },
+            // A shift by the operand's width or more is an error, not a
+            // panic or a masked shift.
             BinaryOp::Shr => match (left.as_u64(), right.as_u64()) {
-                (Some(a), Some(b)) => Ok(json!(a >> b)),
+                (Some(a), Some(b)) => {
+                    checked_shift(u32::try_from(b).ok().and_then(|b| a.checked_shr(b)))
+                }
                 _ => match (left.as_i64(), right.as_i64()) {
-                    (Some(a), Some(b)) => Ok(json!(a >> b)),
+                    (Some(a), Some(b)) => {
+                        checked_shift(u32::try_from(b).ok().and_then(|b| a.checked_shr(b)))
+                    }
                     _ => Err("Shr requires integer operands".into()),
                 },
             },
@@ -8181,6 +8310,41 @@ fn json_integer(value: &Value) -> Option<i128> {
         .as_i64()
         .map(i128::from)
         .or_else(|| value.as_u64().map(i128::from))
+}
+
+/// The value at a dotted path in state (e.g. "section.field" or just
+/// "field"). A numeric segment indexes an array (`curve.points.3.rate`);
+/// anything missing or out of range is `None`.
+fn field_in_state<'a>(state: &'a Value, path: &str) -> Option<&'a Value> {
+    path.split('.')
+        .try_fold(state, |current, segment| match current {
+            Value::Array(items) => segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| items.get(index)),
+            _ => current.get(segment),
+        })
+}
+
+/// `env` with a closure's parameter bound to a charged copy of `value`.
+fn bind_closure_param(
+    env: &ExprEnv,
+    param: &str,
+    value: &Value,
+    budget: &mut ExprBudget,
+) -> Result<ExprEnv> {
+    let value = budget.copy(value)?;
+    budget.charge(env.len() as u64)?;
+    let mut closure_env = env.clone();
+    closure_env.insert(param.to_string(), std::rc::Rc::new(value));
+    Ok(closure_env)
+}
+
+/// A shift result as JSON, or an error when the shift amount was out of range.
+fn checked_shift<T: Into<Value>>(shifted: Option<T>) -> Result<Value> {
+    shifted
+        .map(Into::into)
+        .ok_or_else(|| "Shift amount out of range".into())
 }
 
 /// An integer result as JSON, when it fits an `i64` or a `u64`.
@@ -9367,6 +9531,200 @@ mod tests {
             binary(BinaryOp::Mul, json!(4294967296.0), json!(4294967296.0)),
             json!(18446744073709551616.0)
         );
+    }
+
+    #[test]
+    fn computed_division_and_remainder_edge_cases_never_panic() {
+        // `i64::MIN / -1` and `i64::MIN % -1` overflow `i64`; they are
+        // evaluated exactly instead.
+        assert_eq!(
+            binary(BinaryOp::Div, json!(i64::MIN), json!(-1)),
+            json!(9_223_372_036_854_775_808_u64)
+        );
+        assert_eq!(binary(BinaryOp::Mod, json!(i64::MIN), json!(-1)), json!(0));
+        assert_eq!(binary(BinaryOp::Mod, json!(-7), json!(3)), json!(-1));
+        assert_eq!(binary(BinaryOp::Mod, json!(u64::MAX), json!(10)), json!(5));
+        assert_eq!(binary(BinaryOp::Mod, json!(-5), json!(u64::MAX)), json!(-5));
+
+        let evaluate = |op, left, right| {
+            VmContext::new().evaluate_computed_expr(
+                &ComputedExpr::Binary {
+                    op,
+                    left: literal(left),
+                    right: literal(right),
+                },
+                &json!({}),
+            )
+        };
+        for (op, left, right) in [
+            (BinaryOp::Div, json!(i64::MIN), json!(0)),
+            (BinaryOp::Mod, json!(i64::MIN), json!(0)),
+            (BinaryOp::Mod, json!(5), json!(1.5)),
+            (BinaryOp::Shl, json!(1), json!(64)),
+            (BinaryOp::Shr, json!(1), json!(u64::MAX)),
+            (BinaryOp::Shl, json!(-1), json!(64)),
+        ] {
+            let result = evaluate(op, left, right);
+            assert!(result.is_err(), "{result:?}");
+        }
+        assert_eq!(
+            binary(BinaryOp::Shl, json!(1), json!(63)),
+            json!(1_u64 << 63)
+        );
+        assert_eq!(binary(BinaryOp::Shr, json!(-8), json!(1)), json!(-4));
+    }
+
+    /// `x + 1` mapped over `[0, 1, .., len)`.
+    fn map_increment(len: usize) -> (ComputedExpr, Value) {
+        let expr = ComputedExpr::MethodCall {
+            expr: Box::new(ComputedExpr::FieldRef {
+                path: "items".to_string(),
+            }),
+            method: "map".to_string(),
+            args: vec![ComputedExpr::Closure {
+                param: "x".to_string(),
+                body: Box::new(ComputedExpr::Binary {
+                    op: BinaryOp::Add,
+                    left: Box::new(ComputedExpr::Var {
+                        name: "x".to_string(),
+                    }),
+                    right: literal(json!(1)),
+                }),
+            }],
+        };
+        (expr, json!({ "items": (0..len).collect::<Vec<_>>() }))
+    }
+
+    #[test]
+    fn computed_expression_fuel_is_bounded_per_evaluation() {
+        let vm = VmContext::new();
+        let (expr, state) = map_increment(4);
+        // Outside the closure: two nodes plus copying the five-value array.
+        // Per element: binding it (one value), three nodes, and copying the
+        // variable and the literal (one value each).
+        let needed = 2 + 5 + 6 * 4;
+        assert_eq!(
+            vm.evaluate_computed_expr_with_limits(&expr, &state, needed, 16)
+                .unwrap(),
+            json!([1, 2, 3, 4])
+        );
+        let error = vm
+            .evaluate_computed_expr_with_limits(&expr, &state, needed - 1, 16)
+            .unwrap_err();
+        assert!(error.to_string().contains("evaluation budget"), "{error}");
+
+        // The default budget applies to every evaluation and is fresh for
+        // each one.
+        let (expr, state) = map_increment(MAX_COMPUTED_EXPR_FUEL as usize / 3 + 1);
+        let error = vm.evaluate_computed_expr(&expr, &state).unwrap_err();
+        assert!(error.to_string().contains("evaluation budget"), "{error}");
+        let (expr, state) = map_increment(1_000);
+        for _ in 0..3 {
+            assert_eq!(
+                vm.evaluate_computed_expr(&expr, &state).unwrap()[999],
+                json!(1_000)
+            );
+        }
+    }
+
+    #[test]
+    fn computed_expression_fuel_charges_for_copied_values() {
+        let var = |name: &str| {
+            Box::new(ComputedExpr::Var {
+                name: name.to_string(),
+            })
+        };
+        // `source.map(|_| source)`: an array of `source.len()` copies.
+        let square = |source: Box<ComputedExpr>| ComputedExpr::MethodCall {
+            expr: source.clone(),
+            method: "map".to_string(),
+            args: vec![ComputedExpr::Closure {
+                param: "_".to_string(),
+                body: source,
+            }],
+        };
+        // let a = items.map(|_| items); let b = a.map(|_| a); b.map(|_| b)
+        // visits a few hundred nodes but would build 100^4 values.
+        let expr = ComputedExpr::Let {
+            name: "a".to_string(),
+            value: Box::new(square(Box::new(ComputedExpr::FieldRef {
+                path: "items".to_string(),
+            }))),
+            body: Box::new(ComputedExpr::Let {
+                name: "b".to_string(),
+                value: Box::new(square(var("a"))),
+                body: Box::new(square(var("b"))),
+            }),
+        };
+        let state = json!({ "items": vec![0; 100] });
+        let error = VmContext::new()
+            .evaluate_computed_expr(&expr, &state)
+            .unwrap_err();
+        assert!(error.to_string().contains("evaluation budget"), "{error}");
+
+        // Doubling a string with `concat` is charged by length.
+        let mut expr = *var("s");
+        for _ in 0..24 {
+            expr = ComputedExpr::Let {
+                name: "s".to_string(),
+                value: Box::new(ComputedExpr::MethodCall {
+                    expr: var("s"),
+                    method: "concat".to_string(),
+                    args: vec![*var("s")],
+                }),
+                body: Box::new(expr),
+            };
+        }
+        let expr = ComputedExpr::Let {
+            name: "s".to_string(),
+            value: Box::new(ComputedExpr::FieldRef {
+                path: "text".to_string(),
+            }),
+            body: Box::new(expr),
+        };
+        let error = VmContext::new()
+            .evaluate_computed_expr(&expr, &json!({ "text": "abcdefgh" }))
+            .unwrap_err();
+        assert!(error.to_string().contains("evaluation budget"), "{error}");
+    }
+
+    #[test]
+    fn computed_expression_depth_is_bounded() {
+        let nest = |depth: usize| {
+            let mut expr = ComputedExpr::Literal { value: json!(1) };
+            for _ in 1..depth {
+                expr = ComputedExpr::Paren {
+                    expr: Box::new(expr),
+                };
+            }
+            expr
+        };
+        let vm = VmContext::new();
+        assert_eq!(
+            vm.evaluate_computed_expr(&nest(MAX_COMPUTED_EXPR_DEPTH), &json!({}))
+                .unwrap(),
+            json!(1)
+        );
+        let error = vm
+            .evaluate_computed_expr(&nest(MAX_COMPUTED_EXPR_DEPTH + 1), &json!({}))
+            .unwrap_err();
+        assert!(error.to_string().contains("nesting depth"), "{error}");
+    }
+
+    #[test]
+    fn computed_field_over_budget_is_skipped_not_fatal() {
+        let vm = VmContext::new();
+        let (expr, mut state) = map_increment(MAX_COMPUTED_EXPR_FUEL as usize / 3 + 1);
+        let spec = ComputedFieldSpec {
+            target_path: "out".to_string(),
+            expression: expr,
+            result_type: "Vec<u64>".to_string(),
+        };
+        let updated = vm
+            .evaluate_computed_fields_from_ast(&mut state, &[spec])
+            .unwrap();
+        assert!(updated.is_empty());
+        assert!(state.get("out").is_none());
     }
 
     #[test]
