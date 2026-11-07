@@ -416,11 +416,17 @@ impl<'de> Deserialize<'de> for DecimalU64 {
     }
 }
 
+/// Serve one relay request.
+///
+/// The body is read, bounded in size and by `body_read_timeout`, before any
+/// rate or concurrency admission is taken: a client that trickles its body
+/// must not hold one of the relay's concurrency permits while it does.
 pub(crate) async fn handle(
     remote_addr: SocketAddr,
     req: Request<Incoming>,
     auth: Option<AuthContext>,
     state: TransactionState,
+    body_read_timeout: Duration,
 ) -> Response<Full<Bytes>> {
     let request_id = Uuid::new_v4().to_string();
     let start = Instant::now();
@@ -495,18 +501,20 @@ pub(crate) async fn handle(
     }
 
     let client_ip = trusted_client_ip(remote_addr, req.headers(), &state.config);
-    let admission = match admit(operation, auth.as_ref(), client_ip, &state).await {
-        Ok(admission) => admission,
-        Err(error) => return error.response(&request_id),
-    };
     let body_limit = auth
         .as_ref()
         .and_then(|context| context.limits.max_transaction_request_bytes)
         .map(|limit| limit as usize)
         .unwrap_or(state.config.max_body_bytes)
         .min(state.config.max_body_bytes);
-    let body = match read_bounded_body(req, body_limit).await {
-        Ok(body) => body,
+    let body =
+        match tokio::time::timeout(body_read_timeout, read_bounded_body(req, body_limit)).await {
+            Ok(Ok(body)) => body,
+            Ok(Err(error)) => return error.response(&request_id),
+            Err(_) => return body_timeout().response(&request_id),
+        };
+    let admission = match admit(operation, auth.as_ref(), client_ip, &state).await {
+        Ok(admission) => admission,
         Err(error) => return error.response(&request_id),
     };
 
@@ -962,6 +970,19 @@ async fn read_bounded_body(req: Request<Incoming>, max: usize) -> Result<Bytes, 
         }
     }
     Ok(Bytes::from(bytes))
+}
+
+fn body_timeout() -> TxError {
+    TxError {
+        status: StatusCode::REQUEST_TIMEOUT,
+        code: "request_timeout",
+        message: "Transaction request body was not received in time".into(),
+        retryable: true,
+        submission_state: Some("not_submitted"),
+        signature: None,
+        details: None,
+        upstream_attempted: false,
+    }
 }
 
 fn payload_too_large() -> TxError {

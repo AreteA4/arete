@@ -448,3 +448,128 @@ async fn inbound_denial_remains_deliverable_while_egress_denial_disconnects() {
     assert!(manager.enforce_egress_budgets(egress, 32).is_err());
     assert!(!manager.has_client(egress));
 }
+
+/// A client that stops reading is evicted when its queue fills. Its writer
+/// may then be blocked on the socket; after a bounded grace the server drops
+/// the socket instead of holding it, uncounted, until the peer reads again.
+#[tokio::test]
+async fn an_evicted_client_that_stops_reading_loses_its_socket() {
+    use tokio::io::AsyncReadExt;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (accepted, connected) = tokio::join!(listener.accept(), TcpStream::connect(addr));
+    let (server_stream, _) = accepted.unwrap();
+    let mut peer = connected.unwrap();
+    let socket = WebSocketStream::from_raw_socket(server_stream, Role::Server, None).await;
+    let manager = ClientManager::new().with_message_queue_size(8);
+    let client_id = Uuid::new_v4();
+    manager
+        .add_client(client_id, socket.split().0, None, addr)
+        .unwrap();
+
+    let frame = 1 << 20;
+    let payload = Arc::new(Bytes::from(vec![0u8; frame]));
+    let mut queued = 0usize;
+    while manager.send_to_client(client_id, payload.clone()).is_ok() {
+        queued += 1;
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !manager.has_client(client_id),
+        "a full queue evicts the client"
+    );
+
+    tokio::time::sleep(REMOVED_CLIENT_WRITE_GRACE * 3).await;
+    let mut received = 0usize;
+    let mut buffer = vec![0; 1 << 16];
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            match peer.read(&mut buffer).await {
+                Ok(0) | Err(_) => return,
+                Ok(read) => received += read,
+            }
+        }
+    })
+    .await
+    .expect("the server closes the socket");
+    assert!(
+        received < queued * frame,
+        "the dropped socket must not deliver everything queued: {received} of {} bytes",
+        queued * frame
+    );
+}
+
+fn account_context(consumer: &str, account: &str, max_account_connections: u32) -> AuthContext {
+    let mut context = context(consumer);
+    context.actor_key = Some(consumer.to_string());
+    context.consumer_key = Some(consumer.to_string());
+    context.account_key = Some(account.to_string());
+    context.policy_version = Some(1);
+    context.account_limits.max_connections = Some(max_account_connections);
+    context
+}
+
+/// Two sockets refreshing into an account with one free place: the second
+/// refresh waits for the first to install its identity, then sees the
+/// account full. Without that, both counted the same free place and both won.
+///
+/// The parked first refresh blocks a worker inside the fake provider, and a
+/// second refresh that does not wait would block another on the provider's
+/// hook lock; a third worker keeps the timer running so that case fails
+/// rather than hangs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+async fn concurrent_refreshes_cannot_share_an_accounts_last_place() {
+    let provider = Arc::new(FakeAdmission::default());
+    let manager =
+        Arc::new(ClientManager::new().with_admission_provider(Arc::new(provider.clone())));
+    insert_client(
+        &manager,
+        &provider,
+        account_context("consumer:b", "account:b", 2),
+    );
+    let first = insert_client(
+        &manager,
+        &provider,
+        account_context("consumer:c", "account:c", 9),
+    );
+    let second = insert_client(
+        &manager,
+        &provider,
+        account_context("consumer:d", "account:d", 9),
+    );
+    let (entered_tx, entered_rx) = sync_mpsc::channel();
+    let (release_tx, release_rx) = sync_mpsc::channel();
+    provider.block_next_refresh(entered_tx, release_rx);
+
+    let first_manager = manager.clone();
+    let first_refresh = tokio::spawn(async move {
+        first_manager
+            .try_update_client_auth_async(first, account_context("consumer:b", "account:b", 2))
+            .await
+    });
+    tokio::task::spawn_blocking(move || entered_rx.recv_timeout(Duration::from_secs(1)))
+        .await
+        .unwrap()
+        .unwrap();
+
+    let second_manager = manager.clone();
+    let mut second_refresh = tokio::spawn(async move {
+        second_manager
+            .try_update_client_auth_async(second, account_context("consumer:b", "account:b", 2))
+            .await
+    });
+    // Give the second refresh time to race the first. Release the first
+    // before asserting anything, so a failure cannot leave it parked.
+    let early = tokio::time::timeout(Duration::from_millis(100), &mut second_refresh).await;
+    release_tx.send(()).unwrap();
+    assert!(first_refresh.await.unwrap().unwrap());
+    let second = match early {
+        Ok(finished) => finished,
+        Err(_) => second_refresh.await,
+    };
+    let deny = second
+        .unwrap()
+        .expect_err("the second refresh must not take the place the first took");
+    assert_eq!(deny.code, AuthErrorCode::ConnectionLimitExceeded);
+}
