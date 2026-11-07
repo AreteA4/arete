@@ -44,6 +44,9 @@ tracing-opentelemetry = { version = "0.23", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1.0", features = ["macros", "io-util", "net", "time", "rt-multi-thread"] }
+# Parse generated Rust in the hostile-name codegen test.
+proc-macro2 = "1.0"
+syn = { version = "2.0", features = ["full", "parsing"] }
 
 [features]
 default = []
@@ -53,8 +56,3 @@ otel = [
     "opentelemetry-otlp",
     "tracing-opentelemetry",
 ]
-
-[dev-dependencies]
-# Parse generated Rust in the hostile-name codegen test.
-proc-macro2 = "1.0"
-syn = { version = "2.0", features = ["full", "parsing"] }
