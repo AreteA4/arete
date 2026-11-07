@@ -513,7 +513,12 @@ fn account_context(consumer: &str, account: &str, max_account_connections: u32) 
 /// Two sockets refreshing into an account with one free place: the second
 /// refresh waits for the first to install its identity, then sees the
 /// account full. Without that, both counted the same free place and both won.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+///
+/// The parked first refresh blocks a worker inside the fake provider, and a
+/// second refresh that does not wait would block another on the provider's
+/// hook lock; a third worker keeps the timer running so that case fails
+/// rather than hangs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 3)]
 async fn concurrent_refreshes_cannot_share_an_accounts_last_place() {
     let provider = Arc::new(FakeAdmission::default());
     let manager =
