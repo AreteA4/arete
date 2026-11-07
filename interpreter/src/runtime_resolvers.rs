@@ -275,8 +275,11 @@ pub trait RuntimeResolver: Send + Sync {
                                         TokenResolverMissAction::Dropped => {}
                                     }
                                 }
+                                // The fetch failed (unreachable, refused, non-2xx or
+                                // unparseable). Back off rather than hitting the URL
+                                // again on the next dispatch.
                                 RuntimeResolverRequest::UrlJson { .. } => {
-                                    failed.push(entry.request)
+                                    deferred.push(entry.request)
                                 }
                             },
                         }
@@ -593,6 +596,60 @@ mod tests {
         assert!(mutations.is_empty());
 
         // The request stays pending but is not sent straight back to the backend.
+        assert!(vm.lock().unwrap().take_resolver_requests().is_empty());
+    }
+
+    struct EmptyResolver;
+
+    impl RuntimeResolver for EmptyResolver {
+        fn resolve_batch<'a>(
+            &'a self,
+            _requests: &'a [RuntimeResolverRequest],
+        ) -> ResolverBatchFuture<'a> {
+            Box::pin(async { Ok(HashMap::new()) })
+        }
+    }
+
+    #[test]
+    fn failed_url_fetches_back_off_instead_of_retrying_at_once() {
+        let resolver = ResolverType::Url(crate::ast::UrlResolverConfig {
+            url_source: crate::ast::UrlSource::FieldPath("metadata_url".to_string()),
+            method: HttpMethod::Get,
+            extract_path: None,
+        });
+        let vm = std::sync::Mutex::new(VmContext::new());
+        let requests = {
+            let mut vm = vm.lock().unwrap();
+            vm.enqueue_resolver_request(
+                "ignored".to_string(),
+                resolver,
+                serde_json::json!("https://example.com/missing.json"),
+                crate::vm::ResolverTarget {
+                    state_id: 0,
+                    entity_name: "TestEntity".to_string(),
+                    primary_key: serde_json::json!("entity_1"),
+                    extracts: vec![],
+                },
+            );
+            vm.take_resolver_requests()
+        };
+        assert_eq!(requests.len(), 1);
+
+        let bytecode = MultiEntityBytecode {
+            entities: HashMap::new(),
+            event_routing: HashMap::new(),
+            when_events: Default::default(),
+            proto_router: crate::proto_router::ProtoRouter::new(),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        // The backend answers, but without a value for this URL.
+        let mutations =
+            runtime.block_on(EmptyResolver.resolve_and_apply(&vm, &bytecode, requests, None));
+        assert!(mutations.is_empty());
+
+        // The request is kept, but not sent again on the next dispatch.
         assert!(vm.lock().unwrap().take_resolver_requests().is_empty());
     }
 
