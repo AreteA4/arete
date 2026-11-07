@@ -26,6 +26,7 @@
 
 pub mod ast;
 pub mod canonical_log;
+pub mod codegen_input;
 pub mod compiler;
 pub mod debugger;
 pub mod event_type_helpers;

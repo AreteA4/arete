@@ -53,3 +53,8 @@ otel = [
     "opentelemetry-otlp",
     "tracing-opentelemetry",
 ]
+
+[dev-dependencies]
+# Parse generated Rust in the hostile-name codegen test.
+proc-macro2 = "1.0"
+syn = { version = "2.0", features = ["full", "parsing"] }

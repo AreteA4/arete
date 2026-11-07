@@ -3178,7 +3178,7 @@ fn render_interface_from_ts_fields(
             let doc = field
                 .description
                 .as_deref()
-                .map(|doc| format!("  /** {} */\n", doc.replace("*/", "*\\/")))
+                .map(|doc| format!("  /** {} */\n", crate::codegen_input::comment_text(doc)))
                 .unwrap_or_default();
             format!(
                 "{doc}  {}{}: {};",
@@ -3501,6 +3501,7 @@ pub fn compile_serializable_spec(
     entity_name: String,
     config: Option<TypeScriptConfig>,
 ) -> Result<TypeScriptOutput, String> {
+    crate::codegen_input::validate_entity_spec(&spec)?;
     entity_compiler(spec, entity_name, config, HashSet::new()).try_compile()
 }
 
@@ -4000,6 +4001,7 @@ fn compile_stack_spec_with_view_selection(
     config: Option<TypeScriptStackConfig>,
     exact_views: bool,
 ) -> Result<TypeScriptStackOutput, String> {
+    crate::codegen_input::validate_stack_spec(&stack_spec)?;
     let config = config.unwrap_or_default();
     let program_configs = resolve_program_configs(&stack_spec, config.programs.as_deref(), true)?;
     let stack_name = &stack_spec.stack_name;
@@ -4323,6 +4325,10 @@ pub fn compile_composed_public_artifacts_v2(
 ) -> Result<TypeScriptCompositionOutput, String> {
     let composed =
         crate::public_artifacts::stack_specs_from_artifacts_v2(programs, live_specs, manifest)?;
+    crate::codegen_input::validate_text("stack name", &composed.name)?;
+    for live in &composed.live_specs {
+        crate::codegen_input::validate_text("LiveSpec alias", &live.alias)?;
+    }
     if composed.live_specs.is_empty() {
         return Err(
             "TypeScript session generation requires at least one aliased LiveSpec".to_string(),
@@ -5127,6 +5133,7 @@ pub fn compile_program_modules(
     stack_spec: SerializableStackSpec,
     config: Option<TypeScriptStackConfig>,
 ) -> Result<TypeScriptStackOutput, String> {
+    crate::codegen_input::validate_stack_spec(&stack_spec)?;
     let config = config.unwrap_or_default();
     let program_configs = resolve_program_configs(&stack_spec, config.programs.as_deref(), false)?;
     let stack_name = &stack_spec.stack_name;
