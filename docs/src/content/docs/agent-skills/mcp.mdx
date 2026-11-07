@@ -428,6 +428,8 @@ other API gets no key, and the tool fails before sending anything.
 | `dev_events`             | `after?`, `limit?`, `waitMs?`, `types?`, `project?`                                 | the running `a4 dev up`'s event feed since a cursor: builds, deploys, steps, instance changes, stack rows, clock jumps and the environment's lifecycle; returns `cursor`                             |
 | `dev_capture`            | `programs`, `from`, `to?`, `output`, `rpc_url?`, `accounts?`, `max_transactions?`   | record a window of raw updates from a Solana RPC node into a `.arcap` capture                                                                                                                        |
 
+File paths (`output`, a `scenario` file) are relative to the server's working directory: absolute paths, `..` and symlinks are refused.
+
 See [Develop with a4 dev and cloud dev environments](/cli/local-development/).
 
 ### Protocol tools

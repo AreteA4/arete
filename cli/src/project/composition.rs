@@ -1027,11 +1027,19 @@ pub(crate) fn write_composition_artifacts(
     project_root: &Path,
     composed: &ComposedStack,
 ) -> Result<()> {
-    let root = project_root.join(COMPOSITIONS_DIR);
-    fs::create_dir_all(&root).with_context(|| format!("Failed to create {}", root.display()))?;
+    // Every name below becomes a file name: none may step out of the
+    // composition's directory.
+    file_stem("composed stack name", &composed.name)?;
+    for (alias, _) in &composed.live_specs {
+        file_stem("live alias", alias)?;
+    }
+    for program in &composed.program_specs {
+        program_id_file_stem(&program.payload.program_id)?;
+    }
+    let root = super::paths::real_project_dir(project_root, COMPOSITIONS_DIR)?;
     let staging = root.join(format!(".{}.{}.tmp", composed.name, uuid::Uuid::new_v4()));
     let result = (|| -> Result<()> {
-        fs::create_dir_all(&staging)?;
+        fs::create_dir(&staging)?;
         write_artifact(
             &staging.join(format!("{}.stack-manifest.json", composed.name)),
             &composed.stack_manifest,
@@ -1045,7 +1053,10 @@ pub(crate) fn write_composition_artifacts(
         }
         for program in &composed.program_specs {
             write_artifact(
-                &staging.join(format!("{}.program-spec.json", program.payload.program_id)),
+                &staging.join(format!(
+                    "{}.program-spec.json",
+                    program_id_file_stem(&program.payload.program_id)?
+                )),
                 program,
             )?;
         }
@@ -1091,6 +1102,31 @@ fn replace_dir(staged: &Path, target: &Path, backup: &Path) -> Result<()> {
         let _ = fs::remove_dir_all(backup);
     }
     Ok(())
+}
+
+/// `name` when it is a portable file name stem: 1-64 ASCII letters, digits,
+/// `-` or `_` (the names arete.toml allows), so it cannot name another
+/// directory (`/`, `..`).
+fn file_stem<'a>(kind: &str, name: &'a str) -> Result<&'a str> {
+    let valid = !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if !valid {
+        bail!("{kind} '{name}' cannot be used as a file name");
+    }
+    Ok(name)
+}
+
+/// `program_id` when it is a base58 Solana public key (32 bytes), the only
+/// form a ProgramSpec's program may take before it names a file.
+fn program_id_file_stem(program_id: &str) -> Result<&str> {
+    let decoded = bs58::decode(program_id).into_vec();
+    if !matches!(decoded, Ok(bytes) if bytes.len() == 32) {
+        bail!("program id '{program_id}' is not a base58 public key");
+    }
+    Ok(program_id)
 }
 
 /// `.arete/compositions/<name>`.

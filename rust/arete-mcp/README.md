@@ -471,6 +471,8 @@ other API gets no key, and the tool fails before sending anything.
   `after`.
 - `dev_capture({ programs, from, to?, output, … })` — a capture from a Solana
   RPC node.
+- File paths (`output`, a `scenario` file) are relative to the server's
+  working directory: absolute paths, `..` and symlinks are refused.
 
 ### Protocols
 

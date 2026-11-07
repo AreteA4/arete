@@ -752,7 +752,8 @@ pub struct DevConfirmArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DevScenarioArgs {
     /// An `arete.scenario/v1` document (JSON), or the path of a file holding
-    /// one (relative to the server's working directory).
+    /// one (relative to the server's working directory, no `..`, no
+    /// symlinks).
     pub scenario: serde_json::Value,
     /// Only encode the writes; change nothing.
     #[serde(default)]
@@ -774,7 +775,7 @@ pub struct DevReproArgs {
     /// The signature of a transaction sent in this environment.
     pub signature: String,
     /// Also write the bundle to this file (relative to the server's working
-    /// directory, no `..`).
+    /// directory, no `..`, no symlinks).
     #[serde(default)]
     pub output: Option<String>,
     #[serde(flatten)]
@@ -802,8 +803,8 @@ pub struct DevCaptureArgs {
     /// Window end: a slot, a time, or `+5m` relative to `from` (default now).
     #[serde(default)]
     pub to: Option<String>,
-    /// The `.arcap` file to write: absolute, or relative to the server's
-    /// working directory (no `..`).
+    /// The `.arcap` file to write, relative to the server's working
+    /// directory (no `..`, no symlinks).
     pub output: String,
     /// JSON-RPC node (default the public mainnet RPC, which rate-limits hard).
     #[serde(default)]
@@ -2121,13 +2122,12 @@ impl AreteMcp {
         };
         let cwd = std::env::current_dir()
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        let path = crate::dev_capture::resolve_file_path(&output, &cwd)
+        crate::dev_capture::resolve_file_path(&output, &cwd)
             .map_err(|error| McpError::invalid_params(format!("{error:#}"), None))?;
         let bytes = serde_json::to_vec_pretty(&result)
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
-        std::fs::write(&path, &bytes).map_err(|error| {
-            McpError::internal_error(format!("{}: {error}", path.display()), None)
-        })?;
+        let path = crate::dev_capture::write_confined(&cwd, &output, &mut bytes.as_slice())
+            .map_err(|error| McpError::invalid_params(format!("{error:#}"), None))?;
         shaped_result(&json!({
             "output": path.display().to_string(),
             "bytes": bytes.len(),
@@ -2273,18 +2273,37 @@ impl AreteMcp {
                 None,
             )
         })?;
-        let output =
-            crate::dev_capture::resolve_capture_output(&args.output, &cwd).map_err(invalid)?;
-        let mut options = RpcCaptureOptions::new(rpc_url.clone(), args.programs, from, to, output);
+        crate::dev_capture::resolve_capture_output(&args.output, &cwd).map_err(invalid)?;
+        // Recorded in a private directory, then written into the working
+        // directory through checked directory handles: the capture can take
+        // minutes after the path was checked.
+        let recording = tempfile::tempdir().map_err(|error| {
+            McpError::internal_error(
+                format!("Failed to create a temporary directory: {error}"),
+                None,
+            )
+        })?;
+        let mut options = RpcCaptureOptions::new(
+            rpc_url.clone(),
+            args.programs,
+            from,
+            to,
+            recording.path().join("capture.arcap"),
+        );
         options.accounts = args.accounts;
         if let Some(max) = args.max_transactions {
             options.max_transactions = max;
         }
         let rpc = HttpRpc::new(rpc_url, options.requests_per_second).map_err(invalid)?;
         let mut progress = |_: &str| {};
-        let summary = capture_from_rpc(&rpc, &options, &mut progress)
+        let mut summary = capture_from_rpc(&rpc, &options, &mut progress)
             .await
             .map_err(dev_error)?;
+        let mut recorded = std::fs::File::open(&options.output)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        let path = crate::dev_capture::write_confined(&cwd, &args.output, &mut recorded)
+            .map_err(invalid)?;
+        summary.path = path.display().to_string();
         shaped_result(&serde_json::to_value(&summary).unwrap_or_default())
     }
 

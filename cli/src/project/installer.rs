@@ -138,10 +138,9 @@ pub fn install_without_saving(
     } else {
         invocation_root.join(output)
     };
-    let temporary_root = invocation_root
-        .join(".arete")
+    let temporary_root = super::paths::real_project_dir(&invocation_root, ".arete")?
         .join(format!("no-save-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&temporary_root)?;
+    fs::create_dir(&temporary_root)?;
 
     let result = (|| -> Result<()> {
         let mut manifest = ManifestV1::new(format!("no-save-{alias}"));
@@ -1351,11 +1350,9 @@ fn install_loaded_project(
         _ => with_local_extensions(prospective_lock, &extensions)?,
     };
 
-    let staging_root = manifest
-        .root
-        .join(".arete")
+    let staging_root = super::paths::real_project_dir(&manifest.root, ".arete")?
         .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&staging_root)?;
+    fs::create_dir(&staging_root)?;
     let staged = match generate_all(&manifest, &plan, &resolved, &extensions, &staging_root) {
         Ok(staged) => staged,
         Err(error) => {
@@ -5734,11 +5731,9 @@ pub fn install_local_extensions(
                 .collect(),
         })
         .collect();
-    let staging_root = manifest
-        .root
-        .join(".arete")
+    let staging_root = super::paths::real_project_dir(&manifest.root, ".arete")?
         .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&staging_root)?;
+    fs::create_dir(&staging_root)?;
     let staged = match generate_outputs(
         &manifest,
         outputs.into_iter(),
@@ -6066,11 +6061,9 @@ pub fn install_local_protocol_build(
     lock.dependencies.push(entry);
     lock.normalize_and_validate()?;
 
-    let staging_root = manifest
-        .root
-        .join(".arete")
+    let staging_root = super::paths::real_project_dir(&manifest.root, ".arete")?
         .join(format!("install-staging-{}", uuid::Uuid::new_v4()));
-    fs::create_dir_all(&staging_root)?;
+    fs::create_dir(&staging_root)?;
     let staged = match generate_outputs(
         &manifest,
         outputs.into_iter(),
@@ -10727,6 +10720,77 @@ targets = ["typescript"]
     /// served instead. The install warns, naming the composed stack; the
     /// registry's upgrade command installs a dependency, which a composition
     /// is not, so only the served version is named.
+    #[test]
+    fn composition_artifacts_are_written_only_inside_the_project() {
+        let composed = composition::compose_parts(
+            "ore-plus-token",
+            vec![live_part(
+                "ore",
+                ore_stack_with_program_sdk('7', "1.0.2", vec![]),
+            )],
+            vec![],
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+        composition::write_composition_artifacts(project.path(), &composed).unwrap();
+        let written = project.path().join(".arete/compositions/ore-plus-token");
+        assert!(written.join("ore-plus-token.stack-manifest.json").is_file());
+        assert!(written
+            .join(format!("{ORE_PROGRAM_ID}.program-spec.json"))
+            .is_file());
+
+        // Names from the registry or arete.toml become file names: anything
+        // but a plain name is refused before a file is written.
+        let escape = |edit: &dyn Fn(&mut composition::ComposedStack)| {
+            let mut bad = composed.clone();
+            edit(&mut bad);
+            let project = tempfile::tempdir().unwrap();
+            let error = composition::write_composition_artifacts(project.path(), &bad)
+                .unwrap_err()
+                .to_string();
+            assert!(!project.path().join(".arete").exists(), "{error}");
+            error
+        };
+        for program_id in ["../../../escape", "/tmp/escape", "not-base58", "1111"] {
+            let error = escape(&|bad| {
+                bad.program_specs[0].payload.program_id = program_id.to_string();
+            });
+            assert!(error.contains("not a base58 public key"), "{error}");
+        }
+        for alias in ["../escape", "a/b", "/tmp/escape", "", "a.b"] {
+            let error = escape(&|bad| bad.live_specs[0].0 = alias.to_string());
+            assert!(error.contains("cannot be used as a file name"), "{error}");
+        }
+        let error = escape(&|bad| bad.name = "../escape".to_string());
+        assert!(error.contains("cannot be used as a file name"), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composition_artifacts_are_not_written_through_a_symlink() {
+        let composed = composition::compose_parts(
+            "ore-plus-token",
+            vec![live_part(
+                "ore",
+                ore_stack_with_program_sdk('7', "1.0.2", vec![]),
+            )],
+            vec![],
+        )
+        .unwrap();
+        for linked in [".arete", ".arete/compositions"] {
+            let project = tempfile::tempdir().unwrap();
+            let outside = tempfile::tempdir().unwrap();
+            let link = project.path().join(linked);
+            fs::create_dir_all(link.parent().unwrap()).unwrap();
+            std::os::unix::fs::symlink(outside.path(), &link).unwrap();
+            let error = composition::write_composition_artifacts(project.path(), &composed)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains("symlink"), "{linked}: {error}");
+            assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0, "{linked}");
+        }
+    }
+
     #[test]
     fn a_retired_composed_source_is_bound_like_a_direct_install_and_warned_about() {
         let mut stack = ore_stack_with_program_sdk('7', "1.0.2", vec![]);

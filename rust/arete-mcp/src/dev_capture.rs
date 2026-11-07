@@ -323,33 +323,219 @@ pub struct CaptureSummary {
     pub requests: usize,
 }
 
-/// A file path, absolute or relative to `base`, with an existing parent
-/// directory and no `..` components. Shared by JSON and raw-capture tools.
+/// A file path relative to `base` (the server's working directory) that
+/// stays inside it. Tool arguments come from an agent whose input can be
+/// attacker-influenced, so a path may not be absolute or contain `..`, every
+/// directory between `base` and the file must already exist as a real
+/// directory (not a symlink), and the file itself may not be a symlink or a
+/// directory. Shared by JSON and raw-capture tools.
 pub fn resolve_file_path(output: &str, base: &std::path::Path) -> anyhow::Result<PathBuf> {
-    let path = std::path::Path::new(output.trim());
-    if path.as_os_str().is_empty() {
-        bail!("`output` is empty");
+    use std::path::Component;
+
+    let relative = std::path::Path::new(output.trim());
+    if relative.has_root()
+        || relative
+            .components()
+            .any(|component| matches!(component, Component::Prefix(_) | Component::RootDir))
+    {
+        bail!("`output` must be relative to the working directory: {output}");
     }
-    if path
+    if relative
         .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
+        .any(|component| matches!(component, Component::ParentDir))
     {
         bail!("`output` may not contain `..`: {output}");
     }
-    let path = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        base.join(path)
+    let parts = relative
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let Some((file, directories)) = parts.split_last() else {
+        bail!("`output` is empty");
     };
-    if path.is_dir() {
-        bail!("`output` is a directory: {}", path.display());
+    let mut directory = base.to_path_buf();
+    for part in directories {
+        directory.push(part);
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                bail!("`output` passes through a symlink: {}", directory.display())
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => bail!("`output` passes through a file: {}", directory.display()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => bail!(
+                "the directory of `output` does not exist: {}",
+                directory.display()
+            ),
+            Err(error) => bail!("{}: {error}", directory.display()),
+        }
     }
-    match path.parent() {
-        Some(parent) if parent.is_dir() => Ok(path),
-        _ => bail!(
-            "the directory of `output` does not exist: {}",
-            path.display()
-        ),
+    let path = directory.join(file);
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            bail!("`output` is a symlink: {}", path.display())
+        }
+        Ok(metadata) if metadata.is_dir() => {
+            bail!("`output` is a directory: {}", path.display())
+        }
+        Ok(_) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(path),
+        Err(error) => bail!("{}: {error}", path.display()),
+    }
+}
+
+/// Writes `contents` to `output`, a path relative to `base` checked like
+/// [`resolve_file_path`], and returns where it went. On Unix every directory
+/// on the way is opened without following symlinks and the file is created
+/// and renamed into place through the last directory's handle, so neither a
+/// symlink at the file nor a directory swapped for a symlink after the check
+/// can redirect the write. Elsewhere the file is written to a temporary file
+/// in the checked directory and renamed over `output`.
+pub fn write_confined(
+    base: &std::path::Path,
+    output: &str,
+    contents: &mut dyn std::io::Read,
+) -> anyhow::Result<PathBuf> {
+    let path = resolve_file_path(output, base)?;
+    let relative = path
+        .strip_prefix(base)
+        .map_err(|_| anyhow!("`output` is outside {}", base.display()))?;
+    let parts = relative.iter().collect::<Vec<_>>();
+    let Some((file, directories)) = parts.split_last() else {
+        bail!("`output` is empty");
+    };
+    #[cfg(unix)]
+    {
+        let directory = confined::open_directory(base, directories)
+            .with_context(|| format!("opening the directory of {}", path.display()))?;
+        confined::write_at(&directory, file, contents)
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (file, directories);
+        let directory = path
+            .parent()
+            .ok_or_else(|| anyhow!("`output` has no directory: {}", path.display()))?;
+        let mut temporary = tempfile::Builder::new()
+            .prefix(".arete-output-")
+            .tempfile_in(directory)
+            .with_context(|| format!("creating a file in {}", directory.display()))?;
+        std::io::copy(contents, &mut temporary)
+            .and_then(|_| temporary.as_file().sync_all())
+            .with_context(|| format!("writing {}", path.display()))?;
+        temporary
+            .persist(&path)
+            .map_err(|error| anyhow!(error.error))
+            .with_context(|| format!("writing {}", path.display()))?;
+    }
+    Ok(path)
+}
+
+/// Directory-handle file operations: a directory opened here stays the
+/// directory that was checked, whatever later happens to its path.
+#[cfg(unix)]
+mod confined {
+    use std::ffi::{CString, OsStr};
+    use std::fs::File;
+    use std::io;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::Path;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn c_name(name: &OsStr) -> io::Result<CString> {
+        CString::new(name.as_bytes())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name contains NUL"))
+    }
+
+    /// `base`, then each of `directories` below it opened through the
+    /// previous handle with `O_NOFOLLOW`: a symlink on the way fails.
+    pub(super) fn open_directory(base: &Path, directories: &[&OsStr]) -> io::Result<OwnedFd> {
+        let mut directory: OwnedFd = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_CLOEXEC)
+            .open(base)?
+            .into();
+        for name in directories {
+            let name = c_name(name)?;
+            // SAFETY: `directory` is an open descriptor and `name` a
+            // NUL-terminated string, both live for the call.
+            let fd = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: `openat` returned a new descriptor that nothing else owns.
+            directory = unsafe { OwnedFd::from_raw_fd(fd) };
+        }
+        Ok(directory)
+    }
+
+    /// Writes `contents` to a new temporary file in `directory` and renames
+    /// it to `file` there.
+    pub(super) fn write_at(
+        directory: &OwnedFd,
+        file: &OsStr,
+        contents: &mut dyn io::Read,
+    ) -> io::Result<()> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let target = c_name(file)?;
+        let temporary = CString::new(format!(
+            ".arete-output-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ))
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "a file name contains NUL"))?;
+        // Owner-only, like the capture writer's files: exports hold account
+        // state from a dev environment.
+        // SAFETY: as in `open_directory`; the mode is the variadic argument
+        // `O_CREAT` needs.
+        let fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                temporary.as_ptr(),
+                libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                0o600 as libc::c_uint,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: `openat` returned a new descriptor that nothing else owns.
+        let mut out = unsafe { File::from_raw_fd(fd) };
+        let result = io::copy(contents, &mut out)
+            .and_then(|_| out.sync_all())
+            .and_then(|()| {
+                // SAFETY: both names are NUL-terminated and `directory` is
+                // open for the call.
+                let renamed = unsafe {
+                    libc::renameat(
+                        directory.as_raw_fd(),
+                        temporary.as_ptr(),
+                        directory.as_raw_fd(),
+                        target.as_ptr(),
+                    )
+                };
+                if renamed < 0 {
+                    Err(io::Error::last_os_error())
+                } else {
+                    Ok(())
+                }
+            });
+        if result.is_err() {
+            // SAFETY: as above.
+            unsafe { libc::unlinkat(directory.as_raw_fd(), temporary.as_ptr(), 0) };
+        }
+        result
     }
 }
 
@@ -1436,11 +1622,6 @@ mod tests {
             base.join("window.arcap")
         );
         let absolute = base.join("abs.arcap");
-        assert_eq!(
-            resolve_capture_output(absolute.to_str().unwrap(), std::path::Path::new("/nowhere"))
-                .unwrap(),
-            absolute
-        );
         for bad in [
             "",
             "window.json",
@@ -1448,6 +1629,7 @@ mod tests {
             "../window.arcap",
             "sub/../../window.arcap",
             "missing/window.arcap",
+            absolute.to_str().unwrap(),
         ] {
             assert!(resolve_capture_output(bad, base).is_err(), "{bad}");
         }
@@ -1459,25 +1641,122 @@ mod tests {
     fn json_paths_share_file_checks_without_capture_suffixes() {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path();
+        std::fs::create_dir(base.join("sub")).unwrap();
         for name in ["scenario.json", "repro.json"] {
             assert_eq!(resolve_file_path(name, base).unwrap(), base.join(name));
-            let absolute = base.join(name);
             assert_eq!(
-                resolve_file_path(absolute.to_str().unwrap(), base).unwrap(),
-                absolute
+                resolve_file_path(&format!("./sub/{name}"), base).unwrap(),
+                base.join("sub").join(name)
             );
             assert!(resolve_capture_output(name, base).is_err());
         }
         std::fs::create_dir(base.join("directory.json")).unwrap();
+        std::fs::write(base.join("file"), "").unwrap();
         for bad in [
             "",
+            ".",
             "../scenario.json",
             "sub/../../repro.json",
+            "sub/../repro.json",
             "missing/repro.json",
+            "file/repro.json",
             "directory.json",
         ] {
             assert!(resolve_file_path(bad, base).is_err(), "{bad}");
         }
+    }
+
+    #[test]
+    fn absolute_paths_are_refused_even_inside_the_working_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        let inside = base.join("repro.json");
+        let error = resolve_file_path(inside.to_str().unwrap(), base).unwrap_err();
+        assert!(error.to_string().contains("relative"), "{error}");
+        assert!(resolve_file_path("/etc/passwd", base).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlinks_cannot_point_a_path_outside_the_working_directory() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::os::unix::fs::symlink(outside.path(), base.join("linked")).unwrap();
+        std::fs::write(outside.path().join("target.json"), "keep").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("target.json"), base.join("link.json"))
+            .unwrap();
+        std::fs::create_dir(base.join("real")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), base.join("real").join("nested")).unwrap();
+        for bad in [
+            "linked/repro.json",
+            "link.json",
+            "real/nested/repro.json",
+            "linked/window.arcap",
+        ] {
+            let error = resolve_file_path(bad, base).unwrap_err();
+            assert!(error.to_string().contains("symlink"), "{bad}: {error}");
+        }
+        assert!(resolve_capture_output("linked/window.arcap", base).is_err());
+        assert_eq!(
+            std::fs::read_to_string(outside.path().join("target.json")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writes_replace_a_symlink_instead_of_following_it() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let target = outside.path().join("target.json");
+        std::fs::write(&target, "keep").unwrap();
+        let path = dir.path().join("repro.json");
+        let written = write_confined(dir.path(), "repro.json", &mut &b"{}"[..]).unwrap();
+        assert_eq!(written, path);
+        // A symlink swapped in at the file after the path was checked.
+        std::fs::remove_file(&path).unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let directory = confined::open_directory(dir.path(), &[]).unwrap();
+        confined::write_at(&directory, "repro.json".as_ref(), &mut &b"{}"[..]).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "keep");
+        assert!(!std::fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "{}");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_directory_swapped_for_a_symlink_cannot_redirect_a_write() {
+        let outside = tempfile::tempdir().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let base = dir.path();
+        std::fs::create_dir(base.join("captures")).unwrap();
+        // Swapped before the directory is opened: opening refuses it.
+        std::fs::rename(base.join("captures"), base.join("moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), base.join("captures")).unwrap();
+        assert!(confined::open_directory(base, &["captures".as_ref()]).is_err());
+        std::fs::remove_file(base.join("captures")).unwrap();
+        std::fs::rename(base.join("moved"), base.join("captures")).unwrap();
+
+        // Swapped after it is opened: the write lands in the directory that
+        // was opened, not behind the symlink.
+        let directory = confined::open_directory(base, &["captures".as_ref()]).unwrap();
+        std::fs::rename(base.join("captures"), base.join("moved")).unwrap();
+        std::os::unix::fs::symlink(outside.path(), base.join("captures")).unwrap();
+        confined::write_at(&directory, "window.arcap".as_ref(), &mut &b"data"[..]).unwrap();
+        assert_eq!(std::fs::read_dir(outside.path()).unwrap().count(), 0);
+        assert_eq!(
+            std::fs::read_to_string(base.join("moved/window.arcap")).unwrap(),
+            "data"
+        );
     }
 
     const PROGRAM: &str = "whirLbMiicVdio4qvUfM5KS9gd5StM6dENbZyRy7Jpc";

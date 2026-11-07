@@ -109,9 +109,85 @@ pub fn normalize_absolute(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
+/// `project_root/relative`, created if missing, when every directory below
+/// `project_root` on the way is a real directory: a symlink there (a
+/// repository can ship one) would send writes outside the project.
+pub(crate) fn real_project_dir(project_root: &Path, relative: &str) -> Result<PathBuf> {
+    let mut directory = project_root.to_path_buf();
+    for component in Path::new(relative).components() {
+        let Component::Normal(part) = component else {
+            bail!("{relative} is not a plain relative path");
+        };
+        directory.push(part);
+        match std::fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_symlink() => bail!(
+                "Refusing to write through {}: it is a symlink",
+                directory.display()
+            ),
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => bail!(
+                "Refusing to write through {}: it is not a directory",
+                directory.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                match std::fs::create_dir(&directory) {
+                    Ok(()) => {}
+                    // Created concurrently: check it again.
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                        let metadata = std::fs::symlink_metadata(&directory)?;
+                        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                            bail!(
+                                "Refusing to write through {}: it is not a directory",
+                                directory.display()
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        return Err(anyhow::Error::from(error)
+                            .context(format!("Failed to create {}", directory.display())))
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(anyhow::Error::from(error)
+                    .context(format!("Failed to read {}", directory.display())))
+            }
+        }
+    }
+    Ok(directory)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_dirs_are_created_as_real_directories() {
+        let root = tempfile::tempdir().unwrap();
+        let created = real_project_dir(root.path(), ".arete/compositions").unwrap();
+        assert_eq!(created, root.path().join(".arete/compositions"));
+        assert!(created.is_dir());
+        assert_eq!(
+            real_project_dir(root.path(), ".arete/compositions").unwrap(),
+            created
+        );
+        for bad in ["../outside", "/tmp", "a/../b"] {
+            assert!(real_project_dir(root.path(), bad).is_err(), "{bad}");
+        }
+        std::fs::write(root.path().join("file"), "").unwrap();
+        assert!(real_project_dir(root.path(), "file/sub").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn project_dirs_refuse_a_symlink_on_the_way() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join(".arete")).unwrap();
+        let error = real_project_dir(root.path(), ".arete/compositions").unwrap_err();
+        assert!(error.to_string().contains("symlink"), "{error}");
+        assert!(!outside.path().join("compositions").exists());
+    }
 
     #[test]
     fn outside_outputs_require_both_manifest_and_cli_consent() {
