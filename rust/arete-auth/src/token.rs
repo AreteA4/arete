@@ -194,7 +194,11 @@ impl TokenVerifier {
         self
     }
 
-    /// Require client IP validation
+    /// Require client IP validation.
+    ///
+    /// Tokens must carry a `client_ip` claim equal to the `expected_client_ip`
+    /// passed to [`Self::verify`]. A call with no expected client IP is
+    /// refused rather than skipping the check.
     pub fn with_client_ip_validation(mut self) -> Self {
         self.require_client_ip = true;
         self
@@ -321,23 +325,20 @@ impl TokenVerifier {
         // If token has origin but none provided, and origin is NOT required,
         // we allow the connection (defense-in-depth is optional)
 
-        // Validate client IP if required
+        // Validate client IP if required. Fails closed: an IP-bound token is
+        // refused when the caller cannot say which IP the request came from.
         if self.require_client_ip {
-            if let Some(expected) = expected_client_ip {
-                match &claims.client_ip {
-                    Some(actual) if actual == expected => {}
-                    Some(actual) => {
-                        return Err(VerifyError::OriginMismatch {
-                            expected: expected.to_string(),
-                            actual: actual.clone(),
-                        });
-                    }
-                    None => {
-                        return Err(VerifyError::MissingClaim("client_ip".to_string()));
-                    }
-                }
-            } else if claims.client_ip.is_none() {
-                return Err(VerifyError::MissingClaim("client_ip".to_string()));
+            let actual = claims
+                .client_ip
+                .as_ref()
+                .ok_or_else(|| VerifyError::MissingClaim("client_ip".to_string()))?;
+            let expected = expected_client_ip
+                .ok_or_else(|| VerifyError::MissingClaim("client_ip".to_string()))?;
+            if actual != expected {
+                return Err(VerifyError::OriginMismatch {
+                    expected: expected.to_string(),
+                    actual: actual.clone(),
+                });
             }
         }
 
@@ -1033,6 +1034,49 @@ mod tests {
             result,
             Err(VerifyError::MissingClaim(ref claim)) if claim == "client_ip"
         ));
+    }
+
+    fn ip_bound_token(signer: &TokenSigner, client_ip: &str) -> String {
+        let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
+            .with_ttl(300)
+            .with_scope("read")
+            .with_metering_key("meter-123")
+            .with_key_class(KeyClass::Publishable)
+            .with_client_ip(client_ip)
+            .build();
+        signer.sign(claims).unwrap()
+    }
+
+    #[test]
+    fn test_client_ip_validation_fails_closed_when_client_ip_unknown() {
+        let signing_key = crate::keys::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+        let verifier = TokenVerifier::new(verifying_key, "test-issuer", "test-audience")
+            .with_client_ip_validation();
+        let token = ip_bound_token(&signer, "198.51.100.7");
+
+        assert!(matches!(
+            verifier.verify(&token, None, None),
+            Err(VerifyError::MissingClaim(ref claim)) if claim == "client_ip"
+        ));
+        assert!(matches!(
+            verifier.verify(&token, None, Some("203.0.113.9")),
+            Err(VerifyError::OriginMismatch { .. })
+        ));
+        let context = verifier.verify(&token, None, Some("198.51.100.7")).unwrap();
+        assert_eq!(context.subject, "test-subject");
+    }
+
+    #[test]
+    fn test_ip_bound_token_passes_when_client_ip_validation_is_off() {
+        let signing_key = crate::keys::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+        let verifier = TokenVerifier::new(verifying_key, "test-issuer", "test-audience");
+        let token = ip_bound_token(&signer, "198.51.100.7");
+
+        assert!(verifier.verify(&token, None, None).is_ok());
     }
 
     #[test]

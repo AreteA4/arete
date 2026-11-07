@@ -1,10 +1,16 @@
 use arete_auth::{KeyClass, Limits, SessionClaims};
-use axum::{extract::State, Json};
+use axum::{
+    extract::{ConnectInfo, State},
+    Json,
+};
 use chrono::Utc;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use crate::error::AuthServerError;
-use crate::models::{HealthResponse, Jwk, JwksResponse, MintTokenRequest, MintTokenResponse};
+use crate::models::{
+    ApiKeyInfo, HealthResponse, Jwk, JwksResponse, MintTokenRequest, MintTokenResponse,
+};
 use crate::server::AppState;
 
 /// Extract Bearer token from Authorization header
@@ -12,7 +18,7 @@ fn extract_bearer_token(auth_header: Option<&str>) -> Option<&str> {
     auth_header.and_then(|header| header.strip_prefix("Bearer "))
 }
 
-fn extract_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
+fn forwarded_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
     headers
         .get("x-forwarded-for")
         .and_then(|h| h.to_str().ok())
@@ -28,6 +34,50 @@ fn extract_client_ip(headers: &axum::http::HeaderMap) -> Option<String> {
                 .filter(|value| !value.is_empty())
                 .map(str::to_string)
         })
+}
+
+/// The client IP used for per-IP rate limiting: the forwarded IP when proxy
+/// headers are trusted, otherwise the TCP peer.
+fn client_ip(
+    headers: &axum::http::HeaderMap,
+    peer: SocketAddr,
+    trust_proxy_headers: bool,
+) -> String {
+    trust_proxy_headers
+        .then(|| forwarded_client_ip(headers))
+        .flatten()
+        .unwrap_or_else(|| peer.ip().to_string())
+}
+
+/// Charge one mint to the key's per-client-IP bucket and to its per-key
+/// bucket. Neither bucket depends on caller-chosen values such as `Origin`,
+/// so a caller cannot reset its limit by varying them.
+fn enforce_mint_rate_limit(
+    rate_limiter: &crate::rate_limiter::MintRateLimiter,
+    config: &crate::config::Config,
+    key_info: &ApiKeyInfo,
+    client_ip: &str,
+) -> Result<(), AuthServerError> {
+    let per_ip_bucket = format!("ip:{}:{}", key_info.key_id, client_ip);
+    let per_ip_limit = key_info
+        .rate_limit_tier
+        .requests_per_minute()
+        .min(config.rate_limit_per_minute);
+    let per_key_bucket = format!("key:{}", key_info.key_id);
+
+    let mut buckets = vec![(per_ip_bucket.as_str(), per_ip_limit)];
+    if config.rate_limit_per_key_per_minute > 0 {
+        buckets.push((
+            per_key_bucket.as_str(),
+            config.rate_limit_per_key_per_minute,
+        ));
+    }
+
+    if rate_limiter.check_all(&buckets) {
+        Ok(())
+    } else {
+        Err(AuthServerError::RateLimitExceeded)
+    }
 }
 
 /// Extract deployment ID from websocket URL
@@ -99,6 +149,7 @@ pub async fn jwks(
 /// Mint a new session token
 pub async fn mint_token(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(request): Json<MintTokenRequest>,
 ) -> Result<Json<MintTokenResponse>, AuthServerError> {
@@ -120,32 +171,22 @@ pub async fn mint_token(
 
     // Check rate limits (if enabled)
     if let Some(rate_limiter) = state.rate_limiter.as_ref() {
-        let client_ip = extract_client_ip(&headers).unwrap_or_else(|| "unknown".to_string());
-
-        let rate_limit_key = format!(
-            "{}:{}:{}",
-            key_info.key_id,
-            client_ip,
-            origin_header.as_deref().unwrap_or("none")
-        );
-
-        // Simple in-memory rate limiting - check against configured limit
-        // This is a placeholder for a proper distributed rate limiter
-        // In production, use Redis or similar
-        check_rate_limit(
-            rate_limiter,
-            &rate_limit_key,
-            key_info
-                .rate_limit_tier
-                .requests_per_minute()
-                .min(state.config.rate_limit_per_minute),
-        )?;
+        let client_ip = client_ip(&headers, peer, state.config.trust_proxy_headers);
+        enforce_mint_rate_limit(rate_limiter, &state.config, &key_info, &client_ip)?;
     }
 
-    // Validate origin for publishable keys
+    // The token is bound to the requested origin, falling back to the
+    // `Origin` header. With an allowlist, both must be allowed, so a caller
+    // cannot pass the check with one origin and bind the token to another.
+    let token_origin = request.origin.clone().or_else(|| origin_header.clone());
     state
         .key_store
-        .authorize_origin(&key_info, origin_header.as_deref())?;
+        .authorize_origin(&key_info, token_origin.as_deref())?;
+    if origin_header.is_some() {
+        state
+            .key_store
+            .authorize_origin(&key_info, origin_header.as_deref())?;
+    }
 
     // Parse websocket_url to extract deployment_id/audience
     // Format: wss://{deployment_id}.{domain} or wss://{domain}/{deployment_id}
@@ -200,9 +241,6 @@ pub async fn mint_token(
     .with_limits(limits)
     .with_key_class(key_info.key_class);
 
-    // Use origin header if not explicitly provided in request
-    let token_origin = request.origin.or(origin_header);
-
     if let Some(origin) = token_origin {
         claims = claims.with_origin(origin);
     }
@@ -222,26 +260,14 @@ pub async fn mint_token(
     }))
 }
 
-/// Simple in-memory rate limiting check
-///
-/// Note: This is a placeholder implementation. In production, use a distributed
-/// rate limiter like Redis or a proper rate limiting service.
-fn check_rate_limit(
-    rate_limiter: &crate::rate_limiter::MintRateLimiter,
-    key: &str,
-    limit: u32,
-) -> Result<(), AuthServerError> {
-    if rate_limiter.check(key, limit) {
-        Ok(())
-    } else {
-        Err(AuthServerError::RateLimitExceeded)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::http::{HeaderMap, HeaderValue};
+
+    fn peer() -> SocketAddr {
+        "192.0.2.1:4000".parse().unwrap()
+    }
 
     #[test]
     fn extract_client_ip_uses_leftmost_forwarded_ip() {
@@ -251,7 +277,7 @@ mod tests {
             HeaderValue::from_static("198.51.100.7, 10.0.0.1, 10.0.0.2"),
         );
 
-        assert_eq!(extract_client_ip(&headers).as_deref(), Some("198.51.100.7"));
+        assert_eq!(client_ip(&headers, peer(), true), "198.51.100.7");
     }
 
     #[test]
@@ -259,6 +285,166 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("x-real-ip", HeaderValue::from_static("203.0.113.9"));
 
-        assert_eq!(extract_client_ip(&headers).as_deref(), Some("203.0.113.9"));
+        assert_eq!(client_ip(&headers, peer(), true), "203.0.113.9");
+    }
+
+    #[test]
+    fn client_ip_uses_the_peer_when_no_header_or_untrusted() {
+        assert_eq!(client_ip(&HeaderMap::new(), peer(), true), "192.0.2.1");
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.7"));
+        assert_eq!(client_ip(&headers, peer(), false), "192.0.2.1");
+    }
+
+    fn publishable_key() -> ApiKeyInfo {
+        crate::keys::ApiKeyStore::new(vec![], vec!["pub123".to_string()])
+            .validate_key("pub123")
+            .unwrap()
+    }
+
+    #[test]
+    fn per_ip_bucket_is_not_reset_by_other_request_values() {
+        let limiter = crate::rate_limiter::MintRateLimiter::new(std::time::Duration::from_secs(60));
+        let config = crate::config::Config {
+            rate_limit_per_minute: 2,
+            ..crate::config::Config::for_tests()
+        };
+        let key = publishable_key();
+
+        assert!(enforce_mint_rate_limit(&limiter, &config, &key, "198.51.100.7").is_ok());
+        assert!(enforce_mint_rate_limit(&limiter, &config, &key, "198.51.100.7").is_ok());
+        assert!(matches!(
+            enforce_mint_rate_limit(&limiter, &config, &key, "198.51.100.7"),
+            Err(AuthServerError::RateLimitExceeded)
+        ));
+        // Another client IP has its own bucket.
+        assert!(enforce_mint_rate_limit(&limiter, &config, &key, "203.0.113.9").is_ok());
+    }
+
+    #[test]
+    fn per_key_bucket_caps_mints_across_client_ips() {
+        let limiter = crate::rate_limiter::MintRateLimiter::new(std::time::Duration::from_secs(60));
+        let config = crate::config::Config {
+            rate_limit_per_minute: 60,
+            rate_limit_per_key_per_minute: 3,
+            ..crate::config::Config::for_tests()
+        };
+        let key = publishable_key();
+
+        for ip in ["10.0.0.1", "10.0.0.2", "10.0.0.3"] {
+            assert!(enforce_mint_rate_limit(&limiter, &config, &key, ip).is_ok());
+        }
+        assert!(matches!(
+            enforce_mint_rate_limit(&limiter, &config, &key, "10.0.0.4"),
+            Err(AuthServerError::RateLimitExceeded)
+        ));
+    }
+
+    fn app_state(config: crate::config::Config) -> Arc<AppState> {
+        let key_store = crate::keys::ApiKeyStore::new(
+            config.secret_keys.clone(),
+            config.publishable_keys.clone(),
+        )
+        .with_publishable_origin_allowlist(config.publishable_key_origins.clone());
+        let signing_key = arete_auth::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        Arc::new(AppState {
+            rate_limiter: config.enable_rate_limit.then(|| {
+                crate::rate_limiter::MintRateLimiter::new(std::time::Duration::from_secs(60))
+            }),
+            token_signer: arete_auth::TokenSigner::new(signing_key, config.issuer.clone()),
+            verifying_key,
+            key_store,
+            config,
+        })
+    }
+
+    async fn mint(
+        state: &Arc<AppState>,
+        header_origin: Option<&'static str>,
+        body_origin: Option<&str>,
+    ) -> Result<Json<MintTokenResponse>, AuthServerError> {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pub123"),
+        );
+        if let Some(origin) = header_origin {
+            headers.insert("origin", HeaderValue::from_static(origin));
+        }
+        mint_token(
+            State(state.clone()),
+            ConnectInfo(peer()),
+            headers,
+            Json(MintTokenRequest {
+                websocket_url: "wss://demo.stack.example.com".to_string(),
+                deployment_id: None,
+                scope: None,
+                ttl_seconds: None,
+                origin: body_origin.map(str::to_string),
+            }),
+        )
+        .await
+    }
+
+    fn token_origin(response: &MintTokenResponse) -> Option<String> {
+        use base64::Engine;
+        let claims = response.token.split('.').nth(1).unwrap();
+        let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(claims)
+            .unwrap();
+        let claims: serde_json::Value = serde_json::from_slice(&claims).unwrap();
+        claims["origin"].as_str().map(str::to_string)
+    }
+
+    #[tokio::test]
+    async fn publishable_mint_is_restricted_to_allowed_origins() {
+        let state = app_state(crate::config::Config {
+            publishable_keys: vec!["pub123".to_string()],
+            publishable_key_origins: vec!["https://app.example.com".to_string()],
+            enable_rate_limit: false,
+            ..crate::config::Config::for_tests()
+        });
+
+        let ok = mint(&state, Some("https://app.example.com"), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            token_origin(&ok).as_deref(),
+            Some("https://app.example.com")
+        );
+
+        for (header, body) in [
+            (Some("https://evil.example"), None),
+            (None, None),
+            (None, Some("https://evil.example")),
+            // The allowed header cannot vouch for a different bound origin.
+            (
+                Some("https://app.example.com"),
+                Some("https://evil.example"),
+            ),
+        ] {
+            assert!(matches!(
+                mint(&state, header, body).await,
+                Err(AuthServerError::OriginNotAllowed)
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn varying_the_origin_header_does_not_reset_the_mint_limit() {
+        let state = app_state(crate::config::Config {
+            publishable_keys: vec!["pub123".to_string()],
+            rate_limit_per_minute: 2,
+            ..crate::config::Config::for_tests()
+        });
+
+        assert!(mint(&state, Some("https://a.example"), None).await.is_ok());
+        assert!(mint(&state, Some("https://b.example"), None).await.is_ok());
+        assert!(matches!(
+            mint(&state, Some("https://c.example"), None).await,
+            Err(AuthServerError::RateLimitExceeded)
+        ));
     }
 }

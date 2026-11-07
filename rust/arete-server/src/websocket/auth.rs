@@ -518,6 +518,32 @@ impl SignedSessionAuthPlugin {
         self.metrics.as_ref().map(|m| m.snapshot())
     }
 
+    /// With origin validation on, the connection must send an `Origin` and
+    /// the token must be bound to it. The verifier has already compared the
+    /// two when both are present.
+    fn enforce_origin(
+        &self,
+        context: AuthContext,
+        request_origin: Option<&str>,
+    ) -> Result<AuthContext, arete_auth::VerifyError> {
+        if !self.require_origin {
+            return Ok(context);
+        }
+        match (&context.origin, request_origin) {
+            (None, _) => Err(arete_auth::VerifyError::MissingClaim("origin".to_string())),
+            (Some(token_origin), None) => Err(arete_auth::VerifyError::OriginRequired {
+                token_origin: token_origin.clone(),
+            }),
+            (Some(token_origin), Some(request_origin)) if token_origin != request_origin => {
+                Err(arete_auth::VerifyError::OriginMismatch {
+                    expected: request_origin.to_string(),
+                    actual: token_origin.clone(),
+                })
+            }
+            (Some(_), Some(_)) => Ok(context),
+        }
+    }
+
     fn extract_token<'a>(&self, request: &'a ConnectionAuthRequest) -> Option<&'a str> {
         request
             .bearer_token()
@@ -529,20 +555,45 @@ impl SignedSessionAuthPlugin {
     /// This is used when a client wants to refresh their auth without reconnecting.
     /// The origin is NOT validated here - we assume the client has already proven
     /// origin at connection time, and we're just refreshing the session token.
+    ///
+    /// No client IP is known here, so a verifier with client IP validation
+    /// refuses every token; use [`Self::verify_refresh_token_from`] instead.
     #[allow(clippy::result_large_err)]
     pub async fn verify_refresh_token(&self, token: &str) -> Result<AuthContext, AuthDeny> {
+        self.verify_refresh(token, None).await
+    }
+
+    /// Verify a token for in-band refresh on a connection from `remote_addr`.
+    ///
+    /// Like [`Self::verify_refresh_token`], but IP-bound tokens are checked
+    /// against the connection's peer IP.
+    #[allow(clippy::result_large_err)]
+    pub async fn verify_refresh_token_from(
+        &self,
+        token: &str,
+        remote_addr: SocketAddr,
+    ) -> Result<AuthContext, AuthDeny> {
+        let peer_ip = remote_addr.ip().to_string();
+        self.verify_refresh(token, Some(peer_ip.as_str())).await
+    }
+
+    #[allow(clippy::result_large_err)]
+    async fn verify_refresh(
+        &self,
+        token: &str,
+        client_ip: Option<&str>,
+    ) -> Result<AuthContext, AuthDeny> {
         let result = match &self.verifier {
-            SignedSessionVerifier::Static(verifier) => verifier.verify(token, None, None),
+            SignedSessionVerifier::Static(verifier) => verifier.verify(token, None, client_ip),
             SignedSessionVerifier::CachedJwks(verifier) => {
-                verifier.verify_with_cache(token, None, None).await
+                verifier.verify_with_cache(token, None, client_ip).await
             }
-            SignedSessionVerifier::MultiKey(verifier) => verifier.verify(token, None, None).await,
+            SignedSessionVerifier::MultiKey(verifier) => {
+                verifier.verify(token, None, client_ip).await
+            }
         };
 
-        match result {
-            Ok(context) => Ok(context),
-            Err(e) => Err(AuthDeny::from_verify_error(e)),
-        }
+        result.map_err(AuthDeny::from_verify_error)
     }
 }
 
@@ -558,7 +609,10 @@ impl WebSocketAuthPlugin for SignedSessionAuthPlugin {
 
         let expected_origin = request.origin.as_deref();
 
-        let expected_client_ip = None; // IP validation can be added here if needed
+        // The TCP peer. Verifiers only compare it when client IP binding is
+        // enabled, and then refuse tokens bound to a different IP.
+        let peer_ip = request.remote_addr.ip().to_string();
+        let expected_client_ip = Some(peer_ip.as_str());
 
         let result = match &self.verifier {
             SignedSessionVerifier::Static(verifier) => {
@@ -575,6 +629,7 @@ impl WebSocketAuthPlugin for SignedSessionAuthPlugin {
                     .await
             }
         };
+        let result = result.and_then(|context| self.enforce_origin(context, expected_origin));
 
         match result {
             Ok(context) => {
@@ -892,6 +947,133 @@ mod tests {
         } else {
             panic!("Expected Deny decision for origin mismatch");
         }
+    }
+
+    fn plugin_request(token: &str, origin: Option<&str>, peer: &str) -> ConnectionAuthRequest {
+        let mut builder = Request::builder().uri(format!("/ws?hs_token={}", token));
+        if let Some(origin) = origin {
+            builder = builder.header("Origin", origin);
+        }
+        let request = builder.body(()).expect("request should build");
+        ConnectionAuthRequest::from_http_request(
+            peer.parse().expect("socket addr should parse"),
+            &request,
+        )
+    }
+
+    fn deny_code(decision: AuthDecision) -> AuthErrorCode {
+        match decision {
+            AuthDecision::Deny(deny) => deny.code,
+            AuthDecision::Allow(_) => panic!("expected Deny decision"),
+        }
+    }
+
+    #[tokio::test]
+    async fn plugin_origin_validation_applies_without_verifier_origin_validation() {
+        use arete_auth::{KeyClass, SessionClaims, TokenSigner};
+
+        let signing_key = arete_auth::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+        // Only the plugin asks for origin validation.
+        let verifier =
+            arete_auth::TokenVerifier::new(verifying_key.clone(), "test-issuer", "test-audience");
+        let plugin = SignedSessionAuthPlugin::new(verifier).with_origin_validation();
+
+        let token_for = |origin: Option<&str>| {
+            let mut claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
+                .with_scope("read")
+                .with_key_class(KeyClass::Publishable);
+            if let Some(origin) = origin {
+                claims = claims.with_origin(origin);
+            }
+            signer.sign(claims.build()).unwrap()
+        };
+        let bound = token_for(Some("https://app.example.com"));
+        let unbound = token_for(None);
+        let peer = "127.0.0.1:8877";
+
+        // Origin-bound token, no Origin on the connection.
+        let decision = plugin.authorize(&plugin_request(&bound, None, peer)).await;
+        assert_eq!(deny_code(decision), AuthErrorCode::OriginRequired);
+
+        // Token without an origin claim.
+        let decision = plugin
+            .authorize(&plugin_request(
+                &unbound,
+                Some("https://app.example.com"),
+                peer,
+            ))
+            .await;
+        assert_eq!(deny_code(decision), AuthErrorCode::TokenMissingClaim);
+
+        // Different origin.
+        let decision = plugin
+            .authorize(&plugin_request(&bound, Some("https://evil.example"), peer))
+            .await;
+        assert_eq!(deny_code(decision), AuthErrorCode::OriginMismatch);
+
+        // Matching origin.
+        let decision = plugin
+            .authorize(&plugin_request(
+                &bound,
+                Some("https://app.example.com"),
+                peer,
+            ))
+            .await;
+        assert!(decision.is_allowed());
+
+        // Without the toggle, an unbound token from any origin still passes.
+        let verifier =
+            arete_auth::TokenVerifier::new(verifying_key, "test-issuer", "test-audience");
+        let plugin = SignedSessionAuthPlugin::new(verifier);
+        let decision = plugin
+            .authorize(&plugin_request(&unbound, None, peer))
+            .await;
+        assert!(decision.is_allowed());
+    }
+
+    #[tokio::test]
+    async fn plugin_checks_ip_bound_tokens_against_the_peer_ip() {
+        use arete_auth::{KeyClass, SessionClaims, TokenSigner};
+
+        let signing_key = arete_auth::SigningKey::generate();
+        let verifying_key = signing_key.verifying_key();
+        let signer = TokenSigner::new(signing_key, "test-issuer");
+        let verifier =
+            arete_auth::TokenVerifier::new(verifying_key, "test-issuer", "test-audience")
+                .with_client_ip_validation();
+        let plugin = SignedSessionAuthPlugin::new(verifier);
+
+        let claims = SessionClaims::builder("test-issuer", "test-subject", "test-audience")
+            .with_scope("read")
+            .with_key_class(KeyClass::Secret)
+            .with_client_ip("198.51.100.7")
+            .build();
+        let token = signer.sign(claims).unwrap();
+
+        let decision = plugin
+            .authorize(&plugin_request(&token, None, "203.0.113.9:4000"))
+            .await;
+        assert!(!decision.is_allowed());
+
+        let decision = plugin
+            .authorize(&plugin_request(&token, None, "198.51.100.7:4000"))
+            .await;
+        assert!(decision.is_allowed());
+
+        // In-band refresh checks the same binding against the peer IP.
+        let same_peer: SocketAddr = "198.51.100.7:4000".parse().unwrap();
+        let other_peer: SocketAddr = "203.0.113.9:4000".parse().unwrap();
+        assert!(plugin
+            .verify_refresh_token_from(&token, same_peer)
+            .await
+            .is_ok());
+        assert!(plugin
+            .verify_refresh_token_from(&token, other_peer)
+            .await
+            .is_err());
+        assert!(plugin.verify_refresh_token(&token).await.is_err());
     }
 
     #[tokio::test]

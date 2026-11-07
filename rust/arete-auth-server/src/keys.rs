@@ -52,6 +52,20 @@ impl ApiKeyStore {
         Self { keys }
     }
 
+    /// Restrict every publishable key to `origins`. An empty list leaves
+    /// publishable keys unrestricted.
+    pub fn with_publishable_origin_allowlist(mut self, origins: Vec<String>) -> Self {
+        if origins.is_empty() {
+            return self;
+        }
+        for info in self.keys.values_mut() {
+            if matches!(info.key_class, arete_auth::KeyClass::Publishable) {
+                info.origin_allowlist = Some(origins.clone());
+            }
+        }
+        self
+    }
+
     /// Create a new key store with publishable keys that have origin allowlists
     ///
     /// # Arguments
@@ -146,11 +160,11 @@ impl ApiKeyStore {
             let origin_str = origin.ok_or(AuthServerError::OriginNotAllowed)?;
 
             // Normalize origin for comparison
-            let origin_normalized = origin_str.to_lowercase();
+            let origin_normalized = origin_str.trim_end_matches('/').to_lowercase();
 
             // Check if origin is in allowlist
             let allowed = allowed_origins.iter().any(|allowed| {
-                let allowed_normalized = allowed.to_lowercase();
+                let allowed_normalized = allowed.trim_end_matches('/').to_lowercase();
                 // Exact match or subdomain match
                 origin_normalized == allowed_normalized
                     || origin_normalized.ends_with(&format!(".{}", allowed_normalized))
@@ -181,6 +195,40 @@ mod tests {
         let store = ApiKeyStore::new(vec![], vec!["pub123".to_string()]);
         let info = store.validate_key("pub123").unwrap();
         assert!(matches!(info.key_class, arete_auth::KeyClass::Publishable));
+    }
+
+    #[test]
+    fn publishable_origin_allowlist_rejects_other_origins() {
+        let store = ApiKeyStore::new(vec!["secret123".to_string()], vec!["pub123".to_string()])
+            .with_publishable_origin_allowlist(vec!["https://app.example.com".to_string()]);
+        let publishable = store.validate_key("pub123").unwrap();
+
+        assert!(store
+            .authorize_origin(&publishable, Some("https://app.example.com"))
+            .is_ok());
+        assert!(matches!(
+            store.authorize_origin(&publishable, Some("https://evil.example")),
+            Err(AuthServerError::OriginNotAllowed)
+        ));
+        assert!(matches!(
+            store.authorize_origin(&publishable, None),
+            Err(AuthServerError::OriginNotAllowed)
+        ));
+
+        // Secret keys are server-side and never origin-restricted.
+        let secret = store.validate_key("secret123").unwrap();
+        assert!(store.authorize_origin(&secret, None).is_ok());
+    }
+
+    #[test]
+    fn empty_origin_allowlist_leaves_publishable_keys_unrestricted() {
+        let store = ApiKeyStore::new(vec![], vec!["pub123".to_string()])
+            .with_publishable_origin_allowlist(vec![]);
+        let publishable = store.validate_key("pub123").unwrap();
+        assert!(store
+            .authorize_origin(&publishable, Some("https://anything.example"))
+            .is_ok());
+        assert!(store.authorize_origin(&publishable, None).is_ok());
     }
 
     #[test]

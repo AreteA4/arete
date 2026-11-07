@@ -155,6 +155,14 @@ let context = verifier.verify(
 ).unwrap();
 ```
 
+With client IP validation on, a call that passes `None` for the client IP is
+refused rather than skipping the check. The `arete-server` WebSocket auth
+plugin passes the TCP peer address, so behind a proxy the bound IP must be the
+proxy-facing address the server sees.
+
+`KeyLoader::generate_and_save_keys` writes the signing key owner-only (`0600`)
+on Unix.
+
 ### Resource Limits and Metering
 
 ```rust

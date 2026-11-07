@@ -23,7 +23,13 @@ impl AppState {
 
         // Create key store
         let key_store =
-            ApiKeyStore::new(config.secret_keys.clone(), config.publishable_keys.clone());
+            ApiKeyStore::new(config.secret_keys.clone(), config.publishable_keys.clone())
+                .with_publishable_origin_allowlist(config.publishable_key_origins.clone());
+        if !config.publishable_keys.is_empty() && config.publishable_key_origins.is_empty() {
+            tracing::warn!(
+                "PUBLISHABLE_KEY_ORIGINS is not set: publishable keys can mint tokens for any origin"
+            );
+        }
         let rate_limiter = if config.enable_rate_limit {
             Some(MintRateLimiter::new(Duration::from_secs(60)))
         } else {
