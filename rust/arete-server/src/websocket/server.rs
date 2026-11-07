@@ -7039,10 +7039,12 @@ mod limits_tests {
         })
         .await
         .expect("the client registers");
-        assert_eq!(probe.sessions.len(), 1);
 
+        // Every client is stale under a zero timeout. The server's own cleanup
+        // task may evict it first; either way it leaves the registry here.
         tokio::time::sleep(Duration::from_millis(5)).await;
-        assert_eq!(probe.client_manager.cleanup_stale_clients(), 1);
+        probe.client_manager.cleanup_stale_clients();
+        assert_eq!(probe.client_manager.client_count(), 0);
         tokio::time::timeout(Duration::from_secs(5), async {
             while !probe.sessions.is_empty() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
