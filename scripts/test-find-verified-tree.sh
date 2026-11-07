@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # The release gate trusts find-verified-tree.sh to accept only a successful
-# run of the named workflow, from this repository rather than a fork, that
-# uploaded an unexpired marker for exactly this tree. This runs the script
-# against canned API responses through a fake gh, one case per rule.
+# push or dispatch run of the named workflow on main, from this repository
+# rather than a fork, whose own commit has exactly this tree and which
+# uploaded an unexpired marker for it. Markers from pull_request runs never
+# count. This runs the script against canned API responses through a fake gh,
+# one case per rule.
 set -euo pipefail
 
 script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/find-verified-tree.sh"
@@ -14,6 +16,8 @@ trap 'rm -rf "$work"' EXIT
 git init -q "$work/repo"
 git -C "$work/repo" -c user.name=test -c user.email=test@example.invalid \
   commit -q --allow-empty -m tree
+tree="$(git -C "$work/repo" rev-parse 'HEAD^{tree}')"
+other_tree=0000000000000000000000000000000000000001
 
 # gh api <path> --jq <filter>, answered from $FAKE_DIR through the real jq.
 mkdir -p "$work/bin" "$work/api"
@@ -33,6 +37,7 @@ done
 case "$path" in
   */actions/artifacts\?*) file="$FAKE_DIR/artifacts.json" ;;
   */actions/runs/*) file="$FAKE_DIR/run-${path##*/}.json" ;;
+  */git/commits/*) file="$FAKE_DIR/commit-${path##*/}.json" ;;
   *) echo "fake gh: unexpected path $path" >&2; exit 2 ;;
 esac
 jq -r "$filter" "$file"
@@ -49,15 +54,19 @@ artifact() {
 }
 
 failures=0
-# check <label> <expected> <artifacts JSON array> [<run-id>:<conclusion>:<path>]...
+# check <label> <expected> <artifacts JSON array> [<run>]...
+# Each <run> is <id>:<conclusion>:<path>:<event>:<branch>:<commit tree>; the
+# run's commit is "commit<id>", whose tree the fake commits API reports.
 check() {
-  local label="$1" expected="$2" artifacts="$3" run id conclusion path actual
+  local label="$1" expected="$2" artifacts="$3" run id conclusion path event branch commit_tree actual
   shift 3
   rm -f "$work/api"/*
   printf '{"artifacts":%s}' "$artifacts" > "$work/api/artifacts.json"
   for run in "$@"; do
-    IFS=: read -r id conclusion path <<<"$run"
-    printf '{"conclusion":"%s","path":"%s"}' "$conclusion" "$path" > "$work/api/run-$id.json"
+    IFS=: read -r id conclusion path event branch commit_tree <<<"$run"
+    printf '{"conclusion":"%s","path":"%s","event":"%s","head_branch":"%s","head_sha":"commit%s"}' \
+      "$conclusion" "$path" "$event" "$branch" "$id" > "$work/api/run-$id.json"
+    printf '{"tree":{"sha":"%s"}}' "$commit_tree" > "$work/api/commit-commit$id.json"
   done
   actual="$(cd "$work/repo" && PATH="$work/bin:$PATH" FAKE_DIR="$work/api" \
     GITHUB_REPOSITORY=owner/repo GITHUB_REPOSITORY_ID="$repo_id" \
@@ -71,22 +80,33 @@ check() {
 }
 
 ci=.github/workflows/ci.yml
-check "a successful run of the workflow verifies the tree" true \
-  "[$(artifact 1 "$repo_id" false)]" "1:success:$ci"
+check "a successful push run on main verifies the tree" true \
+  "[$(artifact 1 "$repo_id" false)]" "1:success:$ci:push:main:$tree"
+check "a successful dispatch run on main verifies the tree" true \
+  "[$(artifact 2 "$repo_id" false)]" "2:success:$ci:workflow_dispatch:main:$tree"
 check "a workflow path with a ref suffix still counts" true \
-  "[$(artifact 2 "$repo_id" false)]" "2:success:$ci@refs/heads/main"
+  "[$(artifact 3 "$repo_id" false)]" "3:success:$ci@refs/heads/main:push:main:$tree"
+check "a marker from a pull_request run is never accepted" false \
+  "[$(artifact 4 "$repo_id" false)]" "4:success:$ci:pull_request:feature:$tree"
+check "a marker from a pull_request_target run is never accepted" false \
+  "[$(artifact 5 "$repo_id" false)]" "5:success:$ci:pull_request_target:main:$tree"
+check "a dispatch run on another branch is ignored" false \
+  "[$(artifact 6 "$repo_id" false)]" "6:success:$ci:workflow_dispatch:feature:$tree"
+check "a marker naming a tree its own commit does not have is ignored" false \
+  "[$(artifact 7 "$repo_id" false)]" "7:success:$ci:push:main:$other_tree"
 check "a marker uploaded from a fork is ignored" false \
-  "[$(artifact 3 "$fork_id" false)]" "3:success:$ci"
+  "[$(artifact 8 "$fork_id" false)]" "8:success:$ci:push:main:$tree"
 check "a run of another workflow is ignored" false \
-  "[$(artifact 4 "$repo_id" false)]" "4:success:.github/workflows/other.yml"
+  "[$(artifact 9 "$repo_id" false)]" "9:success:.github/workflows/other.yml:push:main:$tree"
 check "an unsuccessful run is ignored" false \
-  "[$(artifact 5 "$repo_id" false)]" "5:failure:$ci"
+  "[$(artifact 10 "$repo_id" false)]" "10:failure:$ci:push:main:$tree"
 check "an expired marker is ignored" false \
-  "[$(artifact 6 "$repo_id" true)]" "6:success:$ci"
+  "[$(artifact 11 "$repo_id" true)]" "11:success:$ci:push:main:$tree"
 check "no marker at all" false "[]"
 check "one valid run among rejected ones is enough" true \
-  "[$(artifact 7 "$fork_id" false),$(artifact 8 "$repo_id" false),$(artifact 9 "$repo_id" false)]" \
-  "7:success:$ci" "8:failure:$ci" "9:success:$ci"
+  "[$(artifact 12 "$fork_id" false),$(artifact 13 "$repo_id" false),$(artifact 14 "$repo_id" false),$(artifact 15 "$repo_id" false)]" \
+  "12:success:$ci:push:main:$tree" "13:success:$ci:pull_request:feature:$tree" \
+  "14:failure:$ci:push:main:$tree" "15:success:$ci:push:main:$tree"
 
 if [ "$failures" -gt 0 ]; then
   printf '%d verified-tree lookup check(s) failed\n' "$failures" >&2

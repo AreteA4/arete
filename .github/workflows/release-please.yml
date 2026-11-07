@@ -80,10 +80,12 @@ jobs:
           test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
           git show-ref --verify --quiet refs/remotes/origin/main
           git merge-base --is-ancestor "$SOURCE_COMMIT" refs/remotes/origin/main
-          # A successful pull_request run on the identical tree counts as well, so
-          # the release need not wait for main's own CI run to finish. That goes
-          # through the verified-tree marker, which only a full run records: a
-          # pull_request run can skip jobs, so its success alone does not count.
+          # A successful push or dispatch run of ci.yml on this commit counts.
+          # So does one on main whose commit has the identical tree, through
+          # the verified-tree marker, which only a full run records. Pull
+          # request runs never count: they run the pull request's own workflow
+          # files, so neither their success nor their markers prove anything
+          # about main (scripts/find-verified-tree.sh).
           if [ "$(gh run list --workflow ci.yml --commit "$SOURCE_COMMIT" --json conclusion,event --jq 'map(select(.conclusion == "success" and .event != "pull_request")) | length')" -gt 0 ]; then
             echo "ci.yml succeeded on $SOURCE_COMMIT"
           else
