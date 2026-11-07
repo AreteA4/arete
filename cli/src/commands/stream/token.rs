@@ -235,9 +235,17 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<(String, Option<SessionRefr
         return Ok((url, None));
     }
 
-    let api_key = ApiClient::load_optional_api_key().context(
-        "Failed to load stored API credentials; fix ~/.arete/credentials.toml or run `a4 auth login`",
-    )?;
+    // Credentials-file errors already name the file and the fix.
+    let api_key = ApiClient::load_optional_api_key().map_err(|error| {
+        if error
+            .downcast_ref::<arete_mcp::credentials::CredentialsFileError>()
+            .is_some()
+        {
+            error
+        } else {
+            error.context("Failed to load stored API credentials; run `a4 auth login`")
+        }
+    })?;
 
     let base = config::get_api_url(None);
     let endpoint = format!("{}/ws/sessions", base.trim_end_matches('/'));
