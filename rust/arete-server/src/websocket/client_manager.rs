@@ -536,6 +536,13 @@ const MAX_TRACKED_ACCOUNT_USAGE: usize = crate::account_policy::DEFAULT_MAX_TRAC
 /// Idle TTL after which aggregate account usage state is evicted.
 const ACCOUNT_USAGE_IDLE_TTL: Duration = crate::account_policy::DEFAULT_ACCOUNT_IDLE_TTL;
 
+/// How long a client that has left the registry has to take its remaining
+/// queued frames and its close frame before the server drops its socket.
+#[cfg(not(test))]
+const REMOVED_CLIENT_WRITE_GRACE: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const REMOVED_CLIENT_WRITE_GRACE: Duration = Duration::from_millis(500);
+
 /// Manages all connected WebSocket clients using lock-free DashMap.
 ///
 /// Key design decisions:
@@ -556,6 +563,9 @@ pub struct ClientManager {
     account_usage: Arc<DashMap<String, AccountUsage>>,
     /// Optional embedder-owned admission state shared across runtimes.
     admission_provider: Option<Arc<dyn WebSocketAdmissionProvider>>,
+    /// Held from an in-band refresh's identity checks until its new context
+    /// is installed, so concurrent refreshes see each other's identities.
+    refresh_admission: Arc<AsyncMutex<()>>,
 }
 
 impl ClientManager {
@@ -572,6 +582,7 @@ impl ClientManager {
             account_policies: Arc::new(AccountPolicyRegistry::default()),
             account_usage: Arc::new(DashMap::new()),
             admission_provider: None,
+            refresh_admission: Arc::new(AsyncMutex::new(())),
         }
     }
 
@@ -783,21 +794,44 @@ impl ClientManager {
         let close_frame = client_info.close_frame.clone();
 
         let clients_ref = self.clients.clone();
+        let connection_token = client_info.connection_token.clone();
         tokio::spawn(async move {
-            while let Some(message) = client_rx.recv().await {
-                if let Err(e) = ws_sender.send(message).await {
-                    warn!("Failed to send message to client {}: {}", client_id, e);
-                    break;
+            let deliver = async {
+                while let Some(message) = client_rx.recv().await {
+                    if let Err(e) = ws_sender.send(message).await {
+                        warn!("Failed to send message to client {}: {}", client_id, e);
+                        break;
+                    }
+                }
+                // Removing a client closes its queue. Complete the WebSocket
+                // close handshake as well so receivers do not wait forever on
+                // a socket whose server-side delivery task has already
+                // stopped, and say why when the server dropped the client on
+                // purpose.
+                if let Some(frame) = close_frame.get() {
+                    let _ = ws_sender.send(Message::Close(Some(frame.clone()))).await;
+                }
+                let _ = ws_sender.close().await;
+            };
+            tokio::pin!(deliver);
+            // Once the client has left the registry, what is still queued and
+            // the close frame get a bounded grace. A peer that stops reading
+            // would otherwise block a write forever, and this task would keep
+            // a socket open that no connection cap counts any more.
+            tokio::select! {
+                () = &mut deliver => {}
+                () = connection_token.cancelled() => {
+                    if tokio::time::timeout(REMOVED_CLIENT_WRITE_GRACE, &mut deliver)
+                        .await
+                        .is_err()
+                    {
+                        warn!(
+                            "Client {} did not take its remaining frames in time; dropping its socket",
+                            client_id
+                        );
+                    }
                 }
             }
-            // Removing a client closes its queue. Complete the WebSocket close
-            // handshake as well so receivers do not wait forever on a socket
-            // whose server-side delivery task has already stopped, and say why
-            // when the server dropped the client on purpose.
-            if let Some(frame) = close_frame.get() {
-                let _ = ws_sender.send(Message::Close(Some(frame.clone()))).await;
-            }
-            let _ = ws_sender.close().await;
             clients_ref.remove(&client_id);
             debug!("WebSocket sender task for client {} stopped", client_id);
         });
@@ -869,6 +903,14 @@ impl ClientManager {
         })?;
         let active_subscriptions = subscriptions.keys().cloned().collect::<Vec<_>>();
         drop(subscriptions);
+        // Serialize the cap check with the identity change across sockets, so
+        // two refreshes cannot both take an identity's last place.
+        let _refresh_admission = self.refresh_admission.try_lock().map_err(|_| {
+            AuthDeny::new(
+                AuthErrorCode::InternalError,
+                "Subscription admission is busy",
+            )
+        })?;
         self.check_refresh_admission(client_id, &auth_context, active_subscriptions.len())?;
 
         let permit = match &self.admission_provider {
@@ -980,6 +1022,9 @@ impl ClientManager {
         let subscriptions = subscriptions.read().await;
         let active_subscriptions = subscriptions.keys().cloned().collect::<Vec<_>>();
         drop(subscriptions);
+        // Serialize the cap check with the identity change across sockets, so
+        // two refreshes cannot both take an identity's last place.
+        let _refresh_admission = self.refresh_admission.lock().await;
         self.check_refresh_admission(client_id, &auth_context, active_subscriptions.len())?;
 
         let permit = match &self.admission_provider {

@@ -913,6 +913,27 @@ struct HttpLimitState {
     /// Aggregate per-account buckets for the signed `account_limits`, kept
     /// apart from the per-session keys so the two can never collide.
     per_account_per_minute: DashMap<String, (u64, u32)>,
+    /// The minute buckets were last swept in.
+    swept_minute: std::sync::atomic::AtomicU64,
+}
+
+impl HttpLimitState {
+    /// Drop the buckets of earlier minutes, at most once a minute.
+    ///
+    /// A bucket from an earlier minute is reset on its next use, so removing
+    /// it changes no decision; without this, every session and account ever
+    /// seen kept an entry for the life of the server.
+    fn sweep(&self, now_bucket: u64) {
+        let previous = self
+            .swept_minute
+            .swap(now_bucket, std::sync::atomic::Ordering::Relaxed);
+        if previous == now_bucket {
+            return;
+        }
+        for buckets in [&self.per_subject_per_minute, &self.per_account_per_minute] {
+            buckets.retain(|_, (minute, _)| *minute >= now_bucket);
+        }
+    }
 }
 
 fn resolve_rpc_url() -> Option<String> {
@@ -1123,6 +1144,7 @@ fn enforce_http_limits_weighted(
         .unwrap_or(Duration::from_secs(0))
         .as_secs()
         / 60;
+    limit_state.sweep(now_bucket);
     let denied = || {
         Box::new(AuthDeny::rate_limited(
             Duration::from_secs(60),
@@ -3310,6 +3332,30 @@ mod tests {
             },
             ..auth_context_allowing(None)
         }
+    }
+
+    /// Buckets of earlier minutes are dropped once a minute, so sessions and
+    /// accounts that stop reading do not keep an entry for the server's life.
+    #[test]
+    fn http_rate_buckets_of_earlier_minutes_are_swept() {
+        let limit_state = HttpLimitState::default();
+        limit_state
+            .per_subject_per_minute
+            .insert("old-session".into(), (10, 3));
+        limit_state
+            .per_account_per_minute
+            .insert("old-account".into(), (10, 3));
+        limit_state
+            .per_account_per_minute
+            .insert("current-account".into(), (11, 1));
+
+        limit_state.sweep(11);
+
+        assert!(limit_state.per_subject_per_minute.is_empty());
+        assert_eq!(limit_state.per_account_per_minute.len(), 1);
+        assert!(limit_state
+            .per_account_per_minute
+            .contains_key("current-account"));
     }
 
     /// HTTP reads count against the account's signed aggregate quota, shared
