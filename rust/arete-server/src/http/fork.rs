@@ -423,7 +423,9 @@ async fn handle_call(call: Value, services: &ForkServices<'_>) -> Value {
         Some(Value::Array(params)) => params,
         Some(_) => return error_object(id, ForkError::params("params must be an array")),
     };
-    if let Err(error) = validate_params(method, &mut params) {
+    let max_keys =
+        crate::http_health::batch_address_limit(services.auth_context, MAX_FORK_MULTIPLE_ACCOUNTS);
+    if let Err(error) = validate_params(method, &mut params, max_keys) {
         return error_object(id, error);
     }
     let Some(rpc_url) = services.rpc_url else {
@@ -448,9 +450,14 @@ async fn handle_call(call: Value, services: &ForkServices<'_>) -> Value {
 /// Check positional parameters and the config object against the method's limits.
 ///
 /// May normalize the config: `getBlock` without `rewards` is sent with `rewards: false`.
+///
+/// `max_keys` is the session's own ceiling on `getMultipleAccounts` keys, at most
+/// [`MAX_FORK_MULTIPLE_ACCOUNTS`]: the same batch-address limit the chain-read
+/// batch routes apply, so the fork route cannot read more per call than they do.
 pub(crate) fn validate_params(
     method: ForkMethod,
     params: &mut Vec<Value>,
+    max_keys: usize,
 ) -> Result<(), ForkError> {
     let (positional, accepts_config) = method.shape();
     let max = positional.len() + usize::from(accepts_config);
@@ -465,6 +472,11 @@ pub(crate) fn validate_params(
         if count > MAX_FORK_MULTIPLE_ACCOUNTS {
             return Err(ForkError::params(
                 "getMultipleAccounts accepts at most 100 keys on the fork endpoint",
+            ));
+        }
+        if count > max_keys {
+            return Err(ForkError::params(
+                "getMultipleAccounts names more keys than this session's batch address limit",
             ));
         }
     }
@@ -952,12 +964,13 @@ pub(crate) mod tests {
         let keys = |count: u8| json!((0..count).map(address).collect::<Vec<_>>());
         let reject = |method: ForkMethod, params: Value| {
             let mut params = params.as_array().unwrap().clone();
-            let error = validate_params(method, &mut params).unwrap_err();
+            let error =
+                validate_params(method, &mut params, MAX_FORK_MULTIPLE_ACCOUNTS).unwrap_err();
             assert_eq!(error.code, -32602, "{} {params:?}", method.name());
         };
         let accept = |method: ForkMethod, params: Value| {
             let mut params = params.as_array().unwrap().clone();
-            validate_params(method, &mut params).unwrap();
+            validate_params(method, &mut params, MAX_FORK_MULTIPLE_ACCOUNTS).unwrap();
             params
         };
 
@@ -1052,6 +1065,17 @@ pub(crate) mod tests {
         reject(ForkMethod::GetAccountInfo, json!([address(1), "base64"]));
         accept(ForkMethod::GetAccountInfo, json!([address(1), null]));
         accept(ForkMethod::GetMinimumBalanceForRentExemption, json!([165]));
+    }
+
+    /// A session's batch-address ceiling bounds `getMultipleAccounts` below the
+    /// endpoint's own limit.
+    #[test]
+    fn a_session_ceiling_bounds_multiple_account_keys() {
+        let keys = |count: u8| vec![json!((0..count).map(address).collect::<Vec<_>>())];
+        validate_params(ForkMethod::GetMultipleAccounts, &mut keys(10), 10).unwrap();
+        let error =
+            validate_params(ForkMethod::GetMultipleAccounts, &mut keys(11), 10).unwrap_err();
+        assert_eq!(error.code, INVALID_PARAMS);
     }
 
     #[tokio::test]

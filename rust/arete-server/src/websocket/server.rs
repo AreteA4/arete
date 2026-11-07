@@ -1041,6 +1041,10 @@ async fn handle_connection(
         remote_addr,
         admission_permit,
     );
+    // Cancelled when the client leaves the registry. An eviction (staleness,
+    // backpressure, expiry, a spent budget) ends the session as well, so a
+    // peer that ignores the close frame cannot keep an uncounted socket open.
+    let connection_token = context.client_manager.connection_token(client_id);
     // Registered: the connection now counts as a client, so its pending
     // place can go. Released earlier, a concurrent handshake could pass the
     // client limit in between.
@@ -1059,6 +1063,7 @@ async fn handle_connection(
     loop {
         let message = tokio::select! {
             _ = context.shutdown.cancelled() => break,
+            _ = connection_token.cancelled() => break,
             next = ws_receiver.next() => match next {
                 Some(message) => message,
                 None => break,
@@ -1139,7 +1144,10 @@ async fn handle_connection(
                     continue;
                 }
 
-                let cancel_token = CancellationToken::new();
+                // A child of the connection token: an eviction ends this
+                // subscription's delivery task even if this loop never runs
+                // its cleanup for the client.
+                let cancel_token = connection_token.child_token();
                 let added = match context
                     .client_manager
                     .try_add_client_subscription(
@@ -1344,7 +1352,10 @@ async fn rescope_subscriptions(
         {
             continue;
         }
-        let cancel_token = CancellationToken::new();
+        let cancel_token = context
+            .client_manager
+            .connection_token(context.client_id)
+            .child_token();
         if !context
             .client_manager
             .replace_client_subscription_token(
@@ -6994,5 +7005,54 @@ mod limits_tests {
         })
         .await;
         assert!(ended.is_ok(), "the server ends the session");
+    }
+
+    /// An evicted client's session ends with the eviction. Before, the
+    /// session waited on the peer: one that never answered the close frame
+    /// kept its socket and session open after the registry, and every cap
+    /// that counts the registry, had stopped counting it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_evicted_session_ends_even_when_the_peer_ignores_the_close() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = WebSocketServer::new(
+            addr,
+            BusManager::new(),
+            EntityCache::new(),
+            Arc::new(ViewIndex::new()),
+            #[cfg(feature = "otel")]
+            None,
+        )
+        // Long enough that the server's own cleanup tick at startup cannot
+        // evict the client before the test sees it register.
+        .with_rate_limit_config(RateLimitConfig::default().with_timeout(Duration::from_millis(300)))
+        .with_limits(limits());
+        let (acceptor, _cleanup) = server.into_acceptor();
+        let probe = acceptor.clone();
+        tokio::spawn(async move { acceptor.serve_listener(listener).await });
+
+        let stream = TcpStream::connect(addr).await.unwrap();
+        // Held but never polled again: the peer does not answer the close.
+        let (_socket, _) = client_async(format!("ws://{addr}/"), stream).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while probe.client_manager.client_count() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the client registers");
+
+        // Silent past the timeout, the client is stale. The test evicts it,
+        // unless a late cleanup tick of the server's own already has.
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        probe.client_manager.cleanup_stale_clients();
+        assert_eq!(probe.client_manager.client_count(), 0);
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !probe.sessions.is_empty() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the evicted session ends");
     }
 }

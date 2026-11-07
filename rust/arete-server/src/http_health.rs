@@ -262,50 +262,37 @@ impl HttpHealthServer {
         };
 
         let shutdown = self.shutdown.unwrap_or_default();
-        let mut connections = JoinSet::new();
-        loop {
-            let accepted = tokio::select! {
-                _ = shutdown.cancelled() => {
-                    info!("HTTP health server on {} stopping", self.bind_addr);
-                    break;
-                }
-                accepted = listener.accept() => accepted,
-            };
-            match accepted {
-                Ok((stream, remote_addr)) => {
-                    let io = TokioIo::new(stream);
+        let header_read_timeout = self.limits.header_read_timeout;
+        let bind_addr = self.bind_addr;
+        let mut connections = accept_connections(&listener, &shutdown, |stream, remote_addr| {
+            let io = TokioIo::new(stream);
+            let request_state = request_state.clone();
+            let connection_shutdown = shutdown.clone();
+            async move {
+                let service = service_fn(move |req| {
                     let request_state = request_state.clone();
-                    let connection_shutdown = shutdown.clone();
-                    let header_read_timeout = self.limits.header_read_timeout;
-
-                    connections.spawn(async move {
-                        let service = service_fn(move |req| {
-                            let request_state = request_state.clone();
-                            async move { handle_request(remote_addr, req, request_state).await }
-                        });
-                        // A client that never finishes its headers is dropped at the deadline.
-                        let connection = http1::Builder::new()
-                            .timer(TokioTimer::new())
-                            .header_read_timeout(header_read_timeout)
-                            .serve_connection(io, service);
-                        tokio::pin!(connection);
-                        let result = tokio::select! {
-                            result = &mut connection => result,
-                            _ = connection_shutdown.cancelled() => {
-                                connection.as_mut().graceful_shutdown();
-                                connection.await
-                            }
-                        };
-                        if let Err(e) = result {
-                            error!("HTTP connection error: {}", e);
-                        }
-                    });
-                }
-                Err(e) => {
-                    error!("Failed to accept HTTP connection: {}", e);
+                    async move { handle_request(remote_addr, req, request_state).await }
+                });
+                // A client that never finishes its headers is dropped at the deadline.
+                let connection = http1::Builder::new()
+                    .timer(TokioTimer::new())
+                    .header_read_timeout(header_read_timeout)
+                    .serve_connection(io, service);
+                tokio::pin!(connection);
+                let result = tokio::select! {
+                    result = &mut connection => result,
+                    _ = connection_shutdown.cancelled() => {
+                        connection.as_mut().graceful_shutdown();
+                        connection.await
+                    }
+                };
+                if let Err(e) = result {
+                    error!("HTTP connection error: {}", e);
                 }
             }
-        }
+        })
+        .await;
+        info!("HTTP health server on {} stopping", bind_addr);
 
         if tokio::time::timeout(HTTP_CONNECTION_DRAIN_TIMEOUT, async {
             while connections.join_next().await.is_some() {}
@@ -323,6 +310,40 @@ impl HttpHealthServer {
 
         Ok(())
     }
+}
+
+/// Accept from `listener` until `shutdown`, serving each connection on its own
+/// task, and return the tasks still running so the caller can drain them.
+///
+/// Finished connection tasks are reaped as they complete. A `JoinSet` keeps
+/// every finished task until it is joined, so a server that only joined at
+/// shutdown held one entry for every connection it had ever served.
+async fn accept_connections<F, Fut>(
+    listener: &TcpListener,
+    shutdown: &CancellationToken,
+    mut serve: F,
+) -> JoinSet<()>
+where
+    F: FnMut(tokio::net::TcpStream, SocketAddr) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let mut connections = JoinSet::new();
+    loop {
+        let accepted = tokio::select! {
+            _ = shutdown.cancelled() => break,
+            Some(_) = connections.join_next(), if !connections.is_empty() => continue,
+            accepted = listener.accept() => accepted,
+        };
+        match accepted {
+            Ok((stream, remote_addr)) => {
+                connections.spawn(serve(stream, remote_addr));
+            }
+            Err(e) => {
+                error!("Failed to accept HTTP connection: {}", e);
+            }
+        }
+    }
+    connections
 }
 
 async fn handle_request(
@@ -481,10 +502,14 @@ async fn handle_request_inner(
                 Ok(context) => context,
                 Err(response) => return Ok(transaction_auth_error(response, path.as_str())),
             };
-            Ok(
-                transactions::handle(client_addr, req, auth_context, transaction_state.clone())
-                    .await,
+            Ok(transactions::handle(
+                client_addr,
+                req,
+                auth_context,
+                transaction_state.clone(),
+                body_limits.read_timeout,
             )
+            .await)
         }
         _ if runtime_plan.chain_reads && path.starts_with("/chain/") => {
             let auth_context = match authorize_http_request(
@@ -885,6 +910,30 @@ struct AccountsBody {
 #[derive(Default)]
 struct HttpLimitState {
     per_subject_per_minute: DashMap<String, (u64, u32)>,
+    /// Aggregate per-account buckets for the signed `account_limits`, kept
+    /// apart from the per-session keys so the two can never collide.
+    per_account_per_minute: DashMap<String, (u64, u32)>,
+    /// The minute buckets were last swept in.
+    swept_minute: std::sync::atomic::AtomicU64,
+}
+
+impl HttpLimitState {
+    /// Drop the buckets of earlier minutes, at most once a minute.
+    ///
+    /// A bucket from an earlier minute is reset on its next use, so removing
+    /// it changes no decision; without this, every session and account ever
+    /// seen kept an entry for the life of the server.
+    fn sweep(&self, now_bucket: u64) {
+        let previous = self
+            .swept_minute
+            .swap(now_bucket, std::sync::atomic::Ordering::Relaxed);
+        if previous == now_bucket {
+            return;
+        }
+        for buckets in [&self.per_subject_per_minute, &self.per_account_per_minute] {
+            buckets.retain(|_, (minute, _)| *minute >= now_bucket);
+        }
+    }
 }
 
 fn resolve_rpc_url() -> Option<String> {
@@ -1074,41 +1123,95 @@ fn enforce_http_limits(
     enforce_http_limits_weighted(context, limit_state, 1)
 }
 
-/// Charge `weight` requests against the session's per-minute HTTP limit, all or nothing.
+/// Charge `weight` requests against the session's per-minute HTTP limit and,
+/// for a token that names an account, the account's aggregate limit, all or
+/// nothing.
+///
+/// The account limit is what bounds an account's reads across all of its
+/// consumers and sessions; without it each new session would start with a
+/// fresh allowance.
 fn enforce_http_limits_weighted(
     context: &crate::websocket::auth::AuthContext,
     limit_state: &HttpLimitState,
     weight: usize,
 ) -> std::result::Result<(), Box<AuthDeny>> {
-    let Some(limit) = context.limits.max_http_requests_per_minute else {
-        return Ok(());
-    };
     if weight == 0 {
         return Ok(());
     }
     let weight = u32::try_from(weight).unwrap_or(u32::MAX);
-
     let now_bucket = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::from_secs(0))
         .as_secs()
         / 60;
-    let key = format!("{}:{}", context.subject, context.metering_key);
-    let mut entry = limit_state
-        .per_subject_per_minute
-        .entry(key)
-        .or_insert((now_bucket, 0));
+    limit_state.sweep(now_bucket);
+    let denied = || {
+        Box::new(AuthDeny::rate_limited(
+            Duration::from_secs(60),
+            "http reads",
+        ))
+    };
+
+    let session = context.limits.max_http_requests_per_minute.map(|limit| {
+        (
+            format!("{}:{}", context.subject, context.metering_key),
+            limit,
+        )
+    });
+    if let Some((key, limit)) = &session {
+        if !charge_bucket(
+            &limit_state.per_subject_per_minute,
+            key,
+            *limit,
+            weight,
+            now_bucket,
+        ) {
+            return Err(denied());
+        }
+    }
+
+    let account = (!context.is_legacy_policy() && context.account_key.is_some())
+        .then_some(context.account_limits.max_http_requests_per_minute)
+        .flatten();
+    if let Some(limit) = account {
+        if !charge_bucket(
+            &limit_state.per_account_per_minute,
+            context.account_key(),
+            limit,
+            weight,
+            now_bucket,
+        ) {
+            // Refund the session charge so a refusal costs nothing.
+            if let Some((key, _)) = &session {
+                if let Some(mut entry) = limit_state.per_subject_per_minute.get_mut(key) {
+                    if entry.0 == now_bucket {
+                        entry.1 = entry.1.saturating_sub(weight);
+                    }
+                }
+            }
+            return Err(denied());
+        }
+    }
+    Ok(())
+}
+
+/// Add `weight` to the current minute's bucket at `key` unless that would pass `limit`.
+fn charge_bucket(
+    buckets: &DashMap<String, (u64, u32)>,
+    key: &str,
+    limit: u32,
+    weight: u32,
+    now_bucket: u64,
+) -> bool {
+    let mut entry = buckets.entry(key.to_string()).or_insert((now_bucket, 0));
     if entry.0 != now_bucket {
         *entry = (now_bucket, 0);
     }
     if entry.1.saturating_add(weight) > limit {
-        return Err(Box::new(AuthDeny::rate_limited(
-            Duration::from_secs(60),
-            "http reads",
-        )));
+        return false;
     }
     entry.1 += weight;
-    Ok(())
+    true
 }
 
 /// How much request body a handler may read, and for how long. Attached to every request by
@@ -2436,7 +2539,7 @@ fn raw_account_json(address: &str, value: &Value) -> Value {
 /// capped at ten addresses read a hundred for the same cost. That is exactly what
 /// `POST /chain/accounts` did while the program-account batch computed it correctly, so the two
 /// call sites now derive it from one place and cannot drift apart again.
-fn batch_address_limit(
+pub(crate) fn batch_address_limit(
     auth_context: Option<&crate::websocket::auth::AuthContext>,
     protocol_max: usize,
 ) -> usize {
@@ -2910,6 +3013,13 @@ mod tests {
                     ..Default::default()
                 });
             }
+            if scope.contains("narrow") {
+                claims.scope = SCOPE_FORK_READ.to_string();
+                claims.limits = Some(arete_auth::Limits {
+                    max_http_batch_addresses: Some(2),
+                    ..Default::default()
+                });
+            }
             AuthDecision::Allow(crate::websocket::auth::AuthContext::from_claims(claims))
         }
 
@@ -3037,6 +3147,245 @@ mod tests {
         assert_eq!(within.status(), StatusCode::OK);
         assert_eq!(rpc.requests.lock().unwrap().len(), 2);
         shutdown.cancel();
+    }
+
+    /// The fork route's `getMultipleAccounts` honours the session's batch
+    /// address ceiling, as the chain-read batch routes do: a session capped at
+    /// two addresses cannot read a hundred in one call.
+    #[tokio::test]
+    async fn a_fork_multiple_accounts_call_is_bounded_by_the_session_ceiling() {
+        let rpc = crate::http::fork::tests::mock_rpc(crate::http::fork::tests::result_responder(
+            json!({ "context": { "slot": 1 }, "value": [null, null] }),
+        ))
+        .await;
+        let (base, shutdown) = start_gateway(&rpc.url).await;
+        let client = Client::new();
+        let key = "11111111111111111111111111111111";
+        let read = |count: usize| {
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "getMultipleAccounts",
+                "params": [vec![key; count]],
+            })
+        };
+
+        let refused: Value = client
+            .post(format!("{base}/rpc/v1/fork"))
+            .bearer_auth("narrow")
+            .json(&read(3))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(refused["error"]["code"], -32602);
+        assert!(rpc.requests.lock().unwrap().is_empty());
+
+        let within: Value = client
+            .post(format!("{base}/rpc/v1/fork"))
+            .bearer_auth("narrow")
+            .json(&read(2))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        assert!(within.get("result").is_some(), "{within}");
+        assert_eq!(rpc.requests.lock().unwrap().len(), 1);
+        shutdown.cancel();
+    }
+
+    /// A slow body must not hold a relay admission permit. With one inspect
+    /// permit, a request trickling its body used to make every other inspect
+    /// request a `429` until it finished; the body is now read, under the
+    /// HTTP body deadline, before any admission is taken.
+    #[tokio::test]
+    async fn a_stalled_transaction_body_holds_no_admission_permit() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let shutdown = CancellationToken::new();
+        let server = HttpHealthServer::new(addr)
+            .with_transaction_config(TransactionConfig {
+                enabled: true,
+                rpc_url: Some("http://127.0.0.1:9".to_string()),
+                allow_unauthenticated: true,
+                inspect_concurrency: 1,
+                send_concurrency: 1,
+                ..TransactionConfig::default()
+            })
+            .with_limits(HttpLimitsConfig {
+                body_read_timeout: Duration::from_millis(500),
+                ..HttpLimitsConfig::default()
+            })
+            .with_shutdown(shutdown.clone());
+        tokio::spawn(server.start());
+        let mut stalled = loop {
+            if let Ok(stream) = tokio::net::TcpStream::connect(addr).await {
+                break stream;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        stalled
+            .write_all(
+                b"POST /transactions/v1/fee HTTP/1.1\r\nHost: test\r\nContent-Type: application/json\r\nContent-Length: 64\r\n\r\n{",
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let response = Client::new()
+            .post(format!("http://{addr}/transactions/v1/fee"))
+            .header("Content-Type", "application/json")
+            .body("not json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let mut answer = Vec::new();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut buffer = [0; 1024];
+            while !String::from_utf8_lossy(&answer).contains("\r\n\r\n") {
+                let read = stalled.read(&mut buffer).await.unwrap();
+                assert_ne!(read, 0, "the stalled request gets an answer");
+                answer.extend_from_slice(&buffer[..read]);
+            }
+        })
+        .await
+        .expect("the stalled body is cut off at the deadline");
+        assert!(
+            String::from_utf8_lossy(&answer).starts_with("HTTP/1.1 408"),
+            "{}",
+            String::from_utf8_lossy(&answer)
+        );
+        shutdown.cancel();
+    }
+
+    /// Finished connections leave the server's connection set as they end,
+    /// rather than all of them staying in it until shutdown.
+    #[tokio::test]
+    async fn finished_http_connections_are_reaped_while_serving() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let shutdown = CancellationToken::new();
+        let served = Arc::new(AtomicUsize::new(0));
+        let accept = {
+            let shutdown = shutdown.clone();
+            let served = served.clone();
+            tokio::spawn(async move {
+                accept_connections(&listener, &shutdown, |_stream, _addr| {
+                    let served = served.clone();
+                    async move {
+                        served.fetch_add(1, Ordering::SeqCst);
+                    }
+                })
+                .await
+            })
+        };
+
+        for _ in 0..20 {
+            drop(tokio::net::TcpStream::connect(addr).await.unwrap());
+        }
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while served.load(Ordering::SeqCst) < 20 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("every connection is served");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        shutdown.cancel();
+
+        let connections = accept.await.unwrap();
+        assert_eq!(connections.len(), 0);
+    }
+
+    fn account_session(
+        consumer: &str,
+        account_limit: Option<u32>,
+    ) -> crate::websocket::auth::AuthContext {
+        crate::websocket::auth::AuthContext {
+            subject: consumer.to_string(),
+            metering_key: consumer.to_string(),
+            limits: arete_auth::Limits {
+                max_http_requests_per_minute: Some(100),
+                ..Default::default()
+            },
+            actor_key: Some("user:1".to_string()),
+            account_key: Some("account:1".to_string()),
+            consumer_key: Some(consumer.to_string()),
+            policy_version: Some(1),
+            account_limits: arete_auth::Limits {
+                max_http_requests_per_minute: account_limit,
+                ..Default::default()
+            },
+            ..auth_context_allowing(None)
+        }
+    }
+
+    /// Buckets of earlier minutes are dropped once a minute, so sessions and
+    /// accounts that stop reading do not keep an entry for the server's life.
+    #[test]
+    fn http_rate_buckets_of_earlier_minutes_are_swept() {
+        let limit_state = HttpLimitState::default();
+        limit_state
+            .per_subject_per_minute
+            .insert("old-session".into(), (10, 3));
+        limit_state
+            .per_account_per_minute
+            .insert("old-account".into(), (10, 3));
+        limit_state
+            .per_account_per_minute
+            .insert("current-account".into(), (11, 1));
+
+        limit_state.sweep(11);
+
+        assert!(limit_state.per_subject_per_minute.is_empty());
+        assert_eq!(limit_state.per_account_per_minute.len(), 1);
+        assert!(limit_state
+            .per_account_per_minute
+            .contains_key("current-account"));
+    }
+
+    /// HTTP reads count against the account's signed aggregate quota, shared
+    /// by every consumer and session of the account; a refusal charges
+    /// nothing to the session's own bucket.
+    #[test]
+    fn http_reads_count_against_the_account_quota() {
+        let limit_state = HttpLimitState::default();
+        let first = account_session("consumer:a", Some(3));
+        let second = account_session("consumer:b", Some(3));
+
+        enforce_http_limits_weighted(&first, &limit_state, 2).unwrap();
+        enforce_http_limits_weighted(&second, &limit_state, 1).unwrap();
+        let deny = enforce_http_limits_weighted(&second, &limit_state, 1).unwrap_err();
+        assert_eq!(
+            deny.code,
+            crate::websocket::auth::AuthErrorCode::RateLimitExceeded
+        );
+        let session = limit_state
+            .per_subject_per_minute
+            .get("consumer:b:consumer:b")
+            .unwrap()
+            .1;
+        assert_eq!(session, 1, "the refused read is refunded");
+
+        // No account claim: only the session's own limit applies.
+        let unclaimed = HttpLimitState::default();
+        let open = account_session("consumer:a", None);
+        enforce_http_limits_weighted(&open, &unclaimed, 50).unwrap();
+        assert!(unclaimed.per_account_per_minute.is_empty());
     }
 
     #[tokio::test]
