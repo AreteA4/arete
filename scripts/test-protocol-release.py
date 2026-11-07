@@ -22,6 +22,7 @@ class ProtocolReleaseTests(unittest.TestCase):
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
         (scripts / "publish-npm-package.sh").write_text(
             '#!/bin/bash\nset -eu\n'
+            'if [[ -n "${TEST_ARGS_LOG:-}" ]]; then printf "%s\\n" "$*" > "$TEST_ARGS_LOG"; fi\n'
             'if [[ -n "${NPM_TOKEN:-}" ]]; then\n'
             '  test "${NODE_AUTH_TOKEN:-}" = "$NPM_TOKEN"\n'
             '  echo bootstrap\nelse\n'
@@ -44,15 +45,30 @@ class ProtocolReleaseTests(unittest.TestCase):
             "name": "@usearete/protocol", "dependencies": {"@usearete/hash": dependency}
         }))
 
-    def run_publish(self, status="200", token="test-only-token", hash_status="200"):
+    def run_publish(self, status="200", token="test-only-token", hash_status="200", args=("--dry-run",), env_extra=None):
         env = os.environ.copy()
         env.update(PATH=f"{self.bin}:{env['PATH']}", TEST_REGISTRY_STATUS=status, TEST_HASH_STATUS=hash_status)
         env.pop("NPM_TOKEN", None)
         env.pop("NODE_AUTH_TOKEN", None)
         if token:
             env.update(NPM_TOKEN=token, NODE_AUTH_TOKEN=token)
+        env.update(env_extra or {})
         return subprocess.run(["bash", str(self.root / "scripts/publish-protocol-package.sh"),
-                               str(self.package), "--dry-run"], env=env, capture_output=True, text=True)
+                               str(self.package), *args], env=env, capture_output=True, text=True)
+
+    def test_packed_tarball_is_forwarded_on_both_auth_paths(self):
+        args_log = self.root / "args.log"
+        for status, expected in (("200", "oidc"), ("404", "bootstrap")):
+            result = self.run_publish(status, args=("--tarball", "/packed/protocol.tgz"),
+                                      env_extra={"TEST_ARGS_LOG": str(args_log)})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.strip(), expected)
+            self.assertEqual(args_log.read_text().strip(), f"{self.package} --tarball /packed/protocol.tgz")
+
+    def test_unknown_arguments_are_rejected(self):
+        result = self.run_publish(args=("--publish-anything",))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("oidc", result.stdout)
 
     def test_existing_package_uses_oidc_without_exposing_bootstrap_token(self):
         result = self.run_publish()

@@ -2,17 +2,53 @@
 
 set -euo pipefail
 
-PACKAGE_DIR="${1:-}"
-DRY_RUN="${2:-}"
-
-if [[ -z "$PACKAGE_DIR" || ( -n "$DRY_RUN" && "$DRY_RUN" != "--dry-run" ) ]]; then
-  echo "Usage: $0 <package-directory> [--dry-run]"
+# With --tarball, the package directory supplies the expected name and
+# version and the packed tarball (built in a job without publishing
+# credentials) is what npm publishes. npm never runs lifecycle scripts here.
+usage() {
+  echo "Usage: $0 <package-directory> [--dry-run] [--tarball <file.tgz>]"
   exit 1
-fi
+}
+
+PACKAGE_DIR="${1:-}"
+[[ -n "$PACKAGE_DIR" ]] || usage
+shift
+DRY_RUN=""
+TARBALL=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN="--dry-run"; shift ;;
+    --tarball) [[ -n "${2:-}" ]] || usage; TARBALL="$2"; shift 2 ;;
+    # Callers pass an empty dry-run argument when publishing for real.
+    "") shift ;;
+    *) usage ;;
+  esac
+done
 
 PACKAGE_DIR="$(cd "$PACKAGE_DIR" && pwd)"
 PACKAGE_NAME="$(node -p "require('$PACKAGE_DIR/package.json').name")"
 PACKAGE_VERSION="$(node -p "require('$PACKAGE_DIR/package.json').version")"
+PUBLISH_SPEC="$PACKAGE_DIR"
+if [[ -n "$TARBALL" ]]; then
+  if [[ ! -f "$TARBALL" ]]; then
+    echo "Tarball $TARBALL does not exist"
+    exit 1
+  fi
+  TARBALL="$(cd "$(dirname "$TARBALL")" && pwd)/$(basename "$TARBALL")"
+  TARBALL_ID="$(tar -xzOf "$TARBALL" package/package.json | node -e '
+    let input = "";
+    process.stdin.on("data", (chunk) => { input += chunk; });
+    process.stdin.on("end", () => {
+      const pkg = JSON.parse(input);
+      process.stdout.write(`${pkg.name}@${pkg.version}`);
+    });
+  ')"
+  if [[ "$TARBALL_ID" != "$PACKAGE_NAME@$PACKAGE_VERSION" ]]; then
+    echo "Tarball $TARBALL contains $TARBALL_ID, expected $PACKAGE_NAME@$PACKAGE_VERSION"
+    exit 1
+  fi
+  PUBLISH_SPEC="$TARBALL"
+fi
 ENCODED_NAME="${PACKAGE_NAME//@/%40}"
 ENCODED_NAME="${ENCODED_NAME//\//%2F}"
 RESPONSE_FILE="$(mktemp "${TMPDIR:-/tmp}/npm-registry-response.XXXXXX")"
@@ -62,8 +98,8 @@ fi
 (
   cd "$PACKAGE_DIR"
   if [[ "$DRY_RUN" == "--dry-run" ]]; then
-    npm publish --access public --provenance --dry-run
+    npm publish "$PUBLISH_SPEC" --access public --provenance --ignore-scripts --dry-run
   else
-    npm publish --access public --provenance
+    npm publish "$PUBLISH_SPEC" --access public --provenance --ignore-scripts
   fi
 )

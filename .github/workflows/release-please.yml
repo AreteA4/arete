@@ -179,9 +179,12 @@ jobs:
     name: Publish Rust Crates to crates.io
     needs: release-please
     runs-on: ubuntu-latest
+    environment: oss-release-publication
     if: needs.release-please.outputs.releases_created == 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -257,9 +260,15 @@ jobs:
     name: Verify Generated Rust Consumers Against crates.io
     needs: [release-please, publish-rust]
     runs-on: ubuntu-latest
+    # The registry checks resolve fresh lockfiles and run their build scripts,
+    # so this job gets a read-only token and does not keep it on disk.
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         if: needs.release-please.outputs.sdk_release_created == 'true' || needs.release-please.outputs.arete_release_created == 'true'
+        with:
+          persist-credentials: false
 
       - name: Install Rust toolchain
         if: needs.release-please.outputs.sdk_release_created == 'true' || needs.release-please.outputs.arete_release_created == 'true'
@@ -283,10 +292,94 @@ jobs:
         if: needs.release-please.outputs.sdk_release_created != 'true' && needs.release-please.outputs.arete_release_created != 'true'
         run: echo "No arete or arete-a4-sdk release in this run; nothing to verify."
 
-  publish-npm:
-    name: Publish to npm
+  # Builds and packs every npm package this release publishes. npm installs
+  # here from the committed lockfiles without install scripts, and the job
+  # holds no publishing credential: no id-token, no NPM_TOKEN and a read-only
+  # token that is not left on disk. publish-npm only uploads these tarballs.
+  build-npm:
+    name: Build npm packages
     needs: release-please
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    if: >-
+      needs.release-please.outputs.typescript_hash_release_created == 'true' ||
+      needs.release-please.outputs.typescript_protocol_release_created == 'true' ||
+      needs.release-please.outputs.core_release_created == 'true' ||
+      needs.release-please.outputs.react_release_created == 'true' ||
+      needs.release-please.outputs.adapter_kit_release_created == 'true' ||
+      needs.release-please.outputs.adapter_web3js_release_created == 'true' ||
+      needs.release-please.outputs.automations_release_created == 'true'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      # Every lockfile links its sibling packages from this checkout
+      # (protocol -> ../hash, the adapters and automations -> core, React ->
+      # core and the Kit adapter), so each build uses the source released here.
+      - name: Build and pack the released packages
+        env:
+          HASH: ${{ needs.release-please.outputs.typescript_hash_release_created }}
+          PROTOCOL: ${{ needs.release-please.outputs.typescript_protocol_release_created }}
+          CORE: ${{ needs.release-please.outputs.core_release_created }}
+          KIT: ${{ needs.release-please.outputs.adapter_kit_release_created }}
+          REACT: ${{ needs.release-please.outputs.react_release_created }}
+          WEB3JS: ${{ needs.release-please.outputs.adapter_web3js_release_created }}
+          AUTOMATIONS: ${{ needs.release-please.outputs.automations_release_created }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/npm-packages"
+          built=" "
+          build() {
+            local name="$1" dir="$2"
+            [[ "$built" == *" $name "* ]] && return
+            echo "::group::Build $dir"
+            (cd "$dir" && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
+            echo "::endgroup::"
+            built+="$name "
+          }
+          pack() {
+            local name="$1" dir="$2"
+            mkdir -p "$out/$name"
+            (cd "$dir" && npm pack --ignore-scripts --pack-destination "$out/$name")
+          }
+          if [[ "$HASH" == true || "$PROTOCOL" == true ]]; then build hash typescript/hash; fi
+          if [[ "$HASH" == true ]]; then pack hash typescript/hash; fi
+          if [[ "$PROTOCOL" == true ]]; then build protocol typescript/protocol; pack protocol typescript/protocol; fi
+          if [[ "$CORE" == true || "$KIT" == true || "$REACT" == true || "$WEB3JS" == true || "$AUTOMATIONS" == true ]]; then
+            build core typescript/core
+          fi
+          if [[ "$CORE" == true ]]; then pack core typescript/core; fi
+          if [[ "$KIT" == true || "$REACT" == true ]]; then build kit typescript/adapters/kit; fi
+          if [[ "$KIT" == true ]]; then pack kit typescript/adapters/kit; fi
+          if [[ "$REACT" == true ]]; then build react typescript/react; pack react typescript/react; fi
+          if [[ "$WEB3JS" == true ]]; then build web3js typescript/adapters/web3js; pack web3js typescript/adapters/web3js; fi
+          if [[ "$AUTOMATIONS" == true ]]; then build automations typescript/automations; pack automations typescript/automations; fi
+          find "$out" -name '*.tgz' -print
+        shell: bash
+
+      - name: Upload the packed packages
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: npm-packages
+          path: ${{ runner.temp }}/npm-packages
+          if-no-files-found: error
+          retention-days: 7
+
+  # Publishes the tarballs build-npm packed. Nothing is installed or built
+  # here; each tarball must hold the name and version this checkout releases.
+  publish-npm:
+    name: Publish to npm
+    needs: [release-please, build-npm]
+    runs-on: ubuntu-latest
+    environment: oss-release-publication
     permissions:
       contents: read
       id-token: write
@@ -300,6 +393,8 @@ jobs:
       needs.release-please.outputs.automations_release_created == 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -309,26 +404,17 @@ jobs:
           package-manager-cache: false
 
       - name: Upgrade npm for trusted publishing
-        run: npm install --global npm@11
+        run: npm install --global --ignore-scripts npm@11.21.2
 
-      # @usearete/protocol builds against this checkout's hash package.
-      - name: Install hash dependencies
-        if: >-
-          needs.release-please.outputs.typescript_hash_release_created == 'true' ||
-          needs.release-please.outputs.typescript_protocol_release_created == 'true'
-        run: npm ci
-        working-directory: typescript/hash
-
-      - name: Build hash
-        if: >-
-          needs.release-please.outputs.typescript_hash_release_created == 'true' ||
-          needs.release-please.outputs.typescript_protocol_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/hash
+      - name: Download the packed packages
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: npm-packages
+          path: ${{ runner.temp }}/npm-packages
 
       - name: Publish hash
         if: needs.release-please.outputs.typescript_hash_release_created == 'true'
-        run: ../../scripts/publish-npm-package.sh .
+        run: ../../scripts/publish-npm-package.sh . --tarball "$RUNNER_TEMP"/npm-packages/hash/*.tgz
         working-directory: typescript/hash
 
       - name: Wait for hash registry propagation
@@ -351,49 +437,16 @@ jobs:
           exit 1
         shell: bash
 
-      # The lockfile links ../hash; the published manifest names the
-      # @usearete/hash range release-please keeps current.
-      - name: Install protocol dependencies
-        if: needs.release-please.outputs.typescript_protocol_release_created == 'true'
-        run: npm ci
-        working-directory: typescript/protocol
-
-      - name: Build protocol
-        if: needs.release-please.outputs.typescript_protocol_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/protocol
-
       - name: Publish protocol
         if: needs.release-please.outputs.typescript_protocol_release_created == 'true'
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: ../../scripts/publish-protocol-package.sh .
+        run: ../../scripts/publish-protocol-package.sh . --tarball "$RUNNER_TEMP"/npm-packages/protocol/*.tgz
         working-directory: typescript/protocol
-
-      # Build @usearete/sdk first so every downstream package uses this checkout.
-      - name: Install core dependencies
-        if: >-
-          needs.release-please.outputs.core_release_created == 'true' ||
-          needs.release-please.outputs.react_release_created == 'true' ||
-          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
-          needs.release-please.outputs.adapter_web3js_release_created == 'true' ||
-          needs.release-please.outputs.automations_release_created == 'true'
-        run: npm ci
-        working-directory: typescript/core
-
-      - name: Build core
-        if: >-
-          needs.release-please.outputs.core_release_created == 'true' ||
-          needs.release-please.outputs.react_release_created == 'true' ||
-          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
-          needs.release-please.outputs.adapter_web3js_release_created == 'true' ||
-          needs.release-please.outputs.automations_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/core
 
       - name: Publish core
         if: needs.release-please.outputs.core_release_created == 'true'
-        run: ../../scripts/publish-npm-package.sh .
+        run: ../../scripts/publish-npm-package.sh . --tarball "$RUNNER_TEMP"/npm-packages/core/*.tgz
         working-directory: typescript/core
 
       - name: Wait for core registry propagation
@@ -414,27 +467,69 @@ jobs:
           exit 1
         shell: bash
 
-      # `@usearete/react/wallet-standard` builds against the Kit adapter from
-      # this checkout, so the adapter is built (and, when released, published)
-      # before React.
-      - name: Install Kit adapter dependencies
-        if: >-
-          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
-          needs.release-please.outputs.react_release_created == 'true'
-        run: npm install ../../core --no-save --package-lock=false
-        working-directory: typescript/adapters/kit
-
-      - name: Build Kit adapter
-        if: >-
-          needs.release-please.outputs.adapter_kit_release_created == 'true' ||
-          needs.release-please.outputs.react_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/adapters/kit
-
       - name: Publish Kit adapter
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
-        run: ../../../scripts/publish-npm-package.sh .
+        run: ../../../scripts/publish-npm-package.sh . --tarball "$RUNNER_TEMP"/npm-packages/kit/*.tgz
         working-directory: typescript/adapters/kit
+
+      - name: Publish react
+        if: needs.release-please.outputs.react_release_created == 'true'
+        run: ../../scripts/publish-npm-package.sh . --tarball "$RUNNER_TEMP"/npm-packages/react/*.tgz
+        working-directory: typescript/react
+
+      - name: Publish web3.js adapter
+        if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
+        run: ../../../scripts/publish-npm-package.sh . --tarball "$RUNNER_TEMP"/npm-packages/web3js/*.tgz
+        working-directory: typescript/adapters/web3js
+
+      # The first publish creates the package with NPM_TOKEN; later ones
+      # use trusted publishing.
+      - name: Publish automations
+        if: needs.release-please.outputs.automations_release_created == 'true'
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          tarball=("$RUNNER_TEMP"/npm-packages/automations/*.tgz)
+          status="$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' 'https://registry.npmjs.org/@usearete%2fautomations')"
+          case "$status" in
+            200) env -u NPM_TOKEN -u NODE_AUTH_TOKEN ../../scripts/publish-npm-package.sh . --tarball "${tarball[@]}" ;;
+            404)
+              if [[ -z "${NPM_TOKEN:-}" ]]; then
+                echo "::error::The first @usearete/automations publish needs the NPM_TOKEN secret with package creation access"
+                exit 1
+              fi
+              NODE_AUTH_TOKEN="$NPM_TOKEN" ../../scripts/publish-npm-package.sh . --tarball "${tarball[@]}"
+              ;;
+            *)
+              echo "::error::Cannot tell whether @usearete/automations exists (HTTP $status)"
+              exit 1
+              ;;
+          esac
+        shell: bash
+        working-directory: typescript/automations
+
+  # Installs the just-published Kit adapter from the registry and imports
+  # it. That install resolves without a lockfile, so it runs here, after
+  # publishing and with no publishing credential. Runs whenever publish-npm
+  # did and no-ops without a Kit release, so the CLI jobs can need it.
+  check-npm-kit:
+    name: Check the published Kit adapter
+    needs: [release-please, publish-npm]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Setup Node.js
+        if: needs.release-please.outputs.adapter_kit_release_created == 'true'
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
 
       - name: Wait for Kit adapter registry propagation
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
@@ -459,71 +554,9 @@ jobs:
         run: node pack-smoke.mjs --registry
         working-directory: typescript/adapters/kit
 
-      - name: Install React dependencies
-        if: needs.release-please.outputs.react_release_created == 'true'
-        run: npm install ../core ../adapters/kit --no-save --package-lock=false
-        working-directory: typescript/react
-
-      - name: Build react
-        if: needs.release-please.outputs.react_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/react
-
-      - name: Publish react
-        if: needs.release-please.outputs.react_release_created == 'true'
-        run: ../../scripts/publish-npm-package.sh .
-        working-directory: typescript/react
-
-      - name: Install web3.js adapter dependencies
-        if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
-        run: npm install ../../core --no-save --package-lock=false
-        working-directory: typescript/adapters/web3js
-
-      - name: Build web3.js adapter
-        if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/adapters/web3js
-
-      - name: Publish web3.js adapter
-        if: needs.release-please.outputs.adapter_web3js_release_created == 'true'
-        run: ../../../scripts/publish-npm-package.sh .
-        working-directory: typescript/adapters/web3js
-
-      # The lockfile links ../core, built above.
-      - name: Install automations dependencies
-        if: needs.release-please.outputs.automations_release_created == 'true'
-        run: npm ci
-        working-directory: typescript/automations
-
-      - name: Build automations
-        if: needs.release-please.outputs.automations_release_created == 'true'
-        run: npm run build
-        working-directory: typescript/automations
-
-      # The first publish creates the package with NPM_TOKEN; later ones
-      # use trusted publishing.
-      - name: Publish automations
-        if: needs.release-please.outputs.automations_release_created == 'true'
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          status="$(curl --silent --show-error --retry 3 --output /dev/null --write-out '%{http_code}' 'https://registry.npmjs.org/@usearete%2fautomations')"
-          case "$status" in
-            200) env -u NPM_TOKEN -u NODE_AUTH_TOKEN ../../scripts/publish-npm-package.sh . ;;
-            404)
-              if [[ -z "${NPM_TOKEN:-}" ]]; then
-                echo "::error::The first @usearete/automations publish needs the NPM_TOKEN secret with package creation access"
-                exit 1
-              fi
-              NODE_AUTH_TOKEN="$NPM_TOKEN" ../../scripts/publish-npm-package.sh .
-              ;;
-            *)
-              echo "::error::Cannot tell whether @usearete/automations exists (HTTP $status)"
-              exit 1
-              ;;
-          esac
-        shell: bash
-        working-directory: typescript/automations
+      - name: No Kit adapter release in this run
+        if: needs.release-please.outputs.adapter_kit_release_created != 'true'
+        run: echo "No @usearete/adapter-kit release in this run; nothing to check."
 
   bundle-templates:
     name: Bundle CLI Templates
@@ -532,11 +565,19 @@ jobs:
     # published SDK is a version-contract failure, and shipping the CLI first
     # would hand users a broken generator.
     needs:
-      [release-please, publish-npm, publish-rust, verify-generated-rust-crates]
+      [
+        release-please,
+        publish-npm,
+        check-npm-kit,
+        publish-rust,
+        verify-generated-rust-crates,
+      ]
     runs-on: ubuntu-latest
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -755,9 +796,12 @@ jobs:
     # checksums.txt also covers the templates tarball.
     needs: [release-please, build-cli-binaries, bundle-templates]
     runs-on: ubuntu-latest
+    environment: oss-release-publication
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Download checksum artifacts
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
@@ -811,12 +855,15 @@ jobs:
         bundle-templates,
       ]
     runs-on: ubuntu-latest
+    environment: oss-release-publication
     permissions:
       contents: read
       id-token: write
     if: needs.release-please.outputs.cli_release_created == 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -826,7 +873,7 @@ jobs:
           package-manager-cache: false
 
       - name: Upgrade npm for trusted publishing
-        run: npm install --global npm@11
+        run: npm install --global --ignore-scripts npm@11.21.2
 
       - name: Publish arete CLI wrapper
         run: ../../scripts/publish-npm-package.sh .
@@ -838,12 +885,15 @@ jobs:
     name: Publish MCP to npm
     needs: [release-please]
     runs-on: ubuntu-latest
+    environment: oss-release-publication
     permissions:
       contents: read
       id-token: write
     if: needs.release-please.outputs.mcp_release_created == 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
@@ -853,7 +903,7 @@ jobs:
           package-manager-cache: false
 
       - name: Upgrade npm for trusted publishing
-        run: npm install --global npm@11
+        run: npm install --global --ignore-scripts npm@11.21.2
 
       - name: Publish arete MCP wrapper
         run: ../../scripts/publish-npm-package.sh .
@@ -870,6 +920,8 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
