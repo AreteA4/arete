@@ -13,7 +13,7 @@ import {
   TERMINAL_DELIVERY_STATES,
   TERMINAL_STEP_STATES,
 } from '../runtime/types';
-import { type AutomationStore, type ConsentGrant, type LedgerEntry, type NewStepJob, type SourceState, StoreDeploymentError, type TransitionInput, cursorAfter } from './store';
+import { type AutomationStore, type ConsentGrant, type ConsentQuery, type LedgerEntry, type NewStepJob, type SourceState, StoreDeploymentError, type TransitionInput, cursorAfter } from './store';
 
 function isActiveStep(job: Job): boolean {
   return job.kind === 'step' && (ACTIVE_STEP_STATES as readonly string[]).includes(job.state);
@@ -73,6 +73,20 @@ export function memoryStore(options: { state?: MemoryStoreState } = {}): Automat
   // A restored state's workers stopped with the process that saved it, so
   // their claims are released rather than left to expire.
   for (const [id, job] of jobs) if (job.lease) jobs.set(id, { ...job, lease: null });
+
+  /** The grant `consent.find` returns: an instance's own grant before one for every instance. */
+  const activeGrant = ({ wallet, deploymentId, step, instanceId, now }: ConsentQuery): ConsentGrant | undefined => {
+    const candidates = grants.filter(
+      (grant) =>
+        grant.wallet === wallet &&
+        grant.deploymentId === deploymentId &&
+        (grant.instanceId === null || grant.instanceId === instanceId) &&
+        grant.steps.includes(step) &&
+        grant.revokedAt === null &&
+        grant.expiresAt > now,
+    );
+    return candidates.find((grant) => grant.instanceId !== null) ?? candidates[0];
+  };
 
   const insert = (job: Job) => {
     jobs.set(job.id, job);
@@ -161,6 +175,9 @@ export function memoryStore(options: { state?: MemoryStoreState } = {}): Automat
         const job = jobs.get(id);
         if (!job || job.state !== input.from) return false;
         if (job.lease?.worker !== input.worker) return false;
+        if (input.consent && activeGrant({ ...input.consent, now: input.now })?.proof.nonce !== input.consent.nonce) {
+          return false;
+        }
         const next = {
           ...job,
           state: input.to,
@@ -269,18 +286,8 @@ export function memoryStore(options: { state?: MemoryStoreState } = {}): Automat
         if (index >= 0) grants.splice(index, 1);
         grants.push(clone(grant));
       },
-      async find({ wallet, deploymentId, step, instanceId, now }) {
-        const candidates = grants.filter(
-          (grant) =>
-            grant.wallet === wallet &&
-            grant.deploymentId === deploymentId &&
-            (grant.instanceId === null || grant.instanceId === instanceId) &&
-            grant.steps.includes(step) &&
-            grant.revokedAt === null &&
-            grant.expiresAt > now,
-        );
-        // A grant scoped to the instance is more specific than one for every instance.
-        const match = candidates.find((grant) => grant.instanceId !== null) ?? candidates[0];
+      async find(query) {
+        const match = activeGrant(query);
         return match ? clone(match) : null;
       },
       async revoke({ wallet, deploymentId, steps, instanceId, now }) {
