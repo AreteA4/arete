@@ -7023,7 +7023,9 @@ mod limits_tests {
             #[cfg(feature = "otel")]
             None,
         )
-        .with_rate_limit_config(RateLimitConfig::default().with_timeout(Duration::ZERO))
+        // Long enough that the server's own cleanup tick at startup cannot
+        // evict the client before the test sees it register.
+        .with_rate_limit_config(RateLimitConfig::default().with_timeout(Duration::from_millis(300)))
         .with_limits(limits());
         let (acceptor, _cleanup) = server.into_acceptor();
         let probe = acceptor.clone();
@@ -7040,9 +7042,9 @@ mod limits_tests {
         .await
         .expect("the client registers");
 
-        // Every client is stale under a zero timeout. The server's own cleanup
-        // task may evict it first; either way it leaves the registry here.
-        tokio::time::sleep(Duration::from_millis(5)).await;
+        // Silent past the timeout, the client is stale. The test evicts it,
+        // unless a late cleanup tick of the server's own already has.
+        tokio::time::sleep(Duration::from_millis(400)).await;
         probe.client_manager.cleanup_stale_clients();
         assert_eq!(probe.client_manager.client_count(), 0);
         tokio::time::timeout(Duration::from_secs(5), async {
