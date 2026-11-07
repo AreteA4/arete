@@ -232,6 +232,15 @@ pub fn status(json: bool) -> Result<()> {
                 "a4 auth whoami".cyan()
             );
         }
+        Err(error) if is_credentials_file_error(&error) => {
+            println!(
+                "{} {}",
+                ui::symbols::FAILURE.red().bold(),
+                "Cannot use stored credentials".red().bold()
+            );
+            println!();
+            println!("{error}");
+        }
         Err(_) => {
             println!(
                 "{} {}",
@@ -275,11 +284,20 @@ pub fn status(json: bool) -> Result<()> {
     Ok(())
 }
 
+/// A malformed credentials file or an ambiguous profile: say what to fix
+/// instead of "Not authenticated".
+fn is_credentials_file_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<arete_mcp::credentials::CredentialsFileError>()
+        .is_some()
+}
+
 pub fn whoami(json: bool) -> Result<()> {
     let api_url = config::get_api_url(None);
 
     let api_key = match ApiClient::load_api_key_for_url(&api_url) {
         Ok(key) => key,
+        Err(error) if is_credentials_file_error(&error) => return Err(error),
         Err(_) => {
             ui::print_error("Not authenticated");
             println!();

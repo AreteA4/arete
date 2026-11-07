@@ -1,7 +1,8 @@
 use anyhow::{Context, Result};
 use arete_mcp::credentials::{
-    inferred_profile_for_key, lookup_credentials, normalize_api_url, validate_key_for_profile,
-    validate_profile_name, ENV_VAR_API_KEY, ENV_VAR_CREDENTIALS_PATH, ENV_VAR_PROFILE,
+    attach_cli_credentials_path, inferred_profile_for_key, lookup_credentials, normalize_api_url,
+    validate_credentials_file, validate_key_for_profile, validate_profile_name, ENV_VAR_API_KEY,
+    ENV_VAR_CREDENTIALS_PATH, ENV_VAR_PROFILE,
 };
 use arete_sdk::{ApiProblemV1, ReadyRecoveryActionV1, RecoveryAction};
 use serde::{Deserialize, Serialize};
@@ -2800,19 +2801,22 @@ impl ApiClient {
         Ok(())
     }
 
+    /// Look up the key in the credentials file at `path`. A malformed file
+    /// and an ambiguous profile selection are distinct errors naming `path`.
     fn parse_api_key_for_profile(
         content: &str,
+        path: &Path,
         api_url: &str,
         profile: Option<&str>,
     ) -> Result<Option<String>> {
         lookup_credentials(content, api_url, profile)
-            .context("Failed to parse credentials file")
             .map(|lookup| lookup.key)
+            .map_err(|error| attach_cli_credentials_path(error, path))
     }
 
     #[cfg(test)]
     fn parse_api_key(content: &str, api_url: &str) -> Result<Option<String>> {
-        Self::parse_api_key_for_profile(content, api_url, None)
+        Self::parse_api_key_for_profile(content, Path::new("/test/credentials.toml"), api_url, None)
     }
 
     /// Load API key for a specific URL (new URL-based format)
@@ -2862,7 +2866,7 @@ impl ApiClient {
                 return Err(error).context("Failed to read credentials file");
             }
         };
-        Self::parse_api_key_for_profile(&content, api_url, profile)
+        Self::parse_api_key_for_profile(&content, &path, api_url, profile)
     }
 
     /// Load API key for the current configured URL
@@ -2885,6 +2889,8 @@ impl ApiClient {
         ensure_safe_credentials_path(&path)?;
         let content = fs::read_to_string(&path).context("Failed to read credentials file")?;
 
+        validate_credentials_file(&content)
+            .map_err(|error| attach_cli_credentials_path(error.into(), &path))?;
         let creds: toml::Value =
             toml::from_str(&content).context("Failed to parse credentials file")?;
 
@@ -2949,8 +2955,9 @@ impl ApiClient {
         }
 
         let content = fs::read_to_string(&path)?;
+        let lookup = lookup_credentials(&content, api_url, profile)
+            .map_err(|error| attach_cli_credentials_path(error, &path))?;
         let mut creds: toml::Value = toml::from_str(&content)?;
-        let lookup = lookup_credentials(&content, api_url, profile)?;
         if lookup.key.is_none() {
             anyhow::bail!("No API key found for URL: {api_url}");
         }
@@ -5047,6 +5054,94 @@ mod tests {
         )
         .unwrap()
         .is_some());
+
+        std::env::remove_var(ENV_VAR_CREDENTIALS_PATH);
+    }
+
+    /// Two profiles hold a key for the same API URL and nothing selects one.
+    #[test]
+    fn credential_lookup_errors_name_the_file_profiles_and_fix() {
+        let _environment = test_support::ENV_LOCK.lock().unwrap();
+        let root = tempfile::tempdir().expect("tempdir");
+        let credentials = root.path().join("credentials.toml");
+        std::env::set_var(ENV_VAR_CREDENTIALS_PATH, &credentials);
+        let api_url = "https://api.arete.run";
+        let shown = credentials.display().to_string();
+
+        fs::write(
+            &credentials,
+            "[profiles.agent.keys]\n\"https://api.arete.run\" = \"a4_ak_synthetic-agent\"\n\
+             [profiles.human.keys]\n\"https://api.arete.run\" = \"a4_sk_synthetic-human\"\n",
+        )
+        .unwrap();
+        let ambiguous = ApiClient::load_optional_api_key_for_profile(api_url, None)
+            .expect_err("two matching profiles must not pick one")
+            .to_string();
+        assert!(!ambiguous.contains("Failed to parse"), "{ambiguous}");
+        for expected in [
+            shown.as_str(),
+            "agent, human",
+            "--profile <name>",
+            "--profile agent",
+            ".arete/auth.toml",
+            ENV_VAR_CREDENTIALS_PATH,
+        ] {
+            assert!(ambiguous.contains(expected), "{expected}: {ambiguous}");
+        }
+        assert!(!ambiguous.contains("synthetic"), "{ambiguous}");
+
+        // An explicit profile selects one key from the same file.
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(api_url, Some("agent"))
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_synthetic-agent")
+        );
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(api_url, Some("human"))
+                .unwrap()
+                .as_deref(),
+            Some("a4_sk_synthetic-human")
+        );
+
+        // The project's profile file selects the agent profile without a flag.
+        let project = root.path().join("project");
+        fs::create_dir_all(project.join(".arete")).unwrap();
+        fs::write(
+            crate::config::project_auth_profile_path(&project),
+            crate::config::project_auth_profile_contents(),
+        )
+        .unwrap();
+        let config = project.join("arete.toml");
+        let profile =
+            crate::config::resolve_auth_profile(None, config.to_str().unwrap(), None).unwrap();
+        assert_eq!(profile.as_deref(), Some("agent"));
+        assert_eq!(
+            ApiClient::load_optional_api_key_for_profile(api_url, profile.as_deref())
+                .unwrap()
+                .as_deref(),
+            Some("a4_ak_synthetic-agent")
+        );
+
+        // A syntax error is reported as one, with the path and no file contents.
+        fs::write(
+            &credentials,
+            "[profiles.agent.keys]\n\"https://api.arete.run\" = \"a4_ak_synthetic-agent\n",
+        )
+        .unwrap();
+        let malformed = ApiClient::load_optional_api_key_for_profile(api_url, None)
+            .expect_err("malformed TOML is an error")
+            .to_string();
+        assert!(
+            malformed.starts_with(&format!("Failed to parse credentials file {shown}: line 2")),
+            "{malformed}"
+        );
+        assert!(!malformed.contains("synthetic"), "{malformed}");
+        let listed = ApiClient::list_credentials()
+            .expect_err("malformed TOML is an error")
+            .to_string();
+        assert!(!listed.contains("synthetic"), "{listed}");
+        assert!(listed.contains(&shown), "{listed}");
 
         std::env::remove_var(ENV_VAR_CREDENTIALS_PATH);
     }

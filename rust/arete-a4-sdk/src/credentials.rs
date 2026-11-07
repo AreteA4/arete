@@ -77,10 +77,6 @@ fn project_profile(content: Option<Result<String, std::io::Error>>) -> ProjectPr
     }
 }
 
-/// Start of the [`lookup_credentials`] error for more than one matching
-/// profile.
-const AMBIGUOUS_PROFILES_PREFIX: &str = "multiple Arete profiles match";
-
 static WARNED_AMBIGUOUS_PROFILE: AtomicBool = AtomicBool::new(false);
 
 /// Where [`cli_profile_secret_key_with`] reads the outside world from.
@@ -149,11 +145,14 @@ pub(crate) fn cli_profile_secret_key_with(sources: &ProfileSources<'_>) -> Optio
     let key = match lookup_credentials(&content, DEFAULT_API_URL, profile.as_deref()) {
         Ok(lookup) => lookup.key?,
         Err(error) => {
-            if error.to_string().starts_with(AMBIGUOUS_PROFILES_PREFIX) {
+            if let Some(CredentialsFileError::AmbiguousProfile { profiles, .. }) =
+                error.downcast_ref::<CredentialsFileError>()
+            {
                 if !WARNED_AMBIGUOUS_PROFILE.swap(true, Ordering::Relaxed) {
                     tracing::warn!(
-                        "More than one a4 login profile holds a key; not choosing one. Set \
-                         {ENV_VAR_PROFILE} (for example `agent`) or ARETE_API_KEY."
+                        "More than one a4 login profile holds a key ({}); not choosing one. Set \
+                         {ENV_VAR_PROFILE} (for example `agent`) or ARETE_API_KEY.",
+                        profiles.join(", ")
                     );
                 }
             } else {
@@ -167,6 +166,147 @@ pub(crate) fn cli_profile_secret_key_with(sources: &ProfileSources<'_>) -> Optio
         return None;
     }
     Some(key)
+}
+
+/// Why [`lookup_credentials`] could not use a credentials file. Messages
+/// name profiles and API URLs, never key values.
+///
+/// `cli_path` is `None` until the `a4` CLI attaches it with
+/// [`attach_cli_credentials_path`]. The message then names the file and adds
+/// the fixes only the CLI supports (`--profile` and the project profile
+/// file); otherwise it suggests only environment variables, which every
+/// reader of the file honours.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CredentialsFileError {
+    /// The file is not valid TOML, or is not laid out as credential profiles.
+    Malformed {
+        cli_path: Option<PathBuf>,
+        detail: String,
+    },
+    /// More than one profile holds a key for the API URL and none was
+    /// selected. No key is chosen.
+    AmbiguousProfile {
+        cli_path: Option<PathBuf>,
+        api_url: String,
+        profiles: Vec<String>,
+    },
+}
+
+impl CredentialsFileError {
+    fn cli_path(&self) -> Option<&Path> {
+        match self {
+            Self::Malformed { cli_path, .. } | Self::AmbiguousProfile { cli_path, .. } => {
+                cli_path.as_deref()
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for CredentialsFileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let cli_path = self.cli_path();
+        let file = match cli_path {
+            Some(path) => format!("credentials file {}", path.display()),
+            None => "credentials file".to_string(),
+        };
+        match self {
+            Self::Malformed { detail, .. } => write!(
+                f,
+                "Failed to parse {file}: {detail}. Fix the file, or set \
+                 {ENV_VAR_CREDENTIALS_PATH} to use a different one."
+            ),
+            Self::AmbiguousProfile {
+                api_url, profiles, ..
+            } => {
+                let example = profiles
+                    .iter()
+                    .find(|profile| *profile == AGENT_PROFILE)
+                    .or(profiles.first())
+                    .map(String::as_str)
+                    .unwrap_or(AGENT_PROFILE);
+                write!(
+                    f,
+                    "No profile selected and more than one profile in the {file} holds a \
+                     key for {api_url}: {}. ",
+                    profiles.join(", ")
+                )?;
+                if cli_path.is_some() {
+                    write!(
+                        f,
+                        "Choose one with `--profile <name>` (for example `--profile \
+                         {example}`) or {ENV_VAR_PROFILE}, set `default_profile = \
+                         \"{AGENT_PROFILE}\"` in the project's {PROJECT_AUTH_RELATIVE_PATH}, or \
+                         point {ENV_VAR_CREDENTIALS_PATH} at a file with one profile."
+                    )
+                } else {
+                    write!(
+                        f,
+                        "Set {ENV_VAR_PROFILE} to one of them (for example `{example}`), or \
+                         point {ENV_VAR_CREDENTIALS_PATH} at a file with one profile."
+                    )
+                }
+            }
+        }
+    }
+}
+
+impl std::error::Error for CredentialsFileError {}
+
+/// For the `a4` CLI: name `path` in a [`CredentialsFileError`] returned by
+/// [`lookup_credentials`] and add the CLI's own fixes to its message. Other
+/// errors pass through unchanged.
+pub fn attach_cli_credentials_path(error: anyhow::Error, path: &Path) -> anyhow::Error {
+    match error.downcast::<CredentialsFileError>() {
+        Ok(CredentialsFileError::Malformed { detail, .. }) => CredentialsFileError::Malformed {
+            cli_path: Some(path.to_path_buf()),
+            detail,
+        }
+        .into(),
+        Ok(CredentialsFileError::AmbiguousProfile {
+            api_url, profiles, ..
+        }) => CredentialsFileError::AmbiguousProfile {
+            cli_path: Some(path.to_path_buf()),
+            api_url,
+            profiles,
+        }
+        .into(),
+        Err(error) => error,
+    }
+}
+
+/// Check that a credentials document parses, with the same contents-free
+/// error [`lookup_credentials`] gives.
+pub fn validate_credentials_file(content: &str) -> Result<(), CredentialsFileError> {
+    parse_credentials_file(content).map(|_| ())
+}
+
+/// Parse a credentials document without echoing its contents: TOML errors
+/// render with the offending source line, which can hold a key.
+fn parse_credentials_file(content: &str) -> Result<CredentialsFile, CredentialsFileError> {
+    let value = toml::from_str::<toml::Value>(content).map_err(|error| {
+        let location = error
+            .span()
+            .map(|span| {
+                let before = &content[..span.start.min(content.len())];
+                let line = before.matches('\n').count() + 1;
+                let column = before.rsplit('\n').next().map_or(0, |l| l.chars().count()) + 1;
+                format!("line {line}, column {column}: ")
+            })
+            .unwrap_or_default();
+        CredentialsFileError::Malformed {
+            cli_path: None,
+            detail: format!("{location}{}", error.message()),
+        }
+    })?;
+    // Shape errors quote the offending value, which can be a key, so they
+    // are summarised instead.
+    value
+        .try_into::<CredentialsFile>()
+        .map_err(|_| CredentialsFileError::Malformed {
+            cli_path: None,
+            detail: "expected `[profiles.<name>.keys]` tables mapping API URLs to key strings"
+                .to_string(),
+        })
 }
 
 /// One profile-aware lookup from a parsed credentials document.
@@ -227,13 +367,15 @@ pub fn validate_key_for_profile(profile: &str, key: &str) -> Result<()> {
 /// When no profile is requested, exactly one matching named profile is used.
 /// Multiple matches are rejected instead of silently choosing a potentially
 /// more privileged credential. Legacy URL-keyed credentials remain supported.
+///
+/// A malformed file or an ambiguous selection fails with a
+/// [`CredentialsFileError`] (see [`attach_cli_credentials_path`]).
 pub fn lookup_credentials(
     content: &str,
     api_url: &str,
     requested_profile: Option<&str>,
 ) -> Result<CredentialLookup> {
-    let parsed: CredentialsFile = toml::from_str(content)
-        .map_err(|error| anyhow!("failed to parse credentials file: {error}"))?;
+    let parsed = parse_credentials_file(content)?;
 
     if let Some(profile) = requested_profile {
         let profile = validate_profile_name(profile)?;
@@ -294,14 +436,12 @@ pub fn lookup_credentials(
             });
         }
         _ => {
-            let profiles = matches
-                .iter()
-                .map(|(profile, _)| profile.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            return Err(anyhow!(
-                "{AMBIGUOUS_PROFILES_PREFIX} {api_url}: {profiles}; set {ENV_VAR_PROFILE} or pass --profile"
-            ));
+            return Err(CredentialsFileError::AmbiguousProfile {
+                cli_path: None,
+                api_url: api_url.to_string(),
+                profiles: matches.into_iter().map(|(profile, _)| profile).collect(),
+            }
+            .into());
         }
     }
 
@@ -592,6 +732,108 @@ mod tests {
             Err(ErrorKind::PermissionDenied),
         );
         assert_eq!(unreadable.key(), None);
+    }
+
+    fn lookup_error(content: &str, profile: Option<&str>) -> CredentialsFileError {
+        lookup_credentials(content, DEFAULT_API_URL, profile)
+            .unwrap_err()
+            .downcast::<CredentialsFileError>()
+            .expect("typed credentials error")
+    }
+
+    #[test]
+    fn syntax_errors_are_malformed_and_do_not_echo_the_file() {
+        let content = format!("[profiles.agent.keys]\n\"https://api.arete.run\" = \"{AGENT}\n");
+        let error = lookup_error(&content, None);
+        assert!(
+            matches!(error, CredentialsFileError::Malformed { .. }),
+            "{error:?}"
+        );
+        let message = error.to_string();
+        assert!(
+            message.starts_with("Failed to parse credentials file: line 2"),
+            "{message}"
+        );
+        assert!(!message.contains(AGENT), "{message}");
+    }
+
+    #[test]
+    fn layout_errors_are_malformed_and_do_not_echo_values() {
+        let content = format!("[profiles]\nagent = \"{AGENT}\"\n");
+        let message = lookup_error(&content, Some(AGENT_PROFILE)).to_string();
+        assert!(
+            message.contains("expected `[profiles.<name>.keys]`"),
+            "{message}"
+        );
+        assert!(!message.contains(AGENT), "{message}");
+    }
+
+    #[test]
+    fn ambiguous_profiles_name_the_profiles_path_and_fix() {
+        let error = lookup_error(&both_profiles(), None);
+        assert_eq!(
+            error,
+            CredentialsFileError::AmbiguousProfile {
+                cli_path: None,
+                api_url: DEFAULT_API_URL.to_string(),
+                profiles: vec![AGENT_PROFILE.to_string(), HUMAN_PROFILE.to_string()],
+            }
+        );
+        // Without the CLI, only fixes every reader honours are suggested.
+        let message = error.to_string();
+        assert!(message.contains("agent, human"), "{message}");
+        assert!(message.contains(ENV_VAR_PROFILE), "{message}");
+        assert!(message.contains(ENV_VAR_CREDENTIALS_PATH), "{message}");
+        assert!(!message.contains("--profile"), "{message}");
+        assert!(!message.contains(PROJECT_AUTH_RELATIVE_PATH), "{message}");
+
+        let error = attach_cli_credentials_path(error.into(), Path::new("/home/creds.toml"));
+        let message = error.to_string();
+        for expected in [
+            "No profile selected",
+            "credentials file /home/creds.toml",
+            "for https://api.arete.run: agent, human",
+            "`--profile <name>`",
+            "`--profile agent`",
+            ENV_VAR_PROFILE,
+            PROJECT_AUTH_RELATIVE_PATH,
+            ENV_VAR_CREDENTIALS_PATH,
+        ] {
+            assert!(message.contains(expected), "{expected}: {message}");
+        }
+        assert!(!message.contains("parse"), "{message}");
+        assert!(
+            !message.contains(AGENT) && !message.contains(HUMAN),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn attach_cli_credentials_path_names_malformed_files_and_passes_other_errors() {
+        let malformed = lookup_credentials("[keys", DEFAULT_API_URL, None).unwrap_err();
+        let message =
+            attach_cli_credentials_path(malformed, Path::new("/x/creds.toml")).to_string();
+        assert!(
+            message.starts_with("Failed to parse credentials file /x/creds.toml: "),
+            "{message}"
+        );
+
+        let other = anyhow!("profile `agent` requires an a4_ak_* agent credential");
+        let message = attach_cli_credentials_path(other, Path::new("/x/creds.toml")).to_string();
+        assert_eq!(
+            message,
+            "profile `agent` requires an a4_ak_* agent credential"
+        );
+    }
+
+    #[test]
+    fn explicit_profile_resolves_an_otherwise_ambiguous_file() {
+        for (profile, key) in [(AGENT_PROFILE, AGENT), (HUMAN_PROFILE, HUMAN)] {
+            let lookup = lookup_credentials(&both_profiles(), DEFAULT_API_URL, Some(profile))
+                .expect("selected profile");
+            assert_eq!(lookup.key.as_deref(), Some(key));
+            assert_eq!(lookup.profile.as_deref(), Some(profile));
+        }
     }
 
     #[test]

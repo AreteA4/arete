@@ -35,9 +35,10 @@ use anyhow::{anyhow, Result};
 // Profile parsing and lookup live in the SDK so the CLI, this server and SDK
 // scripts resolve `a4` logins identically.
 pub use arete_sdk::credentials::{
-    inferred_profile_for_key, lookup_credentials, normalize_api_url, validate_key_for_profile,
-    validate_profile_name, CredentialLookup, AGENT_PROFILE, DEFAULT_API_URL,
-    ENV_VAR_CREDENTIALS_PATH, ENV_VAR_PROFILE, HUMAN_PROFILE,
+    attach_cli_credentials_path, inferred_profile_for_key, lookup_credentials, normalize_api_url,
+    validate_credentials_file, validate_key_for_profile, validate_profile_name, CredentialLookup,
+    CredentialsFileError, AGENT_PROFILE, DEFAULT_API_URL, ENV_VAR_CREDENTIALS_PATH,
+    ENV_VAR_PROFILE, HUMAN_PROFILE,
 };
 
 pub const ENV_VAR_API_KEY: &str = "ARETE_API_KEY";
@@ -661,9 +662,35 @@ mod tests {
                        \"https://api.arete.run\" = \"a4_ak_agent\"\n\
                        [profiles.human.keys]\n\
                        \"https://api.arete.run\" = \"a4_sk_human\"";
-        let error = lookup_credentials(content, DEFAULT_API_URL, None).unwrap_err();
-        assert!(error.to_string().contains("multiple Arete profiles"));
-        assert!(error.to_string().contains("ARETE_PROFILE"));
+        let env = TestEnv::default().with_credentials(content);
+        let error = resolve_with(&env, None, "wss://foo.stack.arete.run")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("more than one profile"), "{error}");
+        assert!(error.contains("agent, human"), "{error}");
+        assert!(error.contains("ARETE_PROFILE"), "{error}");
+        assert!(!error.contains("parse"), "{error}");
+        // The MCP server has no --profile flag and does not read the
+        // project profile file, so neither is suggested.
+        assert!(!error.contains("--profile"), "{error}");
+        assert!(!error.contains("auth.toml"), "{error}");
+        // Agent-visible: no key values and no credentials file location.
+        assert!(!error.contains("a4_ak_agent") && !error.contains("a4_sk_human"));
+        assert!(!error.contains(".arete/credentials"), "{error}");
+    }
+
+    #[test]
+    fn malformed_credentials_are_a_distinct_error_without_contents() {
+        let env = TestEnv::default()
+            .with_credentials("[profiles.agent.keys]\n\"https://api.arete.run\" = \"a4_ak_x\n");
+        let error = resolve_with(&env, None, "wss://foo.stack.arete.run")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("Failed to parse credentials file: line 2"),
+            "{error}"
+        );
+        assert!(!error.contains("a4_ak_x"), "{error}");
     }
 
     #[test]
@@ -715,7 +742,7 @@ mod tests {
         let error = resolve_with(&env, None, "wss://self.hosted.example").unwrap_err();
         assert!(error
             .to_string()
-            .contains("failed to parse credentials file"));
+            .contains("Failed to parse credentials file"));
     }
 
     // ── Hosted vs self-hosted failure modes ─────────────────────────────────
