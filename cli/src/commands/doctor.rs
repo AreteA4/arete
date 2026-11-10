@@ -459,7 +459,9 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
         )),
         None => checks.push(Check::info(
             "auth.credentials",
-            format!("no API key for {api_url} (not needed for a4 explore)"),
+            format!(
+                "no API key for {api_url}: a4 explore lists only public entries until one is configured (keys are free)"
+            ),
             Some("a4 auth signup".to_string()),
         )),
     }

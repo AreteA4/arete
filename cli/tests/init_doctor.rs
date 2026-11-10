@@ -276,6 +276,13 @@ fn init_in_empty_dir_without_node_then_doctor_warns_on_skills() {
     assert_eq!(c["project.lock"]["status"], "ok");
     assert_eq!(c["project.auth-profile"]["status"], "ok");
     assert_eq!(c["auth.credentials"]["status"], "info");
+    // Without a key, explore lists only public entries; doctor says so.
+    let credentials = c["auth.credentials"]["detail"].as_str().unwrap();
+    assert!(
+        credentials.contains("a4 explore lists only public entries"),
+        "{credentials}"
+    );
+    assert!(!credentials.contains("not needed"), "{credentials}");
     assert_eq!(c["auth.whoami"]["status"], "info");
     assert_eq!(c["account.entitlements"]["status"], "info");
     assert_eq!(
