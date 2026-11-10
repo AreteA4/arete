@@ -4351,6 +4351,7 @@ mod tests {
                 guidance: "",
                 stream_endpoints: STREAM_ENDPOINTS_GUIDANCE,
             },
+            access: None,
         };
         let value = serde_json::to_value(&output).unwrap();
         assert!(value["discovery"]["streamEndpoints"]
