@@ -52,7 +52,8 @@ struct StackDiscoveryGuidance {
 /// under different names, so the list labels its host and points here.
 const STREAM_ENDPOINTS_GUIDANCE: &str = "Deployment hosts can differ from a stack's stream \
      endpoints, and both may serve it. To hard-code a URL, use the stream endpoints \
-     `a4 explore stack <name>` prints: those are the ones installed SDKs connect to.";
+     `a4 explore stack <name>` prints: those are the ones installed SDKs connect to, \
+     unless a project's arete.toml overrides them.";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2191,6 +2192,18 @@ fn render_auth_surface(auth: &Value) -> String {
     parts.join("; ")
 }
 
+/// The heading over a stack summary's hosted stream endpoints. When the
+/// project's `arete.toml` overrides them, the generated SDK connects to those
+/// overrides instead (listed under "SDK endpoints"), so the hosted ones are
+/// not what to hard-code for this project.
+fn stream_endpoints_heading(output: &Value) -> &'static str {
+    if output["sdkEndpoints"]["used"] == "project" {
+        "\nHosted stream endpoints (this project's SDK uses the arete.toml endpoints under SDK endpoints instead)\n"
+    } else {
+        "\nStream endpoints (installed SDKs connect to these; use them to hard-code a URL)\n"
+    }
+}
+
 fn render_stack_summary(output: &Value) -> String {
     let mut text = format!(
         "\nStack: {} (install reference {})  {}\n",
@@ -2264,9 +2277,7 @@ fn render_stack_summary(output: &Value) -> String {
             program["programId"].as_str().unwrap_or("-"),
         ));
     }
-    text.push_str(
-        "\nStream endpoints (installed SDKs connect to these; use them to hard-code a URL)\n",
-    );
+    text.push_str(stream_endpoints_heading(output));
     for live in value_array(&output["endpoints"], "liveSpecs") {
         text.push_str(&format!(
             "  {}  {}  {}\n",
@@ -4272,6 +4283,25 @@ mod tests {
         assert!(
             summary.contains("Stream endpoints (installed SDKs connect to these"),
             "{summary}"
+        );
+
+        let overridden = render_stack_summary(&json!({
+            "name": "meteora-presale",
+            "installRef": "meteora-presale",
+            "live": true,
+            "entities": [],
+            "programs": [],
+            "endpoints": {"liveSpecs": []},
+            "sdkEndpoints": {"used": "project"},
+            "auth": {}
+        }));
+        assert!(
+            overridden.contains("Hosted stream endpoints (this project's SDK uses the arete.toml"),
+            "{overridden}"
+        );
+        assert!(
+            !overridden.contains("installed SDKs connect to these"),
+            "{overridden}"
         );
     }
 
