@@ -1220,7 +1220,11 @@ fn main() {
             };
             process::exit(exit_code);
         }
-        eprintln!("{} {}", "Error:".red().bold(), e);
+        eprintln!(
+            "{} {}",
+            "Error:".red().bold(),
+            api_client::error_report(&e, api_client::verbose_api_errors())
+        );
         process::exit(1);
     }
 }

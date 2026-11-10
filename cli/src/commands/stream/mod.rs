@@ -82,7 +82,8 @@ pub struct StreamArgs {
     pub filters: Vec<String>,
 
     /// Select specific fields to output (comma-separated dot paths). Nested paths are
-    /// flattened to literal keys, e.g. --select "info.name" outputs {"info.name": "..."}
+    /// flattened to literal keys, e.g. --select "info.name" outputs {"info.name": "..."};
+    /// select a parent ("info" or "info.*") to keep its fields nested
     #[arg(long)]
     pub select: Option<String>,
 

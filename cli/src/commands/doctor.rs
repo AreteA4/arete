@@ -18,9 +18,9 @@ use crate::agents::{find_on_path, read_optional, Env};
 #[cfg(test)]
 use crate::api_client::ApiHttpError;
 use crate::api_client::{
-    api_error_details, AccountCapabilities, AccountEntitlements, ApiClient,
-    RegistryProgramInstallResponse, RegistryProgramInstallTransport, CAPABILITY_CREATE_DEPLOYMENT,
-    CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND,
+    api_error_details, AccountCapabilities, AccountEntitlements, ApiClient, ApiResponseError,
+    ApiTransportError, RegistryProgramInstallResponse, RegistryProgramInstallTransport,
+    CAPABILITY_CREATE_DEPLOYMENT, CAPABILITY_TRANSACTION_INSPECT, CAPABILITY_TRANSACTION_SEND,
 };
 use crate::project::manifest::{DependencyKind, DependencySourceV1, InstallTarget};
 use crate::project::runtime;
@@ -745,20 +745,78 @@ fn auth_whoami(key: &str) -> Check {
         Err(error) => return Check::fail(id, format!("{error:#}"), None),
     };
     // Agent keys answer GET /api/agents/me; user keys fall back to a
-    // key-scoped listing.
-    let result = client
-        .agent_me()
-        .map(|me| format!("agent {} ({})", me.slug, me.claim_state))
-        .or_else(|_| client.list_specs().map(|_| "API key accepted".to_string()));
+    // key-scoped listing. When the agent answer could not be read, the key
+    // was accepted there, so that is what fails the check if the listing
+    // fails too (an agent key may not list specs).
+    let result = match client.agent_me() {
+        Ok(me) => Ok(format!("agent {} ({})", me.slug, me.claim_state)),
+        Err(agent_error) => {
+            let unreadable = agent_error.downcast_ref::<ApiResponseError>().is_some();
+            client
+                .list_specs()
+                .map(|_| "API key accepted".to_string())
+                .map_err(|error| if unreadable { agent_error } else { error })
+        }
+    };
     match result {
         Ok(detail) => Check::ok(id, detail),
-        Err(error) => Check::fail(
+        Err(error) => whoami_failure(&error),
+    }
+}
+
+/// The `auth.whoami` check for a failed key check. Only an API refusal (401
+/// or 403) blames the key: a response this build cannot read means the CLI
+/// is out of date, and a request that never got an answer says nothing about
+/// the key at all.
+fn whoami_failure(error: &anyhow::Error) -> Check {
+    let id = "auth.whoami";
+    if let Some(response) = error.downcast_ref::<ApiResponseError>() {
+        if response.is_version_skew() {
+            return Check::fail(
+                id,
+                format!(
+                    "API key accepted, but this a4 ({}) cannot read the API's response ({}); \
+                     it is likely older than the API",
+                    env!("CARGO_PKG_VERSION"),
+                    response.detail()
+                ),
+                Some("a4 self update".to_string()),
+            );
+        }
+        return Check::fail(
             id,
-            format!("API key rejected: {}", root_cause(&error)),
+            format!("could not check the API key: {}", first_line(error)),
+            None,
+        );
+    }
+    if error.downcast_ref::<ApiTransportError>().is_some() {
+        return Check::fail(
+            id,
+            format!("could not check the API key: {}", first_line(error)),
+            Some("retry `a4 doctor` in a moment".to_string()),
+        );
+    }
+    match api_error_details(error) {
+        Some(details) if matches!(details.status, 401 | 403) => Check::fail(
+            id,
+            format!("API key rejected: {}", details.message),
             Some(
                 "a4 auth signup (agent) or a4 auth login --profile human --key <a4_sk_...>"
                     .to_string(),
             ),
+        ),
+        Some(details) => Check::fail(
+            id,
+            format!(
+                "could not check the API key: the API answered {}: {}",
+                details.status, details.message
+            ),
+            None,
+        ),
+        None => Check::fail(
+            id,
+            format!("could not check the API key: {}", root_cause(error)),
+            None,
         ),
     }
 }
@@ -1824,6 +1882,17 @@ fn root_cause(error: &anyhow::Error) -> String {
     error.root_cause().to_string()
 }
 
+/// The first line of `error`'s message: the API error types follow it with
+/// advice for the command line, which a check's `fix` already gives.
+fn first_line(error: &anyhow::Error) -> String {
+    error
+        .to_string()
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2020,6 +2089,64 @@ mod tests {
             "surfaces": surfaces,
         }))
         .unwrap()
+    }
+
+    fn keyed_at(base_url: &str) -> ApiClient {
+        ApiClient::with_base_url(base_url).with_api_key("a4_sk_test".to_string())
+    }
+
+    #[test]
+    fn whoami_blames_the_cli_version_not_the_key_for_an_unreadable_response() {
+        let server = crate::api_client::test_support::MockServer::json(200, r#"[{"id": 1}]"#);
+        let error = keyed_at(server.base_url()).list_specs().unwrap_err();
+        let check = whoami_failure(&error);
+        assert!(matches!(check.status, Status::Fail));
+        assert!(!check.detail.contains("rejected"), "{}", check.detail);
+        assert!(
+            check.detail.starts_with("API key accepted, but this a4"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("missing field"), "{}", check.detail);
+        assert_eq!(check.fix.as_deref(), Some("a4 self update"));
+    }
+
+    #[test]
+    fn whoami_says_rejected_only_when_the_api_refuses_the_key() {
+        let body = r#"{"error": "invalid API key", "code": "unauthorized"}"#;
+        let server = crate::api_client::test_support::MockServer::json(401, body);
+        let error = keyed_at(server.base_url()).list_specs().unwrap_err();
+        let check = whoami_failure(&error);
+        assert_eq!(check.detail, "API key rejected: invalid API key");
+        assert!(check.fix.as_deref().unwrap().contains("a4 auth login"));
+
+        let body = r#"{"error": "upstream unavailable"}"#;
+        let server = crate::api_client::test_support::MockServer::json(500, body);
+        let error = keyed_at(server.base_url()).list_specs().unwrap_err();
+        let check = whoami_failure(&error);
+        assert_eq!(
+            check.detail,
+            "could not check the API key: the API answered 500: upstream unavailable"
+        );
+        assert_eq!(check.fix, None);
+    }
+
+    #[test]
+    fn whoami_reports_an_unreachable_api_as_unchecked() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        drop(listener);
+        let error = keyed_at(&base).list_specs().unwrap_err();
+        let check = whoami_failure(&error);
+        assert!(
+            check
+                .detail
+                .starts_with("could not check the API key: List specs request could not connect"),
+            "{}",
+            check.detail
+        );
+        assert!(!check.detail.contains('\n'), "{}", check.detail);
+        assert!(!check.detail.contains("rejected"), "{}", check.detail);
     }
 
     fn check<'a>(checks: &'a [Check], id: &str) -> &'a Check {

@@ -237,29 +237,57 @@ fn make_not_regex(value: &str) -> Result<FilterOp> {
 }
 
 /// Project specific fields from a JSON value.
-/// Returns a new object with only the selected dot-paths.
-/// Uses full dot-path as key to avoid collisions (e.g. "a.id" and "b.id"
-/// produce {"a.id": ..., "b.id": ...} instead of silently overwriting).
+///
+/// Each path's value goes under its full dot path, so `a.id` and `b.id`
+/// produce `{"a.id": ..., "b.id": ...}` instead of overwriting each other. A
+/// value keeps its own nesting: selecting `state` (or `state.*`) prints
+/// `{"state": {...}}` with every field of `state` nested as it was. A lone
+/// `*` keeps every top-level field. Paths that are absent are left out.
 pub fn select_fields(value: &Value, fields: &[Vec<String>]) -> Value {
     let mut result = serde_json::Map::new();
     for path in fields {
-        if let Some(v) = resolve_path(value, path) {
-            let key = if path.len() == 1 {
-                path[0].clone()
-            } else {
-                path.join(".")
-            };
-            result.insert(key, v.clone());
+        if path.is_empty() {
+            if let Value::Object(map) = value {
+                for (key, field) in map {
+                    result.insert(key.clone(), field.clone());
+                }
+            }
+        } else if let Some(v) = resolve_path(value, path) {
+            result.insert(path.join("."), v.clone());
         }
     }
     Value::Object(result)
 }
 
-pub fn parse_select(select: &str) -> Vec<Vec<String>> {
-    select
-        .split(',')
-        .map(|s| s.trim().split('.').map(|p| p.to_string()).collect())
-        .collect()
+/// Parse `--select`: comma-separated dot paths. A trailing `.*` (`root.*`)
+/// means the whole value at that path, nested; a lone `*` the whole entity.
+/// `*` anywhere else is an error, since one path selects one value.
+pub fn parse_select(select: &str) -> Result<Vec<Vec<String>>> {
+    let mut paths = Vec::new();
+    for raw in select.split(',') {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        let mut segments: Vec<String> = raw.split('.').map(|p| p.trim().to_string()).collect();
+        if segments.last().is_some_and(|last| last == "*") {
+            segments.pop();
+        }
+        if segments.iter().any(|segment| segment.contains('*')) {
+            bail!(
+                "--select '{raw}': `*` can only end a path, as in `state.*` (the whole `state` \
+                 object, nested). To pick fields inside it, list them: `state.a,state.b`."
+            );
+        }
+        if segments.iter().any(String::is_empty) {
+            bail!("--select '{raw}': empty path segment");
+        }
+        paths.push(segments);
+    }
+    if paths.is_empty() {
+        bail!("--select needs at least one field path");
+    }
+    Ok(paths)
 }
 
 #[cfg(test)]
@@ -329,7 +357,7 @@ mod tests {
     #[test]
     fn test_select_fields() {
         let v = json!({"name": "alice", "age": 30, "nested": {"x": 1}});
-        let fields = parse_select("name,nested.x");
+        let fields = parse_select("name,nested.x").unwrap();
         let result = select_fields(&v, &fields);
         assert_eq!(result, json!({"name": "alice", "nested.x": 1}));
     }
@@ -337,9 +365,48 @@ mod tests {
     #[test]
     fn test_select_fields_no_collision() {
         let v = json!({"a": {"id": 1}, "b": {"id": 2}});
-        let fields = parse_select("a.id,b.id");
+        let fields = parse_select("a.id,b.id").unwrap();
         let result = select_fields(&v, &fields);
         assert_eq!(result, json!({"a.id": 1, "b.id": 2}));
+    }
+
+    #[test]
+    fn test_select_wildcard_keeps_nested_objects_readable() {
+        let entity = json!({
+            "id": {"reserve": "R1"},
+            "root": {"rates": {"supply": 0.04, "borrow": 0.06}, "mint": "USDC"},
+            "other": 1
+        });
+        let nested = json!({"root": {"rates": {"supply": 0.04, "borrow": 0.06}, "mint": "USDC"}});
+        // `root.*` and `root` both keep `root` whole and nested, never as
+        // flattened `root.rates.supply` keys or an empty object.
+        assert_eq!(
+            select_fields(&entity, &parse_select("root.*").unwrap()),
+            nested
+        );
+        assert_eq!(
+            select_fields(&entity, &parse_select("root").unwrap()),
+            nested
+        );
+        assert_eq!(
+            select_fields(&entity, &parse_select("id.reserve, root.*").unwrap()),
+            json!({"id.reserve": "R1", "root": nested["root"]})
+        );
+        assert_eq!(select_fields(&entity, &parse_select("*").unwrap()), entity);
+    }
+
+    #[test]
+    fn test_select_rejects_wildcards_inside_a_path() {
+        for select in ["root.*.supply", "ro*t", "*.x"] {
+            let error = parse_select(select).unwrap_err().to_string();
+            assert!(
+                error.contains("`*` can only end a path"),
+                "{select}: {error}"
+            );
+        }
+        assert!(parse_select("a..b").is_err());
+        assert!(parse_select(" , ").is_err());
+        assert_eq!(parse_select("a.b,").unwrap(), vec![vec!["a", "b"]]);
     }
 
     #[test]
