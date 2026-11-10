@@ -278,9 +278,6 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         "sandbox-action-not-granted" => {
             "The owner has not granted this agent that action (sandbox_status lists the granted ones). Only the owner can grant it, in the dashboard."
         }
-        "sandbox-preview-unavailable" => {
-            "This action has no dry run. sandbox_status shows the caps it is checked against; sandbox_invoke checks it again before signing."
-        }
         "sandbox-paused" => "The sandbox is paused. Only its owner can resume it.",
         "sandbox-rules-missing" | "sandbox-rules-unsigned" => {
             "The owner must set or re-sign the sandbox's rules in the dashboard."
@@ -289,7 +286,7 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
             "Fix programId or the seeds: each seed is {kind, value} (or {kind: \"bytes\", hex}), at most 15 seeds of at most 32 bytes each."
         }
         "sandbox-intent-invalid" | "sandbox-intent-foreign-signer" => {
-            "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer."
+            "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer. Accounts with a `fill` in sandbox_rules can be left out; `missingAccounts` lists the ones still needed."
         }
         "sandbox-guard-trial-failed" => {
             "The transaction fails when run. Check accounts and amounts; the guard's logs are in the details when present."
@@ -715,19 +712,14 @@ impl SandboxClient {
         action: SandboxActionName,
         args: Value,
     ) -> Result<Value, SandboxRefusal> {
-        let Some(path) = action.preview_path() else {
-            return Err(SandboxRefusal {
-                status: 0,
-                body: json!({
-                    "code": "sandbox-preview-unavailable", "retryable": false,
-                    "error": format!("`{}` has no dry run", action.as_str()),
-                    "action": action.as_str(),
-                }),
-                kind: CallKind::Preview,
-            });
-        };
-        self.call_with(Some(action), reqwest::Method::POST, path, Some(args), None)
-            .await
+        self.call_with(
+            Some(action),
+            reqwest::Method::POST,
+            action.preview_path(),
+            Some(args),
+            None,
+        )
+        .await
     }
 
     /// Run `action` with `args` under `idempotency_key`.
@@ -928,11 +920,11 @@ impl SandboxActionName {
         }
     }
 
-    fn preview_path(self) -> Option<&'static str> {
+    fn preview_path(self) -> &'static str {
         match self {
-            Self::Invoke => Some("/actions/preview"),
-            Self::Withdraw => None,
-            Self::Swap => Some("/actions/swap/preview"),
+            Self::Invoke => "/actions/preview",
+            Self::Withdraw => "/actions/withdraw/preview",
+            Self::Swap => "/actions/swap/preview",
         }
     }
 }
@@ -1546,30 +1538,34 @@ mod tests {
                 200,
                 json!({ "pass": true }),
             ),
+            (
+                "POST",
+                "/api/sandbox/v1/actions/withdraw/preview",
+                200,
+                json!({ "pass": true }),
+            ),
         ]);
         let client = client(&base);
-        client
-            .preview(SandboxActionName::Invoke, json!({ "instructions": [] }))
-            .await
-            .unwrap();
-        client
-            .preview(SandboxActionName::Swap, json!({ "amount": "1" }))
-            .await
-            .unwrap();
-        let refusal = client
-            .preview(SandboxActionName::Withdraw, json!({ "lamports": "1" }))
-            .await
-            .unwrap_err();
-        assert_eq!(refusal.body["code"], "sandbox-preview-unavailable");
+        let withdraw = json!({ "lamports": "1" });
+        for (action, args) in [
+            (SandboxActionName::Invoke, json!({ "instructions": [] })),
+            (SandboxActionName::Swap, json!({ "amount": "1" })),
+            (SandboxActionName::Withdraw, withdraw.clone()),
+        ] {
+            let body = client.preview(action, args).await.unwrap();
+            assert_eq!(body["pass"], true);
+        }
         let seen = requests(&seen);
-        assert_eq!(
-            seen.len(),
-            3,
-            "the withdraw preview sends nothing: {seen:?}"
-        );
-        for request in &seen[1..] {
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        for (request, path) in seen[1..].iter().zip([
+            "/api/sandbox/v1/actions/preview",
+            "/api/sandbox/v1/actions/swap/preview",
+            "/api/sandbox/v1/actions/withdraw/preview",
+        ]) {
+            assert!(request.starts_with(&format!("POST {path} ")), "{request}");
             assert!(!request.to_ascii_lowercase().contains("idempotency-key"));
         }
+        assert_eq!(body_of(&seen[3]), withdraw);
     }
 
     #[tokio::test]
