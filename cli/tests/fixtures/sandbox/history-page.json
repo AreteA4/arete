@@ -17,6 +17,40 @@
           "args": { "amount": "1234500000", "maxSolCost": "110000000" }
         }
       ],
+      "events": [
+        {
+          "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "name": "TradeEvent",
+          "path": "0",
+          "source": "emit",
+          "fields": { "mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", "is_buy": true, "sol_amount": 105000000, "token_amount": 1234500000 },
+          "data": "vdt/007mYe4="
+        },
+        {
+          "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "name": "TradeEvent",
+          "path": "0.4",
+          "source": "emit_cpi",
+          "fields": { "mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", "is_buy": true, "sol_amount": 105000000, "token_amount": 1234500000 },
+          "data": "vdt/007mYe4="
+        },
+        {
+          "program": "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e",
+          "name": null,
+          "path": "0.5",
+          "source": "emit_cpi",
+          "fields": { "__parse_error": "no IDL is known for this program" },
+          "data": "MUh7LW5AsIU="
+        },
+        {
+          "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "name": "CreateEvent",
+          "path": "0.6",
+          "source": "emit_cpi",
+          "fields": { "__parse_error": "1 bytes left over after the declared fields" },
+          "data": "G3KMqi5lhCE="
+        }
+      ],
       "solDelta": "-105005000",
       "tokenDeltas": [
         {
