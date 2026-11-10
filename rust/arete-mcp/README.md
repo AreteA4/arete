@@ -128,7 +128,7 @@ under the tool reference for the exact precedence.
 
 A typical session starts with discovery — `search_knowledge` to find which
 protocols serve an intent (API key required), `explore_stacks` to see what
-exists, `explore_stack_schema` to get the view ids. To read a view's current
+exists, `explore_stack_views` to list a stack's view ids. To read a view's current
 entities once, it then calls `read_view`, which connects, waits for the
 snapshot and disconnects in one call. To follow updates it calls `connect` once,
 then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
@@ -136,7 +136,7 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 
 | Group | Tools | Auth |
 |-------|-------|------|
-| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
+| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_views`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
 | One-shot read | `read_view` | Key resolved automatically; required for hosted stacks |
 | Knowledge | `search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts` | **API key required** — fails up front without one |
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
@@ -186,6 +186,15 @@ error here.
   browser keys, transaction entitlement). `views` returns only those views with
   their entity schemas; `full: true` returns the whole descriptor `a4 install`
   consumes.
+- `explore_stack_views({ stack, query? })` — the views of one stack you can
+  subscribe to, without knowing their ids first. Each view has its `id` (what
+  `read_view`, `subscribe` and `a4 stream` take), `entity`, `output`
+  (`collection`, or `keyed`: one entity at a time by its `primaryKeys`), the
+  catalog `summary` and `entitySummary` when published, and the `websocketUrl`
+  to subscribe on. A top-level `websocketUrl` means the stack has one endpoint;
+  without it, pass the view's own `websocketUrl` as `url` to `read_view` or
+  `connect`. `query` keeps the views matching every term, in the id,
+  entity, output or summaries; `total` counts the views before it.
 - `explore_stack_schema({ stack })` — entity and view schema: field paths, types,
   primary keys, and the `<EntityName>/<view>` ids `subscribe` accepts. Use this
   instead of guessing a view id from the template. When the stack is published

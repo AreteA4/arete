@@ -173,7 +173,8 @@ enum Commands {
         /// Entity for `explore stack <ref> <entity>`, or the slug for `explore catalog <kind> <slug>`
         entity: Option<String>,
 
-        /// Catalog search: free-text intent (`a4 explore catalog --query "monitor swaps"`)
+        /// Catalog search: free-text intent (`a4 explore catalog --query "monitor swaps"`).
+        /// With `a4 explore stack <ref> --views` and no ids: keep the views matching every term
         #[arg(long)]
         query: Option<String>,
 
@@ -260,11 +261,14 @@ enum Commands {
         summary: bool,
 
         /// Stack: only these views with their entity schemas (`OreRound/latest,OreMiner/list`,
-        /// or repeat the flag; prefix `alias:` when several LiveSpecs select the same id)
+        /// or repeat the flag; prefix `alias:` when several LiveSpecs select the same id).
+        /// With no ids, list the views you can subscribe to (search them with --query)
         #[arg(
             long,
             value_name = "VIEWS",
             value_delimiter = ',',
+            num_args = 0..=1,
+            default_missing_value = "",
             conflicts_with = "operation"
         )]
         views: Vec<String>,
@@ -1386,7 +1390,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             target,
             reference,
             entity,
-            query,
+            mut query,
             concept,
             category,
             kind,
@@ -1408,6 +1412,13 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let target = target.filter(|target| {
                 !(target == "stacks" && reference.is_none() && entity.is_none())
             });
+            // `--views` with no ids lists the stack's views instead of
+            // selecting some.
+            let list_views = !views.is_empty() && views.iter().all(|view| view.trim().is_empty());
+            let views: Vec<String> = views
+                .into_iter()
+                .filter(|view| !view.trim().is_empty())
+                .collect();
             // On the catalog, `--summary` means the brief field set.
             let catalog_target = target.as_deref() == Some("catalog");
             let (brief, summary) = if catalog_target && summary && views.is_empty() {
@@ -1430,7 +1441,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "--section applies only to `a4 explore program <ref>`"
                 ));
             }
-            if !views.is_empty() && !stack_form {
+            if (list_views || !views.is_empty()) && !stack_form {
                 return Err(anyhow::anyhow!(
                     "--views applies only to `a4 explore stack <ref>`"
                 ));
@@ -1450,7 +1461,8 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "--operation applies only to `a4 explore program <ref>` or `a4 explore stack <ref>`"
                 ));
             }
-            let stack_detail = summary || full || !views.is_empty() || operation.is_some();
+            let stack_detail =
+                summary || full || list_views || !views.is_empty() || operation.is_some();
             let entity_form = match target.as_deref() {
                 Some("stack") => entity.is_some(),
                 Some("catalog" | "programs" | "program" | "protocol") | None => false,
@@ -1461,10 +1473,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
                     "--summary, --full, --views and --operation cannot be combined with an entity drill-down"
                 ));
             }
+            // With `--views` and no ids, `--query` searches the stack's views.
+            let view_query = if list_views { query.take() } else { None };
             let stack_options = commands::explore::StackOptions {
                 entity: None,
                 full,
                 views,
+                list_views,
+                view_query: view_query.as_deref(),
                 operation: operation.as_deref(),
                 config_path: &cli.config,
             };
@@ -1479,7 +1495,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             let is_catalog_root = target.as_deref() == Some("catalog") && reference.is_none();
             if (search_options || vocabulary) && !is_catalog_root {
                 return Err(anyhow::anyhow!(
-                    "Catalog options (--query, --concept, --category, --kind, --mode, --target, --limit, --cursor, --vocabulary) apply only to `a4 explore catalog`"
+                    "Catalog options (--query, --concept, --category, --kind, --mode, --target, --limit, --cursor, --vocabulary) apply only to `a4 explore catalog`; --query also searches a stack's views with `a4 explore stack <ref> --views --query <terms>`"
                 ));
             }
             if search_options && vocabulary {
@@ -2741,6 +2757,25 @@ mod tests {
                 vec!["OreRound/latest", "OreMiner/state", "OreBoard/state"]
             ),
             _ => panic!("expected explore command"),
+        }
+
+        // `--views` with no ids lists the stack's views, with or without
+        // a search, in either stack form.
+        for args in [
+            &["a4", "explore", "ore", "--views"][..],
+            &["a4", "explore", "stack", "ore", "--views", "--json"][..],
+            &[
+                "a4", "explore", "stack", "ore", "--views", "--query", "miner",
+            ][..],
+        ] {
+            let cli = Cli::try_parse_from(args).expect("bare views parse");
+            match cli.command {
+                Some(Commands::Explore { views, target, .. }) => {
+                    assert_eq!(views, vec![String::new()], "{args:?}");
+                    assert!(target.is_some(), "{args:?}");
+                }
+                _ => panic!("expected explore command"),
+            }
         }
 
         // `--full` is the full stack or program exploration.

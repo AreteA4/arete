@@ -147,6 +147,8 @@ a4 explore program <ref> --json
 KB by default. Ask for the part you need next:
 
 ```bash
+a4 explore stack <ref> --views --json                  # every view you can subscribe to
+a4 explore stack <ref> --views --query <terms> --json  # only the matching views
 a4 explore stack <ref> --views <Entity>/<view>,<Entity>/<view> --json
 a4 explore stack <ref> --operation <operation> --json
 a4 explore program <ref> --operation <operation> --json
@@ -161,7 +163,11 @@ and views, the token-amount fields with their units (`amountFields`), the
 its Program SDKs, stream endpoints, stream auth and the install command. The
 program summary lists instructions and accounts with the first line of their
 docs, the PDAs the program derives with their seeds, its SDK operations and
-transports. `--operation` shows one operation, and on a stack it searches the
+transports. `--views` with no ids lists the views you can subscribe to, so you
+need no view ids up front: each has its id, entity, whether it is a
+`collection` or `keyed` by a primary key, its summary and its endpoint. Pick
+one and stream it with `a4 stream <Entity>/<view> --stack <ref>` (a keyed view
+also takes `--key`). `--operation` shows one operation, and on a stack it searches the
 stack's Program SDKs. Exploring a definition-only stack prints what you can do
 with it instead of failing. See [`a4 explore`](/cli/commands/#a4-explore) for
 every option.

@@ -724,6 +724,8 @@ a4 explore <stack-ref> <Entity> --json
 
 # Compact by default; ask for the part you need
 a4 explore stack ore --json
+a4 explore stack ore --views --json
+a4 explore stack ore --views --query miner --json
 a4 explore stack ore --views OreRound/latest,OreMiner/state --json
 a4 explore stack ore --full --json
 a4 explore program ore --full --json
@@ -743,13 +745,14 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 
 **Options:**
 
-| Flag               | Applies to         | Description                                                                                                                                            |
-| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--summary`        | `stack`, `program` | The compact summary, which is also the default                                                                                                         |
-| `--full`           | `stack`, `program` | The full exploration: identity hashes, every auth surface and endpoint, SDK metadata; for a program, the IDL-level dump                                |
-| `--views <ids>`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated or repeated; prefix `alias:` when several LiveSpecs select the same id |
-| `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`) |
-| `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                              |
+| Flag               | Applies to         | Description                                                                                                                                                                                                |
+| ------------------ | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--summary`        | `stack`, `program` | The compact summary, which is also the default                                                                                                                                                             |
+| `--full`           | `stack`, `program` | The full exploration: identity hashes, every auth surface and endpoint, SDK metadata; for a program, the IDL-level dump                                                                                    |
+| `--views [ids]`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated or repeated; prefix `alias:` when several LiveSpecs select the same id. With no ids, lists every view you can subscribe to |
+| `--query <terms>`  | `stack --views`    | With `--views` and no ids: only the views matching every term, in the view id, entity, output or summaries                                                                                                 |
+| `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`)                                                     |
+| `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                                                                                  |
 
 **Output varies by specificity:**
 
@@ -759,6 +762,7 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 | `a4 explore programs`                  | Complete promoted Program Release + Program Read installations. Release and spec hashes need `--full`; `--fields` chooses keys               |
 | `a4 explore stack <ref>`               | Compact summary: `live`, entities and views, token-amount fields, `read.*` helpers, Program SDKs, stream endpoints and auth, install command |
 | `a4 explore stack <ref> --full`        | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command    |
+| `a4 explore stack <ref> --views`       | Every view you can subscribe to: id, entity, `collection` or `keyed` (with primary keys), summary, endpoint, and the `a4 stream` command     |
 | `a4 explore stack <ref> --views …`     | The named views' schemas (field descriptions and token-amount units) and endpoints                                                           |
 | `a4 explore program <ref>`             | Compact summary: instructions and accounts with their first doc line, PDAs and seeds, SDK operations, transports, install command            |
 | `a4 explore program <ref> --full`      | Program identity, accounts, instructions, events and types in full, Program Read, and install command                                        |
@@ -767,7 +771,8 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 | `a4 explore <stack> [entity]`          | Legacy syntax routed through descriptor-backed stack exploration                                                                             |
 
 Everything is cut from the same pinned install descriptor on the client, so
-the compact forms agree with the full one. A stack or program summary, one
+the compact forms agree with the full one. The view list (`--views` with no
+ids) is cut from that descriptor by the registry, which also searches it. A stack or program summary, one
 operation, or one view is a few KB; compact JSON carries a `hint` naming the
 next narrower or fuller form, and a `--full` output past 20,000 characters ends
 with one (on stderr for JSON).
