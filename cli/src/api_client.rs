@@ -13,8 +13,11 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 mod protocols;
+mod transport;
 
 pub use protocols::*;
+pub use transport::{ApiResponseError, ApiTransportError};
+use transport::{ResponseBody, SendApi};
 
 fn ensure_safe_credentials_path(path: &Path) -> Result<()> {
     // The credential file and its dedicated directory must not be symlinks.
@@ -195,6 +198,8 @@ pub const REGISTRY_SIGNATURE_VERSIONS: &str = "v1,v2";
 fn http_client() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .user_agent(USER_AGENT)
+        .timeout(transport::DEFAULT_REQUEST_TIMEOUT)
+        .connect_timeout(transport::CONNECT_TIMEOUT)
         .build()
         .unwrap_or_else(|_| reqwest::blocking::Client::new())
 }
@@ -729,6 +734,28 @@ pub(crate) fn api_error_details(error: &anyhow::Error) -> Option<ApiErrorDetails
             upgrade_command: error.upgrade_command.as_deref(),
             dependency: None,
         })
+}
+
+/// The text `main` prints after `Error:` for a failed command.
+///
+/// Under `--verbose` it is the whole cause chain, one cause per line, so the
+/// underlying network or decode error shows. Otherwise it is the outermost
+/// message, followed by the API transport or response error underneath it
+/// when a caller's context would otherwise hide which endpoint failed and how.
+pub(crate) fn error_report(error: &anyhow::Error, verbose: bool) -> String {
+    let mut report = error.to_string();
+    let mut causes = error.chain().skip(1);
+    if verbose {
+        for cause in causes {
+            report.push_str(&format!("\n  caused by: {cause}"));
+        }
+    } else if let Some(cause) = causes.find(|cause| {
+        cause.downcast_ref::<ApiTransportError>().is_some()
+            || cause.downcast_ref::<ApiResponseError>().is_some()
+    }) {
+        report.push_str(&format!("\n{cause}"));
+    }
+    report
 }
 
 // ============================================================================
@@ -1593,8 +1620,7 @@ impl ApiClient {
             .client
             .get(format!("{}/api/specs", self.base_url))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send list specs request")?;
+            .send_api("list specs")?;
 
         Self::handle_response(response)
     }
@@ -1607,8 +1633,7 @@ impl ApiClient {
             .client
             .get(format!("{}/api/specs/{}", self.base_url, spec_id))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send get spec request")?;
+            .send_api("get spec")?;
 
         Self::handle_response(response)
     }
@@ -1621,8 +1646,7 @@ impl ApiClient {
             .post(format!("{}/api/specs", self.base_url))
             .bearer_auth(api_key)
             .json(&req)
-            .send()
-            .context("Failed to send create spec request")?;
+            .send_api("create spec")?;
 
         Self::handle_response(response)
     }
@@ -1634,8 +1658,7 @@ impl ApiClient {
             .client
             .post(format!("{}/api/specs/{}/destroy", self.base_url, spec_id))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to request stack destruction")?;
+            .send_api("stack destroy")?;
         let response: StackDestroyResponse = Self::handle_response(response)?;
         response.validate(spec_id, None)?;
         Ok(response)
@@ -1658,8 +1681,7 @@ impl ApiClient {
             ))
             .bearer_auth(api_key)
             .timeout(request_timeout)
-            .send()
-            .context("Failed to inspect stack destruction")?;
+            .send_api("stack destroy status")?;
         let response: StackDestroyResponse = Self::handle_response(response)?;
         response.validate(spec_id, Some(operation_id))?;
         Ok(response)
@@ -1678,8 +1700,7 @@ impl ApiClient {
                 self.base_url, spec_id
             ))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send get spec with version request")?;
+            .send_api("get spec with version")?;
 
         Self::handle_response(response)
     }
@@ -1692,8 +1713,7 @@ impl ApiClient {
             .client
             .get(format!("{}/api/specs/{}/versions", self.base_url, spec_id))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send list spec versions request")?;
+            .send_api("list spec versions")?;
 
         Self::handle_response(response)
     }
@@ -1723,8 +1743,7 @@ impl ApiClient {
             .client
             .get(&url)
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send list spec versions request")?;
+            .send_api("list spec versions")?;
 
         Self::handle_response(response)
     }
@@ -1766,8 +1785,7 @@ impl ApiClient {
     pub fn list_registry(&self) -> Result<Vec<RegistryStackItem>> {
         let response = self
             .with_optional_auth(self.client.get(format!("{}/api/registry", self.base_url)))
-            .send()
-            .context("Failed to send registry list request")?;
+            .send_api("registry list")?;
 
         Self::handle_response(response)
     }
@@ -1780,8 +1798,7 @@ impl ApiClient {
                 self.client
                     .get(format!("{}/api/registry/programs", self.base_url)),
             )
-            .send()
-            .context("Failed to send registry program list request")?;
+            .send_api("registry program list")?;
 
         Self::handle_response(response)
     }
@@ -1827,8 +1844,7 @@ impl ApiClient {
                     .get(format!("{}/api/registry/v1/catalog/search", self.base_url))
                     .query(&params),
             )
-            .send()
-            .context("Failed to send catalog search request")?;
+            .send_api("catalog search")?;
         Self::handle_response(response)
     }
 
@@ -1839,8 +1855,7 @@ impl ApiClient {
                 "{}/api/registry/v1/catalog/entries/{}/{}",
                 self.base_url, kind, slug
             )))
-            .send()
-            .context("Failed to send catalog entry request")?;
+            .send_api("catalog entry")?;
         Self::handle_response(response)
     }
 
@@ -1879,8 +1894,7 @@ impl ApiClient {
                 "{}/api/registry/v1/catalog/vocabulary",
                 self.base_url
             )))
-            .send()
-            .context("Failed to send catalog vocabulary request")?;
+            .send_api("catalog vocabulary")?;
         Self::handle_response(response)
     }
 
@@ -1904,8 +1918,7 @@ impl ApiClient {
                 self.base_url
             ))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send knowledge vocabulary request")?;
+            .send_api("knowledge vocabulary")?;
         Self::handle_response(response)
     }
 
@@ -1938,8 +1951,7 @@ impl ApiClient {
             .get(format!("{}/api/registry/knowledge/search", self.base_url))
             .query(&params)
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send knowledge search request")?;
+            .send_api("knowledge search")?;
         Self::handle_response(response)
     }
 
@@ -1953,8 +1965,7 @@ impl ApiClient {
                 self.base_url, slug
             ))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send knowledge protocol request")?;
+            .send_api("knowledge protocol")?;
         Self::handle_response(response)
     }
 
@@ -1973,10 +1984,7 @@ impl ApiClient {
         if let Some(section) = section {
             request = request.query(&[("section", section)]);
         }
-        let response = request
-            .bearer_auth(api_key)
-            .send()
-            .context("Failed to send knowledge program request")?;
+        let response = request.bearer_auth(api_key).send_api("knowledge program")?;
         Self::handle_response(response)
     }
 
@@ -1990,8 +1998,7 @@ impl ApiClient {
                 self.base_url, slug
             ))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send knowledge recipe request")?;
+            .send_api("knowledge recipe")?;
         Self::handle_response(response)
     }
 
@@ -2003,8 +2010,7 @@ impl ApiClient {
                 self.client
                     .get(format!("{}/api/registry/{}", self.base_url, name)),
             )
-            .send()
-            .context("Failed to send registry get request")?;
+            .send_api("registry stack")?;
 
         Self::handle_response(response)
     }
@@ -2027,8 +2033,7 @@ impl ApiClient {
         );
         let response = self
             .registry_release_request(self.client.get(url))
-            .send()
-            .context("Failed to send registry stack install request")?;
+            .send_api("stack lookup")?;
 
         self.handle_release_response(
             response,
@@ -2051,8 +2056,7 @@ impl ApiClient {
         );
         let response = self
             .registry_release_request(self.client.get(url))
-            .send()
-            .context("Failed to send registry program install request")?;
+            .send_api("program lookup")?;
 
         self.handle_release_response(
             response,
@@ -2070,8 +2074,7 @@ impl ApiClient {
                 registry_path_segment(kind)?,
                 registry_path_segment(hash)?
             )))
-            .send()
-            .context("Failed to send registry artifact request")?;
+            .send_api("registry artifact")?;
         Self::handle_response(response)
     }
 
@@ -2089,8 +2092,7 @@ impl ApiClient {
         );
         let response = self
             .registry_release_request(self.client.get(url))
-            .send()
-            .context("Failed to send registry protocol install request")?;
+            .send_api("protocol lookup")?;
         self.handle_release_response(
             response,
             crate::registry_signatures::ReleaseShape::Dependency,
@@ -2120,8 +2122,7 @@ impl ApiClient {
                     ))
                     .json(request),
             )
-            .send()
-            .context("Failed to send registry dependency resolver request")?;
+            .send_api("registry dependency resolve")?;
         self.handle_release_response(
             response,
             crate::registry_signatures::ReleaseShape::ResolveResponse,
@@ -2184,9 +2185,7 @@ impl ApiClient {
         if let (Some(_), Some(generation)) = (&self.environment_stacks, self.environment_lease) {
             request = request.header(arete_mcp::dev_env::LEASE_HEADER, generation.to_string());
         }
-        let response = request
-            .send()
-            .context("Failed to send artifact build request")?;
+        let response = request.send_api("artifact build")?;
 
         Self::handle_response(response)
     }
@@ -2224,8 +2223,7 @@ impl ApiClient {
             .client
             .get(&url)
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send list builds request")?;
+            .send_api("list builds")?;
 
         Self::handle_response(response)
     }
@@ -2238,8 +2236,7 @@ impl ApiClient {
             .client
             .get(format!("{}/api/builds/{}", self.base_url, build_id))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send get build request")?;
+            .send_api("get build")?;
 
         Self::handle_response(response)
     }
@@ -2260,8 +2257,7 @@ impl ApiClient {
             .post(format!("{}/api/deployments/plans/preflight", self.base_url))
             .bearer_auth(api_key)
             .json(&req)
-            .send()
-            .context("Failed to send stack deployment preflight request")?;
+            .send_api("stack deployment preflight")?;
 
         Self::handle_response(response)
     }
@@ -2278,8 +2274,7 @@ impl ApiClient {
             .post(format!("{}/api/deployments/plans", self.base_url))
             .bearer_auth(api_key)
             .json(&req)
-            .send()
-            .context("Failed to send stack deployment plan request")?;
+            .send_api("stack deployment plan")?;
 
         Self::handle_response(response)
     }
@@ -2305,8 +2300,7 @@ impl ApiClient {
             .client
             .get(&url)
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send list deployments request")?;
+            .send_api("list deployments")?;
 
         Self::handle_response(response)
     }
@@ -2323,8 +2317,7 @@ impl ApiClient {
                 self.base_url, deployment_id
             ))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send get deployment request")?;
+            .send_api("get deployment")?;
 
         Self::handle_response(response)
     }
@@ -2341,8 +2334,7 @@ impl ApiClient {
             .post(format!("{}/api/deployments/compositions", self.base_url))
             .bearer_auth(api_key)
             .json(&req)
-            .send()
-            .context("Failed to send composition bind request")?;
+            .send_api("composition bind")?;
 
         Self::handle_response(response)
     }
@@ -2361,8 +2353,7 @@ impl ApiClient {
             .json(&serde_json::json!({
                 "reason": "Requested from a4 CLI"
             }))
-            .send()
-            .context("Failed to send stop deployment request")?;
+            .send_api("stop deployment")?;
 
         Self::handle_response(response)
     }
@@ -2394,7 +2385,7 @@ impl ApiClient {
         response: reqwest::blocking::Response,
     ) -> Result<T> {
         if response.status().is_success() {
-            response.json().context("Failed to parse response JSON")
+            ResponseBody::read(response)?.parse()
         } else {
             let mut error = Self::response_error(response);
             if let Some(message) = error
@@ -2417,8 +2408,7 @@ impl ApiClient {
             .client
             .get(self.keys_endpoint())
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send list API keys request")?;
+            .send_api("list API keys")?;
 
         Self::handle_keys_response(response)
     }
@@ -2438,8 +2428,7 @@ impl ApiClient {
             .post(self.keys_endpoint())
             .bearer_auth(api_key)
             .json(&req)
-            .send()
-            .context("Failed to send create API key request")?;
+            .send_api("create API key")?;
 
         Self::handle_keys_response(response)
     }
@@ -2464,8 +2453,7 @@ impl ApiClient {
             .post(format!("{}/publishable", self.keys_endpoint()))
             .bearer_auth(api_key)
             .json(&req)
-            .send()
-            .context("Failed to send create publishable key request")?;
+            .send_api("create publishable key")?;
 
         Self::handle_keys_response(response)
     }
@@ -2478,8 +2466,7 @@ impl ApiClient {
             .client
             .delete(format!("{}/{key_id}", self.keys_endpoint()))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to send delete API key request")?;
+            .send_api("delete API key")?;
 
         Self::handle_keys_response::<serde_json::Value>(response).map(|_| ())
     }
@@ -2494,8 +2481,7 @@ impl ApiClient {
             .post(format!("{}/api/programs", self.base_url))
             .bearer_auth(api_key)
             .json(request)
-            .send()
-            .context("Failed to send ProgramSpec upload request")?;
+            .send_api("ProgramSpec upload")?;
         Self::handle_response(response)
     }
 
@@ -2514,8 +2500,7 @@ impl ApiClient {
         }
         let response = request
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to list uploaded programs")?;
+            .send_api("list uploaded programs")?;
         Self::handle_response(response)
     }
 
@@ -2528,8 +2513,7 @@ impl ApiClient {
                 self.base_url, user_program_id
             ))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to get uploaded program status")?;
+            .send_api("uploaded program status")?;
         Self::handle_response(response)
     }
 
@@ -2552,8 +2536,7 @@ impl ApiClient {
         }
         let response = request
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to list uploaded program events")?;
+            .send_api("list uploaded program events")?;
         Self::handle_response(response)
     }
 
@@ -2566,8 +2549,7 @@ impl ApiClient {
                 self.base_url, user_program_id
             ))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to archive uploaded program")?;
+            .send_api("archive uploaded program")?;
         Self::handle_response(response)
     }
 
@@ -2586,8 +2568,7 @@ impl ApiClient {
             .json(&CreateProgramPromotionRequest {
                 make_idl_public: true,
             })
-            .send()
-            .context("Failed to request uploaded program promotion")?;
+            .send_api("uploaded program promotion")?;
         Self::handle_response(response)
     }
 
@@ -2651,7 +2632,7 @@ impl ApiClient {
         response: reqwest::blocking::Response,
     ) -> Result<T> {
         if response.status().is_success() {
-            response.json().context("Failed to parse response JSON")
+            ResponseBody::read(response)?.parse()
         } else {
             Err(Self::response_error(response).into())
         }
@@ -2669,10 +2650,10 @@ impl ApiClient {
         if !response.status().is_success() {
             return Err(Self::response_error(response).into());
         }
-        let mut value: serde_json::Value =
-            response.json().context("Failed to parse response JSON")?;
+        let body = ResponseBody::read(response)?;
+        let mut value: serde_json::Value = body.parse()?;
         self.check_release_signatures(&mut value, shape)?;
-        serde_json::from_value(value).context("Failed to parse response JSON")
+        body.convert(value)
     }
 
     /// Check the signatures of every package release entry in `value` and
@@ -2703,8 +2684,7 @@ impl ApiClient {
             .client
             .get(format!("{}/api/registry/v1/keys", self.base_url))
             .timeout(Duration::from_secs(10))
-            .send()
-            .context("Failed to fetch the registry signing keys")?;
+            .send_api("registry signing keys")?;
         if response.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -3374,8 +3354,7 @@ impl ApiClient {
                 credential,
                 idempotency_key,
             })
-            .send()
-            .context("Failed to reach the signup endpoint")?;
+            .send_api("agent signup")?;
         Self::handle_response(response)
     }
 
@@ -3387,8 +3366,7 @@ impl ApiClient {
             .get(format!("{}/api/agents/me", self.base_url))
             .timeout(Duration::from_secs(30))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to fetch agent identity")?;
+            .send_api("agent identity")?;
         Self::handle_response(response)
     }
 
@@ -3401,8 +3379,7 @@ impl ApiClient {
             .client
             .get(format!("{}/api/auth/me", self.base_url))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to fetch account capabilities")?;
+            .send_api("account capabilities")?;
         let value: serde_json::Value = Self::handle_response(response)?;
         AccountCapabilities::from_value(&value)
             .ok_or_else(|| anyhow::anyhow!("the account response did not list capabilities"))
@@ -3436,8 +3413,7 @@ impl ApiClient {
             .client
             .get(format!("{}/api/auth/entitlements", self.base_url))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to fetch account entitlements")?;
+            .send_api("account entitlements")?;
         Self::handle_response(response)
     }
 
@@ -3474,8 +3450,7 @@ impl ApiClient {
             .timeout(Duration::from_secs(10))
             .bearer_auth(api_key)
             .json(request)
-            .send()
-            .context("Failed to mint a session token")?;
+            .send_api("session token")?;
         let minted: Minted = Self::handle_response(response)?;
         let token = minted.token.trim().to_string();
         if token.is_empty() {
@@ -3492,8 +3467,7 @@ impl ApiClient {
             .client
             .post(format!("{}/api/agents/me/claim-links", self.base_url))
             .bearer_auth(api_key)
-            .send()
-            .context("Failed to create agent claim link")?;
+            .send_api("agent claim link")?;
         Self::handle_response(response)
     }
 
@@ -4430,9 +4404,22 @@ mod stack_destroy_tests {
             .expect_err("request times out");
 
         assert!(started.elapsed() < Duration::from_millis(500));
-        assert!(error
-            .to_string()
-            .contains("Failed to inspect stack destruction"));
+        let transport = error
+            .downcast_ref::<ApiTransportError>()
+            .expect("a transport error");
+        assert_eq!(transport.failure(), transport::TransportFailure::Timeout);
+        let message = error.to_string();
+        assert!(
+            message.starts_with("Stack destroy status request timed out: GET http://127.0.0.1:"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!(
+                "/api/specs/42/destroy/{OPERATION_ID} sent no response within"
+            )),
+            "{message}"
+        );
+        assert!(message.contains("Retry in a moment"), "{message}");
         assert_eq!(
             server.request().request_line,
             format!("GET /api/specs/42/destroy/{OPERATION_ID} HTTP/1.1")
@@ -4490,7 +4477,13 @@ mod stack_destroy_tests {
         let error = client(&server)
             .request_stack_destroy(42)
             .expect_err("unknown response field");
-        assert!(error.to_string().contains("Failed to parse response JSON"));
+        let response = error
+            .downcast_ref::<ApiResponseError>()
+            .expect("an unreadable response");
+        assert!(response.is_version_skew());
+        assert!(error
+            .to_string()
+            .contains("unknown field `unversionedField`"));
     }
 
     #[test]

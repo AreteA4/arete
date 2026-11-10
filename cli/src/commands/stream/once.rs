@@ -40,7 +40,9 @@ pub struct GetArgs {
     #[arg(long = "where", value_name = "EXPR")]
     pub filters: Vec<String>,
 
-    /// Fields to output (comma-separated dot paths, e.g. "id.round_id,state.motherlode")
+    /// Fields to output (comma-separated dot paths, e.g. "id.round_id,state.motherlode").
+    /// Each lands under its full path as a flat key; select a parent ("state" or
+    /// "state.*") to keep its fields nested
     #[arg(long)]
     pub select: Option<String>,
 
@@ -65,6 +67,13 @@ Output:
   the entities it kept. With --key, an entity that does not exist is an
   error.
 
+Selecting fields:
+  --select a.b,c prints each path's value under its full path as one flat
+  key: {\"a.b\": ..., \"c\": ...}. For nested entities, select the parent
+  object instead of many leaves: --select state (or state.*) prints
+  {\"state\": {...}} with its fields nested as in a full read. `*` can only
+  end a path.
+
 Token amounts:
   Float fields a stack derives with ui_amount are whole token units; the
   integer fields they come from are raw base units (often string-encoded
@@ -74,6 +83,7 @@ Token amounts:
 Examples:
   a4 get OreRound/latest --stack ore --limit 1
   a4 get OreRound/latest --stack ore --limit 1 --select id.round_id,state.total_deployed,treasury.motherlode
+  a4 get OreRound/latest --stack ore --limit 1 --select id,state.*
   a4 get OreMiner/state --stack ore --key <authority>";
 
 pub fn run(args: GetArgs) -> Result<()> {
@@ -82,7 +92,11 @@ pub fn run(args: GetArgs) -> Result<()> {
         bail!("<VIEW> must be EntityName/mode (e.g. OreRound/latest), got '{view}'");
     }
     let filter = Filter::parse(&args.filters)?;
-    let select = args.select.as_deref().map(filter::parse_select);
+    let select = args
+        .select
+        .as_deref()
+        .map(filter::parse_select)
+        .transpose()?;
 
     let url = super::resolve_ws_url(args.url.as_deref(), args.stack.as_deref())?;
     let (url, refresh) = token::ensure_hosted_ws_token(url)?;
@@ -374,7 +388,7 @@ mod tests {
     #[test]
     fn output_filters_selects_and_limits() {
         let filter = Filter::parse(&["state.v>10".to_string()]).unwrap();
-        let select = filter::parse_select("id.n");
+        let select = filter::parse_select("id.n").unwrap();
         let output = shape_output("T/list", None, rows(), &filter, Some(&select), 1).unwrap();
         assert_eq!(
             output,

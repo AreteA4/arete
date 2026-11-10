@@ -301,7 +301,7 @@ text output starts with the status line.
 | `project.auth-profile`  | `.arete/auth.toml` selects only the restricted `agent` profile                  | `warn`/`fail`: `a4 doctor --fix`                                               |
 | `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)             | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch  |
 | `auth.credentials`      | Key present for the active API URL                                              | `info`: `a4 auth signup` (not needed to explore)                               |
-| `auth.whoami`           | Credentials are accepted by the server                                          | `fail`: `a4 auth login --key …`                                                |
+| `auth.whoami`           | Credentials are accepted by the server                                          | `fail`: `a4 auth login --key …` if refused; `a4 self update` if unreadable     |
 | `account.plan`          | The account's plan and dev environment tier                                     | `unknown` when the server cannot say                                           |
 | `account.<surface>`     | One per surface the account can or can't use (see below)                        | `info` with the reason and the unlock; `warn` if `arete.toml` uses the surface |
 | `probe.program-read`    | One Program Read existence check for the first registry program in `arete.toml` | `warn` with the HTTP status and error code; retryable failures say so          |
@@ -943,6 +943,9 @@ a4 get OreRound/latest --stack ore --limit 1
 a4 get OreRound/latest --stack ore --limit 1 \
   --select id.round_id,state.total_deployed,treasury.motherlode
 
+# Whole nested objects, kept nested
+a4 get OreRound/latest --stack ore --limit 1 --select id,state.*
+
 # One entity by key
 a4 get OreRound/state --stack ore --key 434161
 
@@ -956,7 +959,7 @@ a4 get OreRound/latest --stack ore --where 'state.total_deployed>8' --limit 5
 | `--url <ws-url>`     | WebSocket URL instead of `--stack`                                          |
 | `-k, --key <key>`    | Read the one entity with this key (usually an `<Entity>/state` view)        |
 | `--where <expr>`     | Filter: `field=value`, `field>N`, `field~regex` (repeatable, ANDed)         |
-| `--select <paths>`   | Comma-separated dot paths to output                                         |
+| `--select <paths>`   | Comma-separated dot paths to output (see below)                             |
 | `--limit <n>`        | Most entities to print, in the view's order (default 10)                    |
 | `--timeout <secs>`   | Seconds to wait for the connection and snapshot before failing (default 15) |
 
@@ -974,6 +977,14 @@ Output:
   "view": "OreRound/latest"
 }
 ```
+
+`--select` puts each path's value under its full dot path as one flat key,
+as above. That suits a few leaf fields. For nested entities, select the
+parent object instead of many leaves: `--select state` (or `--select
+'state.*'`) prints `{"state": {...}}` with every field of `state` nested as in
+a full read, and `--select id,state.*` combines both. `*` can only end a
+path; to pick some fields inside an object, list them
+(`state.a,state.b`).
 
 Without `--where`, the server sends only `--limit` entities. With `--where`,
 `total` counts the whole snapshot and `matching` the entities that passed.
