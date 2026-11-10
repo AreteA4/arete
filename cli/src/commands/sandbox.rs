@@ -206,22 +206,13 @@ fn history(args: HistoryArgs, json: bool) -> Result<()> {
             "{}",
             render_history(
                 &body,
-                &continuation(&args, query.since),
+                &args,
+                query.since,
                 client.sandbox_id().unwrap_or("?")
             )
         );
     }
     Ok(())
-}
-
-/// `args` for the next-page command: a relative `--since` (`24h`) is
-/// repeated as the time it resolved to, so later pages keep the same cutoff.
-fn continuation(args: &HistoryArgs, since: Option<DateTime<Utc>>) -> HistoryArgs {
-    let mut next = args.clone();
-    if let Some(since) = since {
-        next.since = Some(since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-    }
-    next
 }
 
 fn next_cursor(page: &Value) -> Option<String> {
@@ -263,8 +254,14 @@ pub fn parse_since(text: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
     now.checked_sub_signed(age).ok_or_else(bad)
 }
 
-/// The human rendering of a history page.
-pub fn render_history(body: &Value, args: &HistoryArgs, sandbox_id: &str) -> String {
+/// The human rendering of a history page. `since` is the cutoff `--since`
+/// resolved to.
+pub fn render_history(
+    body: &Value,
+    args: &HistoryArgs,
+    since: Option<DateTime<Utc>>,
+    sandbox_id: &str,
+) -> String {
     let items = body["items"].as_array().cloned().unwrap_or_default();
     let mut out = format!(
         "{} {}  history, newest first\n\n",
@@ -284,7 +281,7 @@ pub fn render_history(body: &Value, args: &HistoryArgs, sandbox_id: &str) -> Str
     if let Some(cursor) = next_cursor(body) {
         out.push_str(&format!(
             "\nMore: a4 sandbox history --cursor {cursor}{}\n",
-            repeat_flags(args)
+            repeat_flags(args, since)
         ));
     }
     out
@@ -294,8 +291,10 @@ fn filtered(args: &HistoryArgs) -> bool {
     args.status.is_some() || args.program.is_some() || args.mint.is_some() || args.since.is_some()
 }
 
-/// The flags to repeat with `--cursor` for the next page.
-fn repeat_flags(args: &HistoryArgs) -> String {
+/// The flags to repeat with `--cursor` for the next page. `--since` is
+/// repeated as the time it resolved to, never as an age (`24h`), so later
+/// pages keep the same cutoff.
+fn repeat_flags(args: &HistoryArgs, since: Option<DateTime<Utc>>) -> String {
     let mut flags = String::new();
     if let Some(sandbox) = &args.target.sandbox {
         flags.push_str(&format!(" --sandbox {sandbox}"));
@@ -303,11 +302,12 @@ fn repeat_flags(args: &HistoryArgs) -> String {
     if args.limit != ledger::DEFAULT_LIMIT {
         flags.push_str(&format!(" --limit {}", args.limit));
     }
+    let since = since.map(|since| since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
     for (flag, value) in [
         ("--status", &args.status),
         ("--program", &args.program),
         ("--mint", &args.mint),
-        ("--since", &args.since),
+        ("--since", &since),
     ] {
         if let Some(value) = value {
             flags.push_str(&format!(" {flag} {}", shell_word(value)));
@@ -838,7 +838,7 @@ mod tests {
             },
             ..Default::default()
         };
-        let text = render_history(&fixture("history-page.json"), &args, "sbx");
+        let text = render_history(&fixture("history-page.json"), &args, None, "sbx");
         let lines: Vec<&str> = text.lines().collect();
         assert_eq!(lines[0], "Sandbox sbx  history, newest first");
         assert!(
@@ -867,7 +867,12 @@ mod tests {
             mint: Some(MINT.into()),
             ..Default::default()
         };
-        let text = render_history(&json!({ "items": [], "nextCursor": null }), &args, "s");
+        let text = render_history(
+            &json!({ "items": [], "nextCursor": null }),
+            &args,
+            None,
+            "s",
+        );
         assert!(text.contains("No actions matched the filters."), "{text}");
         assert!(!text.contains("More:"), "{text}");
     }
@@ -973,23 +978,30 @@ mod tests {
                 .with_timezone(&Utc),
         )
         .unwrap();
-        assert_eq!(
-            repeat_flags(&continuation(&args, Some(since))),
-            " --since 2026-11-14T12:00:00Z"
+        let text = render_history(
+            &json!({ "items": [], "nextCursor": "c2" }),
+            &args,
+            Some(since),
+            "s",
         );
+        assert!(
+            text.ends_with("More: a4 sandbox history --cursor c2 --since 2026-11-14T12:00:00Z\n"),
+            "{text}"
+        );
+        assert!(!text.contains("24h"), "{text}");
     }
 
     #[test]
     fn next_page_flags_are_shell_safe() {
         let args = HistoryArgs {
             limit: ledger::DEFAULT_LIMIT,
+            status: Some("it's".into()),
             program: Some("Pump.fun".into()),
-            since: Some("it's".into()),
             ..Default::default()
         };
         assert_eq!(
-            repeat_flags(&args),
-            " --program Pump.fun --since 'it'\\''s'"
+            repeat_flags(&args, None),
+            " --status 'it'\\''s' --program Pump.fun"
         );
     }
 }
