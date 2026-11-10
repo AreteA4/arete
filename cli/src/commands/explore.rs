@@ -549,7 +549,10 @@ pub fn is_stack_list_target(target: &str) -> bool {
 /// only the registry's 404, which reads like the registry is down.
 pub fn show_legacy_stack(word: &str, options: StackOptions<'_>, json: bool) -> Result<()> {
     show_stack(word, options, json).map_err(|error| {
-        if is_not_found(&error) {
+        let missing = error
+            .downcast_ref::<StackNotFound>()
+            .is_some_and(|missing| missing.reference == word);
+        if missing {
             anyhow::anyhow!(legacy_stack_miss(word))
         } else {
             error
@@ -557,11 +560,21 @@ pub fn show_legacy_stack(word: &str, options: StackOptions<'_>, json: bool) -> R
     })
 }
 
-fn is_not_found(error: &anyhow::Error) -> bool {
-    error
-        .chain()
-        .filter_map(|cause| cause.downcast_ref::<ApiClientError>())
-        .any(|error| error.status == reqwest::StatusCode::NOT_FOUND)
+/// The context of a stack lookup that found nothing: the registry has no
+/// descriptor under `reference` (404), and neither its listing nor the
+/// account's deployments name a stack it translates to. A stack that was
+/// found but whose descriptor failed is not this. Displays as the usual
+/// descriptor diagnostic.
+#[derive(Debug)]
+struct StackNotFound {
+    reference: String,
+    diagnostic: String,
+}
+
+impl std::fmt::Display for StackNotFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.diagnostic)
+    }
 }
 
 fn legacy_stack_miss(word: &str) -> String {
@@ -1349,6 +1362,16 @@ fn resolve_stack_descriptor(
         return Ok((install_ref, descriptor));
     }
 
+    let not_found = direct_error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<ApiClientError>())
+        .any(|error| error.status == reqwest::StatusCode::NOT_FOUND);
+    if not_found {
+        return Err(direct_error).context(StackNotFound {
+            reference: reference.to_string(),
+            diagnostic: descriptor_diagnostic(reference),
+        });
+    }
     Err(direct_error).with_context(|| descriptor_diagnostic(reference))
 }
 
@@ -3969,6 +3992,40 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("a4 explore catalog --query"), "{message}");
+
+        // A stack the registry listing names, whose descriptor then 404s,
+        // exists: its descriptor diagnostic is kept.
+        let listed = json!([{
+            "name": "lsit",
+            "websocketUrl": "wss://lsit-abc123.stack.arete.run",
+            "entities": []
+        }]);
+        let registry = MockRegistry::new(vec![
+            not_found(),
+            (200, listed.to_string()),
+            not_found(),
+            not_found(),
+            not_found(),
+        ]);
+        let error = show_legacy_stack(
+            "lsit",
+            StackOptions {
+                config_path: "/definitely/missing/arete.toml",
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(registry.next_target(), install_target("lsit", None));
+        assert_eq!(registry.next_target(), "/api/registry");
+        assert_eq!(registry.next_target(), install_target("lsit-abc123", None));
+        drop(registry);
+        assert!(
+            !error.to_string().starts_with("No stack named"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("'lsit-abc123'"), "{error:#}");
+        assert!(error.downcast_ref::<ApiClientError>().is_some());
 
         // Other failures are returned unchanged.
         let registry = MockRegistry::new(vec![(

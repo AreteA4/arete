@@ -2694,6 +2694,10 @@ mod tests {
             &["a4", "--profile", "agent", "help", "get"],
             &["a4", "-c", "x/arete.toml", "get", "--help"],
             &["a4", "-cx/arete.toml", "know", "-h"],
+            // Combined short flags: `-yc path` is `-y -c path`.
+            &["a4", "-yc", "x/arete.toml", "get", "--help"],
+            &["a4", "-ycx/arete.toml", "get", "--help"],
+            &["a4", "-yc=x/arete.toml", "explore", "--help"],
             &["a4", "--api-url=http://x", "stream", "--help"],
             // Missing arguments name the command, not "unrecognized".
             &["a4", "get"],

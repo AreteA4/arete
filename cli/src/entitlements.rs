@@ -91,13 +91,16 @@ pub fn named_command(cmd: &Command, args: &[OsString]) -> Option<String> {
             continue;
         }
         if let Some(shorts) = arg.strip_prefix('-').filter(|rest| !rest.is_empty()) {
-            // `-c path` takes the next argument; `-cpath` carries its value.
-            let mut chars = shorts.chars();
-            let short = chars.next();
-            if chars.next().is_none()
-                && takes_value(cmd.get_arguments().find(|a| a.get_short() == short))
-            {
-                args.next();
+            // Short flags combine (`-yc path`, `-ycpath`): the first one that
+            // takes a value ends the group, with the rest of the group as its
+            // value, or the next argument when nothing is left.
+            for (index, short) in shorts.char_indices() {
+                if takes_value(cmd.get_arguments().find(|a| a.get_short() == Some(short))) {
+                    if index + short.len_utf8() == shorts.len() {
+                        args.next();
+                    }
+                    break;
+                }
             }
             continue;
         }
