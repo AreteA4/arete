@@ -669,33 +669,45 @@ fn stack_view_list_next(install_ref: &str, output: &Value) -> Vec<String> {
         .and_then(Value::as_str)
         .unwrap_or("<Entity>/<view>");
     let mut next = vec![
-        format!("a4 stream {id} --stack {install_ref}"),
+        stream_view_command(install_ref, output, first),
         format!("a4 explore stack {install_ref} --views {id}"),
     ];
-    if let Some(keyed) = views
-        .iter()
-        .find(|view| view.get("output").and_then(Value::as_str) == Some("keyed"))
-    {
-        let id = keyed.get("id").and_then(Value::as_str).unwrap_or_default();
-        let key = keyed
-            .get("primaryKeys")
-            .and_then(Value::as_array)
-            .and_then(|keys| keys.first())
-            .and_then(Value::as_str)
-            .unwrap_or("key");
-        next.push(format!(
-            "a4 stream {id} --stack {install_ref} --key <{key}>"
-        ));
-    }
-    // The same id under two LiveSpecs: only the URL tells them apart.
-    if views.iter().enumerate().any(|(index, view)| {
-        views[..index]
-            .iter()
-            .any(|other| other.get("id") == view.get("id"))
-    }) {
-        next.push("a4 stream <id> --url <websocketUrl>".to_string());
+    if !is_keyed_view(first) {
+        if let Some(keyed) = views.iter().find(|view| is_keyed_view(view)) {
+            next.push(stream_view_command(install_ref, output, keyed));
+        }
     }
     next
+}
+
+fn is_keyed_view(view: &Value) -> bool {
+    view.get("output").and_then(Value::as_str) == Some("keyed")
+}
+
+/// The `a4 stream` command for one listed view: by stack name when the stack
+/// has a single WebSocket endpoint (the list's own `websocketUrl`), otherwise
+/// on the view's endpoint; a keyed view also needs `--key`.
+fn stream_view_command(install_ref: &str, output: &Value, view: &Value) -> String {
+    let id = view
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("<Entity>/<view>");
+    let target = match (
+        output.get("websocketUrl").and_then(Value::as_str),
+        view.get("websocketUrl").and_then(Value::as_str),
+    ) {
+        (None, Some(url)) => format!("--url {url}"),
+        _ => format!("--stack {install_ref}"),
+    };
+    let mut command = format!("a4 stream {id} {target}");
+    if is_keyed_view(view) {
+        let key = value_array(view, "primaryKeys")
+            .first()
+            .and_then(Value::as_str)
+            .unwrap_or("key");
+        command.push_str(&format!(" --key <{key}>"));
+    }
+    command
 }
 
 fn render_stack_view_list(output: &Value) -> String {
@@ -722,10 +734,9 @@ fn render_stack_view_list(output: &Value) -> String {
         .map(str::len)
         .max()
         .unwrap_or(0);
-    let several_lives = views
-        .iter()
-        .filter_map(|view| view.get("liveAlias"))
-        .any(|alias| Some(alias) != views[0].get("liveAlias"));
+    // Without a stack-wide endpoint, each view's LiveSpec and endpoint is
+    // what subscribing to it needs.
+    let several_lives = output.get("websocketUrl").is_none();
     for view in views {
         let id = view.get("id").and_then(Value::as_str).unwrap_or("?");
         let output = view.get("output").and_then(Value::as_str).unwrap_or("view");
@@ -4173,6 +4184,7 @@ mod tests {
         let mut body = json!({
             "stack": "ore",
             "stackManifestHash": "arete:h1:stack-manifest:sha256:ore",
+            "websocketUrl": "wss://ore.stack.example",
             "total": 3,
             "views": views
         });
@@ -4262,28 +4274,52 @@ mod tests {
     }
 
     #[test]
-    fn the_view_list_shows_endpoints_only_when_two_live_specs_share_an_id() {
-        let mut backup = ore_view("OreMiner/list", "collection", &["id.authority"], None);
+    fn a_keyed_first_view_streams_with_its_key() {
+        let output = ore_views(
+            Some("state"),
+            json!([
+                ore_view("OreRound/state", "keyed", &["id.round_id"], None),
+                ore_view("OreMiner/state", "keyed", &["id.authority"], None),
+            ]),
+        );
+        assert_eq!(
+            stack_view_list_next("ore", &output),
+            [
+                "a4 stream OreRound/state --stack ore --key <id.round_id>",
+                "a4 explore stack ore --views OreRound/state",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stack_with_several_endpoints_streams_each_view_on_its_own() {
+        let mut backup = ore_view("OreMiner/state", "keyed", &["id.authority"], None);
         backup["liveAlias"] = json!("backup");
         backup["websocketUrl"] = json!("wss://backup.example");
         let mut output = ore_views(
-            None,
+            Some("miner"),
             json!([
                 ore_view("OreMiner/list", "collection", &["id.authority"], None),
                 backup
             ]),
         );
+        // The registry names no stack-wide endpoint for several LiveSpecs,
+        // even when a search keeps views of one.
+        output.as_object_mut().unwrap().remove("websocketUrl");
         let next = stack_view_list_next("ore", &output);
         assert_eq!(
-            next.last().map(String::as_str),
-            Some("a4 stream <id> --url <websocketUrl>")
+            next,
+            [
+                "a4 stream OreMiner/list --url wss://ore.stack.example",
+                "a4 explore stack ore --views OreMiner/list",
+                "a4 stream OreMiner/state --url wss://backup.example --key <id.authority>",
+            ]
         );
         output["installRef"] = json!("ore");
         output["next"] = json!(next);
         let rendered = render_stack_view_list(&output);
-        assert!(rendered.contains("ore: 3 to subscribe to"), "{rendered}");
         assert!(
-            rendered.contains("OreMiner/list  collection  backup\n"),
+            rendered.contains("OreMiner/state  keyed by id.authority  backup\n"),
             "{rendered}"
         );
         assert!(rendered.contains("wss://backup.example"), "{rendered}");

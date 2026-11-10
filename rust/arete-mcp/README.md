@@ -191,7 +191,9 @@ error here.
   `read_view`, `subscribe` and `a4 stream` take), `entity`, `output`
   (`collection`, or `keyed`: one entity at a time by its `primaryKeys`), the
   catalog `summary` and `entitySummary` when published, and the `websocketUrl`
-  to subscribe on. `query` keeps the views matching every term, in the id,
+  to subscribe on. A top-level `websocketUrl` means the stack has one endpoint;
+  without it, pass the view's own `websocketUrl` as `url` to `read_view` or
+  `connect`. `query` keeps the views matching every term, in the id,
   entity, output or summaries; `total` counts the views before it.
 - `explore_stack_schema({ stack })` — entity and view schema: field paths, types,
   primary keys, and the `<EntityName>/<view>` ids `subscribe` accepts. Use this

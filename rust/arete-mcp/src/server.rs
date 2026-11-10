@@ -2627,7 +2627,9 @@ impl AreteMcp {
                           e.g. `OreRound/latest`), `entity`, `output` (`collection`, \
                           or `keyed`: read one entity at a time by its `primaryKeys`), \
                           the catalog `summary` and `entitySummary` when the stack \
-                          publishes them, and the `websocketUrl` to subscribe on.\n\n\
+                          publishes them, and the `websocketUrl` to subscribe on. A \
+                          top-level `websocketUrl` means the stack has one endpoint; \
+                          without it, read each view by its own `websocketUrl` (`url`).\n\n\
                           `query` keeps views matching every term (e.g. `miner`); \
                           `total` counts the stack's views before it. Then read one \
                           with `read_view { stack, view }`, follow it with `connect \
@@ -4167,10 +4169,17 @@ fn stack_views_next(views: &serde_json::Value) -> String {
             "This stack selects no views.".to_string()
         };
     }
-    "Read a view now: read_view { stack, view: <id> } (a `keyed` view also needs `key`, \
-     a value of its primaryKeys). Follow changes: connect { url: <websocketUrl> }, then \
-     subscribe { view: <id> }. Fields: explore_stack { stack, views: [<id>] }."
-        .to_string()
+    // Without a stack-wide endpoint, `read_view { stack }` cannot pick one.
+    let read = if views.get("websocketUrl").is_some() {
+        "read_view { stack, view: <id> }"
+    } else {
+        "read_view { url: <the view's websocketUrl>, view: <id> } (this stack has several endpoints)"
+    };
+    format!(
+        "Read a view now: {read} (a `keyed` view also needs `key`, a value of its \
+         primaryKeys). Follow changes: connect {{ url: <websocketUrl> }}, then subscribe \
+         {{ view: <id> }}. Fields: explore_stack {{ stack, views: [<id>] }}."
+    )
 }
 
 fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> {
@@ -4924,6 +4933,7 @@ mod explore_args_tests {
         let views = serde_json::json!({
             "stack": "ore",
             "stackManifestHash": "arete:h1:stack-manifest:sha256:ore",
+            "websocketUrl": "wss://ore.stack.example",
             "total": 2,
             "views": [{
                 "id": "OreRound/latest",
@@ -4974,6 +4984,15 @@ mod explore_args_tests {
         assert_eq!(
             answer["next"],
             "No view matches `query`; drop it to list all 2."
+        );
+
+        // Several endpoints: no stack-wide URL, so read by the view's own.
+        let mut several = views.clone();
+        several.as_object_mut().unwrap().remove("websocketUrl");
+        let next = stack_views_next(&several);
+        assert!(
+            next.contains("read_view { url: <the view's websocketUrl>, view: <id> }"),
+            "{next}"
         );
 
         // The `q` alias is accepted, as agents often send it.
