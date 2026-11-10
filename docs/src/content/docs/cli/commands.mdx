@@ -122,6 +122,8 @@ Scripts that read inside those pass-through objects should accept both spellings
 | `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
 | `a4 protocol webhook add\|list\|remove\|test`                                 | The webhook endpoints that receive your deployment's events       |
 | `a4 squads status\|list\|attach`                                              | Your account's Squads multisigs (set them up on the dashboard)    |
+| `a4 sandbox history\|holdings\|rules show`                                    | A sandbox's actions, holdings and rules (alpha)                   |
+| `a4 sandbox rules validate <file>`                                            | Check a Rules v3 file locally                                     |
 | `a4 protocol squads proposer\|status [target]`                                | Bring your own Squads multisig: the proposer and its status       |
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
@@ -1305,6 +1307,43 @@ a4 squads attach <M> --label Treasury
 
 Dev environments keep their own proposer: use `a4 protocol squads --dev` and
 [`a4 dev squads`](/cli/local-development/#squads-multisigs) there.
+
+### a4 sandbox
+
+Read a [sandbox](/sandboxes/overview/) wallet (alpha) and check its rules.
+The reads use a short-lived token your account's API key mints for the
+sandbox, so they work for an agent the sandbox's owner granted access. They
+never run an action: actions go through the MCP `sandbox_invoke` tool.
+
+```bash
+a4 sandbox history --sandbox <id>                 # newest first, 20 per page
+a4 sandbox history --status landed --since 24h    # filtered, across pages
+a4 sandbox history --cursor <nextCursor>          # the next page
+a4 sandbox history --all --json                   # every page, as JSON
+a4 sandbox holdings                               # SOL, tokens, positions
+a4 sandbox rules show                             # the rules, as the agent sees them
+a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: stdin)
+```
+
+| Flag             | Description                                                                   |
+| ---------------- | ----------------------------------------------------------------------------- |
+| `--sandbox <id>` | The sandbox (default: `ARETE_SANDBOX_ID`)                                     |
+| `--limit <n>`    | `history`: actions per page, 1 to 100 (default 20)                            |
+| `--cursor <c>`   | `history`: carry on from a previous `nextCursor`                              |
+| `--status <s>`   | `history`: only `landed`, `failed`, `rejected`, ...                           |
+| `--program <p>`  | `history`: only actions that called this program (id or name)                 |
+| `--mint <m>`     | `history`: only actions that moved this token                                 |
+| `--since <t>`    | `history`: only actions since an RFC 3339 time or an age (`30m`, `24h`, `7d`) |
+| `--all`          | `history`: read every page                                                    |
+| `--raw`          | Keep raw transactions and accounts in `--json` output                         |
+| `--json`         | The answer as JSON                                                            |
+
+The filters are applied by `a4` to the pages it reads; a filtered read
+keeps reading (up to 10 pages) until enough actions match. `rules validate`
+exits 1 when the file has errors, and prints the errors and warnings with
+the JSON path of each (`--json`: `{ valid, errors, warnings, enabledPrograms }`).
+A refusal from the API exits 77 (not granted or not signed in), 75 (rate
+limited) or 1, and with `--json` prints its problem body.
 
 ### a4 protocol squads
 

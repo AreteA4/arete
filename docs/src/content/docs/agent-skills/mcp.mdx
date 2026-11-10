@@ -393,6 +393,23 @@ operations.
 An unknown alias, view or read is an invalid-params error that lists what is
 installed.
 
+### Sandbox tools
+
+Listed when `ARETE_SANDBOX_ID` names a [sandbox](/sandboxes/overview/)
+(alpha) whose owner granted this agent access. The agent's own API key mints
+a short-lived token for the sandbox; no key or RPC URL is ever returned.
+
+| Tool               | Arguments                                                                    | Returns                                                                                     |
+| ------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `sandbox_status`   |                                                                              | the wallet, its balances and the actions this agent may run                                 |
+| `sandbox_rules`    |                                                                              | the allowed programs and instructions, and under Rules v3 the toggles, limits and allowlist |
+| `sandbox_derive`   | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`             | an address, without touching the chain                                                      |
+| `sandbox_preview`  | `action`, `args`                                                             | a dry run: `pass` and what the wallet would lose, or the refusal                            |
+| `sandbox_invoke`   | `action` (`invoke`, `withdraw`, `swap`), `args`, `idempotencyKey?`           | runs one action: the only tool that moves funds                                             |
+| `sandbox_action`   | `actionId` or `idempotencyKey`                                               | one action's status                                                                         |
+| `sandbox_history`  | `cursor?`, `limit?`, `status?`, `program?`, `mint?`, `since?`, `includeRaw?` | read-only: past actions, newest first, with decoded instructions and balance changes        |
+| `sandbox_holdings` | `includeRaw?`                                                                | read-only: SOL, tokens (with `acquiredBySandbox`) and program positions                     |
+
 ### Dev environment tools
 
 These tools act on an Arete cloud dev environment: the project's (the
