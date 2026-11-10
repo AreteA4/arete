@@ -98,12 +98,18 @@ pub struct SandboxRefusal {
 }
 
 impl SandboxRefusal {
-    /// Refused here, before anything was sent: the same call is refused
-    /// again, whatever status 0 would otherwise suggest.
+    /// Refused here. A request refused before anything was sent is refused
+    /// again, whatever status 0 would otherwise suggest; an API answer this
+    /// server could not use (a mint without a token, a history page without
+    /// items) may be fine next time, so that stays retryable.
     fn local(code: &str, error: impl Into<String>) -> Self {
         Self {
             status: 0,
-            body: json!({ "code": code, "error": error.into(), "retryable": false }),
+            body: json!({
+                "code": code,
+                "error": error.into(),
+                "retryable": transport_failure(code),
+            }),
             kind: CallKind::Read,
         }
     }
@@ -1751,6 +1757,29 @@ mod tests {
             .to_string();
         assert!(hint.contains("sandbox_action"), "{hint}");
         assert!(hint.contains("idempotencyKey"), "{hint}");
+    }
+
+    /// A refusal made here is final when the request was at fault, and
+    /// retryable when the API's answer was: retryable and hint agree.
+    #[test]
+    fn local_refusals_are_retryable_only_for_an_unusable_answer() {
+        let request = SandboxRefusal::local("sandbox-not-configured", "no id").to_json();
+        assert_eq!(request["retryable"], false);
+        let answer =
+            SandboxRefusal::local("sandbox-response-unreadable", "no token minted").to_json();
+        assert_eq!(answer["retryable"], true);
+        assert!(answer["hint"]
+            .as_str()
+            .unwrap()
+            .contains("retry the same call"));
+    }
+
+    #[tokio::test]
+    async fn a_mint_without_a_token_is_retryable() {
+        let (base, _) = stub(vec![("POST", "/ws/sessions", 200, json!({ "scopes": [] }))]);
+        let shown = client(&base).status().await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-response-unreadable");
+        assert_eq!(shown["retryable"], true);
     }
 
     #[test]
