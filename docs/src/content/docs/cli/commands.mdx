@@ -308,7 +308,7 @@ text output starts with the status line.
 | `project.auth-profile`  | `.arete/auth.toml` selects only the restricted `agent` profile                  | `warn`/`fail`: `a4 doctor --fix`                                               |
 | `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)             | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch  |
 | `auth.credentials`      | Key present for the active API URL                                              | `info`: `a4 auth signup` (not needed to explore)                               |
-| `auth.whoami`           | Credentials are accepted by the server                                          | `fail`: `a4 auth login --key …`                                                |
+| `auth.whoami`           | Credentials are accepted by the server                                          | `fail`: `a4 auth login --key …` if refused; `a4 self update` if unreadable     |
 | `account.plan`          | The account's plan and dev environment tier                                     | `unknown` when the server cannot say                                           |
 | `account.<surface>`     | One per surface the account can or can't use (see below)                        | `info` with the reason and the unlock; `warn` if `arete.toml` uses the surface |
 | `probe.program-read`    | One Program Read existence check for the first registry program in `arete.toml` | `warn` with the HTTP status and error code; retryable failures say so          |
@@ -731,6 +731,8 @@ a4 explore <stack-ref> <Entity> --json
 
 # Compact by default; ask for the part you need
 a4 explore stack ore --json
+a4 explore stack ore --views --json
+a4 explore stack ore --views --query miner --json
 a4 explore stack ore --views OreRound/latest,OreMiner/state --json
 a4 explore stack ore --full --json
 a4 explore program ore --full --json
@@ -750,13 +752,14 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 
 **Options:**
 
-| Flag               | Applies to         | Description                                                                                                                                            |
-| ------------------ | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--summary`        | `stack`, `program` | The compact summary, which is also the default                                                                                                         |
-| `--full`           | `stack`, `program` | The full exploration: identity hashes, every auth surface and endpoint, SDK metadata; for a program, the IDL-level dump                                |
-| `--views <ids>`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated or repeated; prefix `alias:` when several LiveSpecs select the same id |
-| `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`) |
-| `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                              |
+| Flag               | Applies to         | Description                                                                                                                                                                                                |
+| ------------------ | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--summary`        | `stack`, `program` | The compact summary, which is also the default                                                                                                                                                             |
+| `--full`           | `stack`, `program` | The full exploration: identity hashes, every auth surface and endpoint, SDK metadata; for a program, the IDL-level dump                                                                                    |
+| `--views [ids]`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated or repeated; prefix `alias:` when several LiveSpecs select the same id. With no ids, lists every view you can subscribe to |
+| `--query <terms>`  | `stack --views`    | With `--views` and no ids: only the views matching every term, in the view id, entity, output or summaries                                                                                                 |
+| `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`)                                                     |
+| `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                                                                                  |
 
 **Output varies by specificity:**
 
@@ -766,6 +769,7 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 | `a4 explore programs`                    | Complete promoted Program Release + Program Read installations. Release and spec hashes need `--full`; `--fields` chooses keys               |
 | `a4 explore stack <ref>`                 | Compact summary: `live`, entities and views, token-amount fields, `read.*` helpers, Program SDKs, stream endpoints and auth, install command |
 | `a4 explore stack <ref> --full`          | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command    |
+| `a4 explore stack <ref> --views`         | Every view you can subscribe to: id, entity, `collection` or `keyed` (with primary keys), summary, endpoint, and the `a4 stream` command     |
 | `a4 explore stack <ref> --views …`       | The named views' schemas (field descriptions and token-amount units) and endpoints                                                           |
 | `a4 explore program <ref>`               | Compact summary: instructions and accounts with their first doc line, PDAs and seeds, SDK operations, transports, install command            |
 | `a4 explore program <ref> --full`        | Program identity, accounts, instructions, events and types in full, Program Read, and install command                                        |
@@ -787,7 +791,8 @@ are the ones `a4 install` pins into SDKs, so use those when you hard-code a
 URL. `a4 explore --json` says the same in `discovery.streamEndpoints`.
 
 Everything is cut from the same pinned install descriptor on the client, so
-the compact forms agree with the full one. A stack or program summary, one
+the compact forms agree with the full one. The view list (`--views` with no
+ids) is cut from that descriptor by the registry, which also searches it. A stack or program summary, one
 operation, or one view is a few KB; compact JSON carries a `hint` naming the
 next narrower or fuller form, and a `--full` output past 20,000 characters ends
 with one (on stderr for JSON).
@@ -963,6 +968,9 @@ a4 get OreRound/latest --stack ore --limit 1
 a4 get OreRound/latest --stack ore --limit 1 \
   --select id.round_id,state.total_deployed,treasury.motherlode
 
+# Whole nested objects, kept nested
+a4 get OreRound/latest --stack ore --limit 1 --select id,state.*
+
 # One entity by key
 a4 get OreRound/state --stack ore --key 434161
 
@@ -976,7 +984,7 @@ a4 get OreRound/latest --stack ore --where 'state.total_deployed>8' --limit 5
 | `--url <ws-url>`     | WebSocket URL instead of `--stack`                                                     |
 | `-k, --key <key>`    | Read the one entity with this key (usually an `<Entity>/state` view)                   |
 | `--where <expr>`     | Filter: `field=value`, `field>N`, `field~regex` (repeatable, ANDed). Alias: `--filter` |
-| `--select <paths>`   | Comma-separated dot paths to output                                                    |
+| `--select <paths>`   | Comma-separated dot paths to output (see below)                                        |
 | `--limit <n>`        | Most entities to print, in the view's order (default 10)                               |
 | `--timeout <secs>`   | Seconds to wait for the connection and snapshot before failing (default 15)            |
 
@@ -994,6 +1002,14 @@ Output:
   "view": "OreRound/latest"
 }
 ```
+
+`--select` puts each path's value under its full dot path as one flat key,
+as above. That suits a few leaf fields. For nested entities, select the
+parent object instead of many leaves: `--select state` (or `--select
+'state.*'`) prints `{"state": {...}}` with every field of `state` nested as in
+a full read, and `--select id,state.*` combines both. `*` can only end a
+path; to pick some fields inside an object, list them
+(`state.a,state.b`).
 
 Without `--where`, the server sends only `--limit` entities. With `--where`,
 `total` counts the whole snapshot and `matching` the entities that passed.

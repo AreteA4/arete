@@ -5,12 +5,12 @@
 //! lookup (`/api/registry/protocols`). Response types are lenient (unknown
 //! fields are ignored) so a newer server stays compatible with this CLI.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use super::ApiClient;
+use super::{ApiClient, SendApi};
 
 /// A protocol the caller owns.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -253,8 +253,7 @@ impl ApiClient {
                     .get(format!("{}/api/registry/protocols", self.base_url))
                     .query(&params),
             )
-            .send()
-            .context("Failed to send protocol listing search request")?;
+            .send_api("protocol listing search")?;
         Self::handle_response(response)
     }
 
@@ -266,8 +265,7 @@ impl ApiClient {
                 self.base_url,
                 super::registry_path_segment(slug)?
             )))
-            .send()
-            .context("Failed to send protocol listing request")?;
+            .send_api("protocol listing")?;
         Self::listing_result(Self::handle_response(response))
     }
 
@@ -313,8 +311,7 @@ impl ApiClient {
             .client
             .get(format!("{}{path}", self.base_url))
             .bearer_auth(api_key)
-            .send()
-            .with_context(|| format!("Failed to send {what} request"))?;
+            .send_api(what)?;
         Self::handle_response(response)
     }
 
@@ -324,8 +321,7 @@ impl ApiClient {
             .client
             .delete(format!("{}{path}", self.base_url))
             .bearer_auth(api_key)
-            .send()
-            .with_context(|| format!("Failed to send {what} request"))?;
+            .send_api(what)?;
         Self::handle_response(response)
     }
 
@@ -341,8 +337,7 @@ impl ApiClient {
             .post(format!("{}{path}", self.base_url))
             .bearer_auth(api_key)
             .json(body)
-            .send()
-            .with_context(|| format!("Failed to send {what} request"))?;
+            .send_api(what)?;
         Self::handle_response(response)
     }
 

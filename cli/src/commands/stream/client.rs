@@ -38,7 +38,11 @@ struct PendingSnapshot {
 
 fn build_state(args: &StreamArgs, view: &str, url: &str) -> Result<StreamState> {
     let filter = Filter::parse(&args.filters)?;
-    let select_fields = args.select.as_deref().map(filter::parse_select);
+    let select_fields = args
+        .select
+        .as_deref()
+        .map(filter::parse_select)
+        .transpose()?;
     let allowed_ops = args.ops.as_deref().map(|ops| {
         ops.split(',')
             .map(|s| {

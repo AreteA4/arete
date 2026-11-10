@@ -281,6 +281,10 @@ pub struct StackOptions<'a> {
     pub full: bool,
     /// Only these selected views, with their entity schemas.
     pub views: Vec<String>,
+    /// List the stack's subscribable views instead (`--views` with no ids).
+    pub list_views: bool,
+    /// With `list_views`: keep the views matching every term.
+    pub view_query: Option<&'a str>,
     /// One operation from the stack's program SDKs.
     pub operation: Option<&'a str>,
     /// arete.toml, to report the endpoints a project's SDK uses.
@@ -628,6 +632,10 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
         .as_ref()
         .map_or(reference, |project| project.package.as_str());
 
+    if options.list_views {
+        return show_stack_view_list(&client, lookup, options.view_query, json);
+    }
+
     if let Some(entity) = options.entity {
         let (_, typescript, _) = match resolve_stack_descriptors(&client, lookup) {
             Ok(resolved) => resolved,
@@ -710,6 +718,161 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
         print!("{}", render_stack_views(&output));
     }
     Ok(())
+}
+
+/// `a4 explore stack <ref> --views` with no ids: the views the stack lets a
+/// client subscribe to, from the registry, narrowed by `query` when given.
+fn show_stack_view_list(
+    client: &ApiClient,
+    reference: &str,
+    query: Option<&str>,
+    json: bool,
+) -> Result<()> {
+    let (install_ref, mut output) = match resolve_stack_reference(client, reference, |reference| {
+        client.get_registry_stack_views(reference, query)
+    }) {
+        Ok(resolved) => resolved,
+        Err(error) => return answer_definition_only(client, reference, error, json),
+    };
+    output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
+    output["installRef"] = json!(install_ref);
+    output["next"] = json!(stack_view_list_next(&install_ref, &output));
+    if json {
+        println!("{}", serde_json::to_string_pretty(&output)?);
+    } else {
+        print!("{}", render_stack_view_list(&output));
+    }
+    Ok(())
+}
+
+/// The follow-up commands for a stack view list: stream a view, read its
+/// fields, or widen an empty search.
+fn stack_view_list_next(install_ref: &str, output: &Value) -> Vec<String> {
+    let views = value_array(output, "views");
+    let Some(first) = views.first() else {
+        let total = output.get("total").and_then(Value::as_u64).unwrap_or(0);
+        return if output.get("query").is_some() && total > 0 {
+            vec![format!(
+                "No view matches; `a4 explore stack {install_ref} --views` lists all {total}."
+            )]
+        } else {
+            Vec::new()
+        };
+    };
+    let id = first
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("<Entity>/<view>");
+    let mut next = vec![
+        stream_view_command(install_ref, output, first),
+        format!("a4 explore stack {install_ref} --views {id}"),
+    ];
+    if !is_keyed_view(first) {
+        if let Some(keyed) = views.iter().find(|view| is_keyed_view(view)) {
+            next.push(stream_view_command(install_ref, output, keyed));
+        }
+    }
+    next
+}
+
+fn is_keyed_view(view: &Value) -> bool {
+    view.get("output").and_then(Value::as_str) == Some("keyed")
+}
+
+/// The `a4 stream` command for one listed view: by stack name when the stack
+/// has a single WebSocket endpoint (the list's own `websocketUrl`), otherwise
+/// on the view's endpoint; a keyed view also needs `--key`.
+fn stream_view_command(install_ref: &str, output: &Value, view: &Value) -> String {
+    let id = view
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("<Entity>/<view>");
+    let target = match (
+        output.get("websocketUrl").and_then(Value::as_str),
+        view.get("websocketUrl").and_then(Value::as_str),
+    ) {
+        (None, Some(url)) => format!("--url {url}"),
+        _ => format!("--stack {install_ref}"),
+    };
+    let mut command = format!("a4 stream {id} {target}");
+    if is_keyed_view(view) {
+        let key = value_array(view, "primaryKeys")
+            .first()
+            .and_then(Value::as_str)
+            .unwrap_or("key");
+        command.push_str(&format!(" --key <{key}>"));
+    }
+    command
+}
+
+fn render_stack_view_list(output: &Value) -> String {
+    let install_ref = output
+        .get("installRef")
+        .and_then(Value::as_str)
+        .unwrap_or("stack");
+    let views = value_array(output, "views");
+    let total = output.get("total").and_then(Value::as_u64).unwrap_or(0);
+    let mut text = match output.get("query").and_then(Value::as_str) {
+        Some(query) => format!(
+            "\n{} {install_ref}: {} of {total} match \"{query}\"\n",
+            "Views".bold(),
+            views.len()
+        ),
+        None => format!(
+            "\n{} {install_ref}: {total} to subscribe to\n",
+            "Views".bold()
+        ),
+    };
+    let width = views
+        .iter()
+        .filter_map(|view| view.get("id").and_then(Value::as_str))
+        .map(str::len)
+        .max()
+        .unwrap_or(0);
+    // Without a stack-wide endpoint, each view's LiveSpec and endpoint is
+    // what subscribing to it needs.
+    let several_lives = output.get("websocketUrl").is_none();
+    for view in views {
+        let id = view.get("id").and_then(Value::as_str).unwrap_or("?");
+        let output = view.get("output").and_then(Value::as_str).unwrap_or("view");
+        let mut line = format!("  {id:width$}  {output}");
+        if output == "keyed" {
+            let keys: Vec<&str> = value_array(view, "primaryKeys")
+                .iter()
+                .filter_map(Value::as_str)
+                .collect();
+            if !keys.is_empty() {
+                line.push_str(&format!(" by {}", keys.join(", ")));
+            }
+        }
+        if several_lives {
+            if let Some(alias) = view.get("liveAlias").and_then(Value::as_str) {
+                line.push_str(&format!("  {alias}"));
+            }
+        }
+        text.push_str(&line);
+        text.push('\n');
+        let summary = view
+            .get("summary")
+            .or_else(|| view.get("entitySummary"))
+            .and_then(Value::as_str);
+        if let Some(summary) = summary {
+            text.push_str(&format!("  {:width$}  {}\n", "", summary.dimmed()));
+        }
+        if several_lives {
+            if let Some(url) = view.get("websocketUrl").and_then(Value::as_str) {
+                text.push_str(&format!("  {:width$}  {}\n", "", url.dimmed()));
+            }
+        }
+    }
+    let next = value_array(output, "next");
+    if !next.is_empty() {
+        text.push_str("\nNext\n");
+        for step in next.iter().filter_map(Value::as_str) {
+            text.push_str(&format!("  {step}\n"));
+        }
+    }
+    text
 }
 
 /// Answer a failed stack descriptor lookup that is a definition-only stack
@@ -1322,7 +1485,21 @@ fn resolve_stack_descriptor(
     reference: &str,
     language: Option<&str>,
 ) -> Result<(String, RegistryStackInstallResponse)> {
-    let direct_error = match client.get_registry_stack_install(reference, language) {
+    resolve_stack_reference(client, reference, |reference| {
+        client.get_registry_stack_install(reference, language)
+    })
+}
+
+/// `fetch` for `reference`, and the exact install reference it succeeded
+/// for: `reference` itself, or the one a legacy display name or an owner's
+/// private stack name translated to. Every registry read keyed by a stack's
+/// install reference (its descriptor, its views) resolves the same way.
+fn resolve_stack_reference<T>(
+    client: &ApiClient,
+    reference: &str,
+    fetch: impl Fn(&str) -> Result<T>,
+) -> Result<(String, T)> {
+    let direct_error = match fetch(reference) {
         Ok(descriptor) => return Ok((reference.to_string(), descriptor)),
         Err(error) => error,
     };
@@ -1342,10 +1519,9 @@ fn resolve_stack_descriptor(
             .find(|item| item.name.eq_ignore_ascii_case(reference))
         {
             if let Some(install_ref) = install_ref_from_websocket_url(&item.websocket_url) {
-                let descriptor = client
-                    .get_registry_stack_install(&install_ref, language)
-                    .with_context(|| descriptor_diagnostic(&install_ref))?;
-                return Ok((install_ref, descriptor));
+                let fetched =
+                    fetch(&install_ref).with_context(|| descriptor_diagnostic(&install_ref))?;
+                return Ok((install_ref, fetched));
             }
         }
     }
@@ -1356,10 +1532,8 @@ fn resolve_stack_descriptor(
     if let Ok(Some(install_ref)) = paginated_deployment_install_ref(reference, |limit, offset| {
         client.list_deployments_page(limit, offset)
     }) {
-        let descriptor = client
-            .get_registry_stack_install(&install_ref, language)
-            .with_context(|| descriptor_diagnostic(&install_ref))?;
-        return Ok((install_ref, descriptor));
+        let fetched = fetch(&install_ref).with_context(|| descriptor_diagnostic(&install_ref))?;
+        return Ok((install_ref, fetched));
     }
 
     let not_found = direct_error
@@ -4248,6 +4422,191 @@ mod tests {
         assert!(
             !rendered.contains("Program Release"),
             "no identity hashes: {rendered}"
+        );
+    }
+
+    fn ore_views(query: Option<&str>, views: Value) -> Value {
+        let mut body = json!({
+            "stack": "ore",
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:ore",
+            "websocketUrl": "wss://ore.stack.example",
+            "total": 3,
+            "views": views
+        });
+        if let Some(query) = query {
+            body["query"] = json!(query);
+        }
+        body
+    }
+
+    fn ore_view(id: &str, output: &str, keys: &[&str], summary: Option<&str>) -> Value {
+        let mut view = json!({
+            "id": id,
+            "liveAlias": "live",
+            "entity": id.split('/').next().unwrap(),
+            "output": output,
+            "primaryKeys": keys,
+            "websocketUrl": "wss://ore.stack.example"
+        });
+        if let Some(summary) = summary {
+            view["summary"] = json!(summary);
+        }
+        view
+    }
+
+    #[test]
+    fn the_view_list_needs_no_view_ids_and_names_the_follow_up_commands() {
+        let body = ore_views(
+            Some("round"),
+            json!([
+                ore_view(
+                    "OreRound/latest",
+                    "collection",
+                    &["id.round_id"],
+                    Some("The round being mined now.")
+                ),
+                ore_view("OreRound/state", "keyed", &["id.round_id"], None),
+            ]),
+        );
+        let registry = MockRegistry::new(vec![(200, body.to_string())]);
+        let client = ApiClient::new().unwrap();
+        let (install_ref, mut output) = resolve_stack_reference(&client, "ore", |reference| {
+            client.get_registry_stack_views(reference, Some(" round "))
+        })
+        .unwrap();
+        assert_eq!(install_ref, "ore");
+        assert_eq!(
+            registry.next_target(),
+            "/api/registry/stacks/ore/views?q=round"
+        );
+
+        let next = stack_view_list_next(&install_ref, &output);
+        assert_eq!(
+            next,
+            [
+                "a4 stream OreRound/latest --stack ore",
+                "a4 explore stack ore --views OreRound/latest",
+                "a4 stream OreRound/state --stack ore --key <id.round_id>",
+            ]
+        );
+        output["installRef"] = json!(install_ref);
+        output["next"] = json!(next);
+        let rendered = render_stack_view_list(&output);
+        assert!(
+            rendered.contains("ore: 2 of 3 match \"round\""),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  OreRound/latest  collection\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  OreRound/state   keyed by id.round_id\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("The round being mined now."),
+            "{rendered}"
+        );
+        assert!(
+            !rendered.contains("wss://"),
+            "one LiveSpec needs no URL: {rendered}"
+        );
+        assert!(
+            rendered.contains("\nNext\n  a4 stream OreRound/latest --stack ore\n"),
+            "{rendered}"
+        );
+    }
+
+    #[test]
+    fn a_keyed_first_view_streams_with_its_key() {
+        let output = ore_views(
+            Some("state"),
+            json!([
+                ore_view("OreRound/state", "keyed", &["id.round_id"], None),
+                ore_view("OreMiner/state", "keyed", &["id.authority"], None),
+            ]),
+        );
+        assert_eq!(
+            stack_view_list_next("ore", &output),
+            [
+                "a4 stream OreRound/state --stack ore --key <id.round_id>",
+                "a4 explore stack ore --views OreRound/state",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_stack_with_several_endpoints_streams_each_view_on_its_own() {
+        let mut backup = ore_view("OreMiner/state", "keyed", &["id.authority"], None);
+        backup["liveAlias"] = json!("backup");
+        backup["websocketUrl"] = json!("wss://backup.example");
+        let mut output = ore_views(
+            Some("miner"),
+            json!([
+                ore_view("OreMiner/list", "collection", &["id.authority"], None),
+                backup
+            ]),
+        );
+        // The registry names no stack-wide endpoint for several LiveSpecs,
+        // even when a search keeps views of one.
+        output.as_object_mut().unwrap().remove("websocketUrl");
+        let next = stack_view_list_next("ore", &output);
+        assert_eq!(
+            next,
+            [
+                "a4 stream OreMiner/list --url wss://ore.stack.example",
+                "a4 explore stack ore --views OreMiner/list",
+                "a4 stream OreMiner/state --url wss://backup.example --key <id.authority>",
+            ]
+        );
+        output["installRef"] = json!("ore");
+        output["next"] = json!(next);
+        let rendered = render_stack_view_list(&output);
+        assert!(
+            rendered.contains("OreMiner/state  keyed by id.authority  backup\n"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("wss://backup.example"), "{rendered}");
+    }
+
+    #[test]
+    fn an_empty_view_search_says_how_to_list_every_view() {
+        let output = ore_views(Some("treasury"), json!([]));
+        assert_eq!(
+            stack_view_list_next("ore", &output),
+            ["No view matches; `a4 explore stack ore --views` lists all 3."]
+        );
+        assert!(stack_view_list_next("ore", &json!({"total": 0, "views": []})).is_empty());
+    }
+
+    #[test]
+    fn the_view_list_resolves_a_legacy_display_name_like_the_descriptor() {
+        let listing = json!([{
+            "name": "OreMining",
+            "description": null,
+            "websocket_url": "wss://oremining-x1y2z3.stack.arete.run",
+            "entities": ["OreRound"]
+        }]);
+        let registry = MockRegistry::new(vec![
+            not_found(),
+            (200, listing.to_string()),
+            (200, ore_views(None, json!([])).to_string()),
+        ]);
+        let client = ApiClient::new().unwrap();
+        let (install_ref, _) = resolve_stack_reference(&client, "OreMining", |reference| {
+            client.get_registry_stack_views(reference, None)
+        })
+        .unwrap();
+        assert_eq!(install_ref, "oremining-x1y2z3");
+        assert_eq!(
+            registry.next_target(),
+            "/api/registry/stacks/OreMining/views"
+        );
+        assert_eq!(registry.next_target(), "/api/registry");
+        assert_eq!(
+            registry.next_target(),
+            "/api/registry/stacks/oremining-x1y2z3/views"
         );
     }
 
