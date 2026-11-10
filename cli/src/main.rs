@@ -36,6 +36,7 @@ use std::process;
 mod agents;
 mod api_client;
 mod arete_home;
+mod command_hints;
 mod commands;
 mod config;
 mod entitlements;
@@ -164,7 +165,7 @@ enum Commands {
 
     /// Discover installable stacks, programs and protocols through the catalog and pinned descriptors
     Explore {
-        /// `catalog`, `stacks`, `stack`, `program`, `programs`, `protocol`, or a legacy stack reference
+        /// `catalog`, `stacks` (or `list`), `stack`, `program`, `programs`, `protocol`, or a legacy stack reference
         target: Option<String>,
 
         /// Resource reference, `catalog <kind>`, or an entity for legacy `explore <stack> <entity>`
@@ -1019,16 +1020,22 @@ enum BuildCommands {
 }
 
 /// Parse the arguments. A command runs as before, granted or not (the API
-/// refuses what the account may not use). Help, errors and suggestions list
-/// only the command groups the account is entitled to.
+/// refuses what the account may not use). Top-level help, errors and
+/// suggestions list only the command groups the account is entitled to; a
+/// command named on the command line gets its own help and errors either way.
 fn parse_cli() -> Cli {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let error = match Cli::try_parse_from(&args) {
         Ok(cli) => return cli,
         Err(error) => error,
     };
-    if error.kind() == clap::error::ErrorKind::DisplayVersion {
-        error.exit();
+    match parse_failure(&Cli::command(), &args, error.kind()) {
+        ParseFailure::Full => error.exit(),
+        ParseFailure::Hint(message) => {
+            eprint!("{message}");
+            process::exit(2);
+        }
+        ParseFailure::Visible => {}
     }
     let cmd = visible_command(
         entitlements::global_option(&args, "--api-url", None).as_deref(),
@@ -1038,6 +1045,37 @@ fn parse_cli() -> Cli {
     );
     let matches = cmd.get_matches_from(&args);
     Cli::from_arg_matches(&matches).unwrap_or_else(|error| error.exit())
+}
+
+/// How to report arguments the full parser refused.
+#[derive(Debug, PartialEq, Eq)]
+enum ParseFailure {
+    /// The full parser's own error or help: `--version`, or a command named
+    /// on the command line (`a4 explore --help`, `a4 help get`, `a4 get`
+    /// without its view), whether or not the account's help lists it.
+    Full,
+    /// A name that is not an a4 command but has a known replacement.
+    Hint(String),
+    /// Top-level help, or an unknown command: answer with the account's
+    /// commands.
+    Visible,
+}
+
+fn parse_failure(
+    cmd: &clap::Command,
+    args: &[std::ffi::OsString],
+    kind: clap::error::ErrorKind,
+) -> ParseFailure {
+    if kind == clap::error::ErrorKind::DisplayVersion {
+        return ParseFailure::Full;
+    }
+    let Some(name) = entitlements::named_command(cmd, args) else {
+        return ParseFailure::Visible;
+    };
+    if cmd.find_subcommand(&name).is_some() {
+        return ParseFailure::Full;
+    }
+    command_hints::unknown_command_message(&name).map_or(ParseFailure::Visible, ParseFailure::Hint)
 }
 
 /// The `a4` command with only the account's command groups.
@@ -1400,9 +1438,12 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             summary,
             views,
         } => {
-            // `a4 explore stacks` is the root stack list, not a stack named `stacks`.
+            // `a4 explore stacks` (or `list`) is the root stack list, not a
+            // stack named `stacks`.
             let target = target.filter(|target| {
-                !(target == "stacks" && reference.is_none() && entity.is_none())
+                !(commands::explore::is_stack_list_target(target)
+                    && reference.is_none()
+                    && entity.is_none())
             });
             // On the catalog, `--summary` means the brief field set.
             let catalog_target = target.as_deref() == Some("catalog");
@@ -1576,7 +1617,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             (Some("stack"), None, None) => Err(anyhow::anyhow!(
                 "Stack reference required. Usage: a4 explore stack <ref>; list stacks with `a4 explore stacks`"
             )),
-            (Some(stack), entity, None) => commands::explore::show_stack(
+            (Some(stack), entity, None) => commands::explore::show_legacy_stack(
                 stack,
                 commands::explore::StackOptions {
                     entity,
@@ -2633,6 +2674,128 @@ mod tests {
         // The full parser still accepts a hidden command: it runs and the
         // API refuses it when the account may not use it.
         assert!(Cli::try_parse_from(["a4", "install", "ore"]).is_ok());
+    }
+
+    fn parse_failure_of(args: &[&str]) -> ParseFailure {
+        let args: Vec<std::ffi::OsString> = args.iter().map(Into::into).collect();
+        let kind = Cli::try_parse_from(&args)
+            .err()
+            .expect("these arguments do not parse")
+            .kind();
+        parse_failure(&Cli::command(), &args, kind)
+    }
+
+    #[test]
+    fn a_named_command_gets_its_own_help_and_errors_whatever_the_grant() {
+        // Help for a command the account's listing may hide.
+        for args in [
+            &["a4", "explore", "--help"][..],
+            &["a4", "help", "explore"],
+            &["a4", "--profile", "agent", "help", "get"],
+            &["a4", "-c", "x/arete.toml", "get", "--help"],
+            &["a4", "-cx/arete.toml", "know", "-h"],
+            &["a4", "--api-url=http://x", "stream", "--help"],
+            // Missing arguments name the command, not "unrecognized".
+            &["a4", "get"],
+            &["a4", "--json", "explore", "--fields"],
+            &["a4", "--version"],
+        ] {
+            assert_eq!(parse_failure_of(args), ParseFailure::Full, "{args:?}");
+        }
+        // The full parser renders those: help for `explore`, not an
+        // unrecognized subcommand.
+        let help = Cli::try_parse_from(["a4", "help", "explore"])
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(help.contains("Usage: a4 explore"), "{help}");
+        assert!(help.contains("`stacks` (or `list`)"), "{help}");
+
+        // The top-level listing and unknown names stay with the account's
+        // commands.
+        for args in [
+            &["a4", "--help"][..],
+            &["a4", "help"],
+            &["a4", "instal"],
+            &["a4", "help", "instal"],
+        ] {
+            assert_eq!(parse_failure_of(args), ParseFailure::Visible, "{args:?}");
+        }
+    }
+
+    #[test]
+    fn non_commands_people_reach_for_point_to_the_one_that_does_it() {
+        for name in ["read", "query", "view"] {
+            let ParseFailure::Hint(message) = parse_failure_of(&["a4", name, "OreRound/latest"])
+            else {
+                panic!("{name} has no hint");
+            };
+            assert!(message.contains("a4 get <Entity>/<view>"), "{message}");
+            assert!(message.contains("a4 mcp"), "{message}");
+        }
+        let ParseFailure::Hint(message) = parse_failure_of(&["a4", "help", "subscribe"]) else {
+            panic!("help subscribe has no hint");
+        };
+        assert!(message.contains("a4 stream"), "{message}");
+        // Every command a tip names exists.
+        for name in ["read", "subscribe", "search", "list"] {
+            for tip in command_hints::unknown_command_tips(name).unwrap() {
+                for command in tip.split("`a4 ").skip(1) {
+                    let command = command.split([' ', '`']).next().unwrap();
+                    assert!(
+                        Cli::command().find_subcommand(command).is_some(),
+                        "{name}: `a4 {command}` is not a command"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_partial_listing_says_how_to_reach_the_rest() {
+        use arete_mcp::entitlements::Group;
+        let (help, _) = rendered_help(entitlements::visible(
+            Cli::command(),
+            &surface(&[Group::Account]),
+        ));
+        assert!(help.contains("a4 help <command>"), "{help}");
+        let (help, _) = rendered_help(entitlements::visible(Cli::command(), &surface(&Group::ALL)));
+        assert!(!help.contains("a4 help <command>"), "{help}");
+    }
+
+    #[test]
+    fn explore_list_is_the_stack_list() {
+        let cli = Cli::try_parse_from(["a4", "explore", "list"]).expect("parses");
+        let Some(Commands::Explore { target, .. }) = cli.command else {
+            panic!("expected explore");
+        };
+        assert!(commands::explore::is_stack_list_target(
+            target.as_deref().unwrap()
+        ));
+        assert!(commands::explore::is_stack_list_target("stacks"));
+        assert!(!commands::explore::is_stack_list_target("ore"));
+    }
+
+    #[test]
+    fn filter_is_an_alias_of_where() {
+        for command in ["get", "stream"] {
+            let cli = Cli::try_parse_from([
+                "a4",
+                command,
+                "OreRound/latest",
+                "--filter",
+                "a=1",
+                "--where",
+                "b>2",
+            ])
+            .expect("--filter parses");
+            let filters = match cli.command {
+                Some(Commands::Get(args)) => args.filters,
+                Some(Commands::Stream(args)) => args.filters,
+                _ => panic!("expected {command}"),
+            };
+            assert_eq!(filters, ["a=1", "b>2"], "{command}");
+        }
     }
 
     #[test]

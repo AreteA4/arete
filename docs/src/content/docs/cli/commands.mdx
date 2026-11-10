@@ -71,6 +71,13 @@ cargo install a4-cli
 | `--version, -V`         | Show version                                                                  |
 | `--completions <SHELL>` | Generate shell completions (bash, zsh, fish, powershell, elvish)              |
 
+`a4 --help` lists the command groups your account is entitled to; when it
+leaves commands out, it says so at the bottom. Any command still runs, and
+`a4 help <command>` or `a4 <command> --help` shows its help whether or not
+the list includes it. A name that is not an a4 command but has a known
+replacement gets a pointer instead of a bare error: `a4 read`, `a4 query` and
+`a4 view` point to `a4 get`, `a4 stream`, `a4 mcp` and the SDK.
+
 Prompts are also disabled when `A4_NON_INTERACTIVE=1` or `CI` is set, or when stdin is not a terminal. No command ever waits on stdin in those cases.
 
 **Exit codes:** `0` success (including warnings), `1` command failure, `2` usage error, `10` update available (`a4 self update --check` only).
@@ -128,7 +135,7 @@ Scripts that read inside those pass-through objects should accept both spellings
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
 | `a4 telemetry status`                                                         | Show telemetry status                                             |
-| `a4 explore`, `a4 explore stacks`                                             | Discover installable stacks                                       |
+| `a4 explore`, `a4 explore stacks` (or `list`)                                 | Discover installable stacks                                       |
 | `a4 explore programs`                                                         | Discover installable standalone programs                          |
 | `a4 explore stack <ref>`                                                      | Inspect an exact stack install descriptor                         |
 | `a4 explore program <ref>`                                                    | Inspect an exact program install descriptor                       |
@@ -700,7 +707,7 @@ used by `a4 install`. Public resources work without authentication; logging in
 also exposes global resources.
 
 ```bash
-# List all available stacks
+# List all available stacks (`a4 explore stacks` and `a4 explore list` are the same)
 a4 explore
 
 # Search by intent and inspect an exact stack descriptor
@@ -753,18 +760,31 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 
 **Output varies by specificity:**
 
-| Command                                | Shows                                                                                                                                        |
-| -------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `a4 explore`, `a4 explore stacks`      | Available stacks                                                                                                                             |
-| `a4 explore programs`                  | Complete promoted Program Release + Program Read installations. Release and spec hashes need `--full`; `--fields` chooses keys               |
-| `a4 explore stack <ref>`               | Compact summary: `live`, entities and views, token-amount fields, `read.*` helpers, Program SDKs, stream endpoints and auth, install command |
-| `a4 explore stack <ref> --full`        | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command    |
-| `a4 explore stack <ref> --views …`     | The named views' schemas (field descriptions and token-amount units) and endpoints                                                           |
-| `a4 explore program <ref>`             | Compact summary: instructions and accounts with their first doc line, PDAs and seeds, SDK operations, transports, install command            |
-| `a4 explore program <ref> --full`      | Program identity, accounts, instructions, events and types in full, Program Read, and install command                                        |
-| `a4 explore program <ref> --operation` | One operation: generated paths, input type, required and derived accounts, signers, transaction count, errors, transport, usage              |
-| `a4 explore program <ref> --section`   | The named sections in detail                                                                                                                 |
-| `a4 explore <stack> [entity]`          | Legacy syntax routed through descriptor-backed stack exploration                                                                             |
+| Command                                  | Shows                                                                                                                                        |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `a4 explore`, `a4 explore stacks`/`list` | Available stacks                                                                                                                             |
+| `a4 explore programs`                    | Complete promoted Program Release + Program Read installations. Release and spec hashes need `--full`; `--fields` chooses keys               |
+| `a4 explore stack <ref>`                 | Compact summary: `live`, entities and views, token-amount fields, `read.*` helpers, Program SDKs, stream endpoints and auth, install command |
+| `a4 explore stack <ref> --full`          | Exact identities, aliases, selected views, programs, auth and auth requirements, SDK targets, the endpoints the SDK uses, install command    |
+| `a4 explore stack <ref> --views …`       | The named views' schemas (field descriptions and token-amount units) and endpoints                                                           |
+| `a4 explore program <ref>`               | Compact summary: instructions and accounts with their first doc line, PDAs and seeds, SDK operations, transports, install command            |
+| `a4 explore program <ref> --full`        | Program identity, accounts, instructions, events and types in full, Program Read, and install command                                        |
+| `a4 explore program <ref> --operation`   | One operation: generated paths, input type, required and derived accounts, signers, transaction count, errors, transport, usage              |
+| `a4 explore program <ref> --section`     | The named sections in detail                                                                                                                 |
+| `a4 explore <stack> [entity]`            | Legacy syntax routed through descriptor-backed stack exploration                                                                             |
+
+A first word that is not one of `catalog`, `stacks`, `list`, `stack`,
+`programs`, `program` or `protocol` is a legacy stack reference. When the
+registry has no stack by that name, `a4 explore` says so, suggests the
+subcommand you likely meant (`a4 explore stak` → `a4 explore stack`), and
+lists what it takes, rather than printing the registry's 404.
+
+**Stream hostnames.** The stack list shows each stack's deployment host (for
+example `wss://<stack>-<id>.stack.arete.run`). A stack summary's stream
+endpoints can name the same stack differently (for example
+`wss://<stack>.stack.arete.run`), and both may serve it. The stream endpoints
+are the ones `a4 install` pins into SDKs, so use those when you hard-code a
+URL. `a4 explore --json` says the same in `discovery.streamEndpoints`.
 
 Everything is cut from the same pinned install descriptor on the client, so
 the compact forms agree with the full one. A stack or program summary, one
@@ -950,15 +970,15 @@ a4 get OreRound/state --stack ore --key 434161
 a4 get OreRound/latest --stack ore --where 'state.total_deployed>8' --limit 5
 ```
 
-| Flag                 | Description                                                                 |
-| -------------------- | --------------------------------------------------------------------------- |
-| `-s, --stack <name>` | Owned deployment or registry stack name                                     |
-| `--url <ws-url>`     | WebSocket URL instead of `--stack`                                          |
-| `-k, --key <key>`    | Read the one entity with this key (usually an `<Entity>/state` view)        |
-| `--where <expr>`     | Filter: `field=value`, `field>N`, `field~regex` (repeatable, ANDed)         |
-| `--select <paths>`   | Comma-separated dot paths to output                                         |
-| `--limit <n>`        | Most entities to print, in the view's order (default 10)                    |
-| `--timeout <secs>`   | Seconds to wait for the connection and snapshot before failing (default 15) |
+| Flag                 | Description                                                                            |
+| -------------------- | -------------------------------------------------------------------------------------- |
+| `-s, --stack <name>` | Owned deployment or registry stack name                                                |
+| `--url <ws-url>`     | WebSocket URL instead of `--stack`                                                     |
+| `-k, --key <key>`    | Read the one entity with this key (usually an `<Entity>/state` view)                   |
+| `--where <expr>`     | Filter: `field=value`, `field>N`, `field~regex` (repeatable, ANDed). Alias: `--filter` |
+| `--select <paths>`   | Comma-separated dot paths to output                                                    |
+| `--limit <n>`        | Most entities to print, in the view's order (default 10)                               |
+| `--timeout <secs>`   | Seconds to wait for the connection and snapshot before failing (default 15)            |
 
 Output:
 

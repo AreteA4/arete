@@ -105,7 +105,10 @@ reports for your account (`commandGroups` on `GET /api/auth/me`):
 `upgrade`, `config`, `telemetry`) are always listed. With no login, when the
 API can't be reached, or when it reports no groups, every command is listed.
 Hiding is never the gate: a command typed anyway runs, and the API refuses
-what the account may not use.
+what the account may not use. Hiding trims only the listing: when commands
+are left out, `a4 --help` says so, and a command named on the command line
+(`a4 help explore`, `a4 explore --help`, `a4 get` with a missing argument)
+shows its own help and errors for every account.
 
 ## Private Program Uploads
 

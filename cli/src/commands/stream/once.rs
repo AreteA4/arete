@@ -37,7 +37,7 @@ pub struct GetArgs {
     pub key: Option<String>,
 
     /// Filter expression: field=value, field>N, field~regex (repeatable, ANDed)
-    #[arg(long = "where", value_name = "EXPR")]
+    #[arg(long = "where", visible_alias = "filter", value_name = "EXPR")]
     pub filters: Vec<String>,
 
     /// Fields to output (comma-separated dot paths, e.g. "id.round_id,state.motherlode")
