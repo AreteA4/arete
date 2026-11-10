@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.54.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.53.1...arete-automations-v0.54.0) (2026-11-10)
+
+
+### Bug Fixes
+
+* **automations:** discard a step's signatures when its consent is revoked mid-signing ([b6ba341](https://github.com/AreteA4/arete/commit/b6ba341642ab61bd3799105c5c3f17f6e5ad3d07))
+* **automations:** keep a step's signatures only while its consent is still active ([15d9400](https://github.com/AreteA4/arete/commit/15d940069573549852c5ec3d40b82659ce2cfe79))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.53.1 to ^0.54.0
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.53.1 to ^0.54.0
+
 ## [0.53.1](https://github.com/AreteA4/arete/compare/arete-automations-v0.53.0...arete-automations-v0.53.1) (2026-11-06)
 
 

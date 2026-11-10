@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.54.0](https://github.com/AreteA4/arete/compare/arete-server-v0.53.1...arete-server-v0.54.0) (2026-11-10)
+
+
+### Bug Fixes
+
+* **auth:** check IP-bound refresh tokens against the peer and start with unchangeable key files ([ce3829d](https://github.com/AreteA4/arete/commit/ce3829d9129edd2403154da2d3db8baab0195d72))
+* **auth:** make opt-in origin, client IP, seed file and mint limit controls apply ([0feeb53](https://github.com/AreteA4/arete/commit/0feeb531667e829a02329adda3d7994f55240719))
+* **auth:** opt-in origin, client IP, seed file and mint limit controls did not apply ([4b57019](https://github.com/AreteA4/arete/commit/4b57019bf36b8c6a700b6fa5c5364c113cb0ae93))
+* **server:** bound evicted writers, serialize refresh admission, sweep HTTP buckets ([2234487](https://github.com/AreteA4/arete/commit/2234487bbaa32fe4456e6ee52eaddd23d1931424))
+* **server:** close WebSocket and HTTP lifecycle and admission gaps ([acbdfd3](https://github.com/AreteA4/arete/commit/acbdfd3fda53726179e3b5631ef08057d111fbcc))
+* **server:** close WebSocket and HTTP lifecycle and admission gaps ([e670dc4](https://github.com/AreteA4/arete/commit/e670dc43a33adad23a63c362bd18ac654e526f19))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.53.1 to 0.54.0
+    * arete-auth bumped from 0.7.1 to 0.7.2
+
 ## [0.53.1](https://github.com/AreteA4/arete/compare/arete-server-v0.53.0...arete-server-v0.53.1) (2026-11-06)
 
 
