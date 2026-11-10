@@ -212,7 +212,7 @@ impl SendApi for reqwest::blocking::RequestBuilder {
         let method = request.method().clone();
         let url = request.url().clone();
         let started = Instant::now();
-        client.execute(request).map_err(|error| {
+        let mut response = client.execute(request).map_err(|error| {
             ApiTransportError::new(
                 operation,
                 Some(&method),
@@ -220,9 +220,25 @@ impl SendApi for reqwest::blocking::RequestBuilder {
                 started.elapsed(),
                 error,
             )
-            .into()
-        })
+        })?;
+        // The body is read later; a failure there still names this request
+        // and the whole wait.
+        response.extensions_mut().insert(SentRequest {
+            operation: operation.to_string(),
+            method,
+            started,
+        });
+        Ok(response)
     }
+}
+
+/// What [`SendApi::send_api`] sent, kept on its response for errors while
+/// the body is read.
+#[derive(Debug, Clone)]
+struct SentRequest {
+    operation: String,
+    method: reqwest::Method,
+    started: Instant,
 }
 
 /// A successful response's body, read in full.
@@ -245,9 +261,14 @@ impl ResponseBody {
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
         let url = response.url().clone();
-        let started = Instant::now();
+        let sent = response.extensions().get::<SentRequest>().cloned();
+        let started = sent.as_ref().map_or_else(Instant::now, |sent| sent.started);
         let bytes = response.bytes().map_err(|error| {
-            ApiTransportError::new("response body", None, Some(&url), started.elapsed(), error)
+            let (operation, method) = match &sent {
+                Some(sent) => (sent.operation.as_str(), Some(&sent.method)),
+                None => ("response body", None),
+            };
+            ApiTransportError::new(operation, method, Some(&url), started.elapsed(), error)
         })?;
         Ok(ResponseBody {
             endpoint,
@@ -323,7 +344,7 @@ pub(crate) fn verbose_body(bytes: &[u8]) -> String {
             redact_credentials(&mut value);
             serde_json::to_string_pretty(&value).unwrap_or_default()
         }
-        Err(_) => String::from_utf8_lossy(bytes).into_owned(),
+        Err(_) => redact_credential_text(&String::from_utf8_lossy(bytes)),
     };
     let total = text.chars().count();
     if total <= MAX_VERBOSE_BODY {
@@ -351,11 +372,44 @@ fn redact_credentials(value: &mut Value) {
             }
         }
         Value::Array(items) => items.iter_mut().for_each(redact_credentials),
-        Value::String(text) if text.starts_with("a4_") && text.len() > 12 => {
-            *value = Value::String("<redacted>".to_string());
+        Value::String(text) => {
+            let redacted = redact_credential_text(text);
+            if redacted != *text {
+                *value = Value::String(redacted);
+            }
         }
         _ => {}
     }
+}
+
+/// Redact credentials in text that is not valid JSON (for example a body cut
+/// short): the string value of every `"field": "..."` pair named like a
+/// credential, even unterminated, and anything shaped like an Arete key, a
+/// JWT or a bearer token.
+fn redact_credential_text(text: &str) -> String {
+    use std::sync::LazyLock;
+    static FIELD: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(r#""([^"\\]{1,64})"(\s*:\s*)"(?:[^"\\]|\\.)*("|\\?$)"#).unwrap()
+    });
+    static TOKEN: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"a4_[A-Za-z]{2,}_[A-Za-z0-9_\-]{4,}",
+            r"|eyJ[A-Za-z0-9_\-]{8,}(?:\.[A-Za-z0-9_\-]*){0,2}",
+            r"|(?i:bearer)\s+[A-Za-z0-9._~+/=\-]{8,}",
+        ))
+        .unwrap()
+    });
+    let fields = FIELD.replace_all(text, |captures: &regex::Captures| {
+        if is_credential_field(&captures[1]) {
+            format!(
+                "\"{}\"{}\"<redacted>{}",
+                &captures[1], &captures[2], &captures[3]
+            )
+        } else {
+            captures[0].to_string()
+        }
+    });
+    TOKEN.replace_all(&fields, "<redacted>").into_owned()
 }
 
 fn is_credential_field(key: &str) -> bool {
@@ -450,6 +504,29 @@ mod tests {
         assert!(shown.contains("\"user_id\": 3"), "{shown}");
         assert!(shown.contains("\"name\": \"web\""), "{shown}");
 
+        // A body cut short is not JSON, and is redacted all the same.
+        for truncated in [
+            r#"{"id": 8, "key": "a4_sk_0123456789abcdef", "name": "web", "id":"#,
+            r#"{"id": 8, "name": "web", "secretKey": "plain-secret-valu"#,
+            r#"{"items": [{"note": "a4_pk_abcdefghijkl" ,"#,
+            "upstream said: Authorization: Bearer abcdefghijklmnop.qrs",
+            r#"{"session": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.c2ln", "#,
+        ] {
+            let shown = verbose_body(truncated.as_bytes());
+            for secret in [
+                "a4_sk_0123456789abcdef",
+                "plain-secret-valu",
+                "a4_pk_abcdefghijkl",
+                "abcdefghijklmnop",
+                "eyJhbGciOiJIUzI1NiJ9",
+            ] {
+                assert!(!shown.contains(secret), "{truncated} -> {shown}");
+            }
+            assert!(shown.contains("<redacted>"), "{truncated} -> {shown}");
+        }
+        let shown = verbose_body(br#"{"id": 8, "name": "web", "#);
+        assert_eq!(shown, r#"{"id": 8, "name": "web", "#);
+
         let long = "x".repeat(MAX_VERBOSE_BODY + 10);
         let shown = verbose_body(long.as_bytes());
         assert!(shown.ends_with("(10 more characters not shown)"), "{shown}");
@@ -531,6 +608,49 @@ mod tests {
             "{message}"
         );
         assert!(message.contains("Retry in a moment"), "{message}");
+    }
+
+    #[test]
+    fn a_body_timeout_names_the_request_and_the_whole_wait() {
+        // Headers arrive after 200ms; the body never completes before the
+        // deadline, so the failure happens while it is read.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            std::thread::sleep(Duration::from_millis(200));
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n[",
+            );
+            let _ = stream.flush();
+            std::thread::sleep(Duration::from_millis(1500));
+        });
+        let response = reqwest::blocking::Client::new()
+            .get(format!("{base}/api/deployments?limit=100"))
+            .timeout(Duration::from_millis(300))
+            .send_api("list deployments")
+            .unwrap();
+        let error = ResponseBody::read(response).err().unwrap();
+        server.join().unwrap();
+        let transport = error.downcast_ref::<ApiTransportError>().unwrap();
+        assert_eq!(transport.failure(), TransportFailure::Timeout);
+        let message = error.to_string();
+        let prefix = format!(
+            "List deployments request timed out: GET {base}/api/deployments sent no response within "
+        );
+        assert!(message.starts_with(&prefix), "{message}");
+        // The wait counts from when the request was sent, not from when the
+        // headers arrived.
+        let waited: f64 = message[prefix.len()..]
+            .split('s')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(waited >= 0.3, "{message}");
     }
 
     #[test]
