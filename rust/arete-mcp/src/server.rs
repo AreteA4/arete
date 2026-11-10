@@ -1623,7 +1623,7 @@ impl AreteMcp {
 
     #[tool(description = "Health check. Returns \"pong\" if the server is alive.")]
     async fn ping(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text("pong")]))
+        Ok(CallToolResult::success(vec![ContentBlock::text("pong")]))
     }
 
     #[tool(
@@ -2423,7 +2423,7 @@ impl AreteMcp {
             .await
             .map_err(|error| McpError::internal_error(error.to_string(), None))?;
         match result {
-            Ok(text) => Ok(CallToolResult::success(vec![Content::text(text)])),
+            Ok(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
             Err(error) => Err(McpError::invalid_params(format!("{error:#}"), None)),
         }
     }
@@ -3568,7 +3568,7 @@ impl AreteMcp {
     )]
     async fn account_status(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.account_status().await {
-            Ok(status) => Ok(CallToolResult::success(vec![Content::text(
+            Ok(status) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&status).unwrap_or_default(),
             )])),
             Err(error) => Err(self.recovery_error(error).await),
@@ -3617,7 +3617,7 @@ impl AreteMcp {
             state: "Connecting".to_string(),
             key_source: Some(resolved.source.as_str()),
         };
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&info).unwrap_or_default(),
         )]))
     }
@@ -3638,7 +3638,9 @@ impl AreteMcp {
         if entry.is_some() {
             self.subscriptions
                 .remove_for_connection(&args.connection_id);
-            Ok(CallToolResult::success(vec![Content::text("disconnected")]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(
+                "disconnected",
+            )]))
         } else {
             Err(McpError::invalid_params(
                 format!("unknown connection_id: {}", args.connection_id),
@@ -3865,7 +3867,7 @@ impl AreteMcp {
             view: entry.view.clone(),
             key: entry.key.clone(),
         };
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&subscribe_response(info)).unwrap_or_default(),
         )]))
     }
@@ -3886,7 +3888,9 @@ impl AreteMcp {
             })?;
 
         drop(entry);
-        Ok(CallToolResult::success(vec![Content::text("unsubscribed")]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            "unsubscribed",
+        )]))
     }
 
     #[tool(
@@ -3950,7 +3954,7 @@ impl AreteMcp {
             "limit_applied": limit,
             "entities": matched,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&payload).unwrap_or_default(),
         )]))
     }
@@ -3980,7 +3984,7 @@ impl AreteMcp {
             "found": value.is_some(),
             "data": value,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&payload).unwrap_or_default(),
         )]))
     }
@@ -4017,7 +4021,7 @@ impl AreteMcp {
             "truncated": truncated,
             "keys": keys,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&payload).unwrap_or_default(),
         )]))
     }
@@ -4051,7 +4055,7 @@ impl AreteMcp {
             "returned": recent.len(),
             "entities": recent,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&payload).unwrap_or_default(),
         )]))
     }
@@ -4072,7 +4076,7 @@ impl AreteMcp {
                 key: e.key.clone(),
             })
             .collect();
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&out).unwrap_or_default(),
         )]))
     }
@@ -4088,7 +4092,7 @@ impl AreteMcp {
                 key_source: None,
             });
         }
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&out).unwrap_or_default(),
         )]))
     }
@@ -4111,7 +4115,7 @@ impl AreteMcp {
 /// documented raw pass-through actually raw.
 fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, McpError> {
     match result {
-        Ok(body) => Ok(CallToolResult::success(vec![Content::text(body)])),
+        Ok(body) => Ok(CallToolResult::success(vec![ContentBlock::text(body)])),
         Err(error) => Err(registry_error(error)),
     }
 }
@@ -4159,7 +4163,7 @@ fn full_descriptor_result(body: String, narrower: &str) -> Result<CallToolResult
             None,
         ));
     }
-    Ok(CallToolResult::success(vec![Content::text(body)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
 }
 
 /// What to do with an `explore_stack_views` result.
@@ -4214,8 +4218,8 @@ fn discovery_tool_result(
     if total > MAX_RESPONSE_BYTES {
         return Err(oversized_result(total));
     }
-    let mut content = vec![Content::text(text)];
-    content.extend(note.map(Content::text));
+    let mut content = vec![ContentBlock::text(text)];
+    content.extend(note.map(ContentBlock::text));
     Ok(CallToolResult::success(content))
 }
 
@@ -4236,7 +4240,7 @@ fn bounded_result(text: String) -> Result<CallToolResult, McpError> {
     if text.len() > MAX_RESPONSE_BYTES {
         return Err(oversized_result(text.len()));
     }
-    Ok(CallToolResult::success(vec![Content::text(text)]))
+    Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
 }
 
 /// The refusal for a tool result of `bytes` over [`MAX_RESPONSE_BYTES`].
@@ -4368,7 +4372,7 @@ impl AreteMcp {
         result: anyhow::Result<String>,
     ) -> Result<CallToolResult, McpError> {
         let body = self.registry_body(result).await?;
-        Ok(CallToolResult::success(vec![Content::text(body)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(body)]))
     }
 
     /// A discovery listing as a tool result: `text` (bounded), and, when no
@@ -4613,8 +4617,13 @@ fn described_schema_result(
     shaped_result(&schema)
 }
 
+/// The MCP `URLElicitationRequiredError` code. rmcp no longer exports a
+/// constant for it, so it is spelled out here.
+const URL_ELICITATION_REQUIRED: ErrorCode = ErrorCode(-32042);
+
 fn claim_url_elicitation(action: &arete_sdk::ReadyRecoveryAction) -> McpError {
-    McpError::url_elicitation_required(
+    McpError::new(
+        URL_ELICITATION_REQUIRED,
         "A human owner must claim this agent. The agent must not open this URL itself.",
         Some(serde_json::json!({
             "url": action.url,
@@ -4695,26 +4704,34 @@ fn sandbox_result(
                 crate::sandbox::CallKind::Read
             },
         };
-        return CallToolResult::error(vec![Content::text(
+        return CallToolResult::error(vec![ContentBlock::text(
             serde_json::to_string(&with_key(refusal.to_json())).unwrap_or_default(),
         )]);
     }
     if failed {
-        CallToolResult::error(vec![Content::text(text)])
+        CallToolResult::error(vec![ContentBlock::text(text)])
     } else {
-        CallToolResult::success(vec![Content::text(text)])
+        CallToolResult::success(vec![ContentBlock::text(text)])
     }
 }
 
-#[tool_handler]
+// The router on `self`, not a fresh `Self::tool_router()`: the instance's
+// router has the tools this server does not offer removed.
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for AreteMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new(
                 env!("CARGO_PKG_NAME"),
                 env!("CARGO_PKG_VERSION"),
             ))
             .with_protocol_version(ProtocolVersion::V_2024_11_05)
+    }
+
+    // rmcp now negotiates up to the version the client asks for. Keep
+    // answering every handshake with 2024-11-05, as before.
+    fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
+        std::borrow::Cow::Borrowed(ProtocolVersion::known_up_to(&ProtocolVersion::V_2024_11_05))
     }
 }
 

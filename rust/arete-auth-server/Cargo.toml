@@ -30,9 +30,6 @@ arete-auth = { version = "0.7.2", path = "../arete-auth" }
 # HTTP client for JWKS (optional, if needed)
 reqwest = { version = "0.12", features = ["json"], optional = true }
 
-# Database/SQLite for key storage (optional)
-sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"], optional = true }
-
 # Time
 chrono = "0.4"
 
@@ -60,7 +57,9 @@ rand = "0.8"
 governor = { version = "0.8", optional = true }
 
 [features]
-default = ["sqlite"]
-sqlite = ["sqlx"]
+default = []
+# No-op. The server never read or wrote SQLite, so the unused sqlx dependency
+# was dropped; the feature stays so `--features sqlite` builds keep working.
+sqlite = []
 jwks = ["reqwest"]
 rate-limit = ["governor"]
