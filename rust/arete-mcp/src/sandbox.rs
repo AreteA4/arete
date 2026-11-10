@@ -17,6 +17,7 @@
 //! default Arete API), and only when that origin is an Arete host over HTTPS
 //! or loopback. Neither is ever returned in a tool result.
 
+use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -52,23 +53,64 @@ pub const TOOL_NAMES: [&str; 8] = [
     "sandbox_holdings",
 ];
 
-/// An answer the API refused: its HTTP status and problem body.
+/// What a sandbox call does, which decides what retrying it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CallKind {
+    /// Changes nothing: the wallet, rules, an address, an action lookup,
+    /// history, holdings, and minting the sandbox token.
+    #[default]
+    Read,
+    /// A dry run: nothing is signed, sent or recorded.
+    Preview,
+    /// May sign and send a transaction, under an idempotency key.
+    Action,
+}
+
+impl CallKind {
+    /// How long this server waits for the API's answer.
+    fn timeout(self) -> Duration {
+        match self {
+            Self::Read => READ_TIMEOUT,
+            Self::Preview | Self::Action => ACTION_TIMEOUT,
+        }
+    }
+
+    /// `path` is the sandbox route, e.g. `/actions/invoke`.
+    pub fn of(method: &reqwest::Method, path: &str) -> Self {
+        let path = path.split('?').next().unwrap_or(path).trim_end_matches('/');
+        if method == reqwest::Method::GET || path.ends_with("/derive") {
+            Self::Read
+        } else if path.ends_with("/preview") {
+            Self::Preview
+        } else {
+            Self::Action
+        }
+    }
+}
+
+/// An answer the API refused: its HTTP status and problem body, and what
+/// kind of call it answered.
 #[derive(Debug, Clone)]
 pub struct SandboxRefusal {
     pub status: u16,
     pub body: Value,
+    pub kind: CallKind,
 }
 
 impl SandboxRefusal {
+    /// Refused here, before anything was sent: the same call is refused
+    /// again, whatever status 0 would otherwise suggest.
     fn local(code: &str, error: impl Into<String>) -> Self {
         Self {
             status: 0,
-            body: json!({ "code": code, "error": error.into() }),
+            body: json!({ "code": code, "error": error.into(), "retryable": false }),
+            kind: CallKind::Read,
         }
     }
 
     /// What the agent sees: the API's code, message and the rule details,
-    /// plus a hint for the codes an agent can act on.
+    /// and always `code`, `retryable` and a `hint`, whatever answered: the
+    /// API, a proxy in front of it with no readable body, or nothing.
     pub fn to_json(&self) -> Value {
         let mut out = Map::new();
         out.insert("status".into(), json!(self.status));
@@ -82,21 +124,133 @@ impl SandboxRefusal {
         } else if !self.body.is_null() {
             out.insert("error".into(), self.body.clone());
         }
-        if let Some(hint) = self
-            .body
-            .get("code")
-            .and_then(Value::as_str)
-            .and_then(hint_for)
-        {
-            out.insert("hint".into(), json!(hint));
+        let code = match out.get("code").and_then(Value::as_str) {
+            Some(code) if !code.is_empty() => code.to_string(),
+            _ => {
+                let code = fallback_code(self.status);
+                out.insert("code".into(), json!(code));
+                code.to_string()
+            }
+        };
+        if !out.contains_key("error") {
+            out.insert(
+                "error".into(),
+                json!(format!(
+                    "The Arete API answered HTTP {} with no readable error body",
+                    self.status
+                )),
+            );
         }
+        let retryable = match out.get("retryable").and_then(Value::as_bool) {
+            Some(retryable) => retryable,
+            None => {
+                let retryable = retryable_status(self.status);
+                out.insert("retryable".into(), json!(retryable));
+                retryable
+            }
+        };
+        // This server's hint names the MCP tools, so it wins; then the
+        // API's own; then the rule for the kind of call.
+        let hint = hint_for(&code, retryable, self.kind)
+            .or_else(|| out.get("hint").and_then(Value::as_str).map(str::to_string))
+            .unwrap_or_else(|| generic_hint(retryable, self.kind).to_string());
+        out.insert("hint".into(), json!(hint));
         Value::Object(out)
     }
 }
 
+/// The code for an answer that carries none, from its status alone.
+fn fallback_code(status: u16) -> &'static str {
+    match status {
+        0 => "sandbox-api-unreachable",
+        400 | 422 => "sandbox-request-invalid",
+        401 => "sandbox-unauthorized",
+        403 => "sandbox-forbidden",
+        404 => "sandbox-not-found",
+        408 | 504 => "sandbox-api-timeout",
+        409 => "sandbox-conflict",
+        429 => "sandbox-rate-limited",
+        502 | 503 => "sandbox-api-unavailable",
+        500..=599 => "sandbox-internal-error",
+        _ => "sandbox-request-refused",
+    }
+}
+
+/// Whether a status alone says the same call may succeed later.
+fn retryable_status(status: u16) -> bool {
+    matches!(status, 0 | 408 | 429 | 500..=599)
+}
+
+/// The API, or the way to it, failed: nothing about the request itself.
+fn transport_failure(code: &str) -> bool {
+    matches!(
+        code,
+        "sandbox-api-unreachable"
+            | "sandbox-api-timeout"
+            | "sandbox-api-unavailable"
+            | "sandbox-internal-error"
+            | "sandbox-response-unreadable"
+    )
+}
+
+/// The guard, not the transaction, failed.
+fn guard_infrastructure(code: &str) -> bool {
+    matches!(
+        code,
+        "sandbox-guard-unavailable"
+            | "sandbox-guard-fork-unavailable"
+            | "sandbox-guard-lease-timeout"
+            | "sandbox-guard-lease-unavailable"
+            | "sandbox-guard-timeout"
+            | "sandbox-guard-incomplete"
+            | "sandbox-guard-clock-skew"
+    )
+}
+
+const LOOK_UP_THE_ACTION: &str = "The action may have run. Look it up with sandbox_action and the idempotencyKey before retrying: if it ran, do not repeat it; if it was refused, retry with a new key; if no action has the key, retry with the same key.";
+
+/// The rule for a call with no more specific hint.
+fn generic_hint(retryable: bool, kind: CallKind) -> &'static str {
+    match (retryable, kind) {
+        (true, CallKind::Read) => {
+            "Nothing was changed: retry the same call in a few seconds (retryAfterSeconds when present)."
+        }
+        (true, CallKind::Preview) => {
+            "A dry run signs and records nothing: retry the same call in a few seconds (retryAfterSeconds when present)."
+        }
+        (true, CallKind::Action) => LOOK_UP_THE_ACTION,
+        (false, CallKind::Action) => {
+            "Refused before anything was signed: the same call is refused again. Fix it and run it with a new idempotencyKey."
+        }
+        (false, _) => "The same call is refused again: fix it before retrying.",
+    }
+}
+
 /// What an agent can do about a refusal.
-fn hint_for(code: &str) -> Option<&'static str> {
+fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
+    if transport_failure(code) {
+        return Some(generic_hint(true, kind).to_string());
+    }
+    if guard_infrastructure(code) {
+        return Some(
+            match (retryable, kind) {
+                (true, CallKind::Action) => {
+                    "The guard could not check this transaction right now, so nothing was signed or sent. Retry after retryAfterSeconds with a new idempotencyKey: this one is recorded as refused."
+                }
+                (true, _) => {
+                    "The guard could not check this transaction right now; nothing was signed. Retry the same call after retryAfterSeconds."
+                }
+                (false, _) => {
+                    "The guard could not check this transaction and the same call will not pass on a retry; nothing was signed. Change the transaction, or report the requestId to Arete."
+                }
+            }
+            .to_string(),
+        );
+    }
     Some(match code {
+        "sandbox-guard-insufficient-funds" => {
+            "The sandbox wallet cannot pay for this: balanceLamports is what it holds and shortfallLamports, when present, how much more it needs. Ask the owner to fund the wallet, or spend less; the same call is refused until then. When `remaining` is set and your amount is over it, funding is not enough: use a smaller amount."
+        }
         "sandbox-program-not-allowlisted" | "sandbox-guard-program-not-allowlisted" => {
             "The program is not in the sandbox's rules (sandbox_rules lists them). Only the owner can add it, in the dashboard."
         }
@@ -116,6 +270,9 @@ fn hint_for(code: &str) -> Option<&'static str> {
         "sandbox-rules-missing" | "sandbox-rules-unsigned" => {
             "The owner must set or re-sign the sandbox's rules in the dashboard."
         }
+        "sandbox-derive-invalid" => {
+            "Fix programId or the seeds: each seed is {kind, value} (or {kind: \"bytes\", hex}), at most 15 seeds of at most 32 bytes each."
+        }
         "sandbox-intent-invalid" | "sandbox-intent-foreign-signer" => {
             "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer."
         }
@@ -132,12 +289,14 @@ fn hint_for(code: &str) -> Option<&'static str> {
             "This idempotency key already ran: look it up with sandbox_action instead of retrying."
         }
         "sandbox-rate-limited" => "Too many requests: wait for retryAfterSeconds.",
-        "sandbox-api-unreachable" | "sandbox-response-unreadable" => {
-            "If this was sandbox_invoke, the action may have run: look it up with sandbox_action and the idempotencyKey before retrying, and retry only with the same key."
-        }
-        "sandbox-response-too-large" => {
-            "The answer is too large for one tool result. For an action, look it up with sandbox_action and the idempotencyKey."
-        }
+        "sandbox-response-too-large" => match kind {
+            CallKind::Action => {
+                "The answer is too large for one tool result. Look the action up with sandbox_action and the idempotencyKey."
+            }
+            _ => {
+                "The answer is too large for one tool result. Ask for less: a smaller limit, or without includeRaw."
+            }
+        },
         "sandbox-grant-missing" | "sandbox-consent-unsigned" => {
             "The sandbox's owner has not granted this agent access (or must grant it again). Ask the owner to grant access in the dashboard."
         }
@@ -148,7 +307,8 @@ fn hint_for(code: &str) -> Option<&'static str> {
             "The sandbox token no longer works and could not be renewed. Ask the owner whether this agent's access was revoked."
         }
         _ => return None,
-    })
+    }
+    .to_string())
 }
 
 /// A minted sandbox token and what it may do.
@@ -303,7 +463,7 @@ impl SandboxClient {
                 api_key,
                 Some(json!({ "targetKind": "sandbox", "targetId": sandbox_id })),
                 None,
-                READ_TIMEOUT,
+                CallKind::Read,
             )
             .await?;
         let token = body
@@ -367,11 +527,7 @@ impl SandboxClient {
         let session = self.authorized(action).await?;
         self.trusted_origin()?;
         let url = format!("{}/api/sandbox/v1{path}", self.api_base);
-        let timeout = if method == reqwest::Method::POST {
-            ACTION_TIMEOUT
-        } else {
-            READ_TIMEOUT
-        };
+        let kind = CallKind::of(&method, path);
         let first = self
             .send(
                 method.clone(),
@@ -379,7 +535,7 @@ impl SandboxClient {
                 &session.token,
                 body.clone(),
                 idempotency_key,
-                timeout,
+                kind,
             )
             .await;
         let stale = matches!(&first, Err(refusal) if refusal.status == 401
@@ -392,7 +548,7 @@ impl SandboxClient {
         }
         self.forget_token();
         let renewed = self.authorized(action).await?;
-        self.send(method, &url, &renewed.token, body, idempotency_key, timeout)
+        self.send(method, &url, &renewed.token, body, idempotency_key, kind)
             .await
     }
 
@@ -403,8 +559,9 @@ impl SandboxClient {
         bearer: &str,
         body: Option<Value>,
         idempotency_key: Option<&str>,
-        timeout: Duration,
+        kind: CallKind,
     ) -> Result<Value, SandboxRefusal> {
+        let timeout = kind.timeout();
         let mut request = self
             .http
             .request(method, url)
@@ -416,15 +573,31 @@ impl SandboxClient {
         if let Some(body) = body {
             request = request.json(&body);
         }
-        let response = request.send().await.map_err(|error| SandboxRefusal {
-            status: 0,
-            // Without the URL: it is the configured API origin, not a secret,
-            // but keep tool output to what the agent needs.
-            body: json!({
-                "code": "sandbox-api-unreachable",
-                "error": format!("The Arete API did not answer: {}", error.without_url()),
-                "retryable": true,
-            }),
+        let response = request.send().await.map_err(|error| {
+            // Without the URL: it is the configured API origin, not a
+            // secret, but keep tool output to what the agent needs.
+            let (code, message) = if error.is_timeout() {
+                (
+                    "sandbox-api-timeout",
+                    format!(
+                        "The Arete API did not answer within {} s",
+                        timeout.as_secs()
+                    ),
+                )
+            } else {
+                (
+                    "sandbox-api-unreachable",
+                    format!(
+                        "The Arete API could not be reached: {}",
+                        error.without_url()
+                    ),
+                )
+            };
+            SandboxRefusal {
+                status: 0,
+                body: json!({ "code": code, "error": message, "retryable": true }),
+                kind,
+            }
         })?;
         let status = response.status().as_u16();
         let success = (200..300).contains(&status);
@@ -435,6 +608,7 @@ impl SandboxClient {
                 "error": format!("The Arete API answered {status} but its body could not be read: {detail}"),
                 "retryable": true,
             }),
+            kind,
         };
         let bytes = match read_bounded(response).await {
             Ok(bytes) => bytes,
@@ -447,6 +621,7 @@ impl SandboxClient {
                             "The Arete API answer is over the {MAX_RESPONSE_BYTES} byte limit for a tool result"
                         ),
                     }),
+                    kind,
                 })
             }
             Err(BodyError::Read(detail)) => return Err(unreadable(detail)),
@@ -457,10 +632,13 @@ impl SandboxClient {
             // action may have run, and the agent needs its key to look it up.
             Ok(_) if success => Err(unreadable("not a JSON object".into())),
             Err(error) if success => Err(unreadable(error.to_string())),
-            Ok(body) => Err(SandboxRefusal { status, body }),
+            Ok(body) => Err(SandboxRefusal { status, body, kind }),
+            // Not JSON (a proxy's HTML 504, an empty body): the status is
+            // all there is, and `to_json` fills in the rest.
             Err(_) => Err(SandboxRefusal {
                 status,
                 body: Value::Null,
+                kind,
             }),
         }
     }
@@ -473,8 +651,18 @@ impl SandboxClient {
         self.call(reqwest::Method::GET, "/rules", None, None).await
     }
 
-    pub async fn derive(&self, request: Value) -> Result<Value, SandboxRefusal> {
-        self.call(reqwest::Method::POST, "/derive", Some(request), None)
+    /// An address for `args`. A PDA is derived here, without the API or
+    /// the chain ([`derive_pda`]); an associated token account asks the
+    /// API, which reads the mint's owner (SPL Token or Token-2022) from the
+    /// sandbox's chain.
+    pub async fn derive(&self, args: &SandboxDeriveArgs) -> Result<Value, SandboxRefusal> {
+        if args.kind.trim() == "pda" {
+            return derive_pda(
+                args.program_id.as_deref(),
+                args.seeds.as_deref().unwrap_or_default(),
+            );
+        }
+        self.call(reqwest::Method::POST, "/derive", Some(args.body()), None)
             .await
     }
 
@@ -495,12 +683,13 @@ impl SandboxClient {
         Err(SandboxRefusal {
             status: 0,
             body: json!({
-                "code": "sandbox-action-not-granted",
+                "code": "sandbox-action-not-granted", "retryable": false,
                 "rule": "session-grant",
                 "error": format!("This agent is not granted `{}` on this sandbox", action.as_str()),
                 "action": action.as_str(),
                 "granted": session.actions,
             }),
+            kind: CallKind::Read,
         })
     }
 
@@ -515,10 +704,11 @@ impl SandboxClient {
             return Err(SandboxRefusal {
                 status: 0,
                 body: json!({
-                    "code": "sandbox-preview-unavailable",
+                    "code": "sandbox-preview-unavailable", "retryable": false,
                     "error": format!("`{}` has no dry run", action.as_str()),
                     "action": action.as_str(),
                 }),
+                kind: CallKind::Preview,
             });
         };
         self.call_with(Some(action), reqwest::Method::POST, path, Some(args), None)
@@ -811,6 +1001,122 @@ impl SandboxDeriveArgs {
             }
         }
     }
+}
+
+/// The most seeds a PDA takes besides its bump, and the longest one.
+const MAX_PDA_SEEDS: usize = 15;
+const MAX_PDA_SEED_BYTES: usize = 32;
+
+/// One `sandbox_derive` PDA seed: `{"kind": "string"|"pubkey"|"bytes"|"u8"|
+/// "u16"|"u32"|"u64", ...}`, encoded as the sandbox API encodes it.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase", deny_unknown_fields)]
+enum PdaSeed {
+    String { value: String },
+    Pubkey { value: String },
+    Bytes { hex: String },
+    U8 { value: FlexibleU64 },
+    U16 { value: FlexibleU64 },
+    U32 { value: FlexibleU64 },
+    U64 { value: FlexibleU64 },
+}
+
+/// A u64 as a JSON number or a decimal string.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum FlexibleU64 {
+    Number(u64),
+    Text(String),
+}
+
+impl FlexibleU64 {
+    fn get(&self, position: usize) -> Result<u64, String> {
+        match self {
+            Self::Number(value) => Ok(*value),
+            Self::Text(text) => text
+                .trim()
+                .parse()
+                .map_err(|_| format!("seeds[{position}]: {text} is not a u64")),
+        }
+    }
+}
+
+fn hex_bytes(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim();
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(text.get(at..at + 2)?, 16).ok())
+        .collect()
+}
+
+fn pda_seed_bytes(seed: &Value, position: usize) -> Result<Vec<u8>, String> {
+    let seed: PdaSeed = serde_json::from_value(seed.clone())
+        .map_err(|error| format!("seeds[{position}]: {error}"))?;
+    let narrow = |value: &FlexibleU64, max: u64, kind: &str| {
+        let value = value.get(position)?;
+        if value > max {
+            Err(format!("seeds[{position}] is too large for {kind}"))
+        } else {
+            Ok(value)
+        }
+    };
+    Ok(match seed {
+        PdaSeed::String { value } => value.into_bytes(),
+        PdaSeed::Pubkey { value } => arete_sdk::instruction::Pubkey::from_str(value.trim())
+            .map_err(|_| format!("seeds[{position}] is not a base58 address: {value}"))?
+            .to_bytes()
+            .to_vec(),
+        PdaSeed::Bytes { hex } => {
+            hex_bytes(&hex).ok_or_else(|| format!("seeds[{position}] is not hex"))?
+        }
+        PdaSeed::U8 { value } => vec![narrow(&value, u64::from(u8::MAX), "u8")? as u8],
+        PdaSeed::U16 { value } => (narrow(&value, u64::from(u16::MAX), "u16")? as u16)
+            .to_le_bytes()
+            .to_vec(),
+        PdaSeed::U32 { value } => (narrow(&value, u64::from(u32::MAX), "u32")? as u32)
+            .to_le_bytes()
+            .to_vec(),
+        PdaSeed::U64 { value } => value.get(position)?.to_le_bytes().to_vec(),
+    })
+}
+
+/// A program-derived address, computed here: no network round trip, so it
+/// answers even when the API is slow or unreachable. The same seeds, limits
+/// and answer (`address`, `bump`) as the API's `/derive`.
+pub fn derive_pda(program_id: Option<&str>, seeds: &[Value]) -> Result<Value, SandboxRefusal> {
+    let invalid = |message: String| SandboxRefusal::local("sandbox-derive-invalid", message);
+    let program_id = program_id
+        .map(str::trim)
+        .filter(|program| !program.is_empty())
+        .ok_or_else(|| invalid("a PDA needs programId".into()))?;
+    let program = arete_sdk::instruction::Pubkey::from_str(program_id)
+        .map_err(|_| invalid(format!("programId is not a base58 address: {program_id}")))?;
+    if seeds.len() > MAX_PDA_SEEDS {
+        return Err(invalid(format!(
+            "a PDA takes at most {MAX_PDA_SEEDS} seeds besides the bump"
+        )));
+    }
+    let bytes = seeds
+        .iter()
+        .enumerate()
+        .map(|(position, seed)| pda_seed_bytes(seed, position))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(invalid)?;
+    if let Some(position) = bytes
+        .iter()
+        .position(|seed| seed.len() > MAX_PDA_SEED_BYTES)
+    {
+        return Err(invalid(format!(
+            "seeds[{position}] is longer than {MAX_PDA_SEED_BYTES} bytes"
+        )));
+    }
+    let refs: Vec<&[u8]> = bytes.iter().map(Vec::as_slice).collect();
+    let (address, bump) = arete_sdk::instruction::Pubkey::try_find_program_address(&refs, &program)
+        .ok_or_else(|| invalid("no bump gives an address off the curve".into()))?;
+    Ok(json!({ "address": address.to_string(), "bump": bump }))
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -1415,6 +1721,253 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("sandbox_action"));
+    }
+
+    /// A read that fails in transport says to retry it; it never talks
+    /// about idempotency keys, which only an action has. An action that
+    /// fails the same way says to look it up first.
+    #[test]
+    fn transport_failures_are_hinted_for_the_kind_of_call() {
+        let unreachable = |kind| SandboxRefusal {
+            status: 0,
+            body: json!({
+                "code": "sandbox-api-unreachable",
+                "error": "The Arete API could not be reached: error sending request",
+                "retryable": true,
+            }),
+            kind,
+        };
+        for kind in [CallKind::Read, CallKind::Preview] {
+            let shown = unreachable(kind).to_json();
+            let hint = shown["hint"].as_str().unwrap();
+            assert!(!hint.contains("idempotency"), "{kind:?}: {hint}");
+            assert!(!hint.contains("sandbox_action"), "{kind:?}: {hint}");
+            assert!(hint.contains("retry the same call"), "{kind:?}: {hint}");
+            assert_eq!(shown["retryable"], true);
+        }
+        let hint = unreachable(CallKind::Action).to_json()["hint"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(hint.contains("sandbox_action"), "{hint}");
+        assert!(hint.contains("idempotencyKey"), "{hint}");
+    }
+
+    #[test]
+    fn calls_are_read_preview_or_action() {
+        use reqwest::Method;
+        for (method, path, kind) in [
+            (Method::GET, "/wallet", CallKind::Read),
+            (Method::GET, "/rules", CallKind::Read),
+            (Method::GET, "/actions?idempotencyKey=k", CallKind::Read),
+            (Method::POST, "/derive", CallKind::Read),
+            (Method::POST, "/actions/preview", CallKind::Preview),
+            (Method::POST, "/actions/swap/preview", CallKind::Preview),
+            (Method::POST, "/actions/call/preview", CallKind::Preview),
+            (Method::POST, "/actions/invoke", CallKind::Action),
+            (Method::POST, "/actions/withdraw", CallKind::Action),
+            (Method::POST, "/actions/swap", CallKind::Action),
+        ] {
+            assert_eq!(CallKind::of(&method, path), kind, "{method} {path}");
+        }
+    }
+
+    /// The agent sees `code`, `retryable` and `hint` whatever answered: a
+    /// bare 504 from a proxy with no JSON body, or a 500 with `code: null`.
+    #[tokio::test]
+    async fn bare_5xx_answers_get_a_code_retryable_and_hint() {
+        let (base, _) = stub(vec![
+            ("POST", "/api/sandbox/v1/actions/preview", 504, Value::Null),
+            (
+                "GET",
+                "/api/sandbox/v1/rules",
+                500,
+                json!({ "code": null, "error": "Internal server error", "retryable": true }),
+            ),
+        ]);
+        let api = client(&base);
+        let preview = api
+            .preview(SandboxActionName::Invoke, json!({}))
+            .await
+            .unwrap_err()
+            .to_json();
+        assert_eq!(preview["status"], 504);
+        assert_eq!(preview["code"], "sandbox-api-timeout");
+        assert_eq!(preview["retryable"], true);
+        assert!(preview["error"].as_str().unwrap().contains("504"));
+        assert!(preview["hint"].as_str().unwrap().contains("dry run"));
+
+        let rules = api.rules().await.unwrap_err().to_json();
+        assert_eq!(rules["code"], "sandbox-internal-error");
+        assert_eq!(rules["retryable"], true);
+        assert_eq!(rules["error"], "Internal server error");
+        let hint = rules["hint"].as_str().unwrap();
+        assert!(!hint.contains("idempotency"), "{hint}");
+
+        // With no answer at all, the bare status still gets the envelope.
+        let bare = SandboxRefusal {
+            status: 502,
+            body: Value::Null,
+            kind: CallKind::Action,
+        }
+        .to_json();
+        assert_eq!(bare["code"], "sandbox-api-unavailable");
+        assert_eq!(bare["retryable"], true);
+        assert!(bare["hint"].as_str().unwrap().contains("sandbox_action"));
+    }
+
+    /// A hint the API sent is kept when this server has none for the code;
+    /// this server's own (naming the MCP tools) wins when it has one.
+    #[test]
+    fn the_apis_hint_is_kept_unless_this_server_has_one() {
+        let api_hint = SandboxRefusal {
+            status: 403,
+            body: json!({ "code": "sandbox-derive-mint-not-found", "retryable": false, "hint": "from the API" }),
+            kind: CallKind::Read,
+        }
+        .to_json();
+        assert_eq!(api_hint["hint"], "from the API");
+        let ours = SandboxRefusal {
+            status: 403,
+            body: json!({ "code": "sandbox-guard-insufficient-funds", "retryable": false, "hint": "from the API" }),
+            kind: CallKind::Preview,
+        }
+        .to_json();
+        assert!(ours["hint"].as_str().unwrap().contains("fund the wallet"));
+    }
+
+    /// A guard that could not decide: retry the same dry run, or an action
+    /// with a new key (the old one is recorded as refused).
+    #[test]
+    fn guard_infrastructure_hints_follow_retryable_and_kind() {
+        let refusal = |retryable, kind| {
+            SandboxRefusal {
+                status: if retryable { 503 } else { 403 },
+                body: json!({ "code": "sandbox-guard-unavailable", "retryable": retryable }),
+                kind,
+            }
+            .to_json()["hint"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        assert!(refusal(true, CallKind::Preview).contains("Retry the same call"));
+        assert!(refusal(true, CallKind::Action).contains("new idempotencyKey"));
+        assert!(refusal(false, CallKind::Preview).contains("will not pass"));
+    }
+
+    /// PDAs are derived here: the same answer as `solana
+    /// find-program-derived-address`, and no request reaches the API (here,
+    /// an origin with nothing listening).
+    #[tokio::test]
+    async fn pdas_are_derived_locally_without_the_api() {
+        let api = client("http://127.0.0.1:9");
+        let derive = |args: Value| {
+            let args: SandboxDeriveArgs = serde_json::from_value(args).unwrap();
+            let api = api.clone();
+            async move { api.derive(&args).await }
+        };
+        const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+        const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let global = derive(json!({
+            "kind": "pda", "programId": PUMP,
+            "seeds": [{ "kind": "string", "value": "global" }],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(
+            global,
+            json!({ "address": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf", "bump": 255 })
+        );
+        let curve = derive(json!({
+            "kind": "pda", "programId": PUMP,
+            "seeds": [
+                { "kind": "string", "value": "bonding-curve" },
+                { "kind": "pubkey", "value": USDC },
+            ],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(
+            curve,
+            json!({ "address": "8Rr2Qo9ch94zRZxojHfg7Xeq8DfAp9mfNaLZnQScnpbA", "bump": 253 })
+        );
+        // Every seed kind, integers as numbers or decimal strings.
+        let mixed = derive(json!({
+            "kind": "pda", "programId": PUMP,
+            "seeds": [
+                { "kind": "string", "value": "x" },
+                { "kind": "u8", "value": 7 },
+                { "kind": "u16", "value": "513" },
+                { "kind": "u32", "value": 70000 },
+                { "kind": "u64", "value": "1234567890123" },
+                { "kind": "bytes", "hex": "deadbeef" },
+            ],
+        }))
+        .await
+        .unwrap();
+        assert_eq!(
+            mixed,
+            json!({ "address": "3QhyWoQ3n7GZ1xYunPYTi1orfEPqwndDuJVdgBw1creX", "bump": 255 })
+        );
+        // An ATA still needs the API, which is not there.
+        let ata = derive(json!({ "kind": "ata", "mint": USDC }))
+            .await
+            .unwrap_err();
+        assert_eq!(ata.body["code"], "sandbox-api-unreachable");
+    }
+
+    #[test]
+    fn bad_pda_seeds_are_refused_locally() {
+        const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+        let seeds = |list: Value| list.as_array().unwrap().clone();
+        for (program, list, needle) in [
+            (None, json!([]), "programId"),
+            (Some("not-an-address"), json!([]), "programId"),
+            (
+                Some(PUMP),
+                json!([{ "kind": "u8", "value": 256 }]),
+                "too large for u8",
+            ),
+            (
+                Some(PUMP),
+                json!([{ "kind": "u16", "value": "x" }]),
+                "not a u64",
+            ),
+            (
+                Some(PUMP),
+                json!([{ "kind": "bytes", "hex": "abc" }]),
+                "not hex",
+            ),
+            (
+                Some(PUMP),
+                json!([{ "kind": "pubkey", "value": "nope" }]),
+                "base58",
+            ),
+            (
+                Some(PUMP),
+                json!([{ "kind": "float", "value": 1 }]),
+                "seeds[0]",
+            ),
+            (
+                Some(PUMP),
+                json!([{ "kind": "string", "value": "y".repeat(33) }]),
+                "longer than 32",
+            ),
+            (
+                Some(PUMP),
+                Value::Array(vec![json!({ "kind": "u8", "value": 1 }); 16]),
+                "at most 15",
+            ),
+        ] {
+            let refusal = derive_pda(program, &seeds(list.clone())).unwrap_err();
+            let shown = refusal.to_json();
+            assert_eq!(shown["code"], "sandbox-derive-invalid", "{list}");
+            assert_eq!(shown["retryable"], false, "{list}");
+            let error = shown["error"].as_str().unwrap();
+            assert!(error.contains(needle), "{list}: {error}");
+            assert!(shown["hint"].as_str().unwrap().contains("seeds"));
+        }
     }
 
     #[tokio::test]

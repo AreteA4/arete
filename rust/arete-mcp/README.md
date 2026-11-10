@@ -574,10 +574,14 @@ returned in a tool result.
   window has spent. Start here.
 - `sandbox_rules()` — the allowed programs and, for each, the allowed
   instructions with their argument types and accounts.
-- `sandbox_derive({ kind: "ata" | "pda", ... })` — an associated token
-  account (`mint`, optional `owner`, `tokenProgram`) or a program-derived
-  address (`programId`, `seeds`), computed by the API without touching the
-  chain.
+- `sandbox_derive({ kind: "ata" | "pda", ... })` — a program-derived
+  address (`programId`, `seeds`), computed by this server with no network
+  call, or an associated token account (`mint`, optional `owner`,
+  `tokenProgram`), which the API derives under the mint's token program as
+  the chain reports it. PDA seeds are `{ kind, value }` with `kind`
+  `string`, `pubkey`, `u8`, `u16`, `u32` or `u64` (integers as numbers or
+  decimal strings, little-endian), or `{ kind: "bytes", hex }`: at most 15
+  seeds of at most 32 bytes each.
 - `sandbox_preview({ action, args })` — a dry run of the same action
   `sandbox_invoke` takes: builds the transaction and runs every check
   without signing or recording anything. Returns `pass` with what the wallet
@@ -643,6 +647,26 @@ that refused (`program-allowlist`, `instruction-allowlist`, `outflow-cap`,
 `window-cap`, `no-authority-change`, `session-grant`, `swap-venues`, ...),
 what triggered it (`program`, `instruction`, `mint`, `attempted`, `cap`,
 `remaining`), a `hint`, and for `sandbox_invoke` the `idempotencyKey`.
+
+Every sandbox tool error has `status`, `code`, `retryable` and `hint`, even
+when no API answered (`status: 0`) or something in front of it answered
+with no readable body. The retry rule:
+
+- `retryable: false`: the same call fails again; the `hint` says what to
+  change. A wallet that cannot pay is `sandbox-guard-insufficient-funds`
+  with `balanceLamports` (and `shortfallLamports` when known).
+- `retryable: true` on a read (`sandbox_status`, `sandbox_rules`,
+  `sandbox_derive`, `sandbox_action`, `sandbox_history`,
+  `sandbox_holdings`) or a `sandbox_preview`: nothing was changed; retry
+  the same call after `retryAfterSeconds` when present.
+- `retryable: true` on `sandbox_invoke`: the action may have run unless the
+  code says the guard refused it. Look it up with `sandbox_action` and the
+  `idempotencyKey` before retrying.
+
+Transport codes: `sandbox-api-unreachable` (no connection),
+`sandbox-api-timeout` (no answer in time, from this server or the API),
+`sandbox-api-unavailable` (502/503), `sandbox-internal-error` (500) and
+`sandbox-response-unreadable`.
 
 ### Health
 
