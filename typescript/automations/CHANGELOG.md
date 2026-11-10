@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.54.1](https://github.com/AreteA4/arete/compare/arete-automations-v0.54.0...arete-automations-v0.54.1) (2026-11-10)
+
+
+### Miscellaneous Chores
+
+* **arete-automations:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * devDependencies
+    * @usearete/sdk bumped from ^0.54.0 to ^0.54.1
+  * peerDependencies
+    * @usearete/sdk bumped from ^0.54.0 to ^0.54.1
+
 ## [0.54.0](https://github.com/AreteA4/arete/compare/arete-automations-v0.53.1...arete-automations-v0.54.0) (2026-11-10)
 
 

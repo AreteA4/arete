@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+## [0.54.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.54.0...a4-cli-v0.54.1) (2026-11-10)
+
+
+### Bug Fixes
+
+* **deps:** clear new RustSec advisories for openssl, rmcp and libsqlite3-sys ([e99d38a](https://github.com/AreteA4/arete/commit/e99d38ac70856ae3cf6355d9392626b6a0119624))
+* **deps:** clear new RustSec advisories for openssl, rmcp and libsqlite3-sys ([1b35ed7](https://github.com/AreteA4/arete/commit/1b35ed73280af1992a14bbe9923be61919cc3109))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.54.0 to 0.54.1
+    * arete-mcp bumped from 0.54.0 to 0.54.1
+
 ## [0.54.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.53.1...a4-cli-v0.54.0) (2026-11-10)
 
 
