@@ -7,8 +7,9 @@
 //! solDelta, tokenDeltas[{ mint, delta, decimals }], accounts[], raw }],
 //! nextCursor }`, where `raw` is the parsed transaction with its pre and
 //! post balances. `events` are the Anchor events the action emitted, in
-//! instruction-path order; one that did not decode has `name: null` and
-//! `fields.__parse_error`, and keeps its bytes in `data` (base64). Holdings:
+//! instruction-path order; one that did not decode has
+//! `fields.__parse_error` and keeps its bytes in `data` (base64), with
+//! `name: null` when no IDL event matched it. Holdings:
 //! `{ sol, tokens[{ mint, amount, decimals, acquiredBySandbox }],
 //! positions[{ program, account, label, raw }], asOfSlot }`.
 //!

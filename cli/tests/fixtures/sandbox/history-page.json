@@ -41,6 +41,14 @@
           "source": "emit_cpi",
           "fields": { "__parse_error": "no IDL is known for this program" },
           "data": "MUh7LW5AsIU="
+        },
+        {
+          "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "name": "CreateEvent",
+          "path": "0.6",
+          "source": "emit_cpi",
+          "fields": { "__parse_error": "1 bytes left over after the declared fields" },
+          "data": "G3KMqi5lhCE="
         }
       ],
       "solDelta": "-105005000",

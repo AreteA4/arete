@@ -380,20 +380,20 @@ fn history_row(item: &Value) -> String {
     line
 }
 
-/// The Anchor events an action emitted, in order: each decoded event's
-/// name, or the emitting program and `(not decoded)` when its IDL did not
-/// decode it. A run of the same label is shown once with its count. `None`
-/// when the item has no events.
+/// The Anchor events an action emitted, in order: each event's name (the
+/// emitting program when no IDL event matched), marked `(not decoded)` when
+/// its fields did not decode. A run of the same label is shown once with
+/// its count. `None` when the item has no events.
 fn event_labels(item: &Value) -> Option<String> {
     let mut runs: Vec<(String, usize)> = Vec::new();
     for event in item["events"].as_array().into_iter().flatten() {
-        let label = match event["name"].as_str() {
+        let mut label = match event["name"].as_str() {
             Some(name) => name.to_string(),
-            None => format!(
-                "{} (not decoded)",
-                short(event["program"].as_str().unwrap_or("?"))
-            ),
+            None => short(event["program"].as_str().unwrap_or("?")),
         };
+        if event["fields"].get("__parse_error").is_some() {
+            label.push_str(" (not decoded)");
+        }
         match runs.last_mut() {
             Some((last, count)) if *last == label => *count += 1,
             _ => runs.push((label, 1)),
@@ -884,7 +884,8 @@ mod tests {
             "{text}"
         );
         assert_eq!(
-            lines[3], "      events: TradeEvent ×2, MAyh…MD4e (not decoded)",
+            lines[3],
+            "      events: TradeEvent ×2, MAyh…MD4e (not decoded), CreateEvent (not decoded)",
             "{text}"
         );
         assert!(
