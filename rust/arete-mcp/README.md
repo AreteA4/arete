@@ -582,7 +582,11 @@ returned in a tool result.
   caps (lamports and per mint, per action and per window) with what the
   window has spent. Start here.
 - `sandbox_rules()` — the allowed programs and, for each, the allowed
-  instructions with their argument types and accounts.
+  instructions with their argument types and accounts. An account with
+  `fill` (`fixed`, `wallet` or `derived` from the program's spec) can be
+  left out of an `invoke`: Arete fills it. `baseline` lists the plumbing
+  programs with the instructions each allows at the top level and their
+  accounts (associated token `createIdempotent` needs only `mint`).
 - `sandbox_derive({ kind: "ata" | "pda", ... })` — a program-derived
   address (`programId`, `seeds`), computed by this server with no network
   call, or an associated token account (`mint`, optional `owner`,
@@ -594,8 +598,10 @@ returned in a tool result.
 - `sandbox_preview({ action, args })` — a dry run of the same action
   `sandbox_invoke` takes: builds the transaction and runs every check
   without signing or recording anything. Returns `pass` with what the wallet
-  would lose and the transaction it built, or the refusal. `withdraw` has no
-  dry run and is refused with `sandbox-preview-unavailable`.
+  would lose and the transaction it built, or the refusal. Every action has
+  a dry run, `withdraw` included. A refusal's `path` is the index in the
+  request's `instructions`; `transactionPath` gives the transaction's own
+  index when it differs (a v0 compute budget or a fee leg comes first).
 - `sandbox_invoke({ action, args, idempotencyKey? })` — runs one action.
   This is the only tool that moves funds; there are no per-action tools.
 - `sandbox_action({ actionId | idempotencyKey })` — one action's status,
