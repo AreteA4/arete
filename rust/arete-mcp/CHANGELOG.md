@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.54.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.53.1...arete-mcp-v0.54.0) (2026-11-10)
+
+
+### Features
+
+* **cli,mcp:** list and search a stack's views without knowing their ids ([862b7f8](https://github.com/AreteA4/arete/commit/862b7f8bd9905d5d6e3c530b95db914cd9b11a01))
+* **cli,mcp:** list and search a stack's views without knowing their ids ([2645c3d](https://github.com/AreteA4/arete/commit/2645c3d093d24f6a2a3350c13272957ba5763971))
+* **cli,mcp:** sandbox history and holdings, Rules v3 validation, Sandboxes (alpha) docs ([e65d939](https://github.com/AreteA4/arete/commit/e65d939b9a8f15912f8f50ac130b3195ca1ce84f))
+* **cli:** show each action's Anchor events in sandbox history ([4a389af](https://github.com/AreteA4/arete/commit/4a389af9831a231eeea9bd3ebef69bd599a83bde))
+* **cli:** show each action's Anchor events in sandbox history ([8607c3e](https://github.com/AreteA4/arete/commit/8607c3e16f14ba13964e2f971614de8b518c4b69))
+* **mcp:** sandbox history and holdings reads, and Rules v3 validation ([7783910](https://github.com/AreteA4/arete/commit/7783910615d28ef0ca3d2339e7d0488a07af9443))
+
+
+### Bug Fixes
+
+* **cli,mcp:** keep filtered history within its limit and paging stable ([0a1e55b](https://github.com/AreteA4/arete/commit/0a1e55b9818beb1c6c0ae45405893a29ac624a04))
+* **cli,mcp:** keep tool and composition file writes inside the project ([0de0314](https://github.com/AreteA4/arete/commit/0de0314e0f6c49097796b4d0e370bc4a225f6233))
+* **cli,mcp:** keep tool and composition file writes inside the project ([f49040d](https://github.com/AreteA4/arete/commit/f49040d8cc67d3711325e9d069802b7da5938207))
+* **cli,mcp:** say when discovery is signed out and make session refusals actionable ([08f860c](https://github.com/AreteA4/arete/commit/08f860cae0de5affda5b2940e82c1dc11dfbfa20))
+* **cli,mcp:** say when discovery is signed out and make session refusals actionable ([76460a9](https://github.com/AreteA4/arete/commit/76460a97a055d6d064fcaf030ea340b7e24b3d15))
+* **cli,mcp:** suggest stream and read commands that work for every listed view ([171341b](https://github.com/AreteA4/arete/commit/171341bc93beed718941a1c5082f11137054f3de))
+* **cli:** distinguish ambiguous credential profiles from malformed credentials files ([ecf69ab](https://github.com/AreteA4/arete/commit/ecf69abb442ee2231b85c5390ac2be97726e9b86))
+* **cli:** mark named events whose fields did not decode ([9c8950c](https://github.com/AreteA4/arete/commit/9c8950c7a96b87eab6ed10b83058d9871b023977))
+* **cli:** report ambiguous credential profiles instead of "Failed to parse credentials file" ([e19d9ff](https://github.com/AreteA4/arete/commit/e19d9ff595f82788380cb8b19551297d808d27b1))
+* **credentials:** suggest --profile and the project file only in CLI errors ([8bbc506](https://github.com/AreteA4/arete/commit/8bbc506c21d9f616998bca2794868f27d6ad7721))
+* **mcp:** complete sandbox error envelope and local PDA derive ([674cbc8](https://github.com/AreteA4/arete/commit/674cbc8dc9ef989a6fd48f7e15012ccc4e7e54a8))
+* **mcp:** complete sandbox error envelope and local PDA derive ([4a0c409](https://github.com/AreteA4/arete/commit/4a0c409aa15da7ca4672e4713fb12c1eb668ec33))
+* **mcp:** count the signed-out note toward the tool-result limit ([a67862f](https://github.com/AreteA4/arete/commit/a67862f7f7bdf0fe4f4b8b6ecc1834fc277e1a32))
+* **mcp:** create tool exports owner-only ([7cdd29d](https://github.com/AreteA4/arete/commit/7cdd29d1d0ca7f9cfe4426849091389c3a0528cd))
+* **mcp:** hint a token shortfall as a token shortfall, not a SOL one ([2854774](https://github.com/AreteA4/arete/commit/28547743ddaf39ea4542f1200e7a60bf05b3e962))
+* **mcp:** keep an unusable API answer retryable when refused locally ([98cfbf0](https://github.com/AreteA4/arete/commit/98cfbf0a2feeddc8472c0f67c1fc43fad2f69394))
+* **mcp:** pick the token funds hint from the API's shortfall marker ([9ea037b](https://github.com/AreteA4/arete/commit/9ea037b8349eaef214b6659f8abbfe798bf65da2))
+* **mcp:** recheck a confined capture's path just before writing it ([e2d5c30](https://github.com/AreteA4/arete/commit/e2d5c30e37cf57dfe94a8424c8e0a1d24743786b))
+* **mcp:** write tool outputs through checked directory handles ([da5a25b](https://github.com/AreteA4/arete/commit/da5a25bee90951222b20038f5dcf12c0b62a08d9))
+
 ## [0.53.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.53.0...arete-mcp-v0.53.1) (2026-11-06)
 
 

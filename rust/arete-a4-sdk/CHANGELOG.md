@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.54.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.53.1...arete-sdk-v0.54.0) (2026-11-10)
+
+
+### Bug Fixes
+
+* **cli:** distinguish ambiguous credential profiles from malformed credentials files ([ecf69ab](https://github.com/AreteA4/arete/commit/ecf69abb442ee2231b85c5390ac2be97726e9b86))
+* **cli:** report ambiguous credential profiles instead of "Failed to parse credentials file" ([e19d9ff](https://github.com/AreteA4/arete/commit/e19d9ff595f82788380cb8b19551297d808d27b1))
+* **credentials:** suggest --profile and the project file only in CLI errors ([8bbc506](https://github.com/AreteA4/arete/commit/8bbc506c21d9f616998bca2794868f27d6ad7721))
+
 ## [0.53.1](https://github.com/AreteA4/arete/compare/arete-sdk-v0.53.0...arete-sdk-v0.53.1) (2026-11-06)
 
 

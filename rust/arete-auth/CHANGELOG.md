@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.7.2](https://github.com/AreteA4/arete/compare/arete-auth-v0.7.1...arete-auth-v0.7.2) (2026-11-10)
+
+
+### Bug Fixes
+
+* **auth:** count cancelled JWKS fetches against the refresh interval ([2eff861](https://github.com/AreteA4/arete/commit/2eff8614ecda30dccd14582fbb33f0d744581d34))
+* **auth:** keep AsyncVerifier small by sharing its JWKS cache ([9d36ce1](https://github.com/AreteA4/arete/commit/9d36ce1362dab8de3dd9b6c220d952b0d65e428b))
+* **auth:** make opt-in origin, client IP, seed file and mint limit controls apply ([0feeb53](https://github.com/AreteA4/arete/commit/0feeb531667e829a02329adda3d7994f55240719))
+* **auth:** opt-in origin, client IP, seed file and mint limit controls did not apply ([4b57019](https://github.com/AreteA4/arete/commit/4b57019bf36b8c6a700b6fa5c5364c113cb0ae93))
+* **auth:** throttle JWKS refetches triggered by unknown key IDs ([b7c852a](https://github.com/AreteA4/arete/commit/b7c852a1dd6d10aa9912193fa51480e393ed99be))
+* **auth:** throttle JWKS refetches triggered by unknown key IDs ([61a9462](https://github.com/AreteA4/arete/commit/61a94629735a7ae566889d9bd0e74096604c26b4))
+
 ## [0.7.1](https://github.com/AreteA4/arete/compare/arete-auth-v0.7.0...arete-auth-v0.7.1) (2026-11-06)
 
 

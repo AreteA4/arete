@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.54.0](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.53.1...arete-interpreter-v0.54.0) (2026-11-10)
+
+
+### Bug Fixes
+
+* **interpreter:** bound computed expression evaluation and make remainder overflow-safe ([b05a2be](https://github.com/AreteA4/arete/commit/b05a2beb5333b79681a0ab6a1a1aeac59601b664))
+* **interpreter:** charge computed expression fuel for copied values ([f2c8e48](https://github.com/AreteA4/arete/commit/f2c8e48f5631d51a8038b54db9c5f35a6af4ef22))
+* **interpreter:** check author-named map entries and skip runtime-only data ([d2b5941](https://github.com/AreteA4/arete/commit/d2b59415a7e4db2fc4e9755f560078b9f18e8a46))
+* **interpreter:** duplicate [dev-dependencies] table breaks cargo on main ([a4ed6a4](https://github.com/AreteA4/arete/commit/a4ed6a448fd29c92c3b7555c977d56e69be3cf47))
+* **interpreter:** keep URL resolver requests on public destinations ([d883bcb](https://github.com/AreteA4/arete/commit/d883bcbc286c52beffa4bf060bbd23c246d7d513))
+* **interpreter:** keep URL resolver requests on public destinations ([090482b](https://github.com/AreteA4/arete/commit/090482bcdc6b22caa6402a12475d74c9190e4bd8))
+* **interpreter:** leave the rest of the runtime-only handler data unrestricted ([f8e9588](https://github.com/AreteA4/arete/commit/f8e9588842d87cb71dd3e24eeddc41ddeaf81378))
+* **interpreter:** limit each redirect hop and bound the queue wait ([9f88256](https://github.com/AreteA4/arete/commit/9f882564eafd10a5ad306b4be4dc976fcd9b79da))
+* **interpreter:** merge duplicate [dev-dependencies] tables ([fef85cb](https://github.com/AreteA4/arete/commit/fef85cb81f0e740eca5fe1af68b055aa5802085f))
+* **interpreter:** refuse stack and IDL text that could escape generated SDK code ([580b32c](https://github.com/AreteA4/arete/commit/580b32c56ba4d107e03c822393f0ccbaa3298990))
+* **interpreter:** refuse stack and IDL text that could escape generated SDK code ([ad6da04](https://github.com/AreteA4/arete/commit/ad6da0428bb50bedd08f91894dbeae5fbc9fa166))
+* **interpreter:** remainder overflow panic and unbounded computed expression cost ([dc0608e](https://github.com/AreteA4/arete/commit/dc0608e40df8326e9c3730ee109d2b6dfbc8ba6f))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-macros bumped from 0.53.1 to 0.54.0
+
 ## [0.53.1](https://github.com/AreteA4/arete/compare/arete-interpreter-v0.53.0...arete-interpreter-v0.53.1) (2026-11-06)
 
 
