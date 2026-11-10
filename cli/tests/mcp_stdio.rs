@@ -316,6 +316,8 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
     }));
     let called = response(3);
     drop(stdin);
+    // Exit on EOF is the initialize test's concern; never block on it here.
+    let _ = child.kill();
     let _ = child.wait();
 
     let names: Vec<&str> = listed["result"]["tools"]
