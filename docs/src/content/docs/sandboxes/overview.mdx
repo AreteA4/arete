@@ -104,7 +104,11 @@ program: it must also be one the registry supports.
 - **Every action is recorded**, refusals included, and readable as history.
 
 A refusal names its `code`, the `rule` that refused and what triggered it, so
-an agent can correct the request instead of guessing.
+an agent can correct the request instead of guessing. Every error also says
+whether the same request may succeed later (`retryable`) and what to do
+(`hint`): a wallet that cannot pay is refused with
+`sandbox-guard-insufficient-funds` and its balance, not as a failure to
+retry.
 
 ## What is not enforced yet
 

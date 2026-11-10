@@ -1641,13 +1641,13 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Derive an address without touching the chain: `kind: \"ata\"` with `mint` (and optional `owner`, default the sandbox wallet, and `tokenProgram`) for an associated token account, or `kind: \"pda\"` with `programId` and `seeds` for a program-derived address. Use it to fill instruction accounts."
+        description = "Derive an address: `kind: \"pda\"` with `programId` and `seeds` for a program-derived address, computed locally with no network call; or `kind: \"ata\"` with `mint` (and optional `owner`, default the sandbox wallet, and `tokenProgram`) for an associated token account, which asks the Arete API to read the mint's token program. Use it to fill instruction accounts."
     )]
     async fn sandbox_derive(
         &self,
         Parameters(args): Parameters<crate::sandbox::SandboxDeriveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(sandbox_result(self.sandbox.derive(args.body()).await, None))
+        Ok(sandbox_result(self.sandbox.derive(&args).await, None))
     }
 
     #[tool(
@@ -4681,13 +4681,19 @@ fn sandbox_result(
         let refusal = crate::sandbox::SandboxRefusal {
             status: 0,
             body: serde_json::json!({
-                "code": "sandbox-response-too-large",
+                "code": "sandbox-response-too-large", "retryable": false,
                 "error": format!(
                     "The answer is {} bytes, over the {} byte limit for a tool result",
                     text.len(),
                     crate::sandbox::MAX_RESPONSE_BYTES
                 ),
             }),
+            // Only an action carries an idempotency key here.
+            kind: if idempotency_key.is_some() {
+                crate::sandbox::CallKind::Action
+            } else {
+                crate::sandbox::CallKind::Read
+            },
         };
         return CallToolResult::error(vec![Content::text(
             serde_json::to_string(&with_key(refusal.to_json())).unwrap_or_default(),
