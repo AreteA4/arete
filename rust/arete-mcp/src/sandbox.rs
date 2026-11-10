@@ -157,10 +157,11 @@ impl SandboxRefusal {
         };
         // This server's hint names the MCP tools, so it wins; then the
         // API's own; then the rule for the kind of call.
-        // The funds code covers SOL and tokens; only a SOL shortfall carries
-        // `balanceLamports`.
-        let token_shortfall =
-            code == "sandbox-guard-insufficient-funds" && !out.contains_key("balanceLamports");
+        // The funds code covers SOL and tokens; the API marks a token
+        // shortfall `shortfall: "token"`. A missing balance alone proves
+        // nothing, so without the marker the SOL hint stands.
+        let token_shortfall = code == "sandbox-guard-insufficient-funds"
+            && out.get("shortfall").and_then(Value::as_str) == Some("token");
         let hint = token_shortfall
             .then(|| TOKEN_FUNDS_HINT.to_string())
             .or_else(|| hint_for(&code, retryable, self.kind))
@@ -1876,16 +1877,31 @@ mod tests {
         }
         .to_json();
         assert!(ours["hint"].as_str().unwrap().contains("fund the wallet"));
-        // The same code without a SOL balance is a token shortfall.
+        // The same code marked as a token shortfall gets the token hint.
         let tokens = SandboxRefusal {
             status: 403,
-            body: json!({ "code": "sandbox-guard-insufficient-funds", "retryable": false }),
+            body: json!({
+                "code": "sandbox-guard-insufficient-funds",
+                "retryable": false,
+                "shortfall": "token",
+            }),
             kind: CallKind::Preview,
         }
         .to_json();
         let hint = tokens["hint"].as_str().unwrap();
         assert!(hint.contains("token"), "{hint}");
         assert!(!hint.contains("balanceLamports"), "{hint}");
+        // Unmarked, a missing balance alone keeps the SOL hint.
+        let unmarked = SandboxRefusal {
+            status: 403,
+            body: json!({ "code": "sandbox-guard-insufficient-funds", "retryable": false }),
+            kind: CallKind::Preview,
+        }
+        .to_json();
+        assert!(unmarked["hint"]
+            .as_str()
+            .unwrap()
+            .contains("fund the wallet"));
     }
 
     /// A guard that could not decide: retry the same dry run, or an action
