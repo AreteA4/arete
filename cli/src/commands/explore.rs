@@ -3221,13 +3221,16 @@ pub fn catalog_entry(
         .ok_or_else(|| anyhow::anyhow!("kind must be program or stack"))?;
     let slug = catalog_slug(slug)?;
     let client = ApiClient::new()?;
-    let value = client.catalog_entry(kind, &slug).with_context(|| {
-        let mut message = format!("{kind} '{slug}' is not in the active catalog; search with `a4 explore catalog --query <intent>`");
+    let value = client.catalog_entry(kind, &slug).map_err(|error| {
+        // A signed-out miss may be an entry only an account can read. The
+        // note goes to stderr so the API problem itself (and its `--json`
+        // form and exit code) is unchanged.
         if !client.has_api_key() {
-            message.push_str(". ");
-            message.push_str(catalog_view::SIGNED_OUT_HINT);
+            eprintln!("{}", catalog_view::SIGNED_OUT_HINT.yellow());
         }
-        message
+        error.context(format!(
+            "{kind} '{slug}' is not in the active catalog; search with `a4 explore catalog --query <intent>`"
+        ))
     })?;
     if json || shape.is_some() {
         let value = match shape {
