@@ -5,7 +5,10 @@
 //! [`arete_mcp::entitlements`]). Without an account key, when the API can't
 //! be reached, or when it reports no groups, every command is listed as
 //! before. Hiding is UX only: a command typed anyway still runs, and the API
-//! refuses what the account may not use.
+//! refuses what the account may not use. A command named on the command line
+//! (`a4 explore --help`, `a4 help explore`, `a4 get` with a missing
+//! argument) is never hidden: its own help and errors are shown as for any
+//! account.
 
 use arete_mcp::entitlements::{Group, Surface};
 use clap::Command;
@@ -32,11 +35,19 @@ pub fn command_groups(name: &str) -> Option<&'static [Group]> {
     })
 }
 
+/// The help footer when `visible` leaves commands out: they still run, and
+/// naming one shows its help.
+pub const HIDDEN_COMMANDS_NOTE: &str = "\
+Commands outside this account's command groups are not listed. Any a4 command
+still runs when the API allows it, and `a4 help <command>` (or
+`a4 <command> --help`) shows its help.";
+
 /// `cmd` without the top-level commands `surface` does not grant.
 pub fn visible(cmd: Command, surface: &Surface) -> Command {
     if *surface == Surface::Everything {
         return cmd;
     }
+    let all = cmd.get_subcommands().count();
     let kept: Vec<Command> = cmd
         .get_subcommands()
         .filter(|sub| {
@@ -53,7 +64,56 @@ pub fn visible(cmd: Command, surface: &Surface) -> Command {
     if let Some(about) = cmd.get_long_about() {
         root = root.long_about(about.clone());
     }
+    if kept.len() < all {
+        root = root.after_help(HIDDEN_COMMANDS_NOTE);
+    }
     root.args(cmd.get_arguments().cloned()).subcommands(kept)
+}
+
+/// The top-level command the raw arguments name, as typed: the first
+/// argument that is not an option (or an option's value), or the target of
+/// `a4 help <command>`. `None` for `a4`, `a4 --help` and `a4 help`.
+pub fn named_command(cmd: &Command, args: &[OsString]) -> Option<String> {
+    let takes_value =
+        |found: Option<&clap::Arg>| found.is_some_and(|arg| arg.get_action().takes_values());
+    let mut positionals = Vec::new();
+    let mut args = args.iter().skip(1).map(|arg| arg.to_string_lossy());
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        }
+        if let Some(long) = arg.strip_prefix("--") {
+            if !long.contains('=')
+                && takes_value(cmd.get_arguments().find(|a| a.get_long() == Some(long)))
+            {
+                args.next();
+            }
+            continue;
+        }
+        if let Some(shorts) = arg.strip_prefix('-').filter(|rest| !rest.is_empty()) {
+            // Short flags combine (`-yc path`, `-ycpath`): the first one that
+            // takes a value ends the group, with the rest of the group as its
+            // value, or the next argument when nothing is left.
+            for (index, short) in shorts.char_indices() {
+                if takes_value(cmd.get_arguments().find(|a| a.get_short() == Some(short))) {
+                    if index + short.len_utf8() == shorts.len() {
+                        args.next();
+                    }
+                    break;
+                }
+            }
+            continue;
+        }
+        positionals.push(arg.into_owned());
+        if positionals.len() == 2 || positionals[0] != "help" {
+            break;
+        }
+    }
+    let mut positionals = positionals.into_iter();
+    match positionals.next()? {
+        help if help == "help" => positionals.next(),
+        name => Some(name),
+    }
 }
 
 /// The account's surface for the API and profile these global options (or

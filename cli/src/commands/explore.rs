@@ -43,7 +43,17 @@ struct StackDiscoveryGuidance {
     requested_service_class: Option<String>,
     public_stacks_remain_available: bool,
     guidance: &'static str,
+    stream_endpoints: &'static str,
 }
+
+/// Which hostname to use. The registry list carries each deployment's own
+/// host; a stack's descriptor carries the stream endpoints of its live
+/// bindings, which `a4 install` pins into SDKs. Both can serve the same stack
+/// under different names, so the list labels its host and points here.
+const STREAM_ENDPOINTS_GUIDANCE: &str = "Deployment hosts can differ from a stack's stream \
+     endpoints, and both may serve it. To hard-code a URL, use the stream endpoints \
+     `a4 explore stack <name>` prints: those are the ones installed SDKs connect to, \
+     unless a project's arete.toml overrides them.";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -409,6 +419,7 @@ pub fn list(json: bool, service_class: Option<&str>) -> Result<()> {
                     requested_service_class: service_class.map(str::to_string),
                     public_stacks_remain_available: true,
                     guidance: "serviceClass=starter marks trial-eligible authenticated stacks; public stacks remain available regardless of service class.",
+                    stream_endpoints: STREAM_ENDPOINTS_GUIDANCE,
                 },
             })?
         );
@@ -419,18 +430,17 @@ pub fn list(json: bool, service_class: Option<&str>) -> Result<()> {
         println!("\n{}", "Stack Registry".bold());
         println!("{}", "-".repeat(60).dimmed());
         for stack in &registry_stacks {
-            println!(
-                "  {}  {}",
-                stack.name.green().bold(),
-                stack.websocket_url.cyan()
-            );
+            println!("  {}", stack.name.green().bold());
             if let Some(description) = &stack.description {
                 println!("    {}", description.dimmed());
             }
+            println!("    Deployment host: {}", stack.websocket_url.cyan());
             println!("    Entities: {}", stack.entities.join(", "));
             println!("    Service class: {}", stack.service_class);
             println!();
         }
+        println!("{}", STREAM_ENDPOINTS_GUIDANCE.dimmed());
+        println!();
     }
 
     if let Some(specs) = user_stacks {
@@ -526,6 +536,92 @@ pub fn list_programs(json: bool, shape: &catalog_view::Shape) -> Result<()> {
         println!("{}", PROGRAM_LIST_BRIEF_HINT.dimmed());
     }
     Ok(())
+}
+
+/// The `a4 explore` targets with their own meaning; any other first word is a
+/// legacy stack reference (`a4 explore <stack>`).
+const EXPLORE_TARGETS: [&str; 7] = [
+    "catalog", "stacks", "list", "stack", "programs", "program", "protocol",
+];
+
+/// Whether `a4 explore <target>` lists the registry's stacks.
+pub fn is_stack_list_target(target: &str) -> bool {
+    matches!(target, "stacks" | "list")
+}
+
+/// Legacy `a4 explore <word> [entity]`: the stack named `word`. When the
+/// registry has no such stack, say so and what `a4 explore` takes, instead of
+/// only the registry's 404, which reads like the registry is down.
+pub fn show_legacy_stack(word: &str, options: StackOptions<'_>, json: bool) -> Result<()> {
+    show_stack(word, options, json).map_err(|error| {
+        let missing = error
+            .downcast_ref::<StackNotFound>()
+            .is_some_and(|missing| missing.reference == word);
+        if missing {
+            anyhow::anyhow!(legacy_stack_miss(word))
+        } else {
+            error
+        }
+    })
+}
+
+/// The context of a stack lookup that found nothing: the registry has no
+/// descriptor under `reference` (404), and neither its listing nor the
+/// account's deployments name a stack it translates to. A stack that was
+/// found but whose descriptor failed is not this. Displays as the usual
+/// descriptor diagnostic.
+#[derive(Debug)]
+struct StackNotFound {
+    reference: String,
+    diagnostic: String,
+}
+
+impl std::fmt::Display for StackNotFound {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.diagnostic)
+    }
+}
+
+fn legacy_stack_miss(word: &str) -> String {
+    let mut message = format!(
+        "No stack named '{word}' in the registry (`a4 explore {word}` looks up a stack by name)."
+    );
+    if let Some(target) = closest_explore_target(word) {
+        let target = if target == "list" { "stacks" } else { target };
+        message.push_str(&format!(" Did you mean `a4 explore {target}`?"));
+    }
+    message.push_str(
+        "\n`a4 explore` takes: stacks (or list), stack <ref>, programs, program <ref>, \
+         protocol <ref>, catalog --query <intent>. List stacks with `a4 explore stacks`, \
+         or search with `a4 explore catalog --query \"<intent>\"`.",
+    );
+    message
+}
+
+/// The explore target `word` is a likely typo of: one or two edits away
+/// (`stak`, `protocols`), case aside.
+fn closest_explore_target(word: &str) -> Option<&'static str> {
+    let word = word.to_ascii_lowercase();
+    EXPLORE_TARGETS
+        .into_iter()
+        .map(|target| (edit_distance(&word, target), target))
+        .filter(|(distance, _)| *distance <= 2)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, target)| target)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut previous: Vec<usize> = (0..=b.len()).collect();
+    for (i, a_char) in a.chars().enumerate() {
+        let mut current = vec![i + 1];
+        for (j, b_char) in b.iter().enumerate() {
+            let substitute = previous[j] + usize::from(a_char != *b_char);
+            current.push(substitute.min(previous[j + 1] + 1).min(current[j] + 1));
+        }
+        previous = current;
+    }
+    previous[b.len()]
 }
 
 pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Result<()> {
@@ -1441,6 +1537,16 @@ fn resolve_stack_reference<T>(
         return Ok((install_ref, fetched));
     }
 
+    let not_found = direct_error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<ApiClientError>())
+        .any(|error| error.status == reqwest::StatusCode::NOT_FOUND);
+    if not_found {
+        return Err(direct_error).context(StackNotFound {
+            reference: reference.to_string(),
+            diagnostic: descriptor_diagnostic(reference),
+        });
+    }
     Err(direct_error).with_context(|| descriptor_diagnostic(reference))
 }
 
@@ -2086,6 +2192,18 @@ fn render_auth_surface(auth: &Value) -> String {
     parts.join("; ")
 }
 
+/// The heading over a stack summary's hosted stream endpoints. When the
+/// project's `arete.toml` overrides them, the generated SDK connects to those
+/// overrides instead (listed under "SDK endpoints"), so the hosted ones are
+/// not what to hard-code for this project.
+fn stream_endpoints_heading(output: &Value) -> &'static str {
+    if output["sdkEndpoints"]["used"] == "project" {
+        "\nHosted stream endpoints (this project's SDK uses the arete.toml endpoints under SDK endpoints instead)\n"
+    } else {
+        "\nStream endpoints (installed SDKs connect to these; use them to hard-code a URL)\n"
+    }
+}
+
 fn render_stack_summary(output: &Value) -> String {
     let mut text = format!(
         "\nStack: {} (install reference {})  {}\n",
@@ -2159,7 +2277,7 @@ fn render_stack_summary(output: &Value) -> String {
             program["programId"].as_str().unwrap_or("-"),
         ));
     }
-    text.push_str("\nStream endpoints\n");
+    text.push_str(stream_endpoints_heading(output));
     for live in value_array(&output["endpoints"], "liveSpecs") {
         text.push_str(&format!(
             "  {}  {}  {}\n",
@@ -4028,6 +4146,163 @@ mod tests {
         assert!(rendered.contains("a4 install stack pumpfun --ts"));
         assert!(rendered.contains("--mode subscribe"));
         drop(registry);
+    }
+
+    #[test]
+    fn a_legacy_word_the_registry_lacks_says_what_explore_takes() {
+        // Install descriptor, registry list, deployments and catalog entry:
+        // none know `lsit`.
+        let registry = MockRegistry::new(vec![not_found(); 6]);
+        let error = show_legacy_stack(
+            "lsit",
+            StackOptions {
+                config_path: "/definitely/missing/arete.toml",
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(registry.next_target(), install_target("lsit", None));
+        drop(registry);
+        // A plain message, not the registry's 404 (which reads like the
+        // registry is down).
+        assert!(error.downcast_ref::<ApiClientError>().is_none());
+        let message = error.to_string();
+        assert!(
+            message.starts_with("No stack named 'lsit' in the registry"),
+            "{message}"
+        );
+        assert!(
+            message.contains("Did you mean `a4 explore stacks`?"),
+            "{message}"
+        );
+        assert!(message.contains("a4 explore catalog --query"), "{message}");
+
+        // A stack the registry listing names, whose descriptor then 404s,
+        // exists: its descriptor diagnostic is kept.
+        let listed = json!([{
+            "name": "lsit",
+            "websocketUrl": "wss://lsit-abc123.stack.arete.run",
+            "entities": []
+        }]);
+        let registry = MockRegistry::new(vec![
+            not_found(),
+            (200, listed.to_string()),
+            not_found(),
+            not_found(),
+            not_found(),
+        ]);
+        let error = show_legacy_stack(
+            "lsit",
+            StackOptions {
+                config_path: "/definitely/missing/arete.toml",
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(registry.next_target(), install_target("lsit", None));
+        assert_eq!(registry.next_target(), "/api/registry");
+        assert_eq!(registry.next_target(), install_target("lsit-abc123", None));
+        drop(registry);
+        assert!(
+            !error.to_string().starts_with("No stack named"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("'lsit-abc123'"), "{error:#}");
+        assert!(error.downcast_ref::<ApiClientError>().is_some());
+
+        // Other failures are returned unchanged.
+        let registry = MockRegistry::new(vec![(
+            500,
+            json!({"error": "registry unavailable"}).to_string(),
+        )]);
+        let error = show_legacy_stack(
+            "ore",
+            StackOptions {
+                config_path: "/definitely/missing/arete.toml",
+                ..Default::default()
+            },
+            true,
+        )
+        .unwrap_err();
+        drop(registry);
+        assert!(
+            !error.to_string().starts_with("No stack named"),
+            "{error:#}"
+        );
+    }
+
+    #[test]
+    fn legacy_misses_suggest_only_near_explore_targets() {
+        for (word, target) in [
+            ("stak", Some("stack")),
+            ("protocols", Some("protocol")),
+            ("Program", Some("program")),
+            ("ls", Some("list")),
+            ("meteora-presale", None),
+            ("ore", None),
+        ] {
+            assert_eq!(closest_explore_target(word), target, "{word}");
+        }
+        assert!(legacy_stack_miss("ls").contains("Did you mean `a4 explore stacks`?"));
+        assert!(!legacy_stack_miss("ore").contains("Did you mean"));
+    }
+
+    #[test]
+    fn the_registry_list_labels_deployment_hosts() {
+        let output = ExploreStackListOutput {
+            schema_version: EXPLORE_SCHEMA_VERSION,
+            registry: vec![],
+            user_stacks: None,
+            discovery: StackDiscoveryGuidance {
+                requested_service_class: None,
+                public_stacks_remain_available: true,
+                guidance: "",
+                stream_endpoints: STREAM_ENDPOINTS_GUIDANCE,
+            },
+        };
+        let value = serde_json::to_value(&output).unwrap();
+        assert!(value["discovery"]["streamEndpoints"]
+            .as_str()
+            .unwrap()
+            .contains("a4 explore stack <name>"));
+        let summary = render_stack_summary(&json!({
+            "name": "meteora-presale",
+            "installRef": "meteora-presale",
+            "live": true,
+            "entities": [],
+            "programs": [],
+            "endpoints": {"liveSpecs": [{
+                "alias": "primary",
+                "websocket": "wss://meteora-presale.stack.arete.run",
+                "query": "https://meteora-presale.stack.arete.run"
+            }]},
+            "auth": {}
+        }));
+        assert!(
+            summary.contains("Stream endpoints (installed SDKs connect to these"),
+            "{summary}"
+        );
+
+        let overridden = render_stack_summary(&json!({
+            "name": "meteora-presale",
+            "installRef": "meteora-presale",
+            "live": true,
+            "entities": [],
+            "programs": [],
+            "endpoints": {"liveSpecs": []},
+            "sdkEndpoints": {"used": "project"},
+            "auth": {}
+        }));
+        assert!(
+            overridden.contains("Hosted stream endpoints (this project's SDK uses the arete.toml"),
+            "{overridden}"
+        );
+        assert!(
+            !overridden.contains("installed SDKs connect to these"),
+            "{overridden}"
+        );
     }
 
     #[test]
