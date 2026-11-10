@@ -27,7 +27,6 @@ ignore = [
     { id = "RUSTSEC-2026-0067", reason = "tar unpack_in symlink chmod; pending a separate dependency refresh" },
     { id = "RUSTSEC-2026-0068", reason = "tar PAX size header handling; pending a separate dependency refresh" },
     { id = "RUSTSEC-2026-0097", reason = "rand 0.8 unsound only with a custom logger; pending a separate dependency refresh" },
-    { id = "RUSTSEC-2026-0189", reason = "rmcp DNS rebinding in the Streamable HTTP server transport; pending a separate dependency refresh" },
     { id = "RUSTSEC-2026-0253", reason = "lru 0.12 LruCache::pop panic safety; needs an lru major bump, tracked separately" },
     { id = "RUSTSEC-2026-0258", reason = "h2 unbounded empty DATA frames; pending a separate dependency refresh" },
     { id = "RUSTSEC-2026-0386", reason = "tokio AsyncFd I/O safety; pending a separate dependency refresh" },

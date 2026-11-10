@@ -56,7 +56,8 @@ fn a4_mcp_answers_initialize_and_exits_when_stdin_closes() {
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2024-11-05",
+            // A newer client version: the server still answers 2024-11-05.
+            "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": { "name": "a4-cli-test", "version": "0.0.0" }
         }
@@ -93,8 +94,8 @@ fn a4_mcp_answers_initialize_and_exits_when_stdin_closes() {
         response["result"]["serverInfo"]["name"], "arete-mcp",
         "response: {response}"
     );
-    assert!(
-        response["result"]["protocolVersion"].is_string(),
+    assert_eq!(
+        response["result"]["protocolVersion"], "2024-11-05",
         "response: {response}"
     );
 
@@ -251,4 +252,83 @@ fn a4_mcp_describes_an_installed_sdk_of_the_project_it_runs_in() {
             .is_some_and(|message| message.contains("installed: stack ore")),
         "{unknown}"
     );
+}
+
+/// Tools the server removed at startup stay hidden over MCP and cannot be
+/// called: without a local signer there is no `protocol_execute`, and
+/// without a sandbox there are no sandbox tools.
+#[test]
+fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
+    let home = tempfile::tempdir().expect("home directory");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_a4"))
+        .arg("mcp")
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env_remove("ARETE_MCP_SIGNER_CONFIG")
+        .env_remove("ARETE_SANDBOX_ID")
+        .env("CI", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env("A4_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a4 mcp");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    let stdout = child.stdout.take().expect("child stdout");
+    let (line_tx, line_rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+            if line_tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let mut send = |message: serde_json::Value| {
+        writeln!(stdin, "{message}").expect("write message");
+        stdin.flush().expect("flush message");
+    };
+    let response = |id: u64| loop {
+        let line = line_rx
+            .recv_timeout(RESPONSE_TIMEOUT)
+            .expect("a response from a4 mcp");
+        let message: serde_json::Value = serde_json::from_str(&line).expect("JSON-RPC frame");
+        if message["id"] == id {
+            break message;
+        }
+    };
+
+    send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": "a4-cli-test", "version": "0.0.0" }
+        }
+    }));
+    response(1);
+    send(serde_json::json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
+    send(serde_json::json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }));
+    let listed = response(2);
+    send(serde_json::json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "sandbox_status", "arguments": {} }
+    }));
+    let called = response(3);
+    drop(stdin);
+    // Exit on EOF is the initialize test's concern; never block on it here.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    let names: Vec<&str> = listed["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list result: {listed}"))
+        .iter()
+        .filter_map(|tool| tool["name"].as_str())
+        .collect();
+    assert!(names.contains(&"ping"), "{names:?}");
+    for removed in ["protocol_execute", "sandbox_status", "sandbox_action"] {
+        assert!(!names.contains(&removed), "{removed} listed: {names:?}");
+    }
+    assert!(called.get("error").is_some(), "{called}");
 }
