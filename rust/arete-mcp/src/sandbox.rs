@@ -556,15 +556,21 @@ impl SandboxClient {
 
     /// The sandbox's actions, newest first, one page at `query.cursor`.
     /// With filters, further pages are read (up to
-    /// [`ledger::MAX_SCAN_PAGES`]) until `limit` items match; `nextCursor`
-    /// carries on after the last page read.
+    /// [`ledger::MAX_SCAN_PAGES`]), each asking for the items still wanted,
+    /// until `limit` items match; `nextCursor` carries on after the last page
+    /// read.
     pub async fn history(&self, query: &ledger::HistoryQuery) -> Result<Value, SandboxRefusal> {
         let mut cursor = query.cursor.clone();
         let mut items = Vec::new();
         let mut pages_read = 0;
         loop {
-            let path =
-                self.ledger_path(&format!("/actions{}", query.page_query(cursor.as_deref())))?;
+            // Ask only for what is still wanted, so the answer never holds
+            // more than `limit` items and none are skipped behind the cursor.
+            let wanted = query.limit().saturating_sub(items.len() as u32).max(1);
+            let path = self.ledger_path(&format!(
+                "/actions{}",
+                query.page_query(cursor.as_deref(), wanted)
+            ))?;
             let page = self.call(reqwest::Method::GET, &path, None, None).await?;
             pages_read += 1;
             let Some(page_items) = page.get("items").and_then(Value::as_array) else {
@@ -1469,12 +1475,15 @@ mod tests {
             ),
             (
                 "GET",
-                "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=2&cursor=c2",
+                "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=1&cursor=c2",
                 200,
-                json!({
-                    "items": [action_item("a3", "landed", "Other"), action_item("a4", "landed", "Pump")],
-                    "nextCursor": "c3"
-                }),
+                json!({ "items": [action_item("a3", "landed", "Other")], "nextCursor": "c3" }),
+            ),
+            (
+                "GET",
+                "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=1&cursor=c3",
+                200,
+                json!({ "items": [action_item("a4", "landed", "Pump")], "nextCursor": "c4" }),
             ),
         ]);
         let query = ledger::HistoryQuery {
@@ -1492,9 +1501,10 @@ mod tests {
             .map(|item| item["id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, vec!["a2", "a4"]);
-        assert_eq!(body["nextCursor"], "c3");
-        assert_eq!(body["pagesRead"], 2);
-        assert_eq!(requests(&seen).len(), 3);
+        assert_eq!(body["nextCursor"], "c4");
+        assert_eq!(body["pagesRead"], 3);
+        // A mint, then pages of 2, 1 and 1: never more than still wanted.
+        assert_eq!(requests(&seen).len(), 4);
     }
 
     #[tokio::test]

@@ -51,9 +51,10 @@ impl HistoryQuery {
             || self.since.is_some()
     }
 
-    /// The query string for one page, from `cursor`.
-    pub(crate) fn page_query(&self, cursor: Option<&str>) -> String {
-        let mut query = format!("?limit={}", self.limit());
+    /// The query string for one page of `page_limit` items (at most
+    /// [`MAX_LIMIT`]), from `cursor`.
+    pub(crate) fn page_query(&self, cursor: Option<&str>, page_limit: u32) -> String {
+        let mut query = format!("?limit={}", page_limit.clamp(1, MAX_LIMIT));
         if let Some(cursor) = cursor {
             query.push_str("&cursor=");
             query.push_str(&super::url_encode(cursor));
@@ -72,7 +73,10 @@ impl HistoryQuery {
             }
         }
         if let Some(program) = &self.program {
-            if !item_programs(item).any(|value| value.eq_ignore_ascii_case(program)) {
+            if !item_programs(item)
+                .chain(instruction_programs(item))
+                .any(|value| value.eq_ignore_ascii_case(program))
+            {
                 return false;
             }
         }
@@ -117,6 +121,21 @@ pub fn item_programs(item: &Value) -> impl Iterator<Item = &str> {
                 .filter_map(|key| object.get(*key).and_then(Value::as_str))
                 .collect(),
             _ => Vec::new(),
+        })
+}
+
+/// The programs an item's decoded instructions name (`program`,
+/// `programName`): an action can carry a program's name only there.
+pub fn instruction_programs(item: &Value) -> impl Iterator<Item = &str> {
+    item["instructions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|instruction| {
+            ["program", "programId", "programName"]
+                .iter()
+                .filter_map(|key| instruction.get(*key).and_then(Value::as_str))
+                .collect::<Vec<_>>()
         })
 }
 
@@ -191,6 +210,13 @@ mod tests {
                 .matches(&item)
         );
         assert!(!query(|q| q.program = Some("Kamino".into())).matches(&item));
+        // A name only the decoded instruction carries still matches.
+        let by_instruction = json!({
+            "status": "rejected",
+            "programs": ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"],
+            "instructions": [{ "programName": "Pump.fun", "name": "sell" }]
+        });
+        assert!(query(|q| q.program = Some("pump.fun".into())).matches(&by_instruction));
         assert!(query(|q| q.mint = Some("M1".into())).matches(&item));
         assert!(!query(|q| q.mint = Some("M2".into())).matches(&item));
         let since = |text: &str| HistoryQuery {
@@ -206,10 +232,10 @@ mod tests {
     #[test]
     fn limits_are_clamped_and_cursors_encoded() {
         let mut query = HistoryQuery::default();
-        assert_eq!(query.page_query(None), "?limit=20");
+        assert_eq!(query.page_query(None, query.limit()), "?limit=20");
         query.limit = Some(500);
         assert_eq!(
-            query.page_query(Some("a b/c")),
+            query.page_query(Some("a b/c"), query.limit()),
             "?limit=100&cursor=a%20b%2Fc"
         );
         query.limit = Some(0);

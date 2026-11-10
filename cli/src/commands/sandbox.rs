@@ -204,10 +204,24 @@ fn history(args: HistoryArgs, json: bool) -> Result<()> {
     } else {
         print!(
             "{}",
-            render_history(&body, &args, client.sandbox_id().unwrap_or("?"))
+            render_history(
+                &body,
+                &continuation(&args, query.since),
+                client.sandbox_id().unwrap_or("?")
+            )
         );
     }
     Ok(())
+}
+
+/// `args` for the next-page command: a relative `--since` (`24h`) is
+/// repeated as the time it resolved to, so later pages keep the same cutoff.
+fn continuation(args: &HistoryArgs, since: Option<DateTime<Utc>>) -> HistoryArgs {
+    let mut next = args.clone();
+    if let Some(since) = since {
+        next.since = Some(since.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    }
+    next
 }
 
 fn next_cursor(page: &Value) -> Option<String> {
@@ -229,7 +243,12 @@ pub fn parse_since(text: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
             "--since takes an RFC 3339 time (2026-11-15T00:00:00Z) or an age such as 30m, 24h or 7d, not {text:?}"
         )
     };
-    let split = text.len().checked_sub(1).ok_or_else(bad)?;
+    // The unit is the last character, which may be more than one byte.
+    let split = text
+        .char_indices()
+        .next_back()
+        .map(|(index, _)| index)
+        .ok_or_else(bad)?;
     let (amount, unit) = text.split_at(split);
     let amount: i64 = amount.parse().map_err(|_| bad())?;
     let age = match unit {
@@ -803,7 +822,7 @@ mod tests {
                 .to_rfc3339(),
             "2026-11-01T00:00:00+00:00"
         );
-        for bad in ["", "h", "-1h", "3w", "yesterday"] {
+        for bad in ["", "h", "-1h", "3w", "yesterday", "1日", "日"] {
             assert!(parse_since(bad, now).is_err(), "{bad}");
         }
     }
@@ -937,6 +956,26 @@ mod tests {
         assert!(
             text.contains("  error  programs[0].spendLimit.windowSeconds:"),
             "{text}"
+        );
+    }
+
+    #[test]
+    fn the_next_page_keeps_the_resolved_cutoff() {
+        let args = HistoryArgs {
+            limit: ledger::DEFAULT_LIMIT,
+            since: Some("24h".into()),
+            ..Default::default()
+        };
+        let since = parse_since(
+            "24h",
+            DateTime::parse_from_rfc3339("2026-11-15T12:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        )
+        .unwrap();
+        assert_eq!(
+            repeat_flags(&continuation(&args, Some(since))),
+            " --since 2026-11-14T12:00:00Z"
         );
     }
 
