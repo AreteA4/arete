@@ -157,7 +157,13 @@ impl SandboxRefusal {
         };
         // This server's hint names the MCP tools, so it wins; then the
         // API's own; then the rule for the kind of call.
-        let hint = hint_for(&code, retryable, self.kind)
+        // The funds code covers SOL and tokens; only a SOL shortfall carries
+        // `balanceLamports`.
+        let token_shortfall =
+            code == "sandbox-guard-insufficient-funds" && !out.contains_key("balanceLamports");
+        let hint = token_shortfall
+            .then(|| TOKEN_FUNDS_HINT.to_string())
+            .or_else(|| hint_for(&code, retryable, self.kind))
             .or_else(|| out.get("hint").and_then(Value::as_str).map(str::to_string))
             .unwrap_or_else(|| generic_hint(retryable, self.kind).to_string());
         out.insert("hint".into(), json!(hint));
@@ -212,6 +218,8 @@ fn guard_infrastructure(code: &str) -> bool {
             | "sandbox-guard-clock-skew"
     )
 }
+
+const TOKEN_FUNDS_HINT: &str = "A token account this transaction spends from holds less than it moves; adding SOL does not help. Check the amounts against sandbox_holdings (the logs show which transfer failed), then hold more of that token or move less.";
 
 const LOOK_UP_THE_ACTION: &str = "The action may have run. Look it up with sandbox_action and the idempotencyKey before retrying: if it ran, do not repeat it; if it was refused, retry with a new key; if no action has the key, retry with the same key.";
 
@@ -1858,11 +1866,26 @@ mod tests {
         assert_eq!(api_hint["hint"], "from the API");
         let ours = SandboxRefusal {
             status: 403,
-            body: json!({ "code": "sandbox-guard-insufficient-funds", "retryable": false, "hint": "from the API" }),
+            body: json!({
+                "code": "sandbox-guard-insufficient-funds",
+                "retryable": false,
+                "balanceLamports": "0",
+                "hint": "from the API",
+            }),
             kind: CallKind::Preview,
         }
         .to_json();
         assert!(ours["hint"].as_str().unwrap().contains("fund the wallet"));
+        // The same code without a SOL balance is a token shortfall.
+        let tokens = SandboxRefusal {
+            status: 403,
+            body: json!({ "code": "sandbox-guard-insufficient-funds", "retryable": false }),
+            kind: CallKind::Preview,
+        }
+        .to_json();
+        let hint = tokens["hint"].as_str().unwrap();
+        assert!(hint.contains("token"), "{hint}");
+        assert!(!hint.contains("balanceLamports"), "{hint}");
     }
 
     /// A guard that could not decide: retry the same dry run, or an action
