@@ -16,6 +16,7 @@ use crate::config;
 /// not recognised here, no token is minted, and the connection is refused
 /// with a 401 that looks like bad credentials rather than an unknown host.
 use arete_sdk::is_hosted_websocket_host;
+use arete_sdk::ApiProblemV1;
 
 /// Replace `hs_token` query values so session tokens are never logged, embedded in errors, or saved to snapshot headers.
 pub fn redact_hs_token_for_display(url: &str) -> String {
@@ -332,28 +333,7 @@ fn mint_session_token(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_default();
-        if api_key.is_none()
-            && matches!(
-                status,
-                reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
-            )
-        {
-            bail!(
-                "This hosted stream requires authentication ({}): {}.\n\
-                 • Run `a4 auth login`, then retry; the CLI will mint a token automatically.\n\
-                 • Anonymous access is only available for public stacks.\n\
-                 • Or pass `--url` with `?hs_token=...` from POST `{}`.",
-                status,
-                body.trim(),
-                endpoint
-            );
-        }
-        bail!(
-            "Token mint failed ({}): {}.\n\
-             Fix your API key (`a4 auth login`) or permissions for this stack.",
-            status,
-            body.trim()
-        );
+        bail!(mint_refusal(status, &body, api_key.is_some(), endpoint));
     }
 
     let mut mint: MintResponse = response
@@ -364,6 +344,72 @@ fn mint_session_token(
         bail!("Token endpoint returned an empty token");
     }
     Ok(mint)
+}
+
+/// What `a4` prints when the API refuses a session token. The server's own
+/// message leads, never its raw JSON body, followed by the step that lifts
+/// the refusal: sign in when no key was sent, claim the agent when the body
+/// carries the claim action, list the starter stacks for a service-class
+/// refusal, or fix the key when it was rejected. Steps the server message
+/// already names are not repeated.
+fn mint_refusal(status: reqwest::StatusCode, body: &str, keyed: bool, endpoint: &str) -> String {
+    let problem = serde_json::from_str::<ApiProblemV1>(body).ok();
+    let message = problem
+        .as_ref()
+        .map(|problem| problem.error.trim().to_string())
+        .unwrap_or_else(|| body.trim().to_string());
+    let code = problem.as_ref().and_then(|problem| problem.code.as_deref());
+    let claimable = problem
+        .as_ref()
+        .and_then(ApiProblemV1::recovery_action)
+        .is_some_and(|action| action.is_claim_agent_materializer());
+    let refused = match code {
+        Some(code) => format!("({status}, {code})"),
+        None => format!("({status})"),
+    };
+    let denied = matches!(
+        status,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+    );
+
+    if !keyed && denied {
+        return format!(
+            "This hosted stream requires an API key {refused}: {message}\n\
+             • Keys are free: `a4 auth signup` creates an agent key, or create one at https://arete.run/keys and save it with `a4 auth login`. Then retry; the CLI mints a token automatically.\n\
+             • Without a key, only public stacks can be read.\n\
+             • Or pass `--url` with `?hs_token=...` from POST `{endpoint}`."
+        );
+    }
+
+    let mut text = format!("This hosted stream refused the session {refused}: {message}");
+    let mut step = |line: &str, named_by: &str| {
+        if !message.contains(named_by) {
+            text.push_str("\n• ");
+            text.push_str(line);
+        }
+    };
+    if claimable || code == Some("agent-claim-required") {
+        step(
+            "Claiming the agent is free: run `a4 auth claim-link` and have a human open the link, then retry.",
+            "a4 auth claim-link",
+        );
+    }
+    match code {
+        Some("service-class-required") => step(
+            "`a4 explore stacks --service-class starter` lists the stacks this account can read now.",
+            "a4 explore stacks",
+        ),
+        _ if status == reqwest::StatusCode::UNAUTHORIZED => step(
+            "Check the API key: `a4 auth login` stores a new one.",
+            "a4 auth login",
+        ),
+        _ if status == reqwest::StatusCode::FORBIDDEN && !claimable => step(
+            "This account cannot read this stack; `a4 explore stack <ref>` shows what it requires.",
+            "a4 explore",
+        ),
+        _ => {}
+    }
+    text
 }
 
 #[cfg(test)]
@@ -401,6 +447,90 @@ mod tests {
         }
         let mint: MintResponse = serde_json::from_str(r#"{"token":"t"}"#).unwrap();
         assert_eq!(mint.expires_at, None);
+    }
+
+    #[test]
+    fn a_service_class_refusal_names_the_claim_and_the_starter_list() {
+        // An older server: bare message, no action.
+        let body = r#"{"schemaVersion":1,"error":"Your plan does not include this service class","code":"service-class-required","retryable":false}"#;
+        let text = mint_refusal(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            true,
+            "https://api/ws/sessions",
+        );
+        assert!(text.starts_with("This hosted stream refused the session (403 Forbidden, service-class-required): Your plan does not include this service class"), "{text}");
+        assert!(
+            text.contains("`a4 explore stacks --service-class starter`"),
+            "{text}"
+        );
+        assert!(!text.contains("a4 auth claim-link"), "{text}");
+        assert!(!text.contains("\"schemaVersion\""), "{text}");
+        assert!(!text.contains("Fix your API key"), "{text}");
+
+        // A claimable refusal adds the claim step.
+        let body = r#"{"schemaVersion":1,"error":"Your plan does not include this service class","code":"service-class-required","retryable":false,"action":{"type":"claim_agent","label":"Claim this agent","method":"POST","path":"/api/agents/me/claim-links"}}"#;
+        let text = mint_refusal(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            true,
+            "https://api/ws/sessions",
+        );
+        assert!(
+            text.contains("• Claiming the agent is free: run `a4 auth claim-link`"),
+            "{text}"
+        );
+        assert!(text.contains("--service-class starter"), "{text}");
+    }
+
+    #[test]
+    fn steps_the_server_already_names_are_not_repeated() {
+        let body = r#"{"error":"This stack is in the standard service class, and an unclaimed agent account reads only starter targets. Claiming the agent is free and lifts this: run `a4 auth claim-link` and have a human open the link. `a4 explore stacks --service-class starter` lists the stacks this account can read now.","code":"service-class-required","action":{"type":"claim_agent","path":"/api/agents/me/claim-links"}}"#;
+        let text = mint_refusal(
+            reqwest::StatusCode::FORBIDDEN,
+            body,
+            true,
+            "https://api/ws/sessions",
+        );
+        assert_eq!(text.matches("a4 auth claim-link").count(), 1, "{text}");
+        assert_eq!(text.matches("a4 explore stacks").count(), 1, "{text}");
+        assert!(!text.contains('•'), "{text}");
+    }
+
+    #[test]
+    fn an_anonymous_refusal_names_the_free_sign_in() {
+        let body = r#"{"error":"Authentication required to mint websocket session tokens.","code":"auth-required"}"#;
+        let text = mint_refusal(
+            reqwest::StatusCode::UNAUTHORIZED,
+            body,
+            false,
+            "https://api/ws/sessions",
+        );
+        assert!(
+            text.contains("requires an API key (401 Unauthorized, auth-required)"),
+            "{text}"
+        );
+        assert!(text.contains("Keys are free: `a4 auth signup`"), "{text}");
+        assert!(text.contains("`a4 auth login`"), "{text}");
+        assert!(text.contains("POST `https://api/ws/sessions`"), "{text}");
+    }
+
+    #[test]
+    fn a_rejected_key_and_a_non_json_body_stay_readable() {
+        let text = mint_refusal(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error":"Invalid API key","code":"invalid-api-key"}"#,
+            true,
+            "e",
+        );
+        assert!(text.contains("Invalid API key"), "{text}");
+        assert!(text.contains("`a4 auth login` stores a new one"), "{text}");
+
+        let text = mint_refusal(reqwest::StatusCode::BAD_GATEWAY, "upstream down", true, "e");
+        assert_eq!(
+            text,
+            "This hosted stream refused the session (502 Bad Gateway): upstream down"
+        );
     }
 
     #[test]

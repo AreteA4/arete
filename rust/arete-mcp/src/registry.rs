@@ -13,7 +13,10 @@
 //! An api key is attached when one happens to be resolvable (env var or the
 //! file `a4 auth login` writes), because `GET /api/registry` widens its result
 //! set to include global stacks for an authenticated caller. Absence of a key
-//! is not an error here — it just means you see the public set. A registry
+//! is not an error here — it just means you see the public set, and the
+//! discovery tools then say so next to the result (see
+//! [`crate::catalog_view::signed_out_note`]) so an empty public set is never
+//! read as an empty catalog. A registry
 //! may require a key for install descriptors, artifacts and schemas; it then
 //! answers 401 `registry-key-required`, which this module turns into a
 //! message naming `a4 login` and `ARETE_API_KEY`.
@@ -429,6 +432,12 @@ impl RegistryClient {
     async fn get(&self, path: &str) -> Result<String> {
         self.send(path, self.public_key(), None, BodyCap::ToolResult)
             .await
+    }
+
+    /// Whether discovery requests carry an API key. Without one the registry
+    /// answers with only its public entries.
+    pub fn signed_in(&self) -> bool {
+        self.public_key().is_some()
     }
 
     /// The key [`RegistryClient::get`] attaches: see there.

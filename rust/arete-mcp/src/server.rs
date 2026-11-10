@@ -2447,7 +2447,10 @@ impl AreteMcp {
                           throughout, so it does not match this tool field-for-field.\n\n\
                           No auth required — public stacks are always listed. If an \
                           api key is resolvable (ARETE_API_KEY or `a4 auth login`), \
-                          global stacks are included too.\n\n\
+                          global stacks are included too. Without one, a second text \
+                          block says the list is only the public entries and how to \
+                          sign in (free); an empty list then does not mean the registry \
+                          is empty.\n\n\
                           Each stack is brief by default: `name`, `description`, \
                           `websocket_url`, `entities`, `visibility`, `serviceClass` and \
                           `websocket_auth.required`. Pass `full: true` for every field \
@@ -2462,15 +2465,21 @@ impl AreteMcp {
         let body = self
             .registry_body(self.registry.list_stacks().await)
             .await?;
-        bounded_result(stack_list_body(body, &shape))
+        self.discovery_result(stack_list_body(body, &shape))
     }
 
     #[tool(
         description = "List explicitly curated `serviceClass=starter` stacks using the existing Arete registry. These are the authenticated stacks eligible for an agent trial. Public stacks remain available regardless of service class; use `explore_stacks` to see them. This tool is read-only and never creates an account or changes trial state."
     )]
     async fn explore_starter_stacks(&self) -> Result<CallToolResult, McpError> {
-        self.registry_result(self.registry.list_starter_stacks().await)
-            .await
+        let body = self
+            .registry_body(self.registry.list_starter_stacks().await)
+            .await?;
+        let empty = serde_json::from_str::<serde_json::Value>(&body)
+            .ok()
+            .and_then(|value| value.get("stacks").map(catalog_view::is_empty_listing))
+            .unwrap_or(false);
+        self.discovery_note(bounded_result(body)?, empty)
     }
 
     #[tool(
@@ -2678,7 +2687,7 @@ impl AreteMcp {
         let body = self
             .registry_body(self.registry.list_programs().await)
             .await?;
-        bounded_result(list_body(body, &shape))
+        self.discovery_result(list_body(body, &shape))
     }
 
     #[tool(
@@ -3308,7 +3317,9 @@ impl AreteMcp {
                           allowed) to keep only those keys, or `full: true` for every \
                           field as the server sent it.\n\n\
                           No credential is required; an API key widens results to \
-                          global-visibility entries.\n\n\
+                          global-visibility entries. Without one, a second text block \
+                          says the results are only the public entries and how to sign \
+                          in (free).\n\n\
                           For callable protocol packages hosted on Arete (protocols an \
                           agent can execute), use `explore_protocols` instead."
     )]
@@ -3350,7 +3361,9 @@ impl AreteMcp {
             }
             let overview = catalog_view::merge_overview(&pages);
             let hint = overview_hint(limit, overview.get("nextCursors").is_some());
-            return shaped_result(&search_value(&overview, &shape, Some(&hint)));
+            let text = serde_json::to_string(&search_value(&overview, &shape, Some(&hint)))
+                .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+            return self.discovery_result(text);
         }
         let body = self
             .registry_body(
@@ -3368,7 +3381,7 @@ impl AreteMcp {
                     .await,
             )
             .await?;
-        bounded_result(search_body(body, &shape))
+        self.discovery_result(search_body(body, &shape))
     }
 
     #[tool(
@@ -4149,9 +4162,6 @@ fn full_descriptor_result(body: String, narrower: &str) -> Result<CallToolResult
     Ok(CallToolResult::success(vec![Content::text(body)]))
 }
 
-/// A shaped (summary, sections, views or operation) result. It is cut from a
-/// descriptor that was already bounded, but the 512 KiB cap is re-checked on
-/// the bytes actually returned so the advertised bound holds for every tool.
 /// What to do with an `explore_stack_views` result.
 fn stack_views_next(views: &serde_json::Value) -> String {
     let listed = views
@@ -4182,6 +4192,27 @@ fn stack_views_next(views: &serde_json::Value) -> String {
     )
 }
 
+/// A discovery result read without an API key gets a second text block
+/// saying it lists only the public entries (and, when `empty`, that nothing
+/// public matched) and how to sign in. The listing stays the first block,
+/// unchanged, so clients that parse it are unaffected.
+fn with_signed_out_note(
+    mut result: CallToolResult,
+    signed_in: bool,
+    empty: bool,
+) -> CallToolResult {
+    if !signed_in {
+        result.content.push(Content::text(format!(
+            "{} Then restart this MCP server.",
+            catalog_view::signed_out_note(empty)
+        )));
+    }
+    result
+}
+
+/// A shaped (summary, sections, views or operation) result. It is cut from a
+/// descriptor that was already bounded, but the 512 KiB cap is re-checked on
+/// the bytes actually returned so the advertised bound holds for every tool.
 fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string(value)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
@@ -4325,6 +4356,27 @@ impl AreteMcp {
     ) -> Result<CallToolResult, McpError> {
         let body = self.registry_body(result).await?;
         Ok(CallToolResult::success(vec![Content::text(body)]))
+    }
+
+    /// A discovery listing as a tool result: `text` (bounded), and, when no
+    /// API key was sent, the signed-out note ([`with_signed_out_note`]).
+    fn discovery_result(&self, text: String) -> Result<CallToolResult, McpError> {
+        let empty = serde_json::from_str::<Value>(&text)
+            .map(|value| catalog_view::is_empty_listing(&value))
+            .unwrap_or(false);
+        self.discovery_note(bounded_result(text)?, empty)
+    }
+
+    fn discovery_note(
+        &self,
+        result: CallToolResult,
+        empty: bool,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(with_signed_out_note(
+            result,
+            self.registry.signed_in(),
+            empty,
+        ))
     }
 
     async fn catalog_result(
@@ -5418,6 +5470,70 @@ mod explore_args_tests {
             .as_str()
             .unwrap()
             .to_string()
+    }
+
+    fn result_texts(result: &CallToolResult) -> Vec<String> {
+        serde_json::to_value(result).unwrap()["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|block| block["text"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn a_signed_out_listing_says_so_after_the_unchanged_listing() {
+        let listing = || CallToolResult::success(vec![Content::text("[]")]);
+        let signed_in = result_texts(&with_signed_out_note(listing(), true, true));
+        assert_eq!(signed_in, ["[]"]);
+
+        let empty = result_texts(&with_signed_out_note(listing(), false, true));
+        assert_eq!(empty[0], "[]");
+        assert!(
+            empty[1].starts_with(catalog_view::SIGNED_OUT_EMPTY),
+            "{}",
+            empty[1]
+        );
+        assert!(empty[1].contains("`a4 auth login`"), "{}", empty[1]);
+        assert!(
+            empty[1].ends_with("Then restart this MCP server."),
+            "{}",
+            empty[1]
+        );
+
+        let some = result_texts(&with_signed_out_note(listing(), false, false));
+        assert!(some[1].starts_with("Signed out:"), "{}", some[1]);
+    }
+
+    /// The listing tools carry the note when this test runs without a key
+    /// (a canned registry on loopback, with no credentials for it).
+    #[tokio::test]
+    async fn signed_out_discovery_tools_never_return_a_bare_empty_listing() {
+        let server = canned_registry(vec![
+            ("/api/registry", 200, "[]".to_string()),
+            ("/api/registry/programs", 200, "[]".to_string()),
+        ]);
+        if server.registry.signed_in() {
+            return;
+        }
+        for result in [
+            server
+                .explore_stacks(Parameters(explore_stacks_args(None, None)))
+                .await
+                .unwrap(),
+            server.explore_starter_stacks().await.unwrap(),
+            server
+                .explore_programs(Parameters(ExploreProgramsArgs::default()))
+                .await
+                .unwrap(),
+        ] {
+            let texts = result_texts(&result);
+            assert_eq!(texts.len(), 2, "{texts:?}");
+            assert!(
+                texts[1].starts_with(catalog_view::SIGNED_OUT_EMPTY),
+                "{texts:?}"
+            );
+        }
     }
 
     /// A registry `GET /api/registry/ore/schema` response.

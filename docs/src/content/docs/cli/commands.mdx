@@ -307,7 +307,7 @@ text output starts with the status line.
 | `project.lock`          | `arete.lock` is fresh                                                           | `warn`: `a4 install`                                                           |
 | `project.auth-profile`  | `.arete/auth.toml` selects only the restricted `agent` profile                  | `warn`/`fail`: `a4 doctor --fix`                                               |
 | `sdk.runtime`           | Installed TypeScript runtime matches the generated SDKs (see below)             | `warn` with an `npm install` line; `fail` only for an `extensionApi` mismatch  |
-| `auth.credentials`      | Key present for the active API URL                                              | `info`: `a4 auth signup` (not needed to explore)                               |
+| `auth.credentials`      | Key present for the active API URL                                              | `info`: `a4 auth signup`; without a key `a4 explore` lists only public entries |
 | `auth.whoami`           | Credentials are accepted by the server                                          | `fail`: `a4 auth login --key …` if refused; `a4 self update` if unreadable     |
 | `account.plan`          | The account's plan and dev environment tier                                     | `unknown` when the server cannot say                                           |
 | `account.<surface>`     | One per surface the account can or can't use (see below)                        | `info` with the reason and the unlock; `warn` if `arete.toml` uses the surface |
@@ -438,8 +438,12 @@ a4 config validate
 
 ## Authentication
 
-Exploring and installing public SDKs needs no account. Hosted global stacks and
-the knowledge layer do. Agents create or verify their restricted credential with
+Without an API key, `a4 explore` lists only public entries and you can install
+only public SDKs. Most of the catalog, the hosted stacks and the knowledge layer
+need a key. Keys are free (`a4 auth signup` for an agent, or a human key from
+[arete.run/keys](https://arete.run/keys) saved with `a4 auth login`), and any key lists them. Signed out, explore
+says so under every listing (and in `access` in its JSON) rather than printing
+an empty result as if the catalog were empty. Agents create or verify their restricted credential with
 `a4 --profile agent auth signup --if-missing`; humans get keys from
 [arete.run/keys](https://arete.run/keys?utm_source=docs&utm_medium=referral&utm_campaign=docs&utm_content=cli_keys) and use
 `a4 auth login --profile human --key`.
@@ -626,7 +630,11 @@ it is safe to script, and exits non-zero when the API call fails (as does
 
 ### a4 explore catalog
 
-Search the public active catalog by intent and required delivery mode:
+Search the active catalog by intent and required delivery mode. Without an
+API key the search covers only the catalog's public entries, and the output
+ends with a note saying so (`access` in `--json`, with `signedIn: false`). An
+entry lookup that misses says the same. Any API key (they are free: `a4 auth signup`, or `a4 auth login` with a key from
+arete.run/keys) searches everything an account can read.
 
 ```bash
 a4 explore catalog --json                     # overview: first programs and stacks
@@ -704,7 +712,11 @@ descriptor.
 
 Discover installable resources through the same deployment-pinned descriptors
 used by `a4 install`. Public resources work without authentication; logging in
-also exposes global resources.
+also exposes global resources. Signed out, `a4 explore`, `a4 explore stacks` and
+`a4 explore programs` print a note naming the free sign-in under the listing,
+and their `--json` carries `access: {"scope": "public", "signedIn": false,
+"hint": …}`. An empty signed-out list reads "No public stacks found", never
+just "No stacks found".
 
 ```bash
 # List all available stacks (`a4 explore stacks` and `a4 explore list` are the same)
@@ -752,14 +764,15 @@ a4 explore stack ore --operation transactions.mining.deployWithCheckpoint --json
 
 **Options:**
 
-| Flag               | Applies to         | Description                                                                                                                                                                                                |
-| ------------------ | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--summary`        | `stack`, `program` | The compact summary, which is also the default                                                                                                                                                             |
-| `--full`           | `stack`, `program` | The full exploration: identity hashes, every auth surface and endpoint, SDK metadata; for a program, the IDL-level dump                                                                                    |
-| `--views [ids]`    | `stack`            | Only these selected views, each with its entity's field schema. Comma-separated or repeated; prefix `alias:` when several LiveSpecs select the same id. With no ids, lists every view you can subscribe to |
-| `--query <terms>`  | `stack --views`    | With `--views` and no ids: only the views matching every term, in the view id, entity, output or summaries                                                                                                 |
-| `--operation <id>` | `program`, `stack` | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`)                                                     |
-| `--section <name>` | `program`          | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                                                                                  |
+| Flag                      | Applies to                        | Description                                                                                                                                                                                                |
+| ------------------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--summary`               | `stack`, `program`                | The compact summary, which is also the default                                                                                                                                                             |
+| `--full`                  | `stack`, `program`                | The full exploration: identity hashes, every auth surface and endpoint, SDK metadata; for a program, the IDL-level dump                                                                                    |
+| `--views [ids]`           | `stack`                           | Only these selected views, each with its entity's field schema. Comma-separated or repeated; prefix `alias:` when several LiveSpecs select the same id. With no ids, lists every view you can subscribe to |
+| `--query <terms>`         | `stack --views`                   | With `--views` and no ids: only the views matching every term, in the view id, entity, output or summaries                                                                                                 |
+| `--operation <id>`        | `program`, `stack`                | One operation, by semantic path (`transactions.mining.deployWithCheckpoint`), full operation id, generated binding, or raw instruction name (`deploy`)                                                     |
+| `--section <name>`        | `program`                         | Only `accounts`, `events`, `instructions` (with error codes), `operations`, or `types`. Repeat the flag or comma-separate                                                                                  |
+| `--service-class <class>` | `a4 explore`, `a4 explore stacks` | Only stacks of this service class: `starter` or `standard` (see [Service classes](#service-classes))                                                                                                       |
 
 **Output varies by specificity:**
 
@@ -789,6 +802,24 @@ endpoints can name the same stack differently (for example
 `wss://<stack>.stack.arete.run`), and both may serve it. The stream endpoints
 are the ones `a4 install` pins into SDKs, so use those when you hard-code a
 URL. `a4 explore --json` says the same in `discovery.streamEndpoints`.
+
+#### Service classes
+
+Each hosted stack has a service class, `starter` or `standard`, shown as
+`Service class` in `a4 explore stacks` (`serviceClass` in JSON). An agent
+account created with `a4 auth signup` reads public stacks and `starter` stacks
+until a human claims it. Claiming is free and adds the `standard` stacks; a
+human's key (saved with `a4 auth login`) reads both from the start.
+
+```bash
+a4 explore stacks --service-class starter   # the stacks an unclaimed agent can read
+a4 auth claim-link                          # a link for a human to claim the agent
+```
+
+`a4 get` or `a4 stream` on a `standard` stack from an unclaimed agent fails
+with `service-class-required`. The message names the class the stack needs,
+the classes the account has, and both commands above (see
+[a4 get](#a4-get-entityview)).
 
 Everything is cut from the same pinned install descriptor on the client, so
 the compact forms agree with the full one. The view list (`--views` with no
@@ -1015,6 +1046,17 @@ Without `--where`, the server sends only `--limit` entities. With `--where`,
 `total` counts the whole snapshot and `matching` the entities that passed.
 `a4 get` exits non-zero with a message when the view is unknown, a `--key`
 has no entity, or the snapshot does not arrive within `--timeout`.
+
+When the API refuses the session, `a4 get` and `a4 stream` print the server's
+message and code, never its raw JSON, followed by the step that lifts the
+refusal:
+
+| Refusal                         | Next step printed                                                                                     |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| No API key, stack is not public | A free key: `a4 auth signup` (agent) or `a4 auth login` (key from arete.run/keys), then retry         |
+| `service-class-required`        | `a4 explore stacks --service-class starter`; for an unclaimed agent, also `a4 auth claim-link` (free) |
+| `agent-claim-required`          | `a4 auth claim-link`, then retry                                                                      |
+| Key rejected (`401`)            | `a4 auth login` to store a new key                                                                    |
 
 Float token amounts are usually whole units and the integer fields they come
 from raw base units; `a4 explore stack <ref> --views <view>` shows each scaled

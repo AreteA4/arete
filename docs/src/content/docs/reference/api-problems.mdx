@@ -22,7 +22,10 @@ add a tolerant v1 envelope:
 ```
 
 Readers ignore unknown fields. SDKs expose the typed metadata but do not act
-on it. A `429` is temporary and follows the `Retry-After` header. A `403
+on it. A refusal that claiming lifts can carry the same `claim_agent` action
+under its own code: a `403 service-class-required` for an unclaimed agent
+reading a `standard` stack carries it, with `requiredServiceClass` and
+`accountServiceClasses`. Branch on `action.type`, not only on the code. A `429` is temporary and follows the `Retry-After` header. A `403
 agent-claim-required` is not retryable. `402` is reserved for a future payment
 flow.
 

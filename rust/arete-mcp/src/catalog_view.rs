@@ -75,6 +75,52 @@ pub const LIVE_HINT: &str = "`live` (a stack property): true = a hosted stream t
 pub const CATALOG_CHANGED_HINT: &str = "The catalog changed since the first page, so results \
      may be skipped or repeated; search again without a cursor for an exact listing.";
 
+/// Said whenever discovery ran without an API key. Without one the registry
+/// lists only public entries; any account, free, also reads the entries
+/// every account can read. The wording is the same whatever came back, so
+/// it never hints at which entries exist.
+pub const SIGNED_OUT_HINT: &str = "Signed out: without an API key, discovery lists only \
+     public entries. Keys are free and list everything an account can read: `a4 auth signup` \
+     creates an agent key, or create one at https://arete.run/keys and save it with \
+     `a4 auth login`, or set ARETE_API_KEY.";
+
+/// Leads [`SIGNED_OUT_HINT`] when a signed-out listing came back empty, so
+/// an empty result is never mistaken for an empty catalog.
+pub const SIGNED_OUT_EMPTY: &str = "No public entries matched.";
+
+/// The signed-out note for a listing: [`SIGNED_OUT_HINT`], led by
+/// [`SIGNED_OUT_EMPTY`] when `empty`.
+pub fn signed_out_note(empty: bool) -> String {
+    if empty {
+        format!("{SIGNED_OUT_EMPTY} {SIGNED_OUT_HINT}")
+    } else {
+        SIGNED_OUT_HINT.to_string()
+    }
+}
+
+/// The `access` object a signed-out JSON listing carries: the scope it read
+/// and [`signed_out_note`].
+pub fn signed_out_access(empty: bool) -> Value {
+    serde_json::json!({
+        "scope": "public",
+        "signedIn": false,
+        "hint": signed_out_note(empty),
+    })
+}
+
+/// Whether a registry listing has no entries: an empty array, or a page
+/// whose `results` is empty or missing.
+pub fn is_empty_listing(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.is_empty(),
+        Value::Object(map) => map
+            .get("results")
+            .and_then(Value::as_array)
+            .is_none_or(Vec::is_empty),
+        _ => false,
+    }
+}
+
 /// Whether the server marked a page as continued across a catalog change.
 pub fn catalog_changed(value: &Value) -> bool {
     value.get("catalogChanged").and_then(Value::as_bool) == Some(true)
@@ -548,6 +594,33 @@ pub fn shape_body(body: String, shape: &Shape, search: bool) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_out_notes_name_the_free_sign_in_and_flag_an_empty_listing() {
+        let empty = signed_out_note(true);
+        assert!(empty.starts_with(SIGNED_OUT_EMPTY), "{empty}");
+        assert!(empty.contains("`a4 auth login`"), "{empty}");
+        assert!(empty.contains("`a4 auth signup`"), "{empty}");
+        assert!(empty.contains("ARETE_API_KEY"), "{empty}");
+        assert_eq!(signed_out_note(false), SIGNED_OUT_HINT);
+        let access = signed_out_access(true);
+        assert_eq!(access["scope"], "public");
+        assert_eq!(access["signedIn"], false);
+        assert_eq!(access["hint"], empty);
+    }
+
+    #[test]
+    fn empty_listings_are_empty_arrays_or_pages_without_results() {
+        assert!(is_empty_listing(&serde_json::json!([])));
+        assert!(is_empty_listing(&serde_json::json!({"results": []})));
+        assert!(is_empty_listing(
+            &serde_json::json!({"matchedConcepts": []})
+        ));
+        assert!(!is_empty_listing(&serde_json::json!([{"name": "ore"}])));
+        assert!(!is_empty_listing(
+            &serde_json::json!({"results": [{"slug": "ore"}]})
+        ));
+    }
     use serde_json::json;
 
     fn entry() -> Value {

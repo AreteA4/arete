@@ -34,6 +34,9 @@ struct ExploreStackListOutput {
     #[serde(skip_serializing_if = "Option::is_none")]
     user_stacks: Option<Vec<UserStackItem>>,
     discovery: StackDiscoveryGuidance,
+    /// Signed out only: the registry listed its public entries alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    access: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -377,9 +380,23 @@ fn filter_registry_stacks(
         .collect())
 }
 
+/// The `access` object of a signed-out listing (see
+/// [`catalog_view::signed_out_access`]); `None` with an API key.
+fn signed_out_access(client: &ApiClient, empty: bool) -> Option<Value> {
+    (!client.has_api_key()).then(|| catalog_view::signed_out_access(empty))
+}
+
+/// The signed-out note printed under a human listing, if any.
+fn print_signed_out_note(access: Option<&Value>) {
+    if let Some(hint) = access.and_then(|access| access["hint"].as_str()) {
+        println!("{}", hint.yellow());
+    }
+}
+
 pub fn list(json: bool, service_class: Option<&str>) -> Result<()> {
     let client = ApiClient::new()?;
     let registry_stacks = filter_registry_stacks(client.list_registry()?, service_class)?;
+    let access = signed_out_access(&client, registry_stacks.is_empty());
     let user_stacks = client.list_specs().ok();
     let user_deployments = if user_stacks.is_some() {
         client.list_deployments(100).ok()
@@ -421,6 +438,7 @@ pub fn list(json: bool, service_class: Option<&str>) -> Result<()> {
                     guidance: "serviceClass=starter marks trial-eligible authenticated stacks; public stacks remain available regardless of service class.",
                     stream_endpoints: STREAM_ENDPOINTS_GUIDANCE,
                 },
+                access,
             })?
         );
         return Ok(());
@@ -472,11 +490,14 @@ pub fn list(json: bool, service_class: Option<&str>) -> Result<()> {
         let suffix = service_class
             .map(|class| format!(" for service class `{class}`"))
             .unwrap_or_default();
-        println!(
-            "{}",
-            format!("No stacks found in registry{suffix}.").yellow()
-        );
+        let found = if access.is_some() {
+            "No public stacks found in registry"
+        } else {
+            "No stacks found in registry"
+        };
+        println!("{}", format!("{found}{suffix}.").yellow());
     }
+    print_signed_out_note(access.as_ref());
     println!(
         "{}",
         "Trial guidance: serviceClass=starter marks trial-eligible authenticated stacks; public stacks remain available regardless of service class."
@@ -493,7 +514,9 @@ const PROGRAM_LIST_BRIEF_HINT: &str = "Release and spec hashes omitted; use --fu
      field or --fields a,b to choose keys. `a4 explore program <ref>` shows one program.";
 
 pub fn list_programs(json: bool, shape: &catalog_view::Shape) -> Result<()> {
-    let programs = ApiClient::new()?.list_registry_programs()?;
+    let client = ApiClient::new()?;
+    let programs = client.list_registry_programs()?;
+    let access = signed_out_access(&client, programs.is_empty());
     let full = *shape == catalog_view::Shape::Full;
     if json {
         let mut output = serde_json::to_value(ExploreProgramListOutput {
@@ -504,12 +527,21 @@ pub fn list_programs(json: bool, shape: &catalog_view::Shape) -> Result<()> {
             output["programs"] = catalog_view::shape_search(&output["programs"], shape);
             output = catalog_view::with_hint(output, PROGRAM_LIST_BRIEF_HINT);
         }
+        if let Some(access) = access {
+            output["access"] = access;
+        }
         println!("{}", serde_json::to_string_pretty(&output)?);
         return Ok(());
     }
 
     if programs.is_empty() {
-        println!("{}", "No installable programs found in registry.".yellow());
+        let found = if access.is_some() {
+            "No public installable programs found in registry."
+        } else {
+            "No installable programs found in registry."
+        };
+        println!("{}", found.yellow());
+        print_signed_out_note(access.as_ref());
         return Ok(());
     }
     println!("\n{}", "Installable Programs".bold());
@@ -535,6 +567,7 @@ pub fn list_programs(json: bool, shape: &catalog_view::Shape) -> Result<()> {
     } else {
         println!("{}", PROGRAM_LIST_BRIEF_HINT.dimmed());
     }
+    print_signed_out_note(access.as_ref());
     Ok(())
 }
 
@@ -3140,6 +3173,12 @@ pub fn catalog_search(
         )?;
         (value, None)
     };
+    // Signed out, the page says it read only the public catalog, whether or
+    // not the server said so itself.
+    let mut value = value;
+    if let Some(access) = signed_out_access(&client, catalog_view::is_empty_listing(&value)) {
+        value["access"] = access;
+    }
     let full = *shape == catalog_view::Shape::Full;
     if json {
         let mut shaped = catalog_view::shape_search(&value, shape);
@@ -3181,8 +3220,14 @@ pub fn catalog_entry(
     let kind = catalog_choice(Some(kind), "kind", &CATALOG_KINDS)?
         .ok_or_else(|| anyhow::anyhow!("kind must be program or stack"))?;
     let slug = catalog_slug(slug)?;
-    let value = ApiClient::new()?.catalog_entry(kind, &slug).with_context(|| {
-        format!("{kind} '{slug}' is not in the active catalog; search with `a4 explore catalog --query <intent>`")
+    let client = ApiClient::new()?;
+    let value = client.catalog_entry(kind, &slug).with_context(|| {
+        let mut message = format!("{kind} '{slug}' is not in the active catalog; search with `a4 explore catalog --query <intent>`");
+        if !client.has_api_key() {
+            message.push_str(". ");
+            message.push_str(catalog_view::SIGNED_OUT_HINT);
+        }
+        message
     })?;
     if json || shape.is_some() {
         let value = match shape {
@@ -3298,7 +3343,10 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
         text.push_str(&format!("\nMatched concepts: {matched}\n"));
     }
     if results.is_empty() {
-        text.push_str("\nNo catalog entries match. Broaden the query or run `a4 explore catalog --vocabulary`.\n");
+        match signed_out_hint(value) {
+            Some(hint) => text.push_str(&format!("\n{hint}\n")),
+            None => text.push_str("\nNo catalog entries match. Broaden the query or run `a4 explore catalog --vocabulary`.\n"),
+        }
         if catalog_view::catalog_changed(value) {
             text.push_str(&format!("{}\n", catalog_view::CATALOG_CHANGED_HINT));
         }
@@ -3383,7 +3431,19 @@ fn render_catalog_search(value: &Value, full: bool) -> String {
     if catalog_view::catalog_changed(value) {
         text.push_str(&format!("{}\n", catalog_view::CATALOG_CHANGED_HINT));
     }
+    if let Some(hint) = signed_out_hint(value) {
+        text.push_str(&format!("\n{hint}\n"));
+    }
     text
+}
+
+/// The hint of a page read without an API key (its `access` says
+/// `signedIn: false`).
+fn signed_out_hint(value: &Value) -> Option<&str> {
+    let access = value.get("access")?;
+    (access["signedIn"] == false)
+        .then(|| access["hint"].as_str())
+        .flatten()
 }
 
 /// A protocol rollup's `stacks` and `programs`, split into those the
@@ -3675,6 +3735,33 @@ mod tests {
         assert!(rendered.contains("--cursor eyJ2IjoxfQ"));
         assert!(render_catalog_search(&json!({"results": []}), false)
             .contains("No catalog entries match"));
+    }
+
+    #[test]
+    fn a_signed_out_catalog_page_says_it_read_only_public_entries() {
+        let empty = json!({"results": [], "access": catalog_view::signed_out_access(true)});
+        let rendered = render_catalog_search(&empty, false);
+        assert!(!rendered.contains("No catalog entries match"), "{rendered}");
+        assert!(
+            rendered.contains(catalog_view::SIGNED_OUT_EMPTY),
+            "{rendered}"
+        );
+        assert!(rendered.contains("`a4 auth login`"), "{rendered}");
+
+        let page = json!({
+            "results": [{"kind": "program", "slug": "ore", "version": "1.0.0", "name": "ore", "modes": ["build"]}],
+            "access": catalog_view::signed_out_access(false)
+        });
+        let rendered = render_catalog_search(&page, false);
+        assert!(rendered.contains("program ore@1.0.0"), "{rendered}");
+        assert!(
+            rendered.trim_end().ends_with(catalog_view::SIGNED_OUT_HINT),
+            "{rendered}"
+        );
+
+        // A signed-in page (no `access`) renders as before.
+        let rendered = render_catalog_search(&json!({"results": []}), false);
+        assert!(!rendered.contains("Signed out"), "{rendered}");
 
         // The brief default keeps the pinned install command but not the hash.
         let brief = render_catalog_search(&page, false);
