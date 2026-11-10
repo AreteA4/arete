@@ -2479,7 +2479,7 @@ impl AreteMcp {
             .ok()
             .and_then(|value| value.get("stacks").map(catalog_view::is_empty_listing))
             .unwrap_or(false);
-        self.discovery_note(bounded_result(body)?, empty)
+        discovery_tool_result(body, self.registry.signed_in(), empty)
     }
 
     #[tool(
@@ -4196,18 +4196,27 @@ fn stack_views_next(views: &serde_json::Value) -> String {
 /// saying it lists only the public entries (and, when `empty`, that nothing
 /// public matched) and how to sign in. The listing stays the first block,
 /// unchanged, so clients that parse it are unaffected.
-fn with_signed_out_note(
-    mut result: CallToolResult,
+///
+/// Both blocks count toward the [`MAX_RESPONSE_BYTES`] limit, so a listing
+/// that fits alone but not with the note is refused like any oversized one.
+fn discovery_tool_result(
+    text: String,
     signed_in: bool,
     empty: bool,
-) -> CallToolResult {
-    if !signed_in {
-        result.content.push(Content::text(format!(
+) -> Result<CallToolResult, McpError> {
+    let note = (!signed_in).then(|| {
+        format!(
             "{} Then restart this MCP server.",
             catalog_view::signed_out_note(empty)
-        )));
+        )
+    });
+    let total = text.len() + note.as_ref().map_or(0, String::len);
+    if total > MAX_RESPONSE_BYTES {
+        return Err(oversized_result(total));
     }
-    result
+    let mut content = vec![Content::text(text)];
+    content.extend(note.map(Content::text));
+    Ok(CallToolResult::success(content))
 }
 
 /// A shaped (summary, sections, views or operation) result. It is cut from a
@@ -4225,17 +4234,21 @@ fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> 
 /// the bytes actually returned.
 fn bounded_result(text: String) -> Result<CallToolResult, McpError> {
     if text.len() > MAX_RESPONSE_BYTES {
-        return Err(McpError::internal_error(
-            format!(
-                "shaped response is {} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a single \
-                 tool result. Narrow it (fewer `views`, `sections` or `fields`, a `select`, a smaller `limit`, \
-                 or no `full`), or use `a4 explore` on the command line.",
-                text.len()
-            ),
-            None,
-        ));
+        return Err(oversized_result(text.len()));
     }
     Ok(CallToolResult::success(vec![Content::text(text)]))
+}
+
+/// The refusal for a tool result of `bytes` over [`MAX_RESPONSE_BYTES`].
+fn oversized_result(bytes: usize) -> McpError {
+    McpError::internal_error(
+        format!(
+            "shaped response is {bytes} bytes, over the {MAX_RESPONSE_BYTES} byte limit for a single \
+             tool result. Narrow it (fewer `views`, `sections` or `fields`, a `select`, a smaller `limit`, \
+             or no `full`), or use `a4 explore` on the command line."
+        ),
+        None,
+    )
 }
 
 /// Validate that a subscribe `view` argument has the expected
@@ -4359,24 +4372,12 @@ impl AreteMcp {
     }
 
     /// A discovery listing as a tool result: `text` (bounded), and, when no
-    /// API key was sent, the signed-out note ([`with_signed_out_note`]).
+    /// API key was sent, the signed-out note ([`discovery_tool_result`]).
     fn discovery_result(&self, text: String) -> Result<CallToolResult, McpError> {
         let empty = serde_json::from_str::<Value>(&text)
             .map(|value| catalog_view::is_empty_listing(&value))
             .unwrap_or(false);
-        self.discovery_note(bounded_result(text)?, empty)
-    }
-
-    fn discovery_note(
-        &self,
-        result: CallToolResult,
-        empty: bool,
-    ) -> Result<CallToolResult, McpError> {
-        Ok(with_signed_out_note(
-            result,
-            self.registry.signed_in(),
-            empty,
-        ))
+        discovery_tool_result(text, self.registry.signed_in(), empty)
     }
 
     async fn catalog_result(
@@ -5483,11 +5484,12 @@ mod explore_args_tests {
 
     #[test]
     fn a_signed_out_listing_says_so_after_the_unchanged_listing() {
-        let listing = || CallToolResult::success(vec![Content::text("[]")]);
-        let signed_in = result_texts(&with_signed_out_note(listing(), true, true));
+        let listing =
+            |signed_in, empty| discovery_tool_result("[]".to_string(), signed_in, empty).unwrap();
+        let signed_in = result_texts(&listing(true, true));
         assert_eq!(signed_in, ["[]"]);
 
-        let empty = result_texts(&with_signed_out_note(listing(), false, true));
+        let empty = result_texts(&listing(false, true));
         assert_eq!(empty[0], "[]");
         assert!(
             empty[1].starts_with(catalog_view::SIGNED_OUT_EMPTY),
@@ -5501,8 +5503,33 @@ mod explore_args_tests {
             empty[1]
         );
 
-        let some = result_texts(&with_signed_out_note(listing(), false, false));
+        let some = result_texts(&listing(false, false));
         assert!(some[1].starts_with("Signed out:"), "{}", some[1]);
+    }
+
+    /// The note counts toward the tool-result limit: a listing that fits
+    /// alone but not with the note is refused, never returned oversized.
+    #[test]
+    fn the_signed_out_note_counts_toward_the_result_limit() {
+        let note_len = discovery_tool_result(String::new(), false, false)
+            .map(|result| result_texts(&result)[1].len())
+            .unwrap();
+        let fits_alone = "x".repeat(MAX_RESPONSE_BYTES - note_len + 1);
+        discovery_tool_result(fits_alone.clone(), true, false)
+            .expect("signed in, the listing alone fits");
+        let error = discovery_tool_result(fits_alone, false, false)
+            .expect_err("signed out, the listing and note exceed the limit");
+        assert!(
+            error
+                .message
+                .contains(&format!("{} bytes", MAX_RESPONSE_BYTES + 1)),
+            "{}",
+            error.message
+        );
+        let exactly = "x".repeat(MAX_RESPONSE_BYTES - note_len);
+        let result = discovery_tool_result(exactly, false, false).expect("exactly at the limit");
+        let total: usize = result_texts(&result).iter().map(String::len).sum();
+        assert_eq!(total, MAX_RESPONSE_BYTES);
     }
 
     /// The listing tools carry the note when this test runs without a key
