@@ -1,0 +1,18 @@
+{
+  "version": 3,
+  "programs": [
+    {
+      "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+      "name": "Pump.fun",
+      "enabled": true,
+      "instructions": ["buy", "sell"],
+      "spendLimit": { "lamports": "1000000000", "windowSeconds": 86400 }
+    },
+    {
+      "programId": "LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo",
+      "name": "Meteora DLMM",
+      "enabled": false
+    }
+  ],
+  "transferAllowlist": ["9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM"]
+}

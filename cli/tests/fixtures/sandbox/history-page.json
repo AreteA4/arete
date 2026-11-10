@@ -1,0 +1,50 @@
+{
+  "items": [
+    {
+      "id": "0193a1f2-5c2e-7b10-9d3e-2a7b106f1c2c",
+      "createdAt": "2026-11-12T10:00:00Z",
+      "status": "landed",
+      "signature": "5Kt3uYbV9m1vQ8pW2xJcRZ7HnLd4eFgTqA6sB3yCkN8oMiPr1jUwXhEvGzDa9fQ2bL7cYt4nRsK5mWpJ3xVe6uHq",
+      "slot": 312345601,
+      "programs": [
+        { "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "name": "Pump.fun" }
+      ],
+      "instructions": [
+        {
+          "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "programName": "Pump.fun",
+          "name": "buy",
+          "args": { "amount": "1234500000", "maxSolCost": "110000000" }
+        }
+      ],
+      "solDelta": "-105005000",
+      "tokenDeltas": [
+        {
+          "mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+          "delta": "1234500000",
+          "decimals": 6
+        }
+      ],
+      "accounts": ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"],
+      "raw": {
+        "transaction": { "message": { "instructions": [] } },
+        "meta": { "preBalances": [1500000000], "postBalances": [1394995000] }
+      }
+    },
+    {
+      "id": "0193a1f1-0000-7b10-9d3e-2a7b106f1c2c",
+      "createdAt": "2026-11-12T09:58:30Z",
+      "status": "rejected",
+      "signature": null,
+      "slot": null,
+      "programs": ["6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"],
+      "instructions": [{ "programName": "Pump.fun", "name": "sell", "args": {} }],
+      "solDelta": "0",
+      "tokenDeltas": [],
+      "accounts": [],
+      "rejectCode": "sandbox-guard-trial-failed",
+      "raw": null
+    }
+  ],
+  "nextCursor": "eyJpZCI6ImEyIn0"
+}

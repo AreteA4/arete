@@ -423,6 +423,11 @@ enum Commands {
     #[command(subcommand)]
     Squads(commands::squads::SquadsCommands),
 
+    /// Read a sandbox wallet's history, holdings and rules, and check a
+    /// Rules v3 file (sandboxes are in alpha)
+    #[command(subcommand)]
+    Sandbox(commands::sandbox::SandboxCommands),
+
     /// Build commands (advanced) - low-level build management
     #[command(subcommand, hide = true)]
     Build(BuildCommands),
@@ -1270,6 +1275,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Program(_) => "program",
         Commands::Protocol(_) => "protocol",
         Commands::Squads(_) => "squads",
+        Commands::Sandbox(_) => "sandbox",
         Commands::Build(_) => "build",
         Commands::Telemetry(_) => "telemetry",
         Commands::Idl(_) => "idl",
@@ -1969,6 +1975,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Protocol(command) => commands::protocol::run(command, cli.json),
         Commands::Squads(command) => commands::squads::run(command, cli.json),
+        Commands::Sandbox(command) => commands::sandbox::run(command, cli.json),
         Commands::Build(build_cmd) => match build_cmd {
             BuildCommands::List { limit, status } => {
                 commands::build::list(limit, status.as_deref(), cli.json)

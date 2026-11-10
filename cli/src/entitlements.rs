@@ -25,6 +25,7 @@ pub fn command_groups(name: &str) -> Option<&'static [Group]> {
         "explore" | "know" | "install" | "update" | "remove" | "sdk" => &[Group::Registry],
         "protocol" | "squads" => &[Group::Protocols],
         "dev" => &[Group::Dev],
+        "sandbox" => &[Group::Sandboxes],
         // Templates for stack apps and for protocols.
         "create" => &[Group::Stacks, Group::Protocols],
         _ => return None,
