@@ -136,6 +136,7 @@ a4 sandbox rules show
 Sandbox 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10  history, newest first
 
   2026-11-12 10:00:00  landed    Pump.fun.buy  -0.105005 SOL, +1234.5 7xKX…gAsU  5Kt3…6uHq
+      events: TradeEvent ×2
   2026-11-12 09:58:30  rejected  Pump.fun.sell
       sandbox-guard-trial-failed
 
@@ -143,7 +144,9 @@ More: a4 sandbox history --cursor eyJpZCI6ImEyIn0
 ```
 
 Each action has its time, status, the programs and decoded instructions,
-the SOL and token changes, the accounts it touched and, with `--raw` or the
+the Anchor events the programs emitted (decoded against each program's IDL;
+an event that does not decode keeps its bytes and the reason), the SOL and
+token changes, the accounts it touched and, with `--raw` or the
 MCP tool's `includeRaw`, the parsed transaction with its balances before and
 after. Holdings list SOL, each token with `acquiredBySandbox` for tokens the
 sandbox bought, and program positions.

@@ -367,6 +367,9 @@ fn history_row(item: &Value) -> String {
         line.push_str(&format!("  {}", short(signature).dimmed()));
     }
     line.push('\n');
+    if let Some(events) = event_labels(item) {
+        line.push_str(&format!("      events: {events}\n"));
+    }
     if let Some(reason) = item["rejectCode"]
         .as_str()
         .or_else(|| item["error"]["code"].as_str())
@@ -375,6 +378,39 @@ fn history_row(item: &Value) -> String {
         line.push_str(&format!("      {reason}\n"));
     }
     line
+}
+
+/// The Anchor events an action emitted, in order: each decoded event's
+/// name, or the emitting program and `(not decoded)` when its IDL did not
+/// decode it. A run of the same label is shown once with its count. `None`
+/// when the item has no events.
+fn event_labels(item: &Value) -> Option<String> {
+    let mut runs: Vec<(String, usize)> = Vec::new();
+    for event in item["events"].as_array().into_iter().flatten() {
+        let label = match event["name"].as_str() {
+            Some(name) => name.to_string(),
+            None => format!(
+                "{} (not decoded)",
+                short(event["program"].as_str().unwrap_or("?"))
+            ),
+        };
+        match runs.last_mut() {
+            Some((last, count)) if *last == label => *count += 1,
+            _ => runs.push((label, 1)),
+        }
+    }
+    if runs.is_empty() {
+        return None;
+    }
+    Some(
+        runs.into_iter()
+            .map(|(label, count)| match count {
+                1 => label,
+                n => format!("{label} ×{n}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
 }
 
 fn status_label(status: &str) -> String {
@@ -847,11 +883,15 @@ mod tests {
             ),
             "{text}"
         );
-        assert!(
-            lines[3].contains("rejected  ") && lines[3].contains("Pump.fun.sell"),
+        assert_eq!(
+            lines[3], "      events: TradeEvent ×2, MAyh…MD4e (not decoded)",
             "{text}"
         );
-        assert!(lines[4].contains("sandbox-guard-trial-failed"), "{text}");
+        assert!(
+            lines[4].contains("rejected  ") && lines[4].contains("Pump.fun.sell"),
+            "{text}"
+        );
+        assert!(lines[5].contains("sandbox-guard-trial-failed"), "{text}");
         assert!(
             text.ends_with(
                 "More: a4 sandbox history --cursor eyJpZCI6ImEyIn0 --sandbox sbx --limit 2 --status landed\n"

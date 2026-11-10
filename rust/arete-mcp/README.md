@@ -590,7 +590,9 @@ returned in a tool result.
 - `sandbox_history({ cursor?, limit?, status?, program?, mint?, since?, includeRaw? })`
   — read-only. Every action the wallet ran, newest first: `id`, `createdAt`,
   `status`, `signature`, `slot`, the `programs` and decoded `instructions`,
-  `solDelta`, `tokenDeltas` (`mint`, raw `delta`, `decimals`) and the
+  the Anchor `events` it emitted (`program`, `name`, `path`, `source`,
+  decoded `fields`, base64 `data`; `name: null` with
+  `fields.__parse_error` when one did not decode), `solDelta`, `tokenDeltas` (`mint`, raw `delta`, `decimals`) and the
   `accounts` touched. Page with `cursor` (the previous `nextCursor`) and
   `limit` (1 to 100, default 20). The filters are applied by this MCP
   server to the pages it reads: a filtered read scans up to 10
