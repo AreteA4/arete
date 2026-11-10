@@ -569,9 +569,9 @@ returned in a tool result.
 **Agent loop:** discover → preview → invoke.
 
 - `sandbox_status()` — wallet address, SOL and token balances (raw
-  amounts), the actions this agent was granted, and caps (lamports and per
-  mint, per action and per window) with what the window has spent. Start
-  here.
+  amounts), the actions this agent was granted, and, under version 2 rules,
+  caps (lamports and per mint, per action and per window) with what the
+  window has spent. Start here.
 - `sandbox_rules()` — the allowed programs and, for each, the allowed
   instructions with their argument types and accounts.
 - `sandbox_derive({ kind: "ata" | "pda", ... })` — an associated token
@@ -587,6 +587,34 @@ returned in a tool result.
   This is the only tool that moves funds; there are no per-action tools.
 - `sandbox_action({ actionId | idempotencyKey })` — one action's status,
   for looking up a timed-out call instead of retrying it.
+- `sandbox_history({ cursor?, limit?, status?, program?, mint?, since?, includeRaw? })`
+  — read-only. Every action the wallet ran, newest first: `id`, `createdAt`,
+  `status`, `signature`, `slot`, the `programs` and decoded `instructions`,
+  `solDelta`, `tokenDeltas` (`mint`, raw `delta`, `decimals`) and the
+  `accounts` touched. Page with `cursor` (the previous `nextCursor`) and
+  `limit` (1 to 100, default 20). The filters are applied by this MCP
+  server to the pages it reads: a filtered read scans up to 10
+  pages until `limit` items match, and `nextCursor` carries on after the
+  last page scanned. Each item's `raw` parsed transaction (with pre and post
+  balances) is left out unless `includeRaw` is true.
+- `sandbox_holdings({ includeRaw? })` — read-only. SOL, tokens (raw
+  `amount`, `decimals`, and `acquiredBySandbox` for tokens the sandbox
+  bought, which it may always sell) and program `positions` as labeled raw
+  accounts, with `asOfSlot`.
+
+The two reads call `GET /api/sandbox/v1/sandboxes/<id>/actions?limit&cursor`
+and `GET /api/sandbox/v1/sandboxes/<id>/holdings` with the same sandbox
+token. Like the other `sandbox_*` tools they are listed only with a sandbox
+configured; they run no action.
+
+**Rules v3.** Under version 3 rules the owner turns each supported program
+on or off, may narrow its instructions (else the registry's safe set) and
+may set a per-program spend limit (`lamports` over `windowSeconds`). Funds
+may leave the enabled programs only to the owner's wallet, the owner's
+`transferAllowlist` or the sandbox's own accounts, and tokens the sandbox
+bought may always be sold, at a loss too. There are no global per-action or
+per-window caps under version 3. `a4 sandbox rules validate <file>` checks a
+Rules v3 document locally.
 
 Actions (an action the owner did not grant is refused before anything is
 sent, with code `sandbox-action-not-granted` and rule `session-grant`):

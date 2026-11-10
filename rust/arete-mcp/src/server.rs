@@ -1615,14 +1615,14 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this agent may run (`invoke`, `withdraw`, `swap`, as the owner granted), and its caps: lamports and per mint, per action and per window, with what the window has spent. Start here. The sandbox's owner sets the rules, grants and caps; this agent can only act within them. No key, token, wallet credential or RPC URL is ever returned."
+        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this agent may run (`invoke`, `withdraw`, `swap`, as the owner granted), and its caps when the rules set them (version 2 rules: lamports and per mint, per action and per window, with what the window has spent; version 3 rules replace these with optional per-program spend limits, see `sandbox_rules`). Start here. The sandbox's owner sets the rules, grants and caps; this agent can only act within them. No key, token, wallet credential or RPC URL is ever returned."
     )]
     async fn sandbox_status(&self) -> Result<CallToolResult, McpError> {
         Ok(sandbox_result(self.sandbox.status().await, None))
     }
 
     #[tool(
-        description = "The sandbox's rules: the programs it may call and, for each, the allowed instructions with their arguments (IDL types) and accounts (writable/signer/optional/fixed address). Build `invoke` instructions for `sandbox_invoke` from exactly these names. `baseline` lists plumbing always allowed (create your own token accounts, wrap/unwrap SOL); everything else needs the owner's rules."
+        description = "The sandbox's rules: the programs it may call and, for each, the allowed instructions with their arguments (IDL types) and accounts (writable/signer/optional/fixed address). Build `invoke` instructions for `sandbox_invoke` from exactly these names. `baseline` lists plumbing always allowed (create your own token accounts, wrap/unwrap SOL); everything else needs the owner's rules. Under version 3 rules a program may also show `enabled` and a `spendLimit` (`lamports` over `windowSeconds`), and `transferAllowlist` lists the addresses funds may go to besides the owner's wallet and the sandbox's own accounts; tokens the sandbox bought may always be sold. `sandbox_holdings` shows balances and `sandbox_history` past actions."
     )]
     async fn sandbox_rules(&self) -> Result<CallToolResult, McpError> {
         Ok(sandbox_result(self.sandbox.rules().await, None))
@@ -1689,6 +1689,43 @@ impl AreteMcp {
             }
         };
         Ok(sandbox_result(self.sandbox.action(&lookup).await, None))
+    }
+
+    #[tool(
+        description = "Read-only. The sandbox's action history, newest first: every action the wallet ran, with `id`, `createdAt`, `status` (`landed`, `failed`, `rejected`, ...), `signature`, `slot`, the `programs` and decoded `instructions` (name and args), `solDelta` (lamports, signed), `tokenDeltas` (`mint`, raw `delta`, `decimals`) and the `accounts` touched. Page with `cursor` (the previous answer's `nextCursor`, null on the last page) and `limit` (1 to 100, default 20). Filter by `status`, `program` (id or name), `mint` or `since` (RFC 3339): filtered reads scan further pages until `limit` match, and `nextCursor` carries on after the last page scanned. `raw` (the parsed transaction with pre and post balances) is left out unless `includeRaw` is true."
+    )]
+    async fn sandbox_history(
+        &self,
+        Parameters(args): Parameters<crate::sandbox::SandboxHistoryArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let query = args
+            .query()
+            .map_err(|error| McpError::invalid_params(error, None))?;
+        let result = self.sandbox.history(&query).await.map(|body| {
+            if args.include_raw {
+                body
+            } else {
+                crate::sandbox::ledger::without_raw(body)
+            }
+        });
+        Ok(sandbox_result(result, None))
+    }
+
+    #[tool(
+        description = "Read-only. What the sandbox wallet holds now: `sol` (lamports), `tokens` (`mint`, raw `amount`, `decimals`, and `acquiredBySandbox`: true for tokens the sandbox bought, which it may always sell or exit), `positions` in programs (`program`, `account`, `label`; shown as labeled raw accounts for now) and `asOfSlot`. Each position's `raw` account data is left out unless `includeRaw` is true."
+    )]
+    async fn sandbox_holdings(
+        &self,
+        Parameters(args): Parameters<crate::sandbox::SandboxHoldingsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let result = self.sandbox.holdings().await.map(|body| {
+            if args.include_raw {
+                body
+            } else {
+                crate::sandbox::ledger::without_raw(body)
+            }
+        });
+        Ok(sandbox_result(result, None))
     }
 
     #[tool(

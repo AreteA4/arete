@@ -1,0 +1,20 @@
+{
+  "sol": "1394995000",
+  "tokens": [
+    {
+      "mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+      "amount": "1234500000",
+      "decimals": 6,
+      "acquiredBySandbox": true
+    }
+  ],
+  "positions": [
+    {
+      "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+      "account": "H4dH3hmyWZ1SbsMzYqMKdyFBsUuvHGbzvNNxGg8bPFuu",
+      "label": "obligation",
+      "raw": { "owner": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD", "data": "AAAA" }
+    }
+  ],
+  "asOfSlot": 312345678
+}

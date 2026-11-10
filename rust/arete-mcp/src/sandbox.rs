@@ -20,6 +20,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub mod ledger;
+pub mod rules;
+
 use rmcp::schemars;
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
@@ -38,13 +41,15 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 30;
 
 /// The tools this module backs, hidden when no sandbox is configured.
-pub const TOOL_NAMES: [&str; 6] = [
+pub const TOOL_NAMES: [&str; 8] = [
     "sandbox_status",
     "sandbox_rules",
     "sandbox_derive",
     "sandbox_preview",
     "sandbox_invoke",
     "sandbox_action",
+    "sandbox_history",
+    "sandbox_holdings",
 ];
 
 /// An answer the API refused: its HTTP status and problem body.
@@ -185,6 +190,11 @@ impl SandboxClient {
     /// rest of this server uses (`ARETE_API_KEY`, else the a4 login for that
     /// API). Without a sandbox id the tools stay hidden.
     pub fn from_env() -> Self {
+        Self::from_env_for(std::env::var(ENV_VAR_SANDBOX_ID).ok())
+    }
+
+    /// As [`Self::from_env`], for `sandbox_id` (else `ARETE_SANDBOX_ID`).
+    pub fn from_env_for(sandbox_id: Option<String>) -> Self {
         if std::env::var(ENV_VAR_RETIRED_SANDBOX_KEY).is_ok_and(|key| !key.trim().is_empty()) {
             tracing::warn!(
                 "{ENV_VAR_RETIRED_SANDBOX_KEY} is no longer used: set {ENV_VAR_SANDBOX_ID} to the sandbox id and use the agent's own API key"
@@ -200,7 +210,8 @@ impl SandboxClient {
             .ok()
             .flatten()
             .map(|key| key.key);
-        Self::from_values(std::env::var(ENV_VAR_SANDBOX_ID).ok(), api_key, api_url)
+        let sandbox_id = sandbox_id.or_else(|| std::env::var(ENV_VAR_SANDBOX_ID).ok());
+        Self::from_values(sandbox_id, api_key, api_url)
     }
 
     pub fn from_values(
@@ -236,6 +247,11 @@ impl SandboxClient {
 
     pub fn configured(&self) -> bool {
         self.sandbox_id.is_some()
+    }
+
+    /// The sandbox id, once it parsed as one.
+    pub fn sandbox_id(&self) -> Option<&str> {
+        self.sandbox_id.as_deref()
     }
 
     fn trusted_origin(&self) -> Result<(), SandboxRefusal> {
@@ -526,6 +542,75 @@ impl SandboxClient {
         .await
     }
 
+    /// `tail` under this sandbox's ledger routes. The id parsed as a UUID,
+    /// so it is safe in a path.
+    fn ledger_path(&self, tail: &str) -> Result<String, SandboxRefusal> {
+        let Some(sandbox_id) = &self.sandbox_id else {
+            return Err(SandboxRefusal::local(
+                "sandbox-not-configured",
+                format!("Set {ENV_VAR_SANDBOX_ID} to the sandbox id to use the sandbox tools"),
+            ));
+        };
+        Ok(format!("/sandboxes/{sandbox_id}{tail}"))
+    }
+
+    /// The sandbox's actions, newest first, one page at `query.cursor`.
+    /// With filters, further pages are read (up to
+    /// [`ledger::MAX_SCAN_PAGES`]), each asking for the items still wanted,
+    /// until `limit` items match; `nextCursor` carries on after the last page
+    /// read.
+    pub async fn history(&self, query: &ledger::HistoryQuery) -> Result<Value, SandboxRefusal> {
+        let mut cursor = query.cursor.clone();
+        let mut items = Vec::new();
+        let mut pages_read = 0;
+        loop {
+            // Ask only for what is still wanted, so the answer never holds
+            // more than `limit` items and none are skipped behind the cursor.
+            let wanted = query.limit().saturating_sub(items.len() as u32).max(1);
+            let path = self.ledger_path(&format!(
+                "/actions{}",
+                query.page_query(cursor.as_deref(), wanted)
+            ))?;
+            let page = self.call(reqwest::Method::GET, &path, None, None).await?;
+            pages_read += 1;
+            let Some(page_items) = page.get("items").and_then(Value::as_array) else {
+                return Err(SandboxRefusal::local(
+                    "sandbox-response-unreadable",
+                    "The Arete API answered the history read without an `items` list",
+                ));
+            };
+            if !query.filtered() {
+                return Ok(page);
+            }
+            items.extend(
+                page_items
+                    .iter()
+                    .filter(|item| query.matches(item))
+                    .cloned(),
+            );
+            cursor = page
+                .get("nextCursor")
+                .and_then(Value::as_str)
+                .filter(|next| !next.is_empty())
+                .map(str::to_string);
+            let enough = items.len() >= query.limit() as usize;
+            if enough || cursor.is_none() || pages_read >= ledger::MAX_SCAN_PAGES {
+                return Ok(ledger::Scan {
+                    items,
+                    next_cursor: cursor,
+                    pages_read,
+                }
+                .into_json(query));
+            }
+        }
+    }
+
+    /// What the sandbox holds now: SOL, tokens and program positions.
+    pub async fn holdings(&self) -> Result<Value, SandboxRefusal> {
+        let path = self.ledger_path("/holdings")?;
+        self.call(reqwest::Method::GET, &path, None, None).await
+    }
+
     pub async fn action(&self, lookup: &ActionLookup) -> Result<Value, SandboxRefusal> {
         let path = match lookup {
             ActionLookup::Id(id) => format!("/actions/{}", path_segment(id)?),
@@ -582,7 +667,7 @@ fn path_segment(value: &str) -> Result<String, SandboxRefusal> {
     }
 }
 
-fn url_encode(value: &str) -> String {
+pub(crate) fn url_encode(value: &str) -> String {
     value
         .bytes()
         .map(|byte| match byte {
@@ -737,6 +822,71 @@ pub struct SandboxActionArgs {
     /// Or the idempotency key the action ran under.
     #[serde(default)]
     pub idempotency_key: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxHoldingsArgs {
+    /// Keep each position's `raw` account data (default false).
+    #[serde(default)]
+    pub include_raw: bool,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxHistoryArgs {
+    /// The `nextCursor` of the previous page; omit for the newest actions.
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// Actions per page, 1 to 100 (default 20).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Only actions with this status: `landed`, `failed`, `rejected`,
+    /// `sent`, ...
+    #[serde(default)]
+    pub status: Option<String>,
+    /// Only actions that called this program, by id or name.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// Only actions that moved this token mint.
+    #[serde(default)]
+    pub mint: Option<String>,
+    /// Only actions at or after this RFC 3339 time, e.g.
+    /// `2026-11-15T00:00:00Z`.
+    #[serde(default)]
+    pub since: Option<String>,
+    /// Keep each action's `raw` parsed transaction (large; default false).
+    #[serde(default)]
+    pub include_raw: bool,
+}
+
+impl SandboxHistoryArgs {
+    pub fn query(&self) -> Result<ledger::HistoryQuery, String> {
+        let since = self
+            .since
+            .as_deref()
+            .map(|text| {
+                chrono::DateTime::parse_from_rfc3339(text.trim())
+                    .map(|time| time.with_timezone(&chrono::Utc))
+                    .map_err(|_| format!("since must be an RFC 3339 time, not {text:?}"))
+            })
+            .transpose()?;
+        let text = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        Ok(ledger::HistoryQuery {
+            cursor: text(&self.cursor),
+            limit: self.limit,
+            status: text(&self.status),
+            program: text(&self.program),
+            mint: text(&self.mint),
+            since,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -1273,6 +1423,158 @@ mod tests {
         let (base, _) = stub(vec![("GET", "/api/sandbox/v1/rules", 200, big)]);
         let refusal = client(&base).rules().await.unwrap_err();
         assert_eq!(refusal.body["code"], "sandbox-response-too-large");
+    }
+
+    const ACTIONS: &str = "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions";
+
+    fn action_item(id: &str, status: &str, program: &str) -> Value {
+        json!({
+            "id": id, "createdAt": "2026-11-12T10:00:00Z", "status": status,
+            "signature": format!("sig-{id}"), "slot": 1,
+            "programs": [program], "instructions": [], "solDelta": "-5000",
+            "tokenDeltas": [], "accounts": [], "raw": { "meta": {} }
+        })
+    }
+
+    #[tokio::test]
+    async fn an_unfiltered_history_read_is_one_page_verbatim() {
+        let page = json!({ "items": [action_item("a1", "landed", "P")], "nextCursor": "c2" });
+        let (base, seen) = stub(vec![(
+            "GET",
+            "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=20",
+            200,
+            page.clone(),
+        )]);
+        let body = client(&base)
+            .history(&ledger::HistoryQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(body, page);
+        let seen = requests(&seen);
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        let read = seen[1].to_ascii_lowercase();
+        assert!(
+            read.starts_with(&format!("get {ACTIONS}?limit=20 ")),
+            "{read}"
+        );
+        assert!(read.contains("authorization: bearer tok-1"), "{read}");
+        assert!(!read.contains("a4_sk_agent"), "{read}");
+    }
+
+    #[tokio::test]
+    async fn a_filtered_history_read_scans_pages_until_enough_match() {
+        let (base, seen) = stub(vec![
+            (
+                "GET",
+                "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=2&cursor=c1",
+                200,
+                json!({
+                    "items": [action_item("a1", "failed", "Pump"), action_item("a2", "landed", "Pump")],
+                    "nextCursor": "c2"
+                }),
+            ),
+            (
+                "GET",
+                "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=1&cursor=c2",
+                200,
+                json!({ "items": [action_item("a3", "landed", "Other")], "nextCursor": "c3" }),
+            ),
+            (
+                "GET",
+                "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=1&cursor=c3",
+                200,
+                json!({ "items": [action_item("a4", "landed", "Pump")], "nextCursor": "c4" }),
+            ),
+        ]);
+        let query = ledger::HistoryQuery {
+            cursor: Some("c1".into()),
+            limit: Some(2),
+            status: Some("landed".into()),
+            program: Some("pump".into()),
+            ..Default::default()
+        };
+        let body = client(&base).history(&query).await.unwrap();
+        let ids: Vec<&str> = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["a2", "a4"]);
+        assert_eq!(body["nextCursor"], "c4");
+        assert_eq!(body["pagesRead"], 3);
+        // A mint, then pages of 2, 1 and 1: never more than still wanted.
+        assert_eq!(requests(&seen).len(), 4);
+    }
+
+    #[tokio::test]
+    async fn a_filtered_history_read_ends_on_the_last_page() {
+        let (base, seen) = stub(vec![(
+            "GET",
+            "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=20",
+            200,
+            json!({ "items": [action_item("a1", "failed", "P")], "nextCursor": null }),
+        )]);
+        let query = ledger::HistoryQuery {
+            status: Some("landed".into()),
+            ..Default::default()
+        };
+        let body = client(&base).history(&query).await.unwrap();
+        assert_eq!(body["items"], json!([]));
+        assert!(body["nextCursor"].is_null());
+        assert_eq!(requests(&seen).len(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_history_page_without_items_is_an_error() {
+        let (base, _) = stub(vec![(
+            "GET",
+            "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/actions?limit=20",
+            200,
+            json!({ "actions": [] }),
+        )]);
+        let refusal = client(&base)
+            .history(&ledger::HistoryQuery::default())
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.body["code"], "sandbox-response-unreadable");
+    }
+
+    #[tokio::test]
+    async fn holdings_are_read_with_the_sandbox_token() {
+        let holdings = json!({
+            "sol": "1500000000",
+            "tokens": [{ "mint": "M", "amount": "10", "decimals": 6, "acquiredBySandbox": true }],
+            "positions": [], "asOfSlot": 42
+        });
+        let (base, seen) = stub(vec![(
+            "GET",
+            "/api/sandbox/v1/sandboxes/6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10/holdings",
+            200,
+            holdings.clone(),
+        )]);
+        assert_eq!(client(&base).holdings().await.unwrap(), holdings);
+        let seen = requests(&seen);
+        assert!(seen[1].to_ascii_lowercase().contains("bearer tok-1"));
+    }
+
+    #[test]
+    fn history_args_parse_into_a_query() {
+        let args: SandboxHistoryArgs = serde_json::from_value(json!({
+            "cursor": " c ", "limit": 5, "status": "", "since": "2026-11-15T00:00:00+01:00"
+        }))
+        .unwrap();
+        let query = args.query().unwrap();
+        assert_eq!(query.cursor.as_deref(), Some("c"));
+        assert_eq!(query.limit(), 5);
+        assert!(query.status.is_none());
+        assert_eq!(
+            query.since.unwrap().to_rfc3339(),
+            "2026-11-14T23:00:00+00:00"
+        );
+        let bad: SandboxHistoryArgs =
+            serde_json::from_value(json!({ "since": "yesterday" })).unwrap();
+        assert!(bad.query().unwrap_err().contains("RFC 3339"));
     }
 
     #[test]

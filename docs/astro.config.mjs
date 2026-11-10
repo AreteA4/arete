@@ -102,6 +102,10 @@ export default defineConfig({
           ],
         },
         {
+          label: "Agent Sandboxes",
+          items: [{ slug: "sandboxes/overview" }],
+        },
+        {
           label: "Develop and Test",
           items: [
             { slug: "cli/local-development" },
