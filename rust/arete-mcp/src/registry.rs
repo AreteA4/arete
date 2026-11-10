@@ -251,6 +251,13 @@ impl RegistryClient {
         self.get(&format!("/api/registry/{stack}/schema")).await
     }
 
+    /// The views one hosted stack lets a client subscribe to, each with its
+    /// entity, output, primary keys, catalog summary and WebSocket endpoint.
+    /// `query` keeps the views matching every whitespace-separated term.
+    pub async fn stack_views(&self, stack: &str, query: Option<&str>) -> Result<String> {
+        self.get(&stack_views_path(stack, query)?).await
+    }
+
     /// List installable standalone programs.
     pub async fn list_programs(&self) -> Result<String> {
         self.get("/api/registry/programs").await
@@ -908,6 +915,18 @@ fn catalog_search_path(
 }
 
 /// `/api/registry/protocols` with the non-empty filters, encoded.
+/// `/api/registry/stacks/{stack}/views`, with `q` when `query` is not blank.
+fn stack_views_path(stack: &str, query: Option<&str>) -> Result<String> {
+    let stack = path_segment(stack, "stack")?;
+    let path = format!("/api/registry/stacks/{stack}/views");
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return Ok(path);
+    };
+    let mut url = reqwest::Url::parse("http://registry.invalid/").expect("static URL");
+    url.query_pairs_mut().append_pair("q", query);
+    Ok(format!("{path}?{}", url.query().unwrap_or_default()))
+}
+
 fn protocol_listings_path(
     query: Option<&str>,
     cursor: Option<&str>,
@@ -1409,6 +1428,23 @@ mod tests {
             protocol_listings_path(Some(""), None, Some(0)),
             "/api/registry/protocols?limit=1"
         );
+    }
+
+    #[test]
+    fn stack_view_paths_encode_the_query_and_refuse_a_path_as_the_stack() {
+        assert_eq!(
+            stack_views_path("ore", None).unwrap(),
+            "/api/registry/stacks/ore/views"
+        );
+        assert_eq!(
+            stack_views_path(" ore ", Some("  ")).unwrap(),
+            "/api/registry/stacks/ore/views"
+        );
+        assert_eq!(
+            stack_views_path("ore", Some(" round & miner ")).unwrap(),
+            "/api/registry/stacks/ore/views?q=round+%26+miner"
+        );
+        assert!(stack_views_path("ore/../x", None).is_err());
     }
 
     #[tokio::test]

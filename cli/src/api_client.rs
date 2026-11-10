@@ -2036,6 +2036,29 @@ impl ApiClient {
         )
     }
 
+    /// The views a hosted stack lets a client subscribe to, with their
+    /// entity, output, primary keys, catalog summaries and WebSocket
+    /// endpoint. `query` keeps the views matching every term. Raw JSON, so
+    /// `--json` prints what the platform sent.
+    pub fn get_registry_stack_views(
+        &self,
+        stack: &str,
+        query: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut request = self.client.get(format!(
+            "{}/api/registry/stacks/{}/views",
+            self.base_url, stack
+        ));
+        if let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) {
+            request = request.query(&[("q", query)]);
+        }
+        let response = self
+            .with_optional_auth(request)
+            .send()
+            .context("Failed to send registry stack views request")?;
+        Self::handle_response(response)
+    }
+
     /// Get canonical install data for a hosted program SDK.
     ///
     /// See [`Self::get_registry_stack_install`] for the `language` contract.

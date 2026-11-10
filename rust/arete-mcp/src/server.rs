@@ -290,6 +290,18 @@ pub struct ExploreStackSchemaArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExploreStackViewsArgs {
+    /// Bare stack reference as listed by `explore_stacks` (e.g. `ore`).
+    /// Not a URL and not a path.
+    pub stack: String,
+    /// Keep only views matching every whitespace-separated term, without
+    /// regard to case, in the view id, entity, output or summaries
+    /// (e.g. `miner`, `round latest`).
+    #[serde(default, alias = "q")]
+    pub query: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ExploreProgramArgs {
     /// Bare program reference as listed by `explore_programs`
     /// (e.g. `spl-token`), or a program ID.
@@ -2419,7 +2431,8 @@ impl AreteMcp {
     #[tool(description = "List stacks available in the Arete registry. \
                           Start here: the returned `websocket_url` is what `connect` \
                           takes, and `entities` tells you which `<EntityName>/<view>` \
-                          ids to look for.\n\n\
+                          ids to look for; `explore_stack_views` lists one stack's \
+                          subscribable view ids.\n\n\
                           NOTE: casing is not uniform across these tools. This tool \
                           and `explore_stack_schema` return snake_case \
                           (`websocket_url`, `primary_keys`, `rust_type`), except that \
@@ -2538,7 +2551,7 @@ impl AreteMcp {
         let shaped = if views.is_empty() {
             let mut summary = descriptor::stack_summary(&stack, knowledge.as_ref());
             summary["next"] = serde_json::json!(
-                "Pass `views` (e.g. [\"OreRound/latest\"], several at once) for view fields with descriptions and token-amount units; subscribe or read_view with those ids. Program operations: explore_program { program, operationId }. `full: true` for identity hashes, every auth surface and SDK metadata."
+                "Pass `views` (e.g. [\"OreRound/latest\"], several at once) for view fields with descriptions and token-amount units; subscribe or read_view with those ids. Every subscribable view, searchable: explore_stack_views { stack, query? }. Program operations: explore_program { program, operationId }. `full: true` for identity hashes, every auth surface and SDK metadata."
             );
             summary
         } else {
@@ -2605,6 +2618,45 @@ impl AreteMcp {
             .await;
         let descriptor = descriptor.and_then(|body| serde_json::from_str(&body).ok());
         described_schema_result(body, schema, knowledge.as_ref(), descriptor.as_ref())
+    }
+
+    #[tool(
+        description = "List the views of one stack that you can subscribe to, so you \
+                          do not need to know view ids in advance. Each view has its \
+                          `id` (what `read_view`, `subscribe` and `a4 stream` take, \
+                          e.g. `OreRound/latest`), `entity`, `output` (`collection`, \
+                          or `keyed`: read one entity at a time by its `primaryKeys`), \
+                          the catalog `summary` and `entitySummary` when the stack \
+                          publishes them, and the `websocketUrl` to subscribe on.\n\n\
+                          `query` keeps views matching every term (e.g. `miner`); \
+                          `total` counts the stack's views before it. Then read one \
+                          with `read_view { stack, view }`, follow it with `connect \
+                          { url: websocketUrl }` + `subscribe`, or get its fields \
+                          with `explore_stack { stack, views: [id] }`. A \
+                          definition-only stack (no hosted stream) returns `kind: \
+                          \"stack-definition-only\"` with `next` steps instead of an \
+                          error. Pass a bare stack reference (e.g. `ore`), not a URL."
+    )]
+    async fn explore_stack_views(
+        &self,
+        Parameters(args): Parameters<ExploreStackViewsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let body = match self
+            .registry
+            .stack_views(&args.stack, args.query.as_deref())
+            .await
+        {
+            Ok(body) => body,
+            Err(error) => {
+                if let Some(answer) = self.definition_only(&args.stack, &error).await {
+                    return shaped_result(&answer);
+                }
+                self.registry_body(Err(error)).await?
+            }
+        };
+        let mut views: serde_json::Value = parse_descriptor(Ok(body))?;
+        views["next"] = serde_json::json!(stack_views_next(&views));
+        shaped_result(&views)
     }
 
     #[tool(
@@ -4098,6 +4150,29 @@ fn full_descriptor_result(body: String, narrower: &str) -> Result<CallToolResult
 /// A shaped (summary, sections, views or operation) result. It is cut from a
 /// descriptor that was already bounded, but the 512 KiB cap is re-checked on
 /// the bytes actually returned so the advertised bound holds for every tool.
+/// What to do with an `explore_stack_views` result.
+fn stack_views_next(views: &serde_json::Value) -> String {
+    let listed = views
+        .get("views")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    if listed == 0 {
+        let total = views
+            .get("total")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0);
+        return if views.get("query").is_some() && total > 0 {
+            format!("No view matches `query`; drop it to list all {total}.")
+        } else {
+            "This stack selects no views.".to_string()
+        };
+    }
+    "Read a view now: read_view { stack, view: <id> } (a `keyed` view also needs `key`, \
+     a value of its primaryKeys). Follow changes: connect { url: <websocketUrl> }, then \
+     subscribe { view: <id> }. Fields: explore_stack { stack, views: [<id>] }."
+        .to_string()
+}
+
 fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string(value)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
@@ -4842,6 +4917,96 @@ mod explore_args_tests {
             answer.get("detail").is_none(),
             "a not-found message would mislead"
         );
+    }
+
+    #[tokio::test]
+    async fn explore_stack_views_returns_the_registry_views_with_next_steps() {
+        let views = serde_json::json!({
+            "stack": "ore",
+            "stackManifestHash": "arete:h1:stack-manifest:sha256:ore",
+            "total": 2,
+            "views": [{
+                "id": "OreRound/latest",
+                "liveAlias": "live",
+                "entity": "OreRound",
+                "output": "collection",
+                "primaryKeys": ["id.round_id"],
+                "summary": "The round being mined now.",
+                "websocketUrl": "wss://ore.stack.example"
+            }, {
+                "id": "OreMiner/state",
+                "liveAlias": "live",
+                "entity": "OreMiner",
+                "output": "keyed",
+                "primaryKeys": ["id.authority"],
+                "websocketUrl": "wss://ore.stack.example"
+            }]
+        });
+        let empty = serde_json::json!({
+            "stack": "quiet", "stackManifestHash": "h", "query": "miner", "total": 2, "views": []
+        });
+        let server = canned_registry(vec![
+            ("/api/registry/stacks/ore/views", 200, views.to_string()),
+            ("/api/registry/stacks/quiet/views", 200, empty.to_string()),
+        ]);
+        let result = server
+            .explore_stack_views(Parameters(ExploreStackViewsArgs {
+                stack: "ore".into(),
+                query: None,
+            }))
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
+        assert_eq!(answer["views"], views["views"]);
+        assert_eq!(answer["total"], 2);
+        let next = answer["next"].as_str().unwrap();
+        assert!(next.contains("read_view { stack, view: <id> }"), "{next}");
+        assert!(next.contains("subscribe"), "{next}");
+
+        let result = server
+            .explore_stack_views(Parameters(ExploreStackViewsArgs {
+                stack: "quiet".into(),
+                query: Some("miner".into()),
+            }))
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
+        assert_eq!(
+            answer["next"],
+            "No view matches `query`; drop it to list all 2."
+        );
+
+        // The `q` alias is accepted, as agents often send it.
+        let args: ExploreStackViewsArgs =
+            serde_json::from_value(serde_json::json!({"stack": "ore", "q": "round"})).unwrap();
+        assert_eq!(args.query.as_deref(), Some("round"));
+    }
+
+    #[tokio::test]
+    async fn explore_stack_views_answers_a_definition_only_stack_instead_of_failing() {
+        let refusal = r#"{"schemaVersion":1,"error":"Stack 'pumpfun' is a definition-only package with no hosted stream","code":"stack-definition-only","retryable":false}"#;
+        let server = canned_registry(vec![
+            (
+                "/api/registry/stacks/pumpfun/views",
+                409,
+                refusal.to_string(),
+            ),
+            (
+                "/api/registry/v1/catalog/entries/stack/pumpfun",
+                200,
+                pumpfun_entry(serde_json::json!(["build", "read"])),
+            ),
+        ]);
+        let result = server
+            .explore_stack_views(Parameters(ExploreStackViewsArgs {
+                stack: "pumpfun".into(),
+                query: None,
+            }))
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&result_text(&result)).unwrap();
+        assert_eq!(answer["kind"], "stack-definition-only");
+        assert_eq!(answer["live"], false);
     }
 
     #[tokio::test]
