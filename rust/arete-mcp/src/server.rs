@@ -1889,14 +1889,25 @@ impl AreteMcp {
                 ));
             }
         }
-        if let Some(readable) = &readable {
-            let allowed = reads::readable_programs(readable)
-                .iter()
-                .any(|(id, _)| *id == install.program_id);
-            if !allowed {
-                let refusal =
-                    reads::not_allowlisted(&install.program_id, &install.install_name, readable);
-                return Err(sandbox_refusal_error(&refusal));
+        if let (Some(sandbox), Some(cached)) = (&sandbox, &readable) {
+            let allows = |readable: &Value| {
+                reads::readable_programs(readable)
+                    .iter()
+                    .any(|(id, _)| *id == install.program_id)
+            };
+            if !allows(cached) {
+                // The list may be up to a minute old and rules apply at once:
+                // read it again before refusing a program the owner may just
+                // have added.
+                let fresh = match sandbox.reads().await {
+                    Ok(fresh) => fresh,
+                    Err(refusal) => return Err(sandbox_refusal_error(&refusal)),
+                };
+                if !allows(&fresh) {
+                    let refusal =
+                        reads::not_allowlisted(&install.program_id, &install.install_name, &fresh);
+                    return Err(sandbox_refusal_error(&refusal));
+                }
             }
         }
         let data = raw
@@ -3918,6 +3929,7 @@ impl AreteMcp {
             .read_sandbox(args.sandbox.as_deref(), &[Group::Streams])
             .await?
         {
+            reject_url_token(&args.url)?;
             let refused = crate::sandbox::LastRefusal::default();
             let auth = sandbox.stream_auth(&args.url, refused.clone());
             let id = match self
@@ -4053,6 +4065,9 @@ impl AreteMcp {
                     None,
                 )),
             };
+        if sandbox.is_some() {
+            reject_url_token(&url)?;
+        }
         let refused = crate::sandbox::LastRefusal::default();
         let auth = match &sandbox {
             Some(sandbox) => Some(sandbox.stream_auth(&url, refused.clone())),
@@ -5044,6 +5059,23 @@ impl Default for AreteMcp {
 /// A sandbox API answer as a tool result. A refusal is a tool error the
 /// agent can read (code, rule, details, hint), not a protocol error. The
 /// idempotency key an action ran under is echoed either way.
+/// Refuse a URL that already carries a session token (`hs_token`) for a
+/// read through a sandbox: the sandbox mints the session, and the live host
+/// would read the URL's own token first.
+fn reject_url_token(url: &str) -> Result<(), McpError> {
+    let carries_token = reqwest::Url::parse(url)
+        .is_ok_and(|url| url.query_pairs().any(|(key, _)| key == "hs_token"));
+    if carries_token {
+        return Err(McpError::invalid_params(
+            "Through a sandbox the session is minted for you: pass the stack's WebSocket URL \
+             without `hs_token`"
+                .to_string(),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// A sandbox refusal as a tool error: its message, with the refusal's JSON
 /// (code, hint, the programs the rules leave out) as the data.
 fn sandbox_refusal_error(refusal: &crate::sandbox::SandboxRefusal) -> McpError {
@@ -6854,6 +6886,88 @@ mod describe_sdk_tests {
             .expect("read");
         let text = serde_json::to_string(&result).unwrap();
         assert!(text.contains(r#"\"program\":\"klend\""#), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_program_just_added_to_the_rules_is_read_despite_an_older_list() {
+        let decoded = leak(format!("/v1/releases/rel/accounts/Reserve/{ADDRESS}"));
+        let reads = json!({"programs": [{"programId": KLEND}]});
+        let (base, seen) = crate::sandbox::tests::stub(vec![
+            ("GET", "/api/sandbox/v1/reads", 200, reads),
+            (
+                "POST",
+                "/api/sandbox/v1/sessions",
+                200,
+                json!({"token": "read-tok", "expiresAt": 1_900_000_000u64}),
+            ),
+            ("GET", decoded, 200, json!({"liquidity": "5"})),
+        ]);
+        let install_path =
+            "/api/registry/programs/klend/install?capabilities=managed-solana-gateway-v1";
+        let (registry, _) =
+            crate::sandbox::tests::stub(vec![("GET", install_path, 200, klend_install(&base))]);
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&registry),
+            ..sandbox_reader(&base)
+        };
+        // The cached list predates the owner adding klend.
+        server.sandbox.seed_reads(
+            crate::sandbox::tests::SANDBOX,
+            json!({"programs": [{"programId": "JUP6"}]}),
+        );
+        server
+            .program_read_account(Parameters(super::ProgramReadAccountArgs {
+                address: ADDRESS.into(),
+                program: Some("klend".into()),
+                account: Some("Reserve".into()),
+                sandbox: None,
+            }))
+            .await
+            .expect("read after reading the list again");
+        let reads = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.starts_with("GET /api/sandbox/v1/reads"))
+            .count();
+        assert_eq!(reads, 1, "the list is read again once");
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_read_refuses_a_url_with_its_own_token() {
+        let (base, seen) = crate::sandbox::tests::stub(Vec::new());
+        let server = sandbox_reader(&base);
+        let url = "wss://ore.stack.arete.run/?hs_token=old";
+        let error = server
+            .connect(Parameters(super::ConnectArgs {
+                url: url.into(),
+                api_key: None,
+                sandbox: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("hs_token"), "{}", error.message);
+        let error = server
+            .read_view(Parameters(super::ReadViewArgs {
+                stack: None,
+                url: Some(url.into()),
+                view: "OreRound/latest".into(),
+                key: None,
+                r#where: Vec::new(),
+                filters: Vec::new(),
+                select: None,
+                limit: None,
+                timeout_secs: Some(5),
+                sandbox: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(error.message.contains("hs_token"), "{}", error.message);
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.contains("/api/sandbox/v1/sessions")));
     }
 
     #[tokio::test]

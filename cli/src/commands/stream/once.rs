@@ -123,14 +123,16 @@ pub fn run(args: GetArgs, config_path: &str, json: bool) -> Result<()> {
     // Without filters the server can cut the snapshot to --limit; with them
     // the whole snapshot is needed to find the matches.
     let take = (args.key.is_none() && filter.is_empty()).then_some(args.limit as usize);
-    let rows = rt.block_on(read_snapshot(
-        url,
-        refresh,
-        view,
-        args.key.clone(),
-        take,
-        timeout,
-    ))?;
+    let rows = rt
+        .block_on(read_snapshot(
+            url,
+            refresh,
+            view,
+            args.key.clone(),
+            take,
+            timeout,
+        ))
+        .map_err(|error| super::sandbox_refused(error, json))?;
 
     let output = shape_output(
         view,
@@ -195,7 +197,7 @@ async fn read_snapshot(
              `a4 explore stack <stack>`, or raise --timeout.",
             timeout.as_secs()
         ),
-        StreamEnd::Failed(failure) => bail!("{failure}"),
+        StreamEnd::Failed(failure) => Err(failure.into_error()),
         StreamEnd::Lost(loss) => bail!("{loss}"),
         StreamEnd::Finished => {
             bail!("The server ended the subscription to {view} before its snapshot")

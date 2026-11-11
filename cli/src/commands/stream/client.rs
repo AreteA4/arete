@@ -286,7 +286,7 @@ pub async fn stream_feeds(
     }
 
     if let Some(failure) = failure {
-        anyhow::bail!("{failure}");
+        return Err(failure.into_error());
     }
     Ok(())
 }

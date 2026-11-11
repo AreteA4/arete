@@ -491,31 +491,68 @@ impl SandboxClient {
             let sandbox = sandbox.clone();
             let target = target.clone();
             let refused = refused.clone();
-            async move {
-                match sandbox.read_session(&target).await {
-                    Ok(session) => {
-                        let token = arete_sdk::AuthToken::new(session.token);
-                        Ok(match session.expires_at {
-                            Some(expires_at) => token.with_expiry(expires_at),
-                            None => token,
-                        })
-                    }
-                    Err(refusal) => {
-                        let error = arete_sdk::AreteError::AuthRequestFailed {
-                            status: refusal.status,
-                            message: refusal.message(),
-                            code: None,
-                            stack_version: None,
-                            problem: None,
-                        };
-                        if let Ok(mut last) = refused.lock() {
-                            *last = Some(refusal);
-                        }
-                        Err(error)
-                    }
-                }
-            }
+            async move { sandbox.stream_token(&target, &refused).await }
         })
+    }
+
+    /// The next session token for a stream of `target`. A refusal that will
+    /// not pass on a retry (the stack left the rules, the sandbox is paused
+    /// or revoked) ends the stream: later refreshes and reconnects get it
+    /// again from `refused` without asking the API, which would only spend
+    /// the read budget.
+    async fn stream_token(
+        &self,
+        target: &ReadTarget,
+        refused: &LastRefusal,
+    ) -> Result<arete_sdk::AuthToken, arete_sdk::AreteError> {
+        let permanent = refused
+            .lock()
+            .ok()
+            .and_then(|last| last.clone())
+            .filter(|last| !last.retryable());
+        if let Some(refusal) = permanent {
+            return Err(refusal_error(&refusal));
+        }
+        match self.read_session(target).await {
+            Ok(session) => {
+                let token = arete_sdk::AuthToken::new(session.token);
+                Ok(match session.expires_at {
+                    Some(expires_at) => token.with_expiry(expires_at),
+                    None => token,
+                })
+            }
+            Err(refusal) => {
+                let error = refusal_error(&refusal);
+                if let Ok(mut last) = refused.lock() {
+                    *last = Some(refusal);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Seed the readable-programs cache, as if `/reads` had answered `reads`
+    /// for `sandbox_id` just now.
+    #[cfg(test)]
+    pub(crate) fn seed_reads(&self, sandbox_id: &str, reads: Value) {
+        if let Ok(mut cached) = self.reads.lock() {
+            cached.insert(sandbox_id.to_string(), (Instant::now(), reads));
+        }
+    }
+}
+
+/// `refusal` as the SDK's failed auth request, with its problem body, so
+/// the SDK sees whether it is worth retrying (`retryable`).
+fn refusal_error(refusal: &SandboxRefusal) -> arete_sdk::AreteError {
+    let problem = serde_json::from_value::<arete_sdk::ApiProblemV1>(refusal.to_json())
+        .ok()
+        .map(Box::new);
+    arete_sdk::AreteError::AuthRequestFailed {
+        status: refusal.status,
+        message: refusal.message(),
+        code: None,
+        stack_version: None,
+        problem,
     }
 }
 
@@ -2128,6 +2165,57 @@ pub(crate) mod tests {
         let all = requests(&seen);
         assert_eq!(all.len(), 3, "{all:?}");
         assert!(all[2].starts_with("POST /api/sandbox/v1/sessions"));
+    }
+
+    #[tokio::test]
+    async fn a_permanent_stream_refusal_is_not_asked_for_again() {
+        let (base, seen) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/sessions",
+            403,
+            json!({
+                "code": "sandbox-program-not-allowlisted",
+                "error": "The stack decodes a program the sandbox's rules leave out",
+                "retryable": false,
+            }),
+        )]);
+        let client = client(&base);
+        let target = ReadTarget::Stack {
+            websocket_url: "wss://klend.stack.arete.run".into(),
+        };
+        let refused = LastRefusal::default();
+        let first = client.stream_token(&target, &refused).await.unwrap_err();
+        assert!(!first.should_retry(), "{first}");
+        let second = client.stream_token(&target, &refused).await.unwrap_err();
+        assert!(!second.should_retry(), "{second}");
+        let mints = requests(&seen)
+            .iter()
+            .filter(|request| request.starts_with("POST /api/sandbox/v1/sessions"))
+            .count();
+        assert_eq!(mints, 1, "a permanent refusal is asked for once");
+    }
+
+    #[tokio::test]
+    async fn a_passing_stream_refusal_is_asked_for_again() {
+        let (base, seen) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/sessions",
+            429,
+            json!({ "code": "sandbox-rate-limited", "error": "slow down", "retryAfterSeconds": 1 }),
+        )]);
+        let client = client(&base);
+        let target = ReadTarget::Stack {
+            websocket_url: "wss://ore.stack.arete.run".into(),
+        };
+        let refused = LastRefusal::default();
+        let first = client.stream_token(&target, &refused).await.unwrap_err();
+        assert!(first.should_retry(), "{first}");
+        client.stream_token(&target, &refused).await.unwrap_err();
+        let mints = requests(&seen)
+            .iter()
+            .filter(|request| request.starts_with("POST /api/sandbox/v1/sessions"))
+            .count();
+        assert_eq!(mints, 2);
     }
 
     #[tokio::test]

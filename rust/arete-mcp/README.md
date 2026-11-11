@@ -685,7 +685,10 @@ as well as what it does.
   program it decodes is in them (else `sandbox-program-not-allowlisted`,
   with the `programs` the rules leave out). A read session lasts at most a
   minute; a followed view re-mints it through the same sandbox, so a rules
-  change, pause or revoke reaches it within a minute.
+  change, pause or revoke reaches it within a minute. After a refusal that
+  will not pass on a retry, that connection asks the API no more. Pass the
+  stack's URL without `hs_token`: through a sandbox, one carrying its own
+  token is refused.
 - An account whose groups grant `sandboxes` but none of a read tool's own
   groups reads through a sandbox without `sandbox`: the one the `sandbox_*`
   tools resolve to. When none resolves, the tool fails with the same code

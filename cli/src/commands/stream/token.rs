@@ -99,7 +99,7 @@ pub enum RefreshEvent {
     Failed(anyhow::Error),
     /// The sandbox refused the next token for good (the stack's programs
     /// left its rules, or it was paused or revoked): the stream ends.
-    Refused(String),
+    Refused(arete_mcp::sandbox::SandboxRefusal),
 }
 
 /// Keeps a hosted stream's session token fresh while the socket is open.
@@ -153,8 +153,8 @@ fn spawn_refresh(mut refresh: SessionRefresh) -> mpsc::Receiver<RefreshEvent> {
                     RefreshEvent::Token(minted.token)
                 }
                 Err(error) => match fatal_refusal(&error) {
-                    Some(reason) => {
-                        let _ = events.send(RefreshEvent::Refused(reason)).await;
+                    Some(refusal) => {
+                        let _ = events.send(RefreshEvent::Refused(refusal)).await;
                         return;
                     }
                     None => {
@@ -313,12 +313,11 @@ fn retry_after(error: &anyhow::Error) -> Option<Duration> {
     Some(Duration::from_secs(seconds.clamp(1, 60)))
 }
 
-/// The reason to end a stream for `error`: a sandbox refusal that will not
-/// pass on a retry. `None` for anything worth retrying.
-pub fn fatal_refusal(error: &anyhow::Error) -> Option<String> {
+/// The refusal to end a stream with for `error`: a sandbox refusal that
+/// will not pass on a retry. `None` for anything worth retrying.
+pub fn fatal_refusal(error: &anyhow::Error) -> Option<arete_mcp::sandbox::SandboxRefusal> {
     let refusal = error.downcast_ref::<arete_mcp::sandbox::SandboxRefusal>()?;
-    (!refusal.retryable())
-        .then(|| format!("the sandbox refused a new session: {}", refusal.message()))
+    (!refusal.retryable()).then(|| refusal.clone())
 }
 
 impl SessionRefresh {
@@ -759,9 +758,10 @@ mod tests {
         let event = tokio::time::timeout(Duration::from_secs(10), refresher.next())
             .await
             .expect("a refresh attempt within the timeout");
-        let RefreshEvent::Refused(reason) = event else {
+        let RefreshEvent::Refused(refusal) = event else {
             panic!("a rules refusal is final");
         };
+        let reason = refusal.message();
         assert!(
             reason.contains("sandbox-program-not-allowlisted"),
             "{reason}"
@@ -784,7 +784,7 @@ mod tests {
         };
         let error = anyhow::Error::new(refusal);
         assert_eq!(retry_after(&error), Some(Duration::from_secs(7)));
-        assert_eq!(fatal_refusal(&error), None, "a rate limit is retried");
+        assert!(fatal_refusal(&error).is_none(), "a rate limit is retried");
         assert_eq!(retry_after(&anyhow::anyhow!("down")), None);
     }
 

@@ -424,6 +424,13 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
     // ARETE_ENVIRONMENT=dev streams from the `a4 dev` session, as --dev
     // does. A replay (--load) reads a file and goes nowhere.
     if !args.dev && args.load.is_none() && arete_mcp::dev::environment_is_dev()? {
+        if args.sandbox.is_some() {
+            bail!(
+                "ARETE_ENVIRONMENT=dev streams from the a4 dev session, but --sandbox reads \
+                 mainnet stacks through a sandbox. Unset ARETE_ENVIRONMENT (or set it to \
+                 production) to use --sandbox."
+            );
+        }
         if args.url.is_some() {
             bail!(
                 "ARETE_ENVIRONMENT=dev streams from the a4 dev session, but --url names another \
@@ -483,6 +490,7 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
     );
 
     rt.block_on(client::stream(url, refresh, view, &args))
+        .map_err(|error| sandbox_refused(error, json))
 }
 
 /// The subscription for one feed: its own key, else `--key`.
@@ -598,6 +606,31 @@ fn find_serving_owned_deployment(
 mod tests {
     use super::*;
     use crate::api_client::test_support::MockServer;
+
+    #[test]
+    fn the_dev_environment_does_not_drop_a_sandbox() {
+        use clap::Parser;
+        let _env = crate::api_client::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cli = crate::Cli::try_parse_from([
+            "a4",
+            "stream",
+            "Reserve/list",
+            "--stack",
+            "klend",
+            "--sandbox",
+            "Bot",
+        ])
+        .expect("parses");
+        let Some(crate::Commands::Stream(args)) = cli.command else {
+            panic!("a stream command");
+        };
+        std::env::set_var("ARETE_ENVIRONMENT", "dev");
+        let error = run(args, "arete.toml", false).unwrap_err().to_string();
+        std::env::remove_var("ARETE_ENVIRONMENT");
+        assert!(error.contains("--sandbox"), "{error}");
+    }
 
     fn deployment_response(
         id: i32,

@@ -238,12 +238,11 @@ fn decode_production(
         let mut programs = arete_mcp::program_read::readable_programs(&sandbox.reads);
         (programs.len() == 1).then(|| programs.remove(0).0)
     });
-    let named = args
-        .program
-        .as_deref()
-        .or(only_readable.as_deref())
-        .map(|program| install_for(client, config_path, program))
-        .transpose()?;
+    let named = match (args.program.as_deref(), only_readable.as_deref()) {
+        (Some(program), _) => Some(install_for(client, config_path, program)?),
+        (None, Some(program_id)) => Some(install_by_id(client, config_path, program_id)?),
+        (None, None) => None,
+    };
     // Through a sandbox, a named program and account type need no gateway
     // read: Program Read reads the account itself.
     if let (Some(sandbox), Some(install), Some(account)) = (sandbox, &named, &args.account) {
@@ -572,6 +571,24 @@ fn owner_install(
             )
         })?;
     client.get_registry_program_install(&program.install_name, None)
+}
+
+/// The install for the program with `program_id`: the project's dependency
+/// on it at the release arete.lock pins, else the registry's.
+fn install_by_id(
+    client: &ApiClient,
+    config_path: &str,
+    program_id: &str,
+) -> Result<RegistryProgramInstallResponse> {
+    let pinned = project_install(Path::new(config_path), |_, locked| {
+        locked.is_some_and(|entry| entry.program_id.as_deref() == Some(program_id))
+    })?;
+    if let Some(install) = owning(pinned, program_id) {
+        return Ok(install);
+    }
+    client
+        .get_registry_program_install(program_id, None)
+        .with_context(|| format!("Could not resolve program {program_id}"))
 }
 
 /// The install when its program is `owner`. A lock older than arete.toml can
@@ -1253,6 +1270,39 @@ mod tests {
             )
         );
         assert_eq!(read.header("authorization"), Some("Bearer read-tok"));
+    }
+
+    #[test]
+    fn a_sandbox_that_reads_one_program_decodes_it_by_default() {
+        let reads = crate::api_client::test_support::MockServer::json(200, r#"{"liquidity":"5"}"#);
+        let api = sandbox_api(
+            KLEND,
+            &reads,
+            vec![(
+                200,
+                json!({"token": "read-tok", "expiresAt": 4_000_000_000u64}).to_string(),
+            )],
+        );
+        let sandbox = open_sandbox(&api);
+        let client = ApiClient::with_base_url(api.base_url()).with_api_key("a4_sk_agent".into());
+        let args = DecodeArgs {
+            program: None,
+            ..sandbox_args()
+        };
+        let decoded = decode_production(&client, "/nonexistent/arete.toml", &args, Some(&sandbox))
+            .expect("decoded");
+        assert_eq!(decoded.program, "klend");
+        // The sandbox token, then its readable programs, then the install.
+        let _token = api.request();
+        let _reads = api.request();
+        let install = api.request();
+        assert!(
+            install
+                .request_line
+                .starts_with(&format!("GET /api/registry/programs/{KLEND}/install")),
+            "{}",
+            install.request_line
+        );
     }
 
     #[test]

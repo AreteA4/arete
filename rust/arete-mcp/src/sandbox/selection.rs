@@ -272,8 +272,12 @@ impl SelectionStore {
     }
 
     /// Save `sandbox_id` as this project's choice for `api`, or forget the
-    /// choice with `None`.
+    /// choice with `None`. The file is shared by every project and process
+    /// (`a4 sandbox use` beside a running `a4 mcp`, say), so the whole
+    /// read, change and write holds an exclusive lock: a concurrent save
+    /// waits instead of overwriting this one's change, or this one's.
     pub fn save(&self, api: &str, sandbox_id: Option<&str>) -> Result<(), String> {
+        let _lock = self.lock()?;
         let project = self.project_key();
         let mut file = self.read();
         file.selections
@@ -290,6 +294,53 @@ impl SelectionStore {
         let text = serde_json::to_string_pretty(&file).map_err(|error| error.to_string())?;
         write_private(&self.path, text.as_bytes())
     }
+
+    /// An exclusive lock on the file's sibling `<file>.lock`, held until the
+    /// returned handle is dropped. The lock file is separate because the
+    /// choices file itself is replaced by a rename on every save.
+    fn lock(&self) -> Result<std::fs::File, String> {
+        let dir = self
+            .path
+            .parent()
+            .ok_or_else(|| format!("{} has no parent directory", self.path.display()))?;
+        create_private_dir(dir)?;
+        let mut lock_path = self.path.clone().into_os_string();
+        lock_path.push(".lock");
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).read(true).write(true).truncate(false);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let lock = options.open(&lock_path).map_err(|error| {
+            format!(
+                "could not open {}: {error}",
+                Path::new(&lock_path).display()
+            )
+        })?;
+        lock.lock()
+            .map_err(|error| format!("could not lock the sandbox choices: {error}"))?;
+        Ok(lock)
+    }
+}
+
+/// Create `dir` (and its parents), entered only by its owner, unless it
+/// exists.
+fn create_private_dir(dir: &Path) -> Result<(), String> {
+    if dir.exists() {
+        return Ok(());
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(dir)
+        .map_err(|error| format!("could not create {}: {error}", dir.display()))
 }
 
 /// Write `bytes` to `path` whole (a temporary file renamed over it),
@@ -300,18 +351,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path
         .parent()
         .ok_or_else(|| format!("{} has no parent directory", path.display()))?;
-    if !dir.exists() {
-        let mut builder = std::fs::DirBuilder::new();
-        builder.recursive(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        builder
-            .create(dir)
-            .map_err(|error| format!("could not create {}: {error}", dir.display()))?;
-    }
+    create_private_dir(dir)?;
     // A named temporary file is created owner-only.
     let mut file = tempfile::NamedTempFile::new_in(dir)
         .map_err(|error| format!("could not write in {}: {error}", dir.display()))?;
@@ -422,6 +462,50 @@ mod tests {
             assert_eq!(mode(&path), 0o600);
             assert_eq!(mode(path.parent().unwrap()), 0o700);
         }
+    }
+
+    #[test]
+    fn concurrent_saves_keep_every_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("home").join(SELECTIONS_FILE);
+        // Many projects save at once, each from its own handle (as separate
+        // processes would): no save may overwrite another's choice.
+        let writers: Vec<_> = (0..16)
+            .map(|n| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let store = SelectionStore::at(path, format!("/p/{n}").into());
+                    for round in 0..8 {
+                        let id = if (n + round) % 2 == 0 { A } else { B };
+                        store.save("https://api", Some(id)).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().unwrap();
+        }
+        for n in 0..16 {
+            let store = SelectionStore::at(path.clone(), format!("/p/{n}").into());
+            let last = if (n + 7) % 2 == 0 { A } else { B };
+            assert_eq!(store.load("https://api").as_deref(), Some(last), "/p/{n}");
+        }
+        let file: SavedFile =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(file.selections.len(), 16);
+        // Nothing but the file and its lock is left behind.
+        let mut names: Vec<String> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                SELECTIONS_FILE.to_string(),
+                format!("{SELECTIONS_FILE}.lock")
+            ]
+        );
     }
 
     #[test]
