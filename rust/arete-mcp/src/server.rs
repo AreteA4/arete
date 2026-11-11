@@ -1566,6 +1566,10 @@ struct ConnectionInfo {
     /// we don't store per-connection credential provenance.
     #[serde(skip_serializing_if = "Option::is_none")]
     key_source: Option<&'static str>,
+    /// For a connection read through a sandbox: the sandbox's refusal that
+    /// ended its reads (`code`, `hint`, the `programs` the rules leave out).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sandbox_refusal: Option<Value>,
 }
 
 #[tool_router]
@@ -3934,7 +3938,7 @@ impl AreteMcp {
             let auth = sandbox.stream_auth(&args.url, refused.clone());
             let id = match self
                 .connections
-                .connect_with(args.url.clone(), Some(auth))
+                .connect_with(args.url.clone(), Some(auth), Some(refused.clone()))
                 .await
             {
                 Ok(id) => id,
@@ -3945,6 +3949,7 @@ impl AreteMcp {
                 url: args.url,
                 state: "Connecting".to_string(),
                 key_source: Some("sandbox"),
+                sandbox_refusal: None,
             };
             return Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&info).unwrap_or_default(),
@@ -3967,6 +3972,7 @@ impl AreteMcp {
             url: args.url,
             state: "Connecting".to_string(),
             key_source: Some(resolved.source.as_str()),
+            sandbox_refusal: None,
         };
         Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string(&info).unwrap_or_default(),
@@ -4192,6 +4198,7 @@ impl AreteMcp {
                 None,
             )
         })?;
+        not_ended_by_sandbox(conn.sandbox_refusal.as_ref())?;
 
         // Race protection against a concurrent `disconnect`. We hold the
         // read guard for the full insert-sub + dispatch window. Disconnect
@@ -4460,6 +4467,7 @@ impl AreteMcp {
                 url: entry.url.clone(),
                 state: format!("{:?}", entry.state().await),
                 key_source: None,
+                sandbox_refusal: entry.ended_by_sandbox().map(|refusal| refusal.to_json()),
             });
         }
         Ok(CallToolResult::success(vec![ContentBlock::text(
@@ -4842,6 +4850,7 @@ impl AreteMcp {
                 None,
             )
         })?;
+        not_ended_by_sandbox(conn.sandbox_refusal.as_ref())?;
         Ok((
             conn.store.clone(),
             sub.wire_subscription_id.clone(),
@@ -5059,6 +5068,16 @@ impl Default for AreteMcp {
 /// A sandbox API answer as a tool result. A refusal is a tool error the
 /// agent can read (code, rule, details, hint), not a protocol error. The
 /// idempotency key an action ran under is echoed either way.
+/// The refusal that ended a connection read through a sandbox, as the
+/// error of a tool that would read or subscribe on it: its cache is no
+/// longer kept current, and the refusal says why and what to do.
+fn not_ended_by_sandbox(last: Option<&crate::sandbox::LastRefusal>) -> Result<(), McpError> {
+    match crate::connections::ended_by(last) {
+        Some(refusal) => Err(sandbox_refusal_error(&refusal)),
+        None => Ok(()),
+    }
+}
+
 /// Refuse a URL that already carries a session token (`hs_token`) for a
 /// read through a sandbox: the sandbox mints the session, and the live host
 /// would read the URL's own token first.
@@ -6931,6 +6950,34 @@ mod describe_sdk_tests {
             .filter(|request| request.starts_with("GET /api/sandbox/v1/reads"))
             .count();
         assert_eq!(reads, 1, "the list is read again once");
+    }
+
+    #[test]
+    fn a_connection_ended_by_its_sandbox_answers_with_the_refusal() {
+        let last = crate::sandbox::LastRefusal::default();
+        assert!(super::not_ended_by_sandbox(Some(&last)).is_ok());
+        assert!(super::not_ended_by_sandbox(None).is_ok());
+        // A rate limit passes: the connection keeps trying.
+        *last.lock().unwrap() = Some(crate::sandbox::SandboxRefusal {
+            status: 429,
+            body: json!({"code": "sandbox-rate-limited", "error": "slow down"}),
+            kind: crate::sandbox::CallKind::Read,
+        });
+        assert!(super::not_ended_by_sandbox(Some(&last)).is_ok());
+        *last.lock().unwrap() = Some(crate::sandbox::SandboxRefusal {
+            status: 403,
+            body: json!({
+                "code": "sandbox-program-not-allowlisted",
+                "error": "The stack decodes a program the sandbox's rules leave out",
+                "retryable": false,
+                "programs": [KLEND],
+            }),
+            kind: crate::sandbox::CallKind::Read,
+        });
+        let error = super::not_ended_by_sandbox(Some(&last)).unwrap_err();
+        let data = error.data.expect("refusal data");
+        assert_eq!(data["code"], "sandbox-program-not-allowlisted");
+        assert_eq!(data["programs"], json!([KLEND]));
     }
 
     #[tokio::test]

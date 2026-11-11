@@ -686,7 +686,9 @@ as well as what it does.
   with the `programs` the rules leave out). A read session lasts at most a
   minute; a followed view re-mints it through the same sandbox, so a rules
   change, pause or revoke reaches it within a minute. After a refusal that
-  will not pass on a retry, that connection asks the API no more. Pass the
+  will not pass on a retry, that connection asks the API no more: its
+  `subscribe` and cache reads return the refusal, and `list_connections`
+  shows it as `sandbox_refusal`. Pass the
   stack's URL without `hs_token`: through a sandbox, one carrying its own
   token is refused.
 - An account whose groups grant `sandboxes` but none of a read tool's own

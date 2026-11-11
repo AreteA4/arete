@@ -480,7 +480,9 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
         check_tui_args(&args)?;
         #[cfg(feature = "tui")]
         {
-            return rt.block_on(tui::run_tui(url, refresh, view, &args));
+            return rt
+                .block_on(tui::run_tui(url, refresh, view, &args))
+                .map_err(|error| sandbox_refused(error, json));
         }
     }
 

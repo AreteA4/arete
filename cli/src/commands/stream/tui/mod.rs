@@ -180,7 +180,7 @@ pub async fn run_tui_feeds(
 
     result?;
     if let Some(failure) = failure.get() {
-        anyhow::bail!("{failure}");
+        return Err(failure.clone().into_error());
     }
     Ok(())
 }

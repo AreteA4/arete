@@ -450,7 +450,9 @@ when every program it decodes is in them. A refusal carries `code` (such as
 `sandbox-program-not-allowlisted`, with the `programs` the rules leave out),
 `retryable` and a `hint`. A followed view's session is re-minted about every
 minute through the same sandbox, so a rules change, pause or revoke reaches it
-within a minute.
+within a minute. Once the sandbox refuses it for good, the connection's
+`subscribe` and cache reads return that refusal, and `list_connections` shows
+it as `sandbox_refusal`.
 
 An account whose groups grant only `sandboxes` among a read tool's groups
 reads through a sandbox without `sandbox`: the one the `sandbox_*` tools

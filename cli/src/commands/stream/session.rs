@@ -184,7 +184,7 @@ impl fmt::Display for Loss {
 }
 
 /// Why a stream ended in failure.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StreamFailure {
     /// The server closed the socket on a policy, such as an expired or
     /// refused session. Reconnecting would be refused the same way.
