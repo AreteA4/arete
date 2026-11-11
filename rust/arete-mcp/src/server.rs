@@ -127,7 +127,8 @@ pub struct AreteMcp {
     sdk_references: Option<Arc<dyn SdkReferenceSource>>,
     /// The protocol tools' API targets, remembered ids and optional signer.
     protocols: crate::protocol_agent::ProtocolAgent,
-    /// The sandbox wallet tools' API client (`ARETE_SANDBOX_ID`).
+    /// The sandbox wallet tools' API client: the account's grants, the
+    /// chosen sandbox and `ARETE_SANDBOX_ID`.
     sandbox: crate::sandbox::SandboxClient,
 }
 
@@ -1555,7 +1556,8 @@ impl AreteMcp {
     }
 
     /// The server with these protocol tools and sandbox client. The sandbox
-    /// tools are listed only when a sandbox is configured.
+    /// tools are listed only when they can work: with an account API key
+    /// (to list the granted sandboxes) or a sandbox id.
     pub fn with_agents(
         protocols: crate::protocol_agent::ProtocolAgent,
         sandbox: crate::sandbox::SandboxClient,
@@ -1564,7 +1566,7 @@ impl AreteMcp {
         if protocols.signer().is_none() {
             tool_router.remove_route("protocol_execute");
         }
-        if !sandbox.configured() {
+        if !sandbox.available() {
             for name in crate::sandbox::TOOL_NAMES {
                 tool_router.remove_route(name);
             }
@@ -1584,7 +1586,7 @@ impl AreteMcp {
     /// Remove the tools of entitlement groups `surface` does not grant
     /// (see [`crate::entitlements`]). Hiding is UX only: the API still
     /// refuses calls the account may not make. Sandbox tools also still
-    /// need a sandbox id.
+    /// need an API key or a sandbox id.
     pub fn with_surface(mut self, surface: &crate::entitlements::Surface) -> Self {
         let hidden: Vec<String> = self
             .tool_router
@@ -1627,17 +1629,47 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this agent may run (`invoke`, `withdraw`, `swap`, as the owner granted), and its caps when the rules set them (version 2 rules: lamports and per mint, per action and per window, with what the window has spent; version 3 rules replace these with optional per-program spend limits, see `sandbox_rules`). Start here. The sandbox's owner sets the rules, grants and caps; this agent can only act within them. No key, token, wallet credential or RPC URL is ever returned."
+        description = "List the sandboxes this agent's account has been granted: for each, `sandboxId`, `name` (or null), `walletAddress`, `cluster`, `status` (`active`, or `paused`: actions are refused until the owner resumes it), the granted `actions` and `grantExpiresAt`. `current` is the sandbox the other sandbox_* tools act on when they get no `sandbox` argument, and where that came from (`selected`/`saved` by sandbox_select, `env:ARETE_SANDBOX_ID`, or `only-grant` when exactly one active sandbox is granted); null when one must be chosen, and `note` says what to do. Call this first when a sandbox tool asks you to choose."
     )]
-    async fn sandbox_status(&self) -> Result<CallToolResult, McpError> {
-        Ok(sandbox_result(self.sandbox.status().await, None))
+    async fn sandbox_list(&self) -> Result<CallToolResult, McpError> {
+        Ok(sandbox_result(self.sandbox.list().await, None))
+    }
+
+    #[tool(
+        description = "Choose the sandbox the other sandbox_* tools act on when they get no `sandbox` argument: pass `sandbox` as a `sandboxId` or `name` from sandbox_list. The choice holds for this session and is saved for this project (the server's working directory), so it survives restarts; it takes precedence over ARETE_SANDBOX_ID. `clear: true` forgets it. Only needed when several sandboxes are granted; any single tool call can still name another with its own `sandbox` argument."
+    )]
+    async fn sandbox_select(
+        &self,
+        Parameters(args): Parameters<crate::sandbox::SandboxSelectArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        Ok(sandbox_result(
+            self.sandbox
+                .select(args.sandbox.as_deref(), args.clear)
+                .await,
+            None,
+        ))
+    }
+
+    #[tool(
+        description = "Sandbox wallet: address, SOL balance, token accounts (raw amounts), the actions this agent may run (`invoke`, `withdraw`, `swap`, as the owner granted), and its caps when the rules set them (version 2 rules: lamports and per mint, per action and per window, with what the window has spent; version 3 rules replace these with optional per-program spend limits, see `sandbox_rules`). Start here. `selection` names the sandbox the call resolved to and why. Every sandbox_* tool takes an optional `sandbox` (a `sandboxId` or name from sandbox_list) for that call; without it they use the one chosen with sandbox_select, else ARETE_SANDBOX_ID, else the only sandbox granted. The sandbox's owner sets the rules, grants and caps; this agent can only act within them. No key, token, wallet credential or RPC URL is ever returned."
+    )]
+    async fn sandbox_status(
+        &self,
+        Parameters(args): Parameters<crate::sandbox::SandboxTargetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
+        Ok(sandbox_result(sandbox.status().await, None))
     }
 
     #[tool(
         description = "The sandbox's rules: the programs it may call and, for each, the allowed instructions with their arguments (IDL types) and accounts (writable/signer/optional/fixed address). Build `invoke` instructions for `sandbox_invoke` from exactly these names. Each account may carry `fill`: `fixed`, `wallet` or `derived` (from the program's spec: known addresses and PDAs, once the accounts and args their seeds name are given). Leave those accounts out and Arete fills them; give the rest. `baseline` lists plumbing always allowed (create your own token accounts, wrap/unwrap SOL), each with the instructions it allows and their accounts: associated token `createIdempotent` needs only `mint`. Everything else needs the owner's rules. Under version 3 rules a program may also show `enabled` and a `spendLimit` (`lamports` over `windowSeconds`), and `transferAllowlist` lists the addresses funds may go to besides the owner's wallet and the sandbox's own accounts; tokens the sandbox bought may always be sold. `sandbox_holdings` shows balances and `sandbox_history` past actions."
     )]
-    async fn sandbox_rules(&self) -> Result<CallToolResult, McpError> {
-        Ok(sandbox_result(self.sandbox.rules().await, None))
+    async fn sandbox_rules(
+        &self,
+        Parameters(args): Parameters<crate::sandbox::SandboxTargetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
+        Ok(sandbox_result(sandbox.rules().await, None))
     }
 
     #[tool(
@@ -1647,7 +1679,8 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<crate::sandbox::SandboxDeriveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(sandbox_result(self.sandbox.derive(&args).await, None))
+        let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
+        Ok(sandbox_result(sandbox.derive(&args).await, None))
     }
 
     #[tool(
@@ -1660,7 +1693,10 @@ impl AreteMcp {
         let body = crate::sandbox::action_args(args.args)
             .map_err(|error| McpError::invalid_params(error, None))?;
         Ok(sandbox_result(
-            self.sandbox.preview(args.action, body).await,
+            self.sandbox
+                .targeting(args.sandbox.as_deref())
+                .preview(args.action, body)
+                .await,
             None,
         ))
     }
@@ -1678,7 +1714,10 @@ impl AreteMcp {
             .idempotency_key
             .unwrap_or_else(crate::sandbox::new_idempotency_key);
         Ok(sandbox_result(
-            self.sandbox.invoke(args.action, body, &key).await,
+            self.sandbox
+                .targeting(args.sandbox.as_deref())
+                .invoke(args.action, body, &key)
+                .await,
             Some(&key),
         ))
     }
@@ -1700,7 +1739,8 @@ impl AreteMcp {
                 ))
             }
         };
-        Ok(sandbox_result(self.sandbox.action(&lookup).await, None))
+        let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
+        Ok(sandbox_result(sandbox.action(&lookup).await, None))
     }
 
     #[tool(
@@ -1713,7 +1753,8 @@ impl AreteMcp {
         let query = args
             .query()
             .map_err(|error| McpError::invalid_params(error, None))?;
-        let result = self.sandbox.history(&query).await.map(|body| {
+        let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
+        let result = sandbox.history(&query).await.map(|body| {
             if args.include_raw {
                 body
             } else {
@@ -1730,7 +1771,8 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<crate::sandbox::SandboxHoldingsArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let result = self.sandbox.holdings().await.map(|body| {
+        let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
+        let result = sandbox.holdings().await.map(|body| {
             if args.include_raw {
                 body
             } else {
@@ -6375,10 +6417,11 @@ mod describe_sdk_tests {
             everything
         );
 
-        // A granted group never lists sandbox tools without a sandbox.
+        // A granted group never lists sandbox tools that cannot work: no
+        // key to list grants with and no sandbox id.
         let without_key = AreteMcp::with_agents(
             crate::protocol_agent::ProtocolAgent::new(None),
-            crate::sandbox::SandboxClient::from_values(None, Some("a4_sk_secret".into()), None),
+            crate::sandbox::SandboxClient::from_values(None, None, None),
         )
         .with_surface(&Surface::Groups([Group::Sandboxes].into_iter().collect()))
         .tool_names();
@@ -6387,18 +6430,27 @@ mod describe_sdk_tests {
     }
 
     #[tokio::test]
-    async fn sandbox_tools_are_listed_only_with_a_sandbox_and_never_echo_credentials() {
+    async fn sandbox_tools_are_listed_only_when_usable_and_never_echo_credentials() {
         use std::io::{Read, Write};
         let without = AreteMcp::with_agents(
             crate::protocol_agent::ProtocolAgent::new(None),
-            crate::sandbox::SandboxClient::from_values(None, Some("a4_sk_secret".into()), None),
+            crate::sandbox::SandboxClient::from_values(None, None, None),
         );
         let listed = without.tool_names();
         for tool in crate::sandbox::TOOL_NAMES {
             assert!(
                 !listed.iter().any(|name| name == tool),
-                "{tool} listed without a sandbox"
+                "{tool} listed without a key or a sandbox"
             );
+        }
+        // An agent key alone lists them: the sandbox is found from its grants.
+        let key_only = AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(None, Some("a4_ak_agent".into()), None),
+        )
+        .tool_names();
+        for tool in crate::sandbox::TOOL_NAMES {
+            assert!(key_only.iter().any(|name| name == tool), "{tool} missing");
         }
 
         // Mints a token granting `invoke`; refuses every action as off-rules.
@@ -6490,5 +6542,84 @@ mod describe_sdk_tests {
         }))
         .unwrap();
         assert!(with.sandbox_invoke(Parameters(args)).await.is_err());
+    }
+    #[tokio::test]
+    async fn sandbox_tools_resolve_from_the_grants_and_take_a_sandbox_argument() {
+        use std::io::{Read, Write};
+        const OTHER: &str = "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20";
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let minted = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let log = minted.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { return };
+                let mut buffer = [0u8; 8192];
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+                let body = if request.starts_with("GET /api/agent/sandboxes ") {
+                    serde_json::json!({ "sandboxes": [
+                        { "sandboxId": TEST_SANDBOX_ID, "name": "Bot", "status": "active",
+                          "cluster": "devnet", "actions": ["invoke"] },
+                        { "sandboxId": OTHER, "name": "Treasury", "status": "active",
+                          "cluster": "devnet", "actions": ["withdraw"] },
+                    ]})
+                } else if request.starts_with("POST /ws/sessions") {
+                    let target = request.split("\r\n\r\n").nth(1).unwrap_or("").to_string();
+                    log.lock().unwrap().push(target);
+                    serde_json::json!({ "token": "tok-secret", "expiresAt": 99999999999u64, "scopes": ["sandbox:invoke"] })
+                } else {
+                    serde_json::json!({ "walletAddress": "W" })
+                };
+                let body = body.to_string();
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let server = AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(
+                None,
+                Some("a4_ak_agent".into()),
+                Some(format!("http://{address}")),
+            ),
+        );
+        let text =
+            |result: rmcp::model::CallToolResult| serde_json::to_string(&result.content).unwrap();
+
+        let status = server
+            .sandbox_status(Parameters(Default::default()))
+            .await
+            .unwrap();
+        assert_eq!(status.is_error, Some(true));
+        let shown = text(status);
+        assert!(shown.contains("sandbox-selection-required"), "{shown}");
+        assert!(shown.contains("sandbox_select"), "{shown}");
+
+        let listed = text(server.sandbox_list().await.unwrap());
+        assert!(listed.contains("Treasury"), "{listed}");
+
+        let args: crate::sandbox::SandboxSelectArgs =
+            serde_json::from_value(serde_json::json!({ "sandbox": "Treasury" })).unwrap();
+        let picked = server.sandbox_select(Parameters(args)).await.unwrap();
+        assert_eq!(picked.is_error, Some(false));
+
+        let status = server
+            .sandbox_status(Parameters(Default::default()))
+            .await
+            .unwrap();
+        assert_eq!(status.is_error, Some(false), "{}", text(status.clone()));
+        let args: crate::sandbox::SandboxTargetArgs =
+            serde_json::from_value(serde_json::json!({ "sandbox": TEST_SANDBOX_ID })).unwrap();
+        let shown = text(server.sandbox_rules(Parameters(args)).await.unwrap());
+        assert!(!shown.contains("tok-secret") && !shown.contains("a4_ak_agent"));
+
+        let targets: Vec<String> = minted.lock().unwrap().clone();
+        assert_eq!(targets.len(), 2, "{targets:?}");
+        assert!(targets[0].contains(OTHER), "{targets:?}");
+        assert!(targets[1].contains(TEST_SANDBOX_ID), "{targets:?}");
     }
 }

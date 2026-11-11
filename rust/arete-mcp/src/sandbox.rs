@@ -7,8 +7,14 @@
 //! action and its arguments and never sees a private key or an RPC URL.
 //! Owner operations (rules, caps, pause, revoke) are not reachable from here.
 //!
-//! Auth: the agent's own API key (`ARETE_API_KEY` or its a4 login) mints a
-//! short-lived token for the sandbox in `ARETE_SANDBOX_ID` at
+//! Which sandbox: the agent's account may be granted several. The API lists
+//! them for the account's key (`GET /api/agent/sandboxes`), and each call
+//! resolves its sandbox as [`selection`] describes: the call's `sandbox`,
+//! then the one chosen with `sandbox_select` (saved per project), then
+//! `ARETE_SANDBOX_ID`, then the only active grant.
+//!
+//! Auth: the agent's own API key (`ARETE_API_KEY` or its a4 login) lists
+//! the grants and mints a short-lived token for the chosen sandbox at
 //! `POST /ws/sessions` (`targetKind: "sandbox"`). The mint succeeds only
 //! while the sandbox's owner grants this agent access, and the token carries
 //! one `sandbox:<action>` scope per granted action. The token, not the API
@@ -17,12 +23,14 @@
 //! default Arete API), and only when that origin is an Arete host over HTTPS
 //! or loopback. Neither is ever returned in a tool result.
 
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub mod ledger;
 pub mod rules;
+pub mod selection;
 
 use rmcp::schemars;
 use serde::Deserialize;
@@ -30,6 +38,7 @@ use serde_json::{json, Map, Value};
 
 use crate::credentials::{normalize_api_url, DEFAULT_API_URL};
 pub(crate) use crate::registry::MAX_RESPONSE_BYTES;
+use selection::{GrantedSandbox, Resolved, SelectionStore, Source, Unresolved};
 
 pub const ENV_VAR_SANDBOX_ID: &str = "ARETE_SANDBOX_ID";
 /// The retired admin-issued session key. Read only to say it is retired.
@@ -40,9 +49,16 @@ const ACTION_TIMEOUT: Duration = Duration::from_secs(90);
 const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// A token this close to expiry is re-minted before use.
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 30;
+/// How long a listing of the granted sandboxes is reused to resolve calls.
+const GRANTS_TTL: Duration = Duration::from_secs(60);
+/// The agent route listing the sandboxes the account's key may use.
+const GRANTS_PATH: &str = "/api/agent/sandboxes";
 
-/// The tools this module backs, hidden when no sandbox is configured.
-pub const TOOL_NAMES: [&str; 8] = [
+/// The tools this module backs, hidden when there is neither an API key to
+/// list grants with nor a sandbox id.
+pub const TOOL_NAMES: [&str; 10] = [
+    "sandbox_list",
+    "sandbox_select",
     "sandbox_status",
     "sandbox_rules",
     "sandbox_derive",
@@ -310,7 +326,19 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
             }
         },
         "sandbox-grant-missing" | "sandbox-consent-unsigned" => {
-            "The sandbox's owner has not granted this agent access (or must grant it again). Ask the owner to grant access in the dashboard."
+            "The sandbox's owner has not granted this agent access to this sandbox (or must grant it again). sandbox_list shows the sandboxes this agent may use; choose one with sandbox_select, or ask the owner to grant access in the dashboard."
+        }
+        "sandbox-none-granted" => {
+            "No sandbox owner has granted this agent access yet. Ask the owner to grant this agent access in the dashboard, then call sandbox_list."
+        }
+        "sandbox-selection-required" => {
+            "Several sandboxes match (listed in `sandboxes`). Choose one with sandbox_select (it is remembered for this project), or pass `sandbox` with its sandboxId on this call."
+        }
+        "sandbox-unknown" => {
+            "No sandbox granted to this agent has that id or name. Call sandbox_list for the ones it may use."
+        }
+        "sandbox-not-configured" => {
+            "This Arete API cannot list the sandboxes granted to this agent. Pass `sandbox` with the sandbox id, or set ARETE_SANDBOX_ID to it."
         }
         "sandbox-agent-key-required" => {
             "A sandbox token is minted with the agent account's secret API key: set ARETE_API_KEY to it (or log in as the agent)."
@@ -346,30 +374,41 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
-/// The Arete API's sandbox agent routes, under one sandbox-scoped token.
+/// The Arete API's sandbox agent routes, each call under a token scoped to
+/// the sandbox it resolves to.
 #[derive(Clone)]
 pub struct SandboxClient {
     http: reqwest::Client,
     api_base: String,
-    sandbox_id: Option<String>,
-    /// The agent's account API key, used only to mint sandbox tokens.
+    /// `ARETE_SANDBOX_ID`: the default when nothing else chose a sandbox.
+    default_sandbox: Option<String>,
+    /// The sandbox this handle's calls name (a call's `sandbox` argument):
+    /// an id, or a granted sandbox's name.
+    explicit: Option<String>,
+    /// The agent's account API key, used only to list grants and mint
+    /// sandbox tokens.
     api_key: Option<String>,
-    token: Arc<Mutex<Option<SessionToken>>>,
+    /// Minted tokens, per sandbox id.
+    tokens: Arc<Mutex<HashMap<String, SessionToken>>>,
+    /// The sandbox chosen with `sandbox_select`, or saved for the project.
+    choice: Arc<Mutex<Option<(String, Source)>>>,
+    /// Where a choice is saved; `None` keeps it for the session only.
+    store: Option<SelectionStore>,
+    /// The last listing of granted sandboxes, reused while fresh.
+    grants: Arc<Mutex<Option<CachedGrants>>>,
 }
 
-impl SandboxClient {
-    /// From `ARETE_SANDBOX_ID`, `ARETE_API_URL` and the account key the
-    /// rest of this server uses (`ARETE_API_KEY`, else the a4 login for that
-    /// API). Without a sandbox id the tools stay hidden.
-    pub fn from_env() -> Self {
-        Self::from_env_for(std::env::var(ENV_VAR_SANDBOX_ID).ok())
-    }
+/// A listing of granted sandboxes and when it was made.
+type CachedGrants = (Instant, Vec<GrantedSandbox>);
 
-    /// As [`Self::from_env`], for `sandbox_id` (else `ARETE_SANDBOX_ID`).
-    pub fn from_env_for(sandbox_id: Option<String>) -> Self {
+impl SandboxClient {
+    /// From `ARETE_SANDBOX_ID`, `ARETE_API_URL`, the account key the rest
+    /// of this server uses (`ARETE_API_KEY`, else the a4 login for that
+    /// API) and the sandbox saved for the working directory.
+    pub fn from_env() -> Self {
         if std::env::var(ENV_VAR_RETIRED_SANDBOX_KEY).is_ok_and(|key| !key.trim().is_empty()) {
             tracing::warn!(
-                "{ENV_VAR_RETIRED_SANDBOX_KEY} is no longer used: set {ENV_VAR_SANDBOX_ID} to the sandbox id and use the agent's own API key"
+                "{ENV_VAR_RETIRED_SANDBOX_KEY} is no longer used: use the agent's own API key (and {ENV_VAR_SANDBOX_ID} or sandbox_select to choose a sandbox)"
             );
         }
         let api_url = std::env::var(ENV_VAR_API_URL).ok();
@@ -382,8 +421,8 @@ impl SandboxClient {
             .ok()
             .flatten()
             .map(|key| key.key);
-        let sandbox_id = sandbox_id.or_else(|| std::env::var(ENV_VAR_SANDBOX_ID).ok());
-        Self::from_values(sandbox_id, api_key, api_url)
+        Self::from_values(std::env::var(ENV_VAR_SANDBOX_ID).ok(), api_key, api_url)
+            .with_store(SelectionStore::for_working_dir())
     }
 
     pub fn from_values(
@@ -395,11 +434,9 @@ impl SandboxClient {
             .map(|id| id.trim().to_string())
             .filter(|id| !id.is_empty())
             .filter(|id| {
-                let ok = uuid::Uuid::parse_str(id).is_ok();
+                let ok = selection::is_sandbox_id(id);
                 if !ok {
-                    tracing::warn!(
-                        "{ENV_VAR_SANDBOX_ID} is not a sandbox id; sandbox tools are disabled"
-                    );
+                    tracing::warn!("{ENV_VAR_SANDBOX_ID} is not a sandbox id; it is ignored");
                 }
                 ok
             });
@@ -409,21 +446,45 @@ impl SandboxClient {
         Self {
             http: reqwest::Client::new(),
             api_base: api_base.trim_end_matches('/').to_string(),
-            sandbox_id,
+            default_sandbox: sandbox_id,
+            explicit: None,
             api_key: api_key
                 .map(|key| key.trim().to_string())
                 .filter(|key| !key.is_empty()),
-            token: Arc::new(Mutex::new(None)),
+            tokens: Arc::new(Mutex::new(HashMap::new())),
+            choice: Arc::new(Mutex::new(None)),
+            store: None,
+            grants: Arc::new(Mutex::new(None)),
         }
     }
 
-    pub fn configured(&self) -> bool {
-        self.sandbox_id.is_some()
+    /// Save choices in `store`, and start from the one it holds for this
+    /// API.
+    pub fn with_store(mut self, store: Option<SelectionStore>) -> Self {
+        let saved = store.as_ref().and_then(|store| store.load(&self.api_base));
+        if let Some(saved) = saved {
+            self.set_choice(Some((saved, Source::Saved)));
+        }
+        self.store = store;
+        self
     }
 
-    /// The sandbox id, once it parsed as one.
-    pub fn sandbox_id(&self) -> Option<&str> {
-        self.sandbox_id.as_deref()
+    /// This client for calls that name `sandbox` (an id or a granted
+    /// sandbox's name); `None` resolves as usual. Tokens, the choice and
+    /// the grants listing are shared with `self`.
+    pub fn targeting(&self, sandbox: Option<&str>) -> Self {
+        let mut client = self.clone();
+        client.explicit = sandbox
+            .map(str::trim)
+            .filter(|sandbox| !sandbox.is_empty())
+            .map(str::to_string);
+        client
+    }
+
+    /// Whether the sandbox tools can work at all: an API key to list the
+    /// grants (and mint tokens) with, or a sandbox id.
+    pub fn available(&self) -> bool {
+        self.default_sandbox.is_some() || self.api_key.is_some()
     }
 
     fn trusted_origin(&self) -> Result<(), SandboxRefusal> {
@@ -440,33 +501,280 @@ impl SandboxClient {
         }
     }
 
-    fn cached_token(&self) -> Option<SessionToken> {
-        self.token.lock().ok().and_then(|cached| cached.clone())
+    fn agent_key(&self) -> Result<&str, SandboxRefusal> {
+        self.api_key.as_deref().ok_or_else(|| {
+            SandboxRefusal::local(
+                "sandbox-agent-key-required",
+                "No API key: set ARETE_API_KEY to the agent account's secret key (or log in as the agent) to use a sandbox",
+            )
+        })
     }
 
-    fn forget_token(&self) {
-        if let Ok(mut cached) = self.token.lock() {
-            *cached = None;
+    fn cached_token(&self, sandbox_id: &str) -> Option<SessionToken> {
+        self.tokens
+            .lock()
+            .ok()
+            .and_then(|tokens| tokens.get(sandbox_id).cloned())
+    }
+
+    fn forget_token(&self, sandbox_id: &str) {
+        if let Ok(mut tokens) = self.tokens.lock() {
+            tokens.remove(sandbox_id);
         }
     }
 
-    /// A live sandbox token: the cached one, or a fresh mint.
-    async fn session(&self) -> Result<SessionToken, SandboxRefusal> {
-        if let Some(token) = self.cached_token().filter(|t| t.fresh(unix_now())) {
+    fn chosen(&self) -> Option<(String, Source)> {
+        self.choice.lock().ok().and_then(|choice| choice.clone())
+    }
+
+    fn set_choice(&self, choice: Option<(String, Source)>) {
+        if let Ok(mut current) = self.choice.lock() {
+            *current = choice;
+        }
+    }
+
+    // ---- Which sandbox ---------------------------------------------------------
+
+    /// The sandboxes this account's key can mint a token for now, from the
+    /// API (or the listing made in the last minute, unless `refresh`).
+    pub async fn granted(&self, refresh: bool) -> Result<Vec<GrantedSandbox>, SandboxRefusal> {
+        if !refresh {
+            let cached = self.grants.lock().ok().and_then(|grants| grants.clone());
+            if let Some((_, grants)) = cached.filter(|(at, _)| at.elapsed() < GRANTS_TTL) {
+                return Ok(grants);
+            }
+        }
+        let api_key = self.agent_key()?;
+        self.trusted_origin()?;
+        let answer = self
+            .send(
+                reqwest::Method::GET,
+                &format!("{}{GRANTS_PATH}", self.api_base),
+                api_key,
+                None,
+                None,
+                CallKind::Read,
+            )
+            .await;
+        let body = match answer {
+            // An API from before the listing.
+            Err(refusal) if refusal.status == 404 => {
+                return Err(SandboxRefusal::local(
+                    "sandbox-not-configured",
+                    "This Arete API does not list the sandboxes an agent has been granted, so the sandbox must be named",
+                ))
+            }
+            other => other?,
+        };
+        let grants = GrantedSandbox::from_listing(&body).ok_or_else(|| {
+            SandboxRefusal::local(
+                "sandbox-response-unreadable",
+                "The Arete API answered the sandbox listing without a `sandboxes` list",
+            )
+        })?;
+        if let Ok(mut cached) = self.grants.lock() {
+            *cached = Some((Instant::now(), grants.clone()));
+        }
+        Ok(grants)
+    }
+
+    /// The sandbox this handle's calls act on: the call's `sandbox`, the
+    /// chosen (or saved) one, `ARETE_SANDBOX_ID`, then the only active
+    /// grant.
+    pub async fn resolve(&self) -> Result<Resolved, SandboxRefusal> {
+        if let Some(wanted) = &self.explicit {
+            // An id needs no listing: the mint says whether it is granted.
+            if selection::is_sandbox_id(wanted) {
+                return Ok(Resolved {
+                    sandbox_id: wanted.clone(),
+                    source: Source::Argument,
+                });
+            }
+            let grants = self.granted(false).await?;
+            return selection::find(&grants, wanted)
+                .map(|grant| Resolved {
+                    sandbox_id: grant.sandbox_id.clone(),
+                    source: Source::Argument,
+                })
+                .map_err(unresolved);
+        }
+        if let Some((sandbox_id, source)) = self.chosen() {
+            return Ok(Resolved { sandbox_id, source });
+        }
+        if let Some(sandbox_id) = &self.default_sandbox {
+            return Ok(Resolved {
+                sandbox_id: sandbox_id.clone(),
+                source: Source::Env,
+            });
+        }
+        let grants = self.granted(false).await?;
+        selection::only_active(&grants)
+            .map(|grant| Resolved {
+                sandbox_id: grant.sandbox_id.clone(),
+                source: Source::OnlyGrant,
+            })
+            .map_err(unresolved)
+    }
+
+    /// What calls without a `sandbox` resolve to, given the listing; `None`
+    /// when they would be refused.
+    fn current(&self, grants: &[GrantedSandbox]) -> Option<Resolved> {
+        if let Some((sandbox_id, source)) = self.chosen() {
+            return Some(Resolved { sandbox_id, source });
+        }
+        if let Some(sandbox_id) = &self.default_sandbox {
+            return Some(Resolved {
+                sandbox_id: sandbox_id.clone(),
+                source: Source::Env,
+            });
+        }
+        selection::only_active(grants).ok().map(|grant| Resolved {
+            sandbox_id: grant.sandbox_id.clone(),
+            source: Source::OnlyGrant,
+        })
+    }
+
+    /// The granted sandboxes, freshly listed, with the one calls act on.
+    pub async fn list(&self) -> Result<Value, SandboxRefusal> {
+        let grants = self.granted(true).await?;
+        let current = self.current(&grants);
+        let current_id = current.as_ref().map(|current| current.sandbox_id.as_str());
+        let sandboxes: Vec<Value> = grants
+            .iter()
+            .map(|grant| {
+                let mut entry = grant.to_json();
+                entry["current"] =
+                    json!(current_id.is_some_and(|id| id.eq_ignore_ascii_case(&grant.sandbox_id)));
+                entry
+            })
+            .collect();
+        let mut out = json!({
+            "sandboxes": sandboxes,
+            "current": current.as_ref().map(Resolved::to_json),
+        });
+        let listed = |id: &str| {
+            grants
+                .iter()
+                .find(|grant| grant.sandbox_id.eq_ignore_ascii_case(id))
+        };
+        let note = match (&current, selection::only_active(&grants)) {
+            (Some(current), _) => match listed(&current.sandbox_id) {
+                None => Some(format!(
+                    "The current sandbox ({}) is not granted to this agent, so its calls are refused. Choose a listed one with sandbox_select.",
+                    current.source.as_str()
+                )),
+                Some(grant) if !grant.active() => Some(
+                    "The current sandbox is paused: its actions are refused until the owner resumes it.".to_string(),
+                ),
+                Some(_) => None,
+            },
+            (None, Err(Unresolved::NoneGranted)) => Some(
+                "No sandbox is granted to this agent yet. Ask a sandbox owner to grant it access in the dashboard.".to_string(),
+            ),
+            (None, Err(Unresolved::AllPaused(_))) => Some(
+                "Every sandbox granted to this agent is paused. Only an owner can resume one.".to_string(),
+            ),
+            (None, _) => Some(
+                "Several sandboxes are granted. Choose one with sandbox_select (remembered for this project), or pass `sandbox` on each call.".to_string(),
+            ),
+        };
+        if let Some(note) = note {
+            out["note"] = json!(note);
+        }
+        Ok(out)
+    }
+
+    /// Choose the sandbox (an id or a granted sandbox's name) that calls
+    /// without a `sandbox` act on, for this session and, when a store is
+    /// set, for this project from now on. `clear` forgets the choice.
+    pub async fn select(&self, wanted: Option<&str>, clear: bool) -> Result<Value, SandboxRefusal> {
+        if clear {
+            self.set_choice(None);
+            let mut out = json!({ "cleared": true });
+            self.saved_into(&mut out, None);
+            let current = self
+                .granted(true)
+                .await
+                .ok()
+                .and_then(|grants| self.current(&grants));
+            out["current"] = json!(current.as_ref().map(Resolved::to_json));
+            return Ok(out);
+        }
+        let wanted = wanted
+            .map(str::trim)
+            .filter(|wanted| !wanted.is_empty())
+            .ok_or_else(|| {
+                SandboxRefusal::local(
+                    "sandbox-invalid-argument",
+                    "Name the sandbox to select (its sandboxId or name), or pass clear: true",
+                )
+            })?;
+        let chosen = match self.granted(true).await {
+            Ok(grants) => Some(
+                selection::find(&grants, wanted)
+                    .map_err(unresolved)?
+                    .clone(),
+            ),
+            // An API that cannot list grants: an id is taken on trust, and
+            // the mint says whether it is granted.
+            Err(refusal)
+                if refusal.body["code"] == "sandbox-not-configured"
+                    && selection::is_sandbox_id(wanted) =>
+            {
+                None
+            }
+            Err(refusal) => return Err(refusal),
+        };
+        let sandbox_id = chosen
+            .as_ref()
+            .map(|grant| grant.sandbox_id.clone())
+            .unwrap_or_else(|| wanted.to_string());
+        self.set_choice(Some((sandbox_id.clone(), Source::Selected)));
+        let mut out = json!({
+            "selected": chosen
+                .as_ref()
+                .map(GrantedSandbox::to_json)
+                .unwrap_or_else(|| json!({ "sandboxId": sandbox_id })),
+            "current": Resolved { sandbox_id: sandbox_id.clone(), source: Source::Selected }.to_json(),
+        });
+        self.saved_into(&mut out, Some(&sandbox_id));
+        if chosen.as_ref().is_some_and(|grant| !grant.active()) {
+            out["note"] = json!(
+                "This sandbox is paused: its actions are refused until the owner resumes it."
+            );
+        }
+        Ok(out)
+    }
+
+    /// Save `sandbox_id` (or forget the choice) for this project, saying in
+    /// `out` whether it was.
+    fn saved_into(&self, out: &mut Value, sandbox_id: Option<&str>) {
+        match &self.store {
+            None => out["saved"] = json!(false),
+            Some(store) => match store.save(&self.api_base, sandbox_id) {
+                Ok(()) => out["saved"] = json!(true),
+                Err(error) => {
+                    tracing::warn!("could not save the sandbox choice: {error}");
+                    out["saved"] = json!(false);
+                    out["savedError"] = json!(
+                        "The choice holds for this session but could not be saved for the project"
+                    );
+                }
+            },
+        }
+    }
+
+    // ---- Calls -----------------------------------------------------------------
+
+    /// A live token for `sandbox_id`: the cached one, or a fresh mint.
+    async fn session(&self, sandbox_id: &str) -> Result<SessionToken, SandboxRefusal> {
+        if let Some(token) = self
+            .cached_token(sandbox_id)
+            .filter(|t| t.fresh(unix_now()))
+        {
             return Ok(token);
         }
-        let Some(sandbox_id) = &self.sandbox_id else {
-            return Err(SandboxRefusal::local(
-                "sandbox-not-configured",
-                format!("Set {ENV_VAR_SANDBOX_ID} to the sandbox id to use the sandbox tools"),
-            ));
-        };
-        let Some(api_key) = &self.api_key else {
-            return Err(SandboxRefusal::local(
-                "sandbox-agent-key-required",
-                "No API key: set ARETE_API_KEY to the agent account's secret key (or log in as the agent) to mint a sandbox token",
-            ));
-        };
+        let api_key = self.agent_key()?;
         self.trusted_origin()?;
         let body = self
             .send(
@@ -506,8 +814,8 @@ impl SandboxClient {
             expires_at: body.get("expiresAt").and_then(Value::as_u64).unwrap_or(0),
             actions,
         };
-        if let Ok(mut cached) = self.token.lock() {
-            *cached = Some(minted.clone());
+        if let Ok(mut tokens) = self.tokens.lock() {
+            tokens.insert(sandbox_id.to_string(), minted.clone());
         }
         Ok(minted)
     }
@@ -523,11 +831,6 @@ impl SandboxClient {
             .await
     }
 
-    /// `path` under the sandbox routes with `session`'s token. A token the
-    /// API calls expired or invalid is re-minted once and the call repeated:
-    /// the API refuses those before running anything, so the repeat (with
-    /// the same idempotency key) cannot run an action twice. With `action`,
-    /// every token used (the first and a renewed one) must grant it.
     async fn call_with(
         &self,
         action: Option<SandboxActionName>,
@@ -536,7 +839,34 @@ impl SandboxClient {
         body: Option<Value>,
         idempotency_key: Option<&str>,
     ) -> Result<Value, SandboxRefusal> {
-        let session = self.authorized(action).await?;
+        let target = self.resolve().await?;
+        self.call_in(
+            &target.sandbox_id,
+            action,
+            method,
+            path,
+            body,
+            idempotency_key,
+        )
+        .await
+    }
+
+    /// `path` under the sandbox routes with a token for `sandbox_id`. A
+    /// token the API calls expired or invalid is re-minted once and the
+    /// call repeated: the API refuses those before running anything, so the
+    /// repeat (with the same idempotency key) cannot run an action twice.
+    /// With `action`, every token used (the first and a renewed one) must
+    /// grant it.
+    async fn call_in(
+        &self,
+        sandbox_id: &str,
+        action: Option<SandboxActionName>,
+        method: reqwest::Method,
+        path: &str,
+        body: Option<Value>,
+        idempotency_key: Option<&str>,
+    ) -> Result<Value, SandboxRefusal> {
+        let session = self.authorized(sandbox_id, action).await?;
         self.trusted_origin()?;
         let url = format!("{}/api/sandbox/v1{path}", self.api_base);
         let kind = CallKind::of(&method, path);
@@ -558,8 +888,8 @@ impl SandboxClient {
         if !stale {
             return first;
         }
-        self.forget_token();
-        let renewed = self.authorized(action).await?;
+        self.forget_token(sandbox_id);
+        let renewed = self.authorized(sandbox_id, action).await?;
         self.send(method, &url, &renewed.token, body, idempotency_key, kind)
             .await
     }
@@ -655,8 +985,26 @@ impl SandboxClient {
         }
     }
 
+    /// The wallet, its granted actions and caps, with the sandbox it
+    /// resolved to (`selection`).
     pub async fn status(&self) -> Result<Value, SandboxRefusal> {
-        self.call(reqwest::Method::GET, "/wallet", None, None).await
+        let target = self.resolve().await?;
+        let mut body = self
+            .call_in(
+                &target.sandbox_id,
+                None,
+                reqwest::Method::GET,
+                "/wallet",
+                None,
+                None,
+            )
+            .await?;
+        if let Some(object) = body.as_object_mut() {
+            object
+                .entry("selection")
+                .or_insert_with(|| target.to_json());
+        }
+        Ok(body)
     }
 
     pub async fn rules(&self) -> Result<Value, SandboxRefusal> {
@@ -678,14 +1026,15 @@ impl SandboxClient {
             .await
     }
 
-    /// A live session, granting `action` when one is given: an action the
-    /// owner's grant does not include is refused before anything is sent to
-    /// the sandbox routes.
+    /// A live session for `sandbox_id`, granting `action` when one is
+    /// given: an action the owner's grant does not include is refused
+    /// before anything is sent to the sandbox routes.
     async fn authorized(
         &self,
+        sandbox_id: &str,
         action: Option<SandboxActionName>,
     ) -> Result<SessionToken, SandboxRefusal> {
-        let session = self.session().await?;
+        let session = self.session(sandbox_id).await?;
         let Some(action) = action else {
             return Ok(session);
         };
@@ -739,24 +1088,13 @@ impl SandboxClient {
         .await
     }
 
-    /// `tail` under this sandbox's ledger routes. The id parsed as a UUID,
-    /// so it is safe in a path.
-    fn ledger_path(&self, tail: &str) -> Result<String, SandboxRefusal> {
-        let Some(sandbox_id) = &self.sandbox_id else {
-            return Err(SandboxRefusal::local(
-                "sandbox-not-configured",
-                format!("Set {ENV_VAR_SANDBOX_ID} to the sandbox id to use the sandbox tools"),
-            ));
-        };
-        Ok(format!("/sandboxes/{sandbox_id}{tail}"))
-    }
-
     /// The sandbox's actions, newest first, one page at `query.cursor`.
     /// With filters, further pages are read (up to
     /// [`ledger::MAX_SCAN_PAGES`]), each asking for the items still wanted,
     /// until `limit` items match; `nextCursor` carries on after the last page
     /// read.
     pub async fn history(&self, query: &ledger::HistoryQuery) -> Result<Value, SandboxRefusal> {
+        let sandbox_id = self.resolve().await?.sandbox_id;
         let mut cursor = query.cursor.clone();
         let mut items = Vec::new();
         let mut pages_read = 0;
@@ -764,11 +1102,13 @@ impl SandboxClient {
             // Ask only for what is still wanted, so the answer never holds
             // more than `limit` items and none are skipped behind the cursor.
             let wanted = query.limit().saturating_sub(items.len() as u32).max(1);
-            let path = self.ledger_path(&format!(
-                "/actions{}",
-                query.page_query(cursor.as_deref(), wanted)
-            ))?;
-            let page = self.call(reqwest::Method::GET, &path, None, None).await?;
+            let path = ledger_path(
+                &sandbox_id,
+                &format!("/actions{}", query.page_query(cursor.as_deref(), wanted)),
+            );
+            let page = self
+                .call_in(&sandbox_id, None, reqwest::Method::GET, &path, None, None)
+                .await?;
             pages_read += 1;
             let Some(page_items) = page.get("items").and_then(Value::as_array) else {
                 return Err(SandboxRefusal::local(
@@ -804,8 +1144,10 @@ impl SandboxClient {
 
     /// What the sandbox holds now: SOL, tokens and program positions.
     pub async fn holdings(&self) -> Result<Value, SandboxRefusal> {
-        let path = self.ledger_path("/holdings")?;
-        self.call(reqwest::Method::GET, &path, None, None).await
+        let sandbox_id = self.resolve().await?.sandbox_id;
+        let path = ledger_path(&sandbox_id, "/holdings");
+        self.call_in(&sandbox_id, None, reqwest::Method::GET, &path, None, None)
+            .await
     }
 
     pub async fn action(&self, lookup: &ActionLookup) -> Result<Value, SandboxRefusal> {
@@ -817,6 +1159,52 @@ impl SandboxClient {
         };
         self.call(reqwest::Method::GET, &path, None, None).await
     }
+}
+
+/// `tail` under `sandbox_id`'s ledger routes. Every resolved id parsed as
+/// a UUID, so it is safe in a path.
+fn ledger_path(sandbox_id: &str, tail: &str) -> String {
+    format!("/sandboxes/{sandbox_id}{tail}")
+}
+
+/// Why no sandbox could be chosen, as a refusal the agent can act on.
+fn unresolved(reason: Unresolved) -> SandboxRefusal {
+    let (code, error, sandboxes) = match reason {
+        Unresolved::NoneGranted => (
+            "sandbox-none-granted",
+            "No sandbox is granted to this agent".to_string(),
+            None,
+        ),
+        Unresolved::AllPaused(list) => (
+            "sandbox-paused",
+            "Every sandbox granted to this agent is paused".to_string(),
+            Some(list),
+        ),
+        Unresolved::SeveralGranted(list) => (
+            "sandbox-selection-required",
+            format!(
+                "{} sandboxes are granted to this agent and none is chosen",
+                list.len()
+            ),
+            Some(list),
+        ),
+        Unresolved::AmbiguousName(name, list) => (
+            "sandbox-selection-required",
+            format!("{} granted sandboxes are named {name:?}", list.len()),
+            Some(list),
+        ),
+        Unresolved::Unknown(wanted) => (
+            "sandbox-unknown",
+            format!("No sandbox granted to this agent has the id or name {wanted:?}"),
+            None,
+        ),
+    };
+    let mut refusal = SandboxRefusal::local(code, error);
+    if let Some(list) = sandboxes {
+        refusal.body["sandboxes"] =
+            json!(list.iter().map(GrantedSandbox::to_json).collect::<Vec<_>>());
+    }
+    refusal
 }
 
 enum BodyError {
@@ -938,9 +1326,38 @@ pub fn action_args(args: Option<Value>) -> Result<Value, String> {
     }
 }
 
+/// Arguments for a sandbox tool that takes nothing but its sandbox.
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxTargetArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxSelectArgs {
+    /// The sandbox to use from now on: a `sandboxId` or `name` from
+    /// `sandbox_list`.
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    /// Forget the choice instead: calls go back to ARETE_SANDBOX_ID, else
+    /// the only sandbox granted.
+    #[serde(default)]
+    pub clear: bool,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxInvokeArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
     /// The action: `invoke` (named program instructions), `withdraw` (SOL
     /// to the owner) or `swap`. `sandbox_status` lists the ones granted.
     pub action: SandboxActionName,
@@ -958,6 +1375,11 @@ pub struct SandboxInvokeArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxPreviewArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
     /// The action, as for `sandbox_invoke`.
     pub action: SandboxActionName,
     /// The same arguments `sandbox_invoke` takes for it.
@@ -968,6 +1390,11 @@ pub struct SandboxPreviewArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxDeriveArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
     /// `ata` (associated token account) or `pda` (program-derived address).
     pub kind: String,
     /// `ata`: the mint.
@@ -1129,6 +1556,11 @@ pub fn derive_pda(program_id: Option<&str>, seeds: &[Value]) -> Result<Value, Sa
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxActionArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
     /// The `actionId` a `sandbox_invoke` returned.
     #[serde(default)]
     pub action_id: Option<String>,
@@ -1140,6 +1572,11 @@ pub struct SandboxActionArgs {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxHoldingsArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
     /// Keep each position's `raw` account data (default false).
     #[serde(default)]
     pub include_raw: bool,
@@ -1148,6 +1585,11 @@ pub struct SandboxHoldingsArgs {
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxHistoryArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
     /// The `nextCursor` of the previous page; omit for the newest actions.
     #[serde(default)]
     pub cursor: Option<String>,
@@ -1308,11 +1750,372 @@ mod tests {
     }
 
     #[test]
-    fn only_a_sandbox_id_enables_the_tools() {
-        assert!(!SandboxClient::from_values(None, Some("k".into()), None).configured());
-        assert!(!SandboxClient::from_values(Some("  ".into()), None, None).configured());
-        assert!(!SandboxClient::from_values(Some("a4_sbx_x".into()), None, None).configured());
-        assert!(SandboxClient::from_values(Some(format!(" {SANDBOX} ")), None, None).configured());
+    fn an_api_key_or_a_sandbox_id_enables_the_tools() {
+        assert!(!SandboxClient::from_values(None, None, None).available());
+        assert!(!SandboxClient::from_values(Some("  ".into()), Some(" ".into()), None).available());
+        assert!(!SandboxClient::from_values(Some("a4_sbx_x".into()), None, None).available());
+        assert!(SandboxClient::from_values(Some(format!(" {SANDBOX} ")), None, None).available());
+        // A key lists the grants, so no id is needed.
+        assert!(SandboxClient::from_values(None, Some("k".into()), None).available());
+    }
+
+    const OTHER: &str = "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20";
+    const PAUSED: &str = "9d4f6a1b-3c2e-4b8a-a1f0-5e6d7c8b9a01";
+
+    fn granted(id: &str, name: &str, status: &str) -> Value {
+        json!({
+            "sandboxId": id, "name": name, "walletAddress": format!("W-{name}"),
+            "cluster": "mainnet-beta", "status": status,
+            "actions": ["invoke", "withdraw"], "grantExpiresAt": "2026-12-01T00:00:00Z",
+        })
+    }
+
+    fn listing(entries: Vec<Value>) -> (&'static str, &'static str, u16, Value) {
+        (
+            "GET",
+            GRANTS_PATH,
+            200,
+            json!({ "sandboxes": entries, "requestId": "req-1" }),
+        )
+    }
+
+    /// A client with an API key and no sandbox id.
+    fn agent(base: &str) -> SandboxClient {
+        SandboxClient::from_values(None, Some("a4_ak_agent".into()), Some(base.into()))
+    }
+
+    fn minted_for(request: &str) -> Value {
+        assert!(request.starts_with("POST /ws/sessions"), "{request}");
+        body_of(request)["targetId"].clone()
+    }
+
+    #[tokio::test]
+    async fn the_only_active_grant_is_used_without_any_id() {
+        let (base, seen) = stub(vec![
+            listing(vec![
+                granted(PAUSED, "Old", "paused"),
+                granted(SANDBOX, "Bot", "active"),
+            ]),
+            (
+                "GET",
+                "/api/sandbox/v1/wallet",
+                200,
+                json!({ "walletAddress": "W" }),
+            ),
+            ("GET", "/api/sandbox/v1/rules", 200, json!({ "rules": [] })),
+        ]);
+        let client = agent(&base);
+        let status = client.status().await.unwrap();
+        assert_eq!(
+            status["selection"],
+            json!({ "sandboxId": SANDBOX, "source": "only-grant" })
+        );
+        client.rules().await.unwrap();
+        let seen = requests(&seen);
+        // One listing (reused), one mint (reused), two reads.
+        assert_eq!(seen.len(), 4, "{seen:?}");
+        let list = seen[0].to_ascii_lowercase();
+        assert!(list.starts_with("get /api/agent/sandboxes "), "{list}");
+        assert!(list.contains("authorization: bearer a4_ak_agent"), "{list}");
+        assert_eq!(minted_for(&seen[1]), SANDBOX);
+    }
+
+    #[tokio::test]
+    async fn several_grants_ask_for_a_choice_and_send_nothing_else() {
+        let (base, seen) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "Treasury", "active"),
+        ])]);
+        let refusal = agent(&base).status().await.unwrap_err();
+        let shown = refusal.to_json();
+        assert_eq!(shown["code"], "sandbox-selection-required");
+        assert_eq!(shown["retryable"], false);
+        assert!(shown["hint"].as_str().unwrap().contains("sandbox_select"));
+        let listed = shown["sandboxes"].as_array().unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[1]["name"], "Treasury");
+        assert_eq!(requests(&seen).len(), 1, "only the listing");
+    }
+
+    #[tokio::test]
+    async fn no_usable_grant_names_why_and_the_tool_to_call() {
+        let (base, seen) = stub(vec![listing(vec![])]);
+        let shown = agent(&base).holdings().await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-none-granted");
+        assert_eq!(shown["retryable"], false);
+        assert!(shown["hint"].as_str().unwrap().contains("sandbox_list"));
+        assert_eq!(requests(&seen).len(), 1);
+
+        let (base, _) = stub(vec![listing(vec![granted(PAUSED, "Old", "paused")])]);
+        let shown = agent(&base).status().await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-paused");
+        assert_eq!(shown["sandboxes"][0]["sandboxId"], PAUSED);
+    }
+
+    #[tokio::test]
+    async fn an_api_without_the_listing_asks_for_the_sandbox_id() {
+        // The stub answers 404 to the listing, as an older API does.
+        let (base, seen) = stub(vec![]);
+        let shown = agent(&base).status().await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-not-configured");
+        assert_eq!(shown["retryable"], false);
+        assert!(shown["hint"].as_str().unwrap().contains("ARETE_SANDBOX_ID"));
+        assert_eq!(requests(&seen).len(), 1);
+
+        // An id still works, without the listing.
+        let (base, seen) = stub(vec![(
+            "GET",
+            "/api/sandbox/v1/wallet",
+            200,
+            json!({ "walletAddress": "W" }),
+        )]);
+        agent(&base)
+            .targeting(Some(SANDBOX))
+            .status()
+            .await
+            .unwrap();
+        let seen = requests(&seen);
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert_eq!(minted_for(&seen[0]), SANDBOX);
+    }
+
+    #[tokio::test]
+    async fn listing_refusals_keep_their_code() {
+        let (base, _) = stub(vec![(
+            "GET",
+            GRANTS_PATH,
+            403,
+            json!({ "code": "sandbox-agent-key-required", "error": "agent key only" }),
+        )]);
+        let shown = agent(&base).list().await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-agent-key-required");
+        assert!(shown["hint"].as_str().unwrap().contains("ARETE_API_KEY"));
+
+        let (base, _) = stub(vec![("GET", GRANTS_PATH, 401, Value::Null)]);
+        let shown = agent(&base).list().await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-unauthorized");
+
+        let (base, seen) = stub(vec![]);
+        let client = SandboxClient::from_values(None, None, Some(base));
+        let shown = client.list().await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-agent-key-required");
+        assert!(requests(&seen).is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_call_argument_beats_the_choice_which_beats_the_env_default() {
+        let (base, seen) = stub(vec![
+            listing(vec![
+                granted(SANDBOX, "Bot", "active"),
+                granted(OTHER, "Treasury", "active"),
+            ]),
+            ("GET", "/api/sandbox/v1/wallet", 200, json!({})),
+        ]);
+        let client = SandboxClient::from_values(
+            Some(SANDBOX.into()),
+            Some("a4_ak_agent".into()),
+            Some(base),
+        );
+        let source = |body: Value| body["selection"]["source"].clone();
+        assert_eq!(
+            source(client.status().await.unwrap()),
+            "env:ARETE_SANDBOX_ID"
+        );
+
+        let picked = client.select(Some("treasury"), false).await.unwrap();
+        assert_eq!(picked["selected"]["sandboxId"], OTHER);
+        assert_eq!(picked["saved"], false, "no store: this session only");
+        let status = client.status().await.unwrap();
+        assert_eq!(status["selection"]["sandboxId"], OTHER);
+        assert_eq!(source(status), "selected");
+
+        // A handle for one call shares the choice but names its own sandbox.
+        let status = client.targeting(Some("Bot")).status().await.unwrap();
+        assert_eq!(status["selection"]["sandboxId"], SANDBOX);
+        assert_eq!(source(status), "argument");
+        assert_eq!(client.resolve().await.unwrap().sandbox_id, OTHER);
+
+        let cleared = client.select(None, true).await.unwrap();
+        assert_eq!(cleared["cleared"], true);
+        assert_eq!(cleared["current"]["source"], "env:ARETE_SANDBOX_ID");
+
+        // Tokens are minted per sandbox and reused: SANDBOX, OTHER.
+        let mints: Vec<Value> = requests(&seen)
+            .iter()
+            .filter(|request| request.starts_with("POST /ws/sessions"))
+            .map(|request| minted_for(request))
+            .collect();
+        assert_eq!(mints, [json!(SANDBOX), json!(OTHER)]);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_or_shared_name_is_refused() {
+        let (base, _) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "bot", "active"),
+        ])]);
+        let client = agent(&base);
+        let shown = client
+            .targeting(Some("nope"))
+            .status()
+            .await
+            .unwrap_err()
+            .to_json();
+        assert_eq!(shown["code"], "sandbox-unknown");
+        assert!(shown["hint"].as_str().unwrap().contains("sandbox_list"));
+        let shown = client
+            .select(Some("BOT"), false)
+            .await
+            .unwrap_err()
+            .to_json();
+        assert_eq!(shown["code"], "sandbox-selection-required");
+        assert_eq!(shown["sandboxes"].as_array().unwrap().len(), 2);
+        let shown = client
+            .select(Some(PAUSED), false)
+            .await
+            .unwrap_err()
+            .to_json();
+        assert_eq!(shown["code"], "sandbox-unknown");
+        let shown = client.select(None, false).await.unwrap_err().to_json();
+        assert_eq!(shown["code"], "sandbox-invalid-argument");
+    }
+
+    #[tokio::test]
+    async fn a_choice_is_saved_for_the_project_and_used_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = || {
+            Some(SelectionStore::at(
+                dir.path().join("selections.json"),
+                "/work/project".into(),
+            ))
+        };
+        let (base, seen) = stub(vec![
+            listing(vec![
+                granted(SANDBOX, "Bot", "active"),
+                granted(OTHER, "Treasury", "active"),
+            ]),
+            ("GET", "/api/sandbox/v1/wallet", 200, json!({})),
+        ]);
+        let picked = agent(&base)
+            .with_store(store())
+            .select(Some(OTHER), false)
+            .await
+            .unwrap();
+        assert_eq!(picked["saved"], true);
+        assert_eq!(picked["current"]["source"], "selected");
+
+        // A new server in the same project starts from the saved choice,
+        // with no listing.
+        let before = requests(&seen).len();
+        let restarted = agent(&base).with_store(store());
+        let status = restarted.status().await.unwrap();
+        assert_eq!(
+            status["selection"],
+            json!({ "sandboxId": OTHER, "source": "saved" })
+        );
+        let after = requests(&seen);
+        assert!(after[before].starts_with("POST /ws/sessions"), "{after:?}");
+
+        // Another project, or another API, does not share it.
+        let elsewhere = agent(&base).with_store(Some(SelectionStore::at(
+            dir.path().join("selections.json"),
+            "/work/other".into(),
+        )));
+        assert_eq!(
+            elsewhere.status().await.unwrap_err().to_json()["code"],
+            "sandbox-selection-required"
+        );
+
+        restarted.select(None, true).await.unwrap();
+        assert_eq!(
+            agent(&base)
+                .with_store(store())
+                .status()
+                .await
+                .unwrap_err()
+                .to_json()["code"],
+            "sandbox-selection-required"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_older_api_takes_a_selected_id_on_trust() {
+        let (base, _) = stub(vec![]);
+        let client = agent(&base);
+        let picked = client.select(Some(OTHER), false).await.unwrap();
+        assert_eq!(picked["selected"], json!({ "sandboxId": OTHER }));
+        assert_eq!(client.resolve().await.unwrap().sandbox_id, OTHER);
+        // A name cannot be checked without the listing.
+        let shown = client
+            .select(Some("Bot"), false)
+            .await
+            .unwrap_err()
+            .to_json();
+        assert_eq!(shown["code"], "sandbox-not-configured");
+    }
+
+    #[tokio::test]
+    async fn the_listing_marks_the_current_sandbox_and_says_what_to_do() {
+        let (base, _) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "Treasury", "active"),
+            granted(PAUSED, "Old", "paused"),
+        ])]);
+        let client = agent(&base);
+        let listed = client.list().await.unwrap();
+        assert_eq!(listed["current"], Value::Null);
+        assert!(listed["note"].as_str().unwrap().contains("sandbox_select"));
+        assert_eq!(listed["sandboxes"].as_array().unwrap().len(), 3);
+        assert_eq!(listed["sandboxes"][0]["walletAddress"], "W-Bot");
+        assert!(listed.get("requestId").is_none());
+
+        client
+            .select(Some("Old"), false)
+            .await
+            .map(|picked| {
+                assert!(picked["note"].as_str().unwrap().contains("paused"));
+            })
+            .unwrap();
+        let listed = client.list().await.unwrap();
+        assert_eq!(listed["sandboxes"][2]["current"], true);
+        assert_eq!(listed["sandboxes"][0]["current"], false);
+        assert!(listed["note"].as_str().unwrap().contains("paused"));
+
+        // A default the account is not granted is flagged, not hidden.
+        let (base, _) = stub(vec![listing(vec![granted(OTHER, "Treasury", "active")])]);
+        let client = SandboxClient::from_values(
+            Some(SANDBOX.into()),
+            Some("a4_ak_agent".into()),
+            Some(base),
+        );
+        let listed = client.list().await.unwrap();
+        assert_eq!(listed["current"]["sandboxId"], SANDBOX);
+        assert!(listed["note"].as_str().unwrap().contains("not granted"));
+    }
+
+    #[tokio::test]
+    async fn the_history_of_a_named_sandbox_reads_its_own_ledger() {
+        let (base, seen) = stub(vec![
+            listing(vec![
+                granted(SANDBOX, "Bot", "active"),
+                granted(OTHER, "Treasury", "active"),
+            ]),
+            (
+                "GET",
+                "/api/sandbox/v1/sandboxes/0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20/actions?limit=20",
+                200,
+                json!({ "items": [], "nextCursor": null }),
+            ),
+        ]);
+        let query = ledger::HistoryQuery::default();
+        agent(&base)
+            .targeting(Some("Treasury"))
+            .history(&query)
+            .await
+            .unwrap();
+        let seen = requests(&seen);
+        assert_eq!(minted_for(&seen[1]), OTHER);
+        assert!(seen[2].starts_with(&format!("GET /api/sandbox/v1/sandboxes/{OTHER}/actions")));
     }
 
     #[tokio::test]

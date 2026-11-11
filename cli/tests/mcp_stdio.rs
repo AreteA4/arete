@@ -256,7 +256,7 @@ fn a4_mcp_describes_an_installed_sdk_of_the_project_it_runs_in() {
 
 /// Tools the server removed at startup stay hidden over MCP and cannot be
 /// called: without a local signer there is no `protocol_execute`, and
-/// without a sandbox there are no sandbox tools.
+/// without an API key or a sandbox id there are no sandbox tools.
 #[test]
 fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
     let home = tempfile::tempdir().expect("home directory");
@@ -266,6 +266,9 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
         .env("HOME", home.path())
         .env_remove("ARETE_MCP_SIGNER_CONFIG")
         .env_remove("ARETE_SANDBOX_ID")
+        .env_remove("ARETE_API_KEY")
+        .env_remove("ARETE_PROFILE")
+        .env_remove("ARETE_CREDENTIALS_PATH")
         .env("CI", "1")
         .env("DO_NOT_TRACK", "1")
         .env("A4_NO_UPDATE_CHECK", "1")
@@ -327,7 +330,12 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
         .filter_map(|tool| tool["name"].as_str())
         .collect();
     assert!(names.contains(&"ping"), "{names:?}");
-    for removed in ["protocol_execute", "sandbox_status", "sandbox_action"] {
+    for removed in [
+        "protocol_execute",
+        "sandbox_status",
+        "sandbox_action",
+        "sandbox_list",
+    ] {
         assert!(!names.contains(&removed), "{removed} listed: {names:?}");
     }
     assert!(called.get("error").is_some(), "{called}");

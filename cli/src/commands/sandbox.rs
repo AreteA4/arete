@@ -1,11 +1,15 @@
-//! `a4 sandbox`: read a sandbox wallet's history, holdings and rules, and
-//! check a Rules v3 document before its owner signs it.
+//! `a4 sandbox`: list the sandboxes the account has been granted and choose
+//! one, read a sandbox wallet's history, holdings and rules, and check a
+//! Rules v3 document before its owner signs it.
 //!
 //! The reads go to the Arete API's sandbox routes with a short-lived token
 //! the account's API key mints for the sandbox (as the MCP `sandbox_*` tools
 //! do), so they work for an agent the sandbox's owner has granted access.
-//! They never run an action: actions go through the MCP `sandbox_invoke`
-//! tool. `rules validate` reads a local file and sends nothing.
+//! The sandbox resolves as for the MCP tools: `--sandbox`, then the one
+//! chosen with `a4 sandbox use` for this directory, then `ARETE_SANDBOX_ID`,
+//! then the only active sandbox granted. They never run an action: actions
+//! go through the MCP `sandbox_invoke` tool. `rules validate` reads a local
+//! file and sends nothing.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -25,6 +29,10 @@ const MAX_ALL_CALLS: usize = 50;
 
 #[derive(Subcommand, Debug)]
 pub enum SandboxCommands {
+    /// The sandboxes this account has been granted, and which one is used
+    List,
+    /// Choose the sandbox the other commands use in this directory
+    Use(UseArgs),
     /// The sandbox's actions, newest first (paginated, with filters)
     History(HistoryArgs),
     /// What the sandbox wallet holds now: SOL, tokens and program positions
@@ -36,9 +44,21 @@ pub enum SandboxCommands {
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct SandboxTarget {
-    /// The sandbox id (default: ARETE_SANDBOX_ID)
-    #[arg(long, value_name = "ID")]
+    /// The sandbox id or name (default: the one chosen with `a4 sandbox use`,
+    /// else ARETE_SANDBOX_ID, else the only sandbox granted)
+    #[arg(long, value_name = "ID|NAME")]
     pub sandbox: Option<String>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct UseArgs {
+    /// The sandbox id or name, as `a4 sandbox list` shows it
+    #[arg(value_name = "ID|NAME", required_unless_present = "clear")]
+    pub sandbox: Option<String>,
+
+    /// Forget the choice for this directory
+    #[arg(long, conflicts_with = "sandbox")]
+    pub clear: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -102,6 +122,8 @@ pub enum RulesCommands {
 
 pub fn run(command: SandboxCommands, json: bool) -> Result<()> {
     match command {
+        SandboxCommands::List => list(json),
+        SandboxCommands::Use(args) => use_sandbox(args, json),
         SandboxCommands::History(args) => history(args, json),
         SandboxCommands::Holdings(args) => holdings(args, json),
         SandboxCommands::Rules(RulesCommands::Show(target)) => rules_show(target, json),
@@ -116,21 +138,49 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
         .context("Failed to start the async runtime")
 }
 
-fn client(target: &SandboxTarget) -> Result<SandboxClient> {
-    let client = SandboxClient::from_env_for(target.sandbox.clone());
-    if !client.configured() {
-        anyhow::bail!(
-            "No sandbox: pass --sandbox <id> or set ARETE_SANDBOX_ID to the sandbox id shown on the dashboard"
-        );
-    }
-    Ok(client)
+/// A client for the sandbox `target` resolves to, and its id.
+fn client(
+    runtime: &tokio::runtime::Runtime,
+    target: &SandboxTarget,
+    json: bool,
+) -> Result<(SandboxClient, String)> {
+    let client = SandboxClient::from_env().targeting(target.sandbox.as_deref());
+    let resolved = runtime
+        .block_on(client.resolve())
+        .map_err(|refusal| refused(refusal, json))?;
+    // Resolved once: the calls below name the id, with no second listing.
+    let client = client.targeting(Some(&resolved.sandbox_id));
+    Ok((client, resolved.sandbox_id))
+}
+
+/// The hint for `code` in CLI terms, where the MCP hint names MCP tools.
+fn cli_hint(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "sandbox-none-granted" => {
+            "No sandbox owner has granted this agent access yet. Ask the owner to grant it access in the dashboard, then run `a4 sandbox list`."
+        }
+        "sandbox-selection-required" => {
+            "Choose one with `a4 sandbox use <id|name>` (remembered for this directory), or pass --sandbox."
+        }
+        "sandbox-unknown" => "`a4 sandbox list` shows the sandboxes this agent may use.",
+        "sandbox-not-configured" => {
+            "This Arete API cannot list the sandboxes granted to this agent: pass --sandbox <id> or set ARETE_SANDBOX_ID."
+        }
+        "sandbox-grant-missing" | "sandbox-consent-unsigned" => {
+            "The sandbox's owner has not granted this agent access to this sandbox (or must grant it again). `a4 sandbox list` shows the ones it may use and `a4 sandbox use` picks one; or ask the owner to grant access in the dashboard."
+        }
+        _ => return None,
+    })
 }
 
 /// Print a refusal the way API errors are printed (the problem as JSON on
 /// stdout with --json, else the message and a hint on stderr) and exit
 /// with 77 for auth refusals, 75 when rate limited, else 1.
 fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
-    let shown = refusal.to_json();
+    let mut shown = refusal.to_json();
+    if let Some(hint) = shown["code"].as_str().and_then(cli_hint) {
+        shown["hint"] = json!(hint);
+    }
     if json {
         println!("{shown}");
     } else {
@@ -140,6 +190,9 @@ fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
             .or_else(|| shown["message"].as_str())
             .unwrap_or("the Arete API refused the request");
         eprintln!("{} {message} ({code})", "Error:".red().bold());
+        for sandbox in shown["sandboxes"].as_array().into_iter().flatten() {
+            eprintln!("  {}", sandbox_line(sandbox));
+        }
         if let Some(hint) = shown["hint"].as_str() {
             eprintln!("{hint}");
         } else if refusal.status == 404 {
@@ -156,10 +209,185 @@ fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
     ExitCode(code).into()
 }
 
+// ---- list and use -------------------------------------------------------------
+
+fn list(json: bool) -> Result<()> {
+    let client = SandboxClient::from_env();
+    let mut body = runtime()?
+        .block_on(client.list())
+        .map_err(|refusal| refused(refusal, json))?;
+    // The listing's note names the MCP tools; say it in CLI terms.
+    match list_note(&body) {
+        Some(note) => body["note"] = json!(note),
+        None => {
+            if let Some(object) = body.as_object_mut() {
+                object.remove("note");
+            }
+        }
+    }
+    if json {
+        println!("{body}");
+    } else {
+        print!("{}", render_list(&body));
+    }
+    Ok(())
+}
+
+fn use_sandbox(args: UseArgs, json: bool) -> Result<()> {
+    let client = SandboxClient::from_env();
+    let body = runtime()?
+        .block_on(client.select(args.sandbox.as_deref(), args.clear))
+        .map_err(|refusal| refused(refusal, json))?;
+    if json {
+        println!("{body}");
+        return Ok(());
+    }
+    let saved = body["saved"] == true;
+    if body["cleared"] == true {
+        println!("Forgot the sandbox chosen for this directory.");
+        match body["current"].as_object() {
+            Some(_) => println!(
+                "Sandbox commands now use {} ({}).",
+                body["current"]["sandboxId"].as_str().unwrap_or("?"),
+                source_label(body["current"]["source"].as_str().unwrap_or(""))
+            ),
+            None => println!("Pass --sandbox, or choose again with `a4 sandbox use`."),
+        }
+    } else {
+        println!(
+            "{} {}",
+            "Using".green().bold(),
+            sandbox_line(&body["selected"])
+        );
+        if saved {
+            println!("Remembered for this directory (by `a4 sandbox` and `a4 mcp`).");
+        }
+    }
+    if !saved {
+        println!(
+            "{} the choice could not be saved, so it lasted only for this command.",
+            "Warning:".yellow().bold()
+        );
+    }
+    if body["note"].is_string() {
+        println!(
+            "{}",
+            "Its actions are refused until the owner resumes it.".yellow()
+        );
+    }
+    Ok(())
+}
+
+/// What `a4 sandbox list` should say beneath the list, if anything.
+pub fn list_note(body: &Value) -> Option<String> {
+    let sandboxes = body["sandboxes"].as_array().cloned().unwrap_or_default();
+    let current = body["current"]["sandboxId"].as_str();
+    let entry = |id: &str| {
+        sandboxes
+            .iter()
+            .find(|sandbox| sandbox["sandboxId"].as_str() == Some(id))
+    };
+    match current {
+        Some(id) => match entry(id) {
+            None => Some(format!(
+                "The sandbox in use ({id}, from {}) is not granted to this agent, so its commands are refused. Choose a listed one with `a4 sandbox use`.",
+                source_label(body["current"]["source"].as_str().unwrap_or(""))
+            )),
+            Some(sandbox) if sandbox["status"] != "active" => Some(
+                "The sandbox in use is paused: its actions are refused until the owner resumes it."
+                    .into(),
+            ),
+            Some(_) => None,
+        },
+        None if sandboxes.is_empty() => Some(
+            "No sandbox is granted to this agent yet. Ask a sandbox owner to grant it access in the dashboard."
+                .into(),
+        ),
+        None if sandboxes.iter().all(|sandbox| sandbox["status"] != "active") => Some(
+            "Every sandbox granted to this agent is paused. Only an owner can resume one.".into(),
+        ),
+        None => Some(
+            "Several sandboxes are granted: choose one with `a4 sandbox use <id|name>`, or pass --sandbox."
+                .into(),
+        ),
+    }
+}
+
+/// Where the sandbox in use came from, in words.
+fn source_label(source: &str) -> &'static str {
+    match source {
+        "argument" => "--sandbox",
+        "selected" => "chosen with `a4 sandbox use`",
+        "saved" => "saved for this directory",
+        "env:ARETE_SANDBOX_ID" => "ARETE_SANDBOX_ID",
+        "only-grant" => "the only sandbox granted",
+        _ => "unknown",
+    }
+}
+
+/// One sandbox on one line: id, name, status, cluster, actions, wallet.
+fn sandbox_line(sandbox: &Value) -> String {
+    let mut line = sandbox["sandboxId"].as_str().unwrap_or("?").to_string();
+    if let Some(name) = sandbox["name"].as_str() {
+        line.push_str(&format!("  {}", name.bold()));
+    }
+    if let Some(status) = sandbox["status"].as_str() {
+        let status = if status == "active" {
+            status.green().to_string()
+        } else {
+            status.yellow().to_string()
+        };
+        line.push_str(&format!("  {status}"));
+    }
+    if let Some(cluster) = sandbox["cluster"].as_str() {
+        line.push_str(&format!("  {cluster}"));
+    }
+    if let Some(actions) = sandbox["actions"].as_array() {
+        let actions: Vec<&str> = actions.iter().filter_map(Value::as_str).collect();
+        let actions = if actions.is_empty() {
+            "none".to_string()
+        } else {
+            actions.join(", ")
+        };
+        line.push_str(&format!("  actions: {actions}"));
+    }
+    if let Some(wallet) = sandbox["walletAddress"].as_str() {
+        line.push_str(&format!("  wallet: {wallet}"));
+    }
+    line
+}
+
+/// The human rendering of `a4 sandbox list`.
+pub fn render_list(body: &Value) -> String {
+    let sandboxes = body["sandboxes"].as_array().cloned().unwrap_or_default();
+    let mut out = format!("{}\n\n", "Sandboxes granted to this agent".bold());
+    if sandboxes.is_empty() {
+        out.push_str("  none\n");
+    }
+    for sandbox in &sandboxes {
+        let mark = if sandbox["current"] == true { "*" } else { " " };
+        out.push_str(&format!("{mark} {}\n", sandbox_line(sandbox)));
+        if let Some(expires) = sandbox["grantExpiresAt"].as_str() {
+            out.push_str(&format!("    grant expires {expires}\n"));
+        }
+    }
+    if let Some(id) = body["current"]["sandboxId"].as_str() {
+        out.push_str(&format!(
+            "\nIn use: {id} ({})\n",
+            source_label(body["current"]["source"].as_str().unwrap_or(""))
+        ));
+    }
+    if let Some(note) = body["note"].as_str() {
+        out.push_str(&format!("\n{note}\n"));
+    }
+    out
+}
+
 // ---- history ------------------------------------------------------------------
 
 fn history(args: HistoryArgs, json: bool) -> Result<()> {
-    let client = client(&args.target)?;
+    let runtime = runtime()?;
+    let (client, sandbox_id) = client(&runtime, &args.target, json)?;
     let query = ledger::HistoryQuery {
         cursor: args.cursor.clone(),
         limit: Some(args.limit),
@@ -172,7 +400,6 @@ fn history(args: HistoryArgs, json: bool) -> Result<()> {
             .map(|text| parse_since(text, Utc::now()))
             .transpose()?,
     };
-    let runtime = runtime()?;
     let body = if args.all {
         let mut query = query.clone();
         let mut items = Vec::new();
@@ -202,15 +429,7 @@ fn history(args: HistoryArgs, json: bool) -> Result<()> {
     if json {
         println!("{body}");
     } else {
-        print!(
-            "{}",
-            render_history(
-                &body,
-                &args,
-                query.since,
-                client.sandbox_id().unwrap_or("?")
-            )
-        );
+        print!("{}", render_history(&body, &args, query.since, &sandbox_id));
     }
     Ok(())
 }
@@ -477,8 +696,9 @@ fn instruction_labels(item: &Value) -> String {
 // ---- holdings -----------------------------------------------------------------
 
 fn holdings(args: HoldingsArgs, json: bool) -> Result<()> {
-    let client = client(&args.target)?;
-    let body = runtime()?
+    let runtime = runtime()?;
+    let (client, sandbox_id) = client(&runtime, &args.target, json)?;
+    let body = runtime
         .block_on(client.holdings())
         .map_err(|refusal| refused(refusal, json))?;
     let body = if args.raw {
@@ -489,10 +709,7 @@ fn holdings(args: HoldingsArgs, json: bool) -> Result<()> {
     if json {
         println!("{body}");
     } else {
-        print!(
-            "{}",
-            render_holdings(&body, client.sandbox_id().unwrap_or("?"))
-        );
+        print!("{}", render_holdings(&body, &sandbox_id));
     }
     Ok(())
 }
@@ -558,8 +775,9 @@ pub fn render_holdings(body: &Value, sandbox_id: &str) -> String {
 // ---- rules --------------------------------------------------------------------
 
 fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
-    let client = client(&target)?;
-    let body = runtime()?
+    let runtime = runtime()?;
+    let (client, _) = client(&runtime, &target, json)?;
+    let body = runtime
         .block_on(client.rules())
         .map_err(|refusal| refused(refusal, json))?;
     if json {
@@ -826,6 +1044,93 @@ mod tests {
             .join("tests/fixtures/sandbox")
             .join(name);
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn granted_listing(current: Value) -> Value {
+        json!({
+            "sandboxes": [
+                { "sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "name": "Bot",
+                  "walletAddress": "W1", "cluster": "mainnet-beta", "status": "active",
+                  "actions": ["invoke", "withdraw"], "grantExpiresAt": "2026-12-01T00:00:00Z",
+                  "current": current["sandboxId"] == "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10" },
+                { "sandboxId": "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20", "name": null,
+                  "walletAddress": null, "cluster": "devnet", "status": "paused",
+                  "actions": [], "grantExpiresAt": null, "current": false },
+            ],
+            "current": current,
+        })
+    }
+
+    #[test]
+    fn the_list_marks_the_sandbox_in_use_and_where_it_came_from() {
+        colored::control::set_override(false);
+        let body = granted_listing(json!({
+            "sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "source": "saved"
+        }));
+        assert_eq!(list_note(&body), None);
+        let text = render_list(&body);
+        assert!(text.contains(
+            "* 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10  Bot  active  mainnet-beta  actions: invoke, withdraw  wallet: W1"
+        ), "{text}");
+        assert!(
+            text.contains("    grant expires 2026-12-01T00:00:00Z"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20  paused  devnet  actions: none"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "In use: 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10 (saved for this directory)"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_list_says_what_to_do_in_cli_terms() {
+        let several = granted_listing(Value::Null);
+        let mut several_active = several.clone();
+        several_active["sandboxes"][1]["status"] = json!("active");
+        let note = list_note(&several_active).unwrap();
+        assert!(note.contains("a4 sandbox use"), "{note}");
+        assert!(!note.contains("sandbox_select"), "{note}");
+
+        let mut all_paused = several.clone();
+        all_paused["sandboxes"][0]["status"] = json!("paused");
+        assert!(list_note(&all_paused).unwrap().contains("paused"));
+        let none = json!({ "sandboxes": [], "current": null });
+        assert!(list_note(&none).unwrap().contains("dashboard"));
+        assert!(render_list(&none).contains("  none"));
+
+        let stale = granted_listing(json!({
+            "sandboxId": "9d4f6a1b-3c2e-4b8a-a1f0-5e6d7c8b9a01", "source": "env:ARETE_SANDBOX_ID"
+        }));
+        let note = list_note(&stale).unwrap();
+        assert!(
+            note.contains("not granted") && note.contains("ARETE_SANDBOX_ID"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn selection_refusals_get_cli_hints() {
+        for code in [
+            "sandbox-none-granted",
+            "sandbox-selection-required",
+            "sandbox-unknown",
+            "sandbox-not-configured",
+            "sandbox-grant-missing",
+        ] {
+            let hint = cli_hint(code).unwrap();
+            assert!(
+                hint.contains("a4 sandbox") || hint.contains("--sandbox"),
+                "{code}: {hint}"
+            );
+            assert!(!hint.contains("sandbox_"), "{code}: {hint}");
+        }
+        assert_eq!(cli_hint("sandbox-paused"), None);
     }
 
     #[test]
