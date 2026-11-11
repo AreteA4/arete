@@ -154,7 +154,7 @@ always listed.
 
 | Group | Tools |
 |-------|-------|
-| `sandboxes` | `sandbox_*` (also need `ARETE_SANDBOX_ID`) |
+| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`) |
 | `streams` | connection, subscription and cache tools, and `read_view` |
 | `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
 | `protocols` | `protocol_*`, `squads_*` |
@@ -565,22 +565,63 @@ names an action and its arguments, and never sees a private key, a raw
 transaction to sign or an RPC URL. Owner operations (rules, caps, grants,
 pause, revoke) live in the dashboard and are not reachable from these tools.
 
-**Auth.** Listed only when `ARETE_SANDBOX_ID` names a sandbox. The agent
-uses its own account's secret API key (`ARETE_API_KEY`, or its a4 login) to
-mint a short-lived sandbox token at `POST /ws/sessions` with
-`{ "targetKind": "sandbox", "targetId": "<sandbox id>" }`. The mint succeeds
-only while the sandbox's owner grants this agent access; the token carries a
+**Auth.** Listed when there is an account API key (or `ARETE_SANDBOX_ID`
+is set). The agent uses its own account's secret API key (`ARETE_API_KEY`,
+or its a4 login) for two calls: `GET /api/agent/sandboxes` lists the
+sandboxes this key can mint a token for right now, and `POST /ws/sessions`
+with `{ "targetKind": "sandbox", "targetId": "<sandbox id>" }` mints a
+short-lived token for one of them. The mint succeeds only while the
+sandbox's owner grants this agent access; the token carries a
 `sandbox:<action>` scope per granted action and is the only credential the
-sandbox routes see. The server mints it on first use and again when it
-expires; a revoked grant fails closed. Neither the key nor the token is ever
-returned in a tool result.
+sandbox routes see. The server mints a token per sandbox on first use and
+again when it expires; a revoked grant fails closed. Neither the key nor a
+token is ever returned in a tool result.
 
-**Agent loop:** discover → preview → invoke.
+**Which sandbox.** Every tool from `sandbox_status` down takes an optional
+`sandbox` (a sandbox id, or a granted sandbox's name) for that call alone.
+Without it, a call uses the first of:
 
+1. the sandbox chosen with `sandbox_select` (or `a4 sandbox use`), saved per
+   API and project (the server's working directory) in
+   `~/.arete/sandbox-selections.json`, so it survives restarts;
+2. `ARETE_SANDBOX_ID`;
+3. the only `active` sandbox the key has been granted. Paused sandboxes are
+   listed but never picked on their own.
+
+The listing is reused for a minute when it resolves a call. When nothing
+resolves, the call is refused before any token is minted, with
+`retryable: false` and a `hint` naming the tool to call:
+
+| Code | When |
+| ---- | ---- |
+| `sandbox-none-granted` | the key has no granted sandbox |
+| `sandbox-selection-required` | several active sandboxes and none chosen, or a name several share; `sandboxes` lists them |
+| `sandbox-unknown` | the `sandbox` argument (or `sandbox_select`) names no granted sandbox |
+| `sandbox-paused` | every granted sandbox is paused; `sandboxes` lists them |
+| `sandbox-not-configured` | the API does not serve the listing (it answers 404): pass a sandbox id or set `ARETE_SANDBOX_ID` |
+
+**Agent loop:** (choose) → discover → preview → invoke.
+
+- `sandbox_list()` — the granted sandboxes: `sandboxId`, `name` (or null),
+  `walletAddress`, `cluster`, `status` (`active` or `paused`), the granted
+  `actions`, `grantExpiresAt` and `current` (true for the one calls use).
+  The top-level `current` is `{ sandboxId, source }` with `source`
+  `selected`, `saved`, `env:ARETE_SANDBOX_ID` or `only-grant`, or null when
+  one must be chosen; `note` says what to do when something needs
+  attention (nothing chosen, none granted, the current one paused or no
+  longer granted).
+- `sandbox_select({ sandbox?, clear? })` — choose the sandbox (an id or a
+  name from `sandbox_list`) for this session and the project; returns
+  `selected`, `current` and `saved` (false when the choice could not be
+  written, and it then lasts the session). `clear: true` forgets it. The
+  choice is checked against the listing; an API without the listing takes
+  an id on trust.
 - `sandbox_status()` — wallet address, SOL and token balances (raw
   amounts), the actions this agent was granted, and, under version 2 rules,
   caps (lamports and per mint, per action and per window) with what the
-  window has spent. Start here.
+  window has spent. `selection` is `{ sandboxId, source }`: the sandbox the
+  call resolved to and why (`argument` when the call named it). Start
+  here.
 - `sandbox_rules()` — the allowed programs and, for each, the allowed
   instructions with their argument types and accounts. An account with
   `fill` (`fixed`, `wallet` or `derived` from the program's spec) can be
@@ -625,8 +666,7 @@ returned in a tool result.
 
 The two reads call `GET /api/sandbox/v1/sandboxes/<id>/actions?limit&cursor`
 and `GET /api/sandbox/v1/sandboxes/<id>/holdings` with the same sandbox
-token. Like the other `sandbox_*` tools they are listed only with a sandbox
-configured; they run no action.
+token as the other calls to that sandbox; they run no action.
 
 **Rules v3.** Under version 3 rules the owner turns each supported program
 on or off, may narrow its instructions (else the registry's safe set) and
@@ -672,7 +712,7 @@ with no readable body. The retry rule:
 - `retryable: false`: the same call fails again; the `hint` says what to
   change. A wallet that cannot pay is `sandbox-guard-insufficient-funds`
   with `balanceLamports` (and `shortfallLamports` when known).
-- `retryable: true` on a read (`sandbox_status`, `sandbox_rules`,
+- `retryable: true` on a read (`sandbox_list`, `sandbox_status`, `sandbox_rules`,
   `sandbox_derive`, `sandbox_action`, `sandbox_history`,
   `sandbox_holdings`) or a `sandbox_preview`: nothing was changed; retry
   the same call after `retryAfterSeconds` when present.
@@ -734,7 +774,7 @@ RUST_LOG=hs_mcp=debug,arete_sdk=info a4 mcp
 | `ARETE_API_URL` | API base for the discovery tools and credentials lookup. Defaults to `https://api.arete.run`  |
 | `ARETE_MCP_RPC_URL` | Solana RPC the protocol tools simulate prepared transactions against (signer balance changes) |
 | `ARETE_MCP_SIGNER_CONFIG` | A TOML file with a `[signer]` table, instead of `~/.arete/mcp.toml`                    |
-| `ARETE_SANDBOX_ID` | The sandbox an owner granted this agent; lists the `sandbox_*` tools. The agent's API key mints a scoped sandbox token for it, sent only to `ARETE_API_URL` when it is an Arete HTTPS or loopback origin |
+| `ARETE_SANDBOX_ID` | Optional. The default sandbox for the `sandbox_*` tools, used when no call names one and none was chosen with `sandbox_select`; without it they use the only sandbox granted. The agent's API key mints a scoped sandbox token for it, sent only to `ARETE_API_URL` when it is an Arete HTTPS or loopback origin |
 | `RUST_LOG`      | Log verbosity (stderr only)                                                                   |
 
 A resolved API key is attached to discovery requests **only when `ARETE_API_URL`

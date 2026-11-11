@@ -129,6 +129,8 @@ Scripts that read inside those pass-through objects should accept both spellings
 | `a4 protocol listing-status`                                                  | Your deployment's listing state                                   |
 | `a4 protocol webhook add\|list\|remove\|test`                                 | The webhook endpoints that receive your deployment's events       |
 | `a4 squads status\|list\|attach`                                              | Your account's Squads multisigs (set them up on the dashboard)    |
+| `a4 sandbox list`                                                             | The sandboxes your agent has been granted, and the one in use     |
+| `a4 sandbox use <id\|name>`                                                   | Choose the sandbox `a4 sandbox` and `a4 mcp` use in this folder   |
 | `a4 sandbox history\|holdings\|rules show`                                    | A sandbox's actions, holdings and rules (alpha)                   |
 | `a4 sandbox rules validate <file>`                                            | Check a Rules v3 file locally                                     |
 | `a4 protocol squads proposer\|status [target]`                                | Bring your own Squads multisig: the proposer and its status       |
@@ -1388,13 +1390,18 @@ Dev environments keep their own proposer: use `a4 protocol squads --dev` and
 
 ### a4 sandbox
 
-Read a [sandbox](/sandboxes/overview/) wallet (alpha) and check its rules.
-The reads use a short-lived token your account's API key mints for the
-sandbox, so they work for an agent the sandbox's owner granted access. They
-never run an action: actions go through the MCP `sandbox_invoke` tool.
+List the [sandboxes](/sandboxes/overview/) (alpha) your agent has been
+granted, choose one, read its wallet and check its rules. The reads use a
+short-lived token your account's API key mints for the sandbox, so they work
+for an agent the sandbox's owner granted access. They never run an action:
+actions go through the MCP `sandbox_invoke` tool.
 
 ```bash
-a4 sandbox history --sandbox <id>                 # newest first, 20 per page
+a4 sandbox list                                   # granted sandboxes; * marks the one in use
+a4 sandbox use Treasury                           # choose one (id or name) for this folder
+a4 sandbox use --clear                            # forget the choice
+a4 sandbox history                                # newest first, 20 per page
+a4 sandbox history --sandbox <id|name>            # another sandbox, for this command only
 a4 sandbox history --status landed --since 24h    # filtered, across pages
 a4 sandbox history --cursor <nextCursor>          # the next page
 a4 sandbox history --all --json                   # every page, as JSON
@@ -1403,18 +1410,26 @@ a4 sandbox rules show                             # the rules, as the agent sees
 a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: stdin)
 ```
 
-| Flag             | Description                                                                   |
-| ---------------- | ----------------------------------------------------------------------------- |
-| `--sandbox <id>` | The sandbox (default: `ARETE_SANDBOX_ID`)                                     |
-| `--limit <n>`    | `history`: actions per page, 1 to 100 (default 20)                            |
-| `--cursor <c>`   | `history`: carry on from a previous `nextCursor`                              |
-| `--status <s>`   | `history`: only `landed`, `failed`, `rejected`, ...                           |
-| `--program <p>`  | `history`: only actions that called this program (id or name)                 |
-| `--mint <m>`     | `history`: only actions that moved this token                                 |
-| `--since <t>`    | `history`: only actions since an RFC 3339 time or an age (`30m`, `24h`, `7d`) |
-| `--all`          | `history`: read every page                                                    |
-| `--raw`          | Keep raw transactions and accounts in `--json` output                         |
-| `--json`         | The answer as JSON                                                            |
+The commands use, in order: `--sandbox`, the sandbox chosen with
+`a4 sandbox use` in this folder, `ARETE_SANDBOX_ID`, then the only active
+sandbox granted. The choice is saved in your Arete home directory, not in the
+project, and `a4 mcp` started in the same folder uses it too. With several
+sandboxes and none chosen, a read fails with `sandbox-selection-required`
+and lists them; with none granted, `sandbox-none-granted`.
+
+| Flag                   | Description                                                                              |
+| ---------------------- | ---------------------------------------------------------------------------------------- |
+| `--sandbox <id\|name>` | The sandbox for this command (default: the chosen one, `ARETE_SANDBOX_ID`, the only one) |
+| `--clear`              | `use`: forget the choice for this folder                                                 |
+| `--limit <n>`          | `history`: actions per page, 1 to 100 (default 20)                                       |
+| `--cursor <c>`         | `history`: carry on from a previous `nextCursor`                                         |
+| `--status <s>`         | `history`: only `landed`, `failed`, `rejected`, ...                                      |
+| `--program <p>`        | `history`: only actions that called this program (id or name)                            |
+| `--mint <m>`           | `history`: only actions that moved this token                                            |
+| `--since <t>`          | `history`: only actions since an RFC 3339 time or an age (`30m`, `24h`, `7d`)            |
+| `--all`                | `history`: read every page                                                               |
+| `--raw`                | Keep raw transactions and accounts in `--json` output                                    |
+| `--json`               | The answer as JSON                                                                       |
 
 The filters are applied by `a4` to the pages it reads; a filtered read
 keeps reading (up to 10 pages) until enough actions match. `rules validate`
