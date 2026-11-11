@@ -1213,6 +1213,7 @@ mod tests {
                 agents_md: true,
                 skills: false,
                 mcp: true,
+                surface: arete_mcp::entitlements::Surface::Everything,
             };
             let env = Env::new(root, Some(home.to_path_buf()), &[]);
             let report = execute(&env, &root.join("arete.toml"), &plan).unwrap();

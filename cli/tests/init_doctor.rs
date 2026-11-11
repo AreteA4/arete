@@ -59,7 +59,7 @@ fn install_fake_npx(bin: &Path) {
 # (PATH holds only this directory, so use absolute tool paths)
 printf '%s\n' "$@" > npx-args.txt
 for agent in .agents .claude; do
-  for skill in arete arete-streams arete-programs arete-stack-authoring arete-deploy arete-protocols; do
+  for skill in arete-sandbox arete arete-streams arete-programs arete-stack-authoring arete-deploy arete-protocols; do
     /bin/mkdir -p "$agent/skills/$skill"
     printf '# %s\n' "$skill" > "$agent/skills/$skill/SKILL.md"
   done

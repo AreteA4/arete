@@ -7,10 +7,13 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use arete_mcp::entitlements::{Group, Surface};
+
 use super::{display_path, find_on_path, read_optional, Env, ItemResult, Outcome};
 
 pub const SKILLS_SOURCE: &str = "AreteA4/skills";
-pub const SKILL_NAMES: [&str; 6] = [
+pub const SKILL_NAMES: [&str; 7] = [
+    "arete-sandbox",
     "arete",
     "arete-streams",
     "arete-programs",
@@ -19,6 +22,40 @@ pub const SKILL_NAMES: [&str; 6] = [
     "arete-protocols",
 ];
 const LEGACY_SKILL_NAMES: [&str; 2] = ["arete-consume", "arete-build"];
+
+/// The command groups a skill teaches. An account gets a skill when one of
+/// its groups is granted, as `a4` lists a command (see
+/// [`crate::entitlements`]).
+pub fn skill_groups(name: &str) -> &'static [Group] {
+    match name {
+        "arete-sandbox" => &[Group::Sandboxes],
+        "arete" | "arete-programs" => &[Group::Registry],
+        "arete-streams" => &[Group::Streams],
+        "arete-stack-authoring" => &[Group::Stacks],
+        "arete-deploy" => &[Group::Stacks, Group::Protocols],
+        "arete-protocols" => &[Group::Protocols, Group::Dev],
+        _ => &[],
+    }
+}
+
+/// The skills for an account's surface, in `SKILL_NAMES` order: every skill
+/// when the API reports no groups (no key, offline, an older API).
+pub fn skills_for(surface: &Surface) -> Vec<&'static str> {
+    SKILL_NAMES
+        .into_iter()
+        .filter(|name| {
+            skill_groups(name)
+                .iter()
+                .any(|group| surface.allows(*group))
+        })
+        .collect()
+}
+
+/// Whether `names` is every skill, which installs as `--skill '*'`.
+fn is_every_skill(names: &[&str]) -> bool {
+    SKILL_NAMES.iter().all(|name| names.contains(name))
+}
+
 pub const SKILLS_TIMEOUT: Duration = Duration::from_secs(120);
 const LOCK_FILE: &str = "skills-lock.json";
 
@@ -79,16 +116,16 @@ pub fn is_commit_sha(reference: &str) -> bool {
     (7..=40).contains(&reference.len()) && reference.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The manual fix command.
-pub fn fix_command(agent_names: &[String]) -> String {
-    if agent_names.is_empty() {
-        format!("npx skills add {SKILLS_SOURCE}")
-    } else {
-        format!(
-            "npx skills add {SKILLS_SOURCE} --agent {}",
-            agent_names.join(" ")
-        )
+/// The manual fix command for `skills` (every skill: no `--skill`).
+pub fn fix_command(agent_names: &[String], skills: &[&str]) -> String {
+    let mut command = format!("npx skills add {SKILLS_SOURCE}");
+    if !is_every_skill(skills) {
+        command.push_str(&format!(" --skill {}", skills.join(" ")));
     }
+    if !agent_names.is_empty() {
+        command.push_str(&format!(" --agent {}", agent_names.join(" ")));
+    }
+    command
 }
 
 /// Where `npx skills` writes its lock file for this scope.
@@ -285,12 +322,18 @@ pub fn skill_dirs(env: &Env, id: &str, global: bool) -> Vec<PathBuf> {
     dirs
 }
 
-/// Skill names missing for `id` (empty = all present in at least one dir).
-pub fn missing_skills(env: &Env, id: &str, global: bool) -> Vec<&'static str> {
+/// Which of `skills` are missing for `id` (empty = all present in at least
+/// one dir).
+pub fn missing_skills(
+    env: &Env,
+    id: &str,
+    global: bool,
+    skills: &[&'static str],
+) -> Vec<&'static str> {
     let dirs = skill_dirs(env, id, global);
     let mut best: Option<Vec<&'static str>> = None;
     for dir in &dirs {
-        let missing: Vec<&'static str> = SKILL_NAMES
+        let missing: Vec<&'static str> = skills
             .iter()
             .copied()
             .filter(|name| !dir.join(name).join("SKILL.md").is_file())
@@ -302,7 +345,7 @@ pub fn missing_skills(env: &Env, id: &str, global: bool) -> Vec<&'static str> {
             best = Some(missing);
         }
     }
-    best.unwrap_or_else(|| SKILL_NAMES.to_vec())
+    best.unwrap_or_else(|| skills.to_vec())
 }
 
 /// Options for one skills run.
@@ -310,6 +353,8 @@ pub fn missing_skills(env: &Env, id: &str, global: bool) -> Vec<&'static str> {
 pub struct SkillsOptions {
     /// Selected a4 agent ids (mapped to `skills` names here).
     pub agent_ids: Vec<String>,
+    /// The skills to install: [`skills_for`] the account's surface.
+    pub skills: Vec<&'static str>,
     pub skills_ref: Option<String>,
     pub global: bool,
     pub timeout: Duration,
@@ -319,11 +364,18 @@ pub struct SkillsOptions {
 pub fn install(env: &Env, options: &SkillsOptions, dry_run: bool) -> ItemResult {
     let item = "skills";
     let names = skills_agent_names(&options.agent_ids);
-    let fix = fix_command(&names);
+    let fix = fix_command(&names, &options.skills);
     if names.is_empty() {
         return ItemResult::new(
             item,
             Outcome::skipped("no skills-capable agent selected", None),
+            None,
+        );
+    }
+    if options.skills.is_empty() {
+        return ItemResult::new(
+            item,
+            Outcome::skipped("no Arete skill matches this account's command groups", None),
             None,
         );
     }
@@ -356,7 +408,7 @@ pub fn install(env: &Env, options: &SkillsOptions, dry_run: bool) -> ItemResult 
             .agent_ids
             .iter()
             .filter(|id| skills_agent_name(id).is_some())
-            .all(|id| missing_skills(env, id, options.global).is_empty());
+            .all(|id| missing_skills(env, id, options.global, &options.skills).is_empty());
         let outcome = if complete {
             Outcome::Unchanged
         } else if before[0].is_some() {
@@ -373,11 +425,13 @@ pub fn install(env: &Env, options: &SkillsOptions, dry_run: bool) -> ItemResult 
         .arg("skills")
         .arg("add")
         .arg(source_for_ref(options.skills_ref.as_deref()))
-        .arg("--skill")
-        .arg("*")
-        .arg("--agent")
-        .args(&names)
-        .arg("-y");
+        .arg("--skill");
+    if is_every_skill(&options.skills) {
+        command.arg("*");
+    } else {
+        command.args(&options.skills);
+    }
+    command.arg("--agent").args(&names).arg("-y");
     if cfg!(windows) {
         command.arg("--copy");
     }
@@ -551,9 +605,12 @@ mod tests {
         assert!(!is_commit_sha("v1.2.0"));
         assert!(!is_commit_sha("main"));
         assert!(!is_commit_sha("abc"));
-        assert_eq!(fix_command(&[]), "npx skills add AreteA4/skills");
         assert_eq!(
-            fix_command(&["cursor".into()]),
+            fix_command(&[], &SKILL_NAMES),
+            "npx skills add AreteA4/skills"
+        );
+        assert_eq!(
+            fix_command(&["cursor".into()], &SKILL_NAMES),
             "npx skills add AreteA4/skills --agent cursor"
         );
     }
@@ -660,6 +717,7 @@ fi
         let env = Env::new(&root, None, &[("PATH", bin.to_str().unwrap())]);
         let options = SkillsOptions {
             agent_ids: vec!["codex".into()],
+            skills: SKILL_NAMES.to_vec(),
             skills_ref: None,
             global: false,
             timeout: SKILLS_TIMEOUT,
@@ -683,8 +741,10 @@ fi
     fn missing_skills_accepts_universal_dir() {
         let dir = tempfile::tempdir().unwrap();
         let env = Env::new(dir.path(), None, &[]);
-        assert_eq!(missing_skills(&env, "cursor", false), SKILL_NAMES.to_vec());
+        let all = SKILL_NAMES.to_vec();
+        assert_eq!(missing_skills(&env, "cursor", false, &all), all);
         for name in [
+            "arete-sandbox",
             "arete",
             "arete-streams",
             "arete-programs",
@@ -701,10 +761,16 @@ fi
             )
             .unwrap();
         }
-        assert_eq!(missing_skills(&env, "cursor", false), vec!["arete-deploy"]);
+        assert_eq!(
+            missing_skills(&env, "cursor", false, &all),
+            vec!["arete-deploy"]
+        );
+        // A scope without arete-deploy is complete already.
+        let scoped = vec!["arete-sandbox", "arete", "arete-programs"];
+        assert!(missing_skills(&env, "cursor", false, &scoped).is_empty());
         fs::create_dir_all(dir.path().join(".agents/skills/arete-deploy")).unwrap();
         fs::write(dir.path().join(".agents/skills/arete-deploy/SKILL.md"), "x").unwrap();
-        assert!(missing_skills(&env, "cursor", false).is_empty());
+        assert!(missing_skills(&env, "cursor", false, &all).is_empty());
     }
 
     #[test]
@@ -713,6 +779,7 @@ fi
         let env = Env::new(dir.path(), None, &[("PATH", dir.path().to_str().unwrap())]);
         let options = SkillsOptions {
             agent_ids: vec!["claude-code".into()],
+            skills: SKILL_NAMES.to_vec(),
             skills_ref: None,
             global: false,
             timeout: SKILLS_TIMEOUT,
@@ -741,6 +808,7 @@ fi
         let env = Env::new(dir.path(), None, &[("PATH", dir.path().to_str().unwrap())]);
         let options = SkillsOptions {
             agent_ids: vec!["claude-code".into()],
+            skills: SKILL_NAMES.to_vec(),
             skills_ref: Some("c247da25a2ffa77e016a2b750e42420c4d84a52c".into()),
             global: false,
             timeout: SKILLS_TIMEOUT,
@@ -771,6 +839,7 @@ fi
         let env = Env::new(&root, None, &[("PATH", bin.to_str().unwrap())]);
         let options = SkillsOptions {
             agent_ids: vec!["claude-code".into(), "vscode".into(), "copilot-cli".into()],
+            skills: SKILL_NAMES.to_vec(),
             skills_ref: Some("v2".into()),
             global: false,
             timeout: SKILLS_TIMEOUT,
@@ -810,6 +879,97 @@ fi
             matches!(&result.outcome, Outcome::Error { reason, .. } if reason.contains("timed out")),
             "{:?}",
             result.outcome
+        );
+    }
+
+    #[test]
+    fn skills_follow_the_account_command_groups() {
+        assert_eq!(skills_for(&Surface::Everything), SKILL_NAMES.to_vec());
+        let agent = Surface::Groups(
+            [Group::Account, Group::Sandboxes, Group::Registry]
+                .into_iter()
+                .collect(),
+        );
+        assert_eq!(
+            skills_for(&agent),
+            vec!["arete-sandbox", "arete", "arete-programs"]
+        );
+        let account_only = Surface::Groups([Group::Account].into_iter().collect());
+        assert!(skills_for(&account_only).is_empty());
+        let every_group = Surface::Groups(Group::ALL.into_iter().collect());
+        assert_eq!(skills_for(&every_group), SKILL_NAMES.to_vec());
+        for name in SKILL_NAMES {
+            assert!(!skill_groups(name).is_empty(), "{name} has no group");
+        }
+    }
+
+    #[test]
+    fn fix_command_names_skills_only_when_scoped() {
+        let agents = vec!["claude-code".to_string()];
+        assert_eq!(
+            fix_command(&agents, &SKILL_NAMES),
+            "npx skills add AreteA4/skills --agent claude-code"
+        );
+        assert_eq!(
+            fix_command(&agents, &["arete-sandbox", "arete"]),
+            "npx skills add AreteA4/skills --skill arete-sandbox arete --agent claude-code"
+        );
+    }
+
+    #[test]
+    fn nothing_to_install_when_no_skill_is_in_scope() {
+        let dir = tempfile::tempdir().unwrap();
+        let env = Env::new(dir.path(), None, &[]);
+        let options = SkillsOptions {
+            agent_ids: vec!["claude-code".into()],
+            skills: Vec::new(),
+            skills_ref: None,
+            global: false,
+            timeout: SKILLS_TIMEOUT,
+        };
+        assert!(matches!(
+            install(&env, &options, false).outcome,
+            Outcome::Skipped { .. }
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scoped_install_names_each_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        let root = dir.path().join("proj");
+        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&root).unwrap();
+        write_script(
+            &bin.join("npx"),
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\necho '{\"skills\":{}}' > skills-lock.json\n",
+        );
+        let env = Env::new(&root, None, &[("PATH", bin.to_str().unwrap())]);
+        let options = SkillsOptions {
+            agent_ids: vec!["claude-code".into()],
+            skills: vec!["arete-sandbox", "arete", "arete-programs"],
+            skills_ref: None,
+            global: false,
+            timeout: SKILLS_TIMEOUT,
+        };
+        install(&env, &options, false);
+        let args = fs::read_to_string(root.join("args.txt")).unwrap();
+        assert_eq!(
+            args.lines().collect::<Vec<_>>(),
+            vec![
+                "-y",
+                "skills",
+                "add",
+                "AreteA4/skills",
+                "--skill",
+                "arete-sandbox",
+                "arete",
+                "arete-programs",
+                "--agent",
+                "claude-code",
+                "-y"
+            ]
         );
     }
 }

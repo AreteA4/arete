@@ -185,7 +185,10 @@ fn is_fixable(check: &Check) -> bool {
 pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     let env = Env::from_process(init::project_root(config_path));
     let config = Path::new(config_path);
-    let mut checks = run_checks(&env, config);
+    // The skills this account should have, as `a4 init` installs them.
+    let surface = crate::entitlements::account_surface(None, None, config_path);
+    let skill_names = skills::skills_for(&surface);
+    let mut checks = run_checks(&env, config, &skill_names);
 
     if args.fix {
         let fixable: Vec<&Check> = checks.iter().filter(|check| is_fixable(check)).collect();
@@ -211,6 +214,7 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
                 }),
                 skills: fixable.iter().any(|check| check.id.ends_with(".skills")),
                 mcp: fixable.iter().any(|check| check.id.ends_with(".mcp")),
+                surface: surface.clone(),
             };
             let report = init::execute(&env, config, &plan)?;
             if json {
@@ -220,7 +224,7 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
                 print!("{}", report.render());
                 println!();
             }
-            checks = run_checks(&env, config);
+            checks = run_checks(&env, config, &skill_names);
         }
     }
 
@@ -375,7 +379,8 @@ impl ProjectUsage {
 }
 
 /// Run every check from the WP8 table, in order.
-pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
+/// `skills` are the Arete skills this account should have installed.
+pub fn run_checks(env: &Env, config_path: &Path, skills: &[&'static str]) -> Vec<Check> {
     let mut checks = Vec::new();
     let detection = detect(env);
     let receipt = Receipt::load().ok().flatten();
@@ -534,7 +539,7 @@ pub fn run_checks(env: &Env, config_path: &Path) -> Vec<Check> {
     });
 
     // agents.*
-    checks.extend(agent_checks(env, &detection));
+    checks.extend(agent_checks(env, &detection, skills));
     checks
 }
 
@@ -1696,7 +1701,7 @@ fn context_check(detection: &Detection, agent: &str, id: &str, detail: &str) -> 
     }
 }
 
-fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
+fn agent_checks(env: &Env, detection: &Detection, skill_names: &[&'static str]) -> Vec<Check> {
     let mut checks = Vec::new();
     let detected: Vec<String> = detection
         .agents
@@ -1763,24 +1768,28 @@ fn agent_checks(env: &Env, detection: &Detection) -> Vec<Check> {
         // agents.<id>.skills
         if let Some(name) = skills::skills_agent_name(id) {
             let check_id = format!("agents.{id}.skills");
-            let missing = skills::missing_skills(env, id, false);
-            let missing_global = skills::missing_skills(env, id, true);
-            checks.push(if missing.is_empty() || missing_global.is_empty() {
-                Check::ok(
+            let missing = skills::missing_skills(env, id, false, skill_names);
+            let missing_global = skills::missing_skills(env, id, true, skill_names);
+            let fix = skills::fix_command(&[name.to_string()], skill_names);
+            checks.push(if skill_names.is_empty() {
+                Check::info(
                     &check_id,
-                    format!("{} installed", skills::SKILL_NAMES.join(", ")),
+                    "no Arete skill matches this account's command groups",
+                    None,
                 )
+            } else if missing.is_empty() || missing_global.is_empty() {
+                Check::ok(&check_id, format!("{} installed", skill_names.join(", ")))
             } else if home_only {
                 Check::info(
                     &check_id,
                     format!("missing skills: {} ({not_set_up})", missing.join(", ")),
-                    Some(format!("npx skills add AreteA4/skills --agent {name}")),
+                    Some(fix.clone()),
                 )
             } else {
                 Check::warn(
                     &check_id,
                     format!("missing skills: {}", missing.join(", ")),
-                    Some(format!("npx skills add AreteA4/skills --agent {name}")),
+                    Some(fix),
                 )
             });
         }
@@ -2700,7 +2709,7 @@ mod tests {
         let detection = detect(&env);
         assert_eq!(project_agent_ids(&detection), vec!["cursor".to_string()]);
 
-        let checks = agent_checks(&env, &detection);
+        let checks = agent_checks(&env, &detection, &skills::SKILL_NAMES);
         let status = |id: &str| {
             checks
                 .iter()
@@ -2751,7 +2760,7 @@ mod tests {
         std::fs::create_dir_all(&root).unwrap();
         std::fs::create_dir_all(&home).unwrap();
         let env = Env::new(&root, Some(home), &[]);
-        let checks = agent_checks(&env, &detect(&env));
+        let checks = agent_checks(&env, &detect(&env), &skills::SKILL_NAMES);
         let ids: Vec<&str> = checks.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(ids, vec!["agents.detected", "agents.agents-md"]);
         assert_eq!(checks[1].status, Status::Warn);
