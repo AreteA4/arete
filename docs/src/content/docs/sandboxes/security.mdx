@@ -1,0 +1,59 @@
+---
+title: Security model
+description: What a sandbox enforces, what it does not yet, and where the trust boundary sits.
+---
+
+A sandbox protects you from an agent doing something you didn't allow. It
+does not protect you from an agent making bad decisions within what you
+allowed. This page sets out exactly where that line is.
+
+## Trust boundary
+
+- **The wallet is the boundary.** Anything in the sandbox may be traded, and
+  lost, within the rules. Nothing outside it is reachable.
+- **The key stays with Arete.** Arete signs only transactions that pass your
+  rules. The agent never receives a key, a transaction to sign or an RPC URL.
+- **You sign the rules.** Arete enforces the document you signed, nothing
+  looser.
+- **Owner operations are out of the agent's reach.** Rules, grants, pause and
+  revoke are done in the dashboard; no agent tool can call them.
+
+## Enforced
+
+| Rule                      | What it means                                                                                                     |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Enabled programs only     | Every instruction, and the calls those programs make, must belong to an enabled program or the baseline           |
+| Allowed instructions only | Each program's instructions are limited to the ones you listed, or its safe set                                   |
+| Destinations              | SOL and tokens may leave only to your wallet, your allowlist or the sandbox's own accounts                        |
+| Spend limits              | Per-program SOL limits per window, when you set them                                                              |
+| Exits                     | The agent may always sell or exit a token the sandbox bought, at a loss too                                       |
+| No key handover           | Authority and delegate changes on the sandbox's accounts are refused                                              |
+| Grants                    | Only agents you granted can act, and only with the actions you granted; revoking stops the agent at its next call |
+| Trial run                 | A transaction that would fail is refused before it is signed                                                      |
+| Record                    | Every action is recorded, refusals included                                                                       |
+
+## Not enforced yet
+
+- **Trade quality.** The rules decide where funds may go, not whether a trade
+  is a good one. Price, slippage within what you allowed, and losses are the
+  agent's to manage.
+- **Per-token limits.** Purchases are tracked per mint, but there is no limit
+  per token yet. Use per-program spend limits.
+- **Global caps.** Version 3 rules have no sandbox-wide per-action or
+  per-window caps. The per-program spend limit replaces them.
+- **Read scoping.** Rolling out. See [Read scope](/sandboxes/read-scope/).
+- **Decoded positions.** Lending and liquidity positions show as labelled raw
+  accounts, not as decoded balances.
+
+## Your responsibilities
+
+- **Fund only what you can lose.** Withdraw what you want to keep.
+- **Keep the allowlist tight.** An address on it can receive any amount.
+  Allow only addresses you control.
+- **Keep grants narrow.** Grant each agent only the actions its job needs.
+- **Watch the history.** Refusals in the history show what an agent tried.
+
+## Alpha limits
+
+Few programs are supported at first, requests are rate limited, and the API
+and rules format may change before general availability.

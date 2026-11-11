@@ -1,0 +1,51 @@
+---
+title: Use cases
+description: Common agents you can run in a sandbox, and the rules that fit each one.
+---
+
+A sandbox fits any agent that should act with money without being trusted
+with a key. The pattern is the same each time: fund only what the job needs,
+turn on only the programs the job uses, and cap how fast it can spend.
+
+The examples below describe the shape of the rules. Which programs you can
+turn on depends on what the registry supports during the alpha; the rules
+builder lists them.
+
+## A trading agent
+
+An agent that trades tokens on one venue from a research loop.
+
+- **Fund:** the amount you are willing to see traded, and lost.
+- **Programs:** the venue's program, with only its buy and sell instructions.
+- **Spend limit:** a daily limit on that program, so a bad loop can only
+  spend so much before you notice.
+- **Allowlist:** empty. Proceeds stay in the sandbox or come back to you.
+- **Grant:** `invoke`, and `swap` if the rules allow a swap venue.
+
+Exits stay allowed whatever the limits: the agent can always sell what it
+bought.
+
+## Dollar-cost averaging
+
+An agent that buys a fixed amount of a token on a schedule.
+
+- **Programs:** one swap venue.
+- **Spend limit:** the size of one buy per window, so a scheduler bug can't
+  buy twice in the same window.
+- **Grant:** `swap` only.
+
+## Research and monitoring
+
+An agent that only watches: positions, prices and activity on the programs you
+care about.
+
+- **Fund:** nothing, or a token amount.
+- **Grant:** no actions. The agent uses the read side only: the sandbox's
+  holdings and history, and [program reads and live views](/sandboxes/read-scope/)
+  for the programs in its rules.
+
+## Wind down
+
+Any of the agents above can be told to exit. Grant `withdraw` and the agent
+can send SOL back to your wallet, the only destination a withdraw can have.
+Revoke the grant and it stops at its next call.

@@ -1,0 +1,76 @@
+---
+title: History, holdings and audit
+description: Read every action a sandbox ran, refusals included, and what it holds now, from the agent's tools or the a4 CLI.
+---
+
+Every action an agent asks for is recorded, whether it landed, failed or was
+refused. The agent can read that record, and so can you through the CLI.
+Both reads are read-only.
+
+## From the CLI
+
+```bash
+export ARETE_SANDBOX_ID=<sandbox id>
+a4 sandbox history                         # newest first, 20 per page
+a4 sandbox history --status landed --since 24h
+a4 sandbox history --program Pump.fun --all --json
+a4 sandbox holdings
+a4 sandbox rules show
+```
+
+```text
+Sandbox 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10  history, newest first
+
+  2026-11-12 10:00:00  landed    Pump.fun.buy  -0.105005 SOL, +1234.5 7xKX…gAsU  5Kt3…6uHq
+      events: TradeEvent ×2
+  2026-11-12 09:58:30  rejected  Pump.fun.sell
+      sandbox-guard-trial-failed
+
+More: a4 sandbox history --cursor eyJpZCI6ImEyIn0
+```
+
+| Flag             | Meaning                                                      |
+| ---------------- | ------------------------------------------------------------ |
+| `--sandbox <id>` | The sandbox (default: `ARETE_SANDBOX_ID`)                    |
+| `--limit <n>`    | Actions per page, 1 to 100                                   |
+| `--cursor <c>`   | Carry on from a previous page                                |
+| `--status <s>`   | `landed`, `failed`, `rejected`, `sent`, …                    |
+| `--program <p>`  | Only actions that called this program, by id or name         |
+| `--mint <m>`     | Only actions that moved this token mint                      |
+| `--since <t>`    | RFC 3339, or an age such as `30m`, `24h`, `7d`               |
+| `--all`          | Read every page                                              |
+| `--raw`          | Keep each action's raw parsed transaction in `--json` output |
+
+The filters are applied by the client to the pages it reads. A filtered read
+keeps reading pages until enough actions match (up to 10 pages per call),
+then prints the cursor to carry on from.
+
+## From the agent
+
+`sandbox_history` takes the same filters (`cursor`, `limit`, `status`,
+`program`, `mint`, `since`, `includeRaw`), and `sandbox_holdings` takes
+`includeRaw`.
+
+## What an action records
+
+- its time, status and signature;
+- the programs and decoded instructions;
+- the Anchor events the programs emitted, decoded against each program's IDL
+  (an event that doesn't decode keeps its bytes and the reason);
+- the SOL and token changes;
+- the accounts it touched; and
+- with `--raw` or `includeRaw`, the parsed transaction with balances before
+  and after.
+
+Refusals record the `code` and rule that refused.
+
+## Holdings
+
+Holdings list SOL, each token (with `acquiredBySandbox` for tokens the
+sandbox bought, which it may always sell) and program positions, as of a
+slot. Lending and liquidity positions show as labelled raw accounts for now,
+not decoded balances.
+
+## Caveats
+
+Actions from early in the alpha may show fewer details than newer ones.

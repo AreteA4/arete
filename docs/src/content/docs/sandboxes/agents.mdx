@@ -1,0 +1,67 @@
+---
+title: Agents and access
+description: How an agent gets its own account, how you grant it a sandbox and its actions, and how revoking works.
+---
+
+An agent uses a sandbox with **its own** Arete account, not yours. You grant
+that account access to a sandbox and choose which actions it may run. Your
+keys, and the sandbox wallet's key, never reach the agent.
+
+## The agent's account
+
+The setup prompt has the agent sign up for a restricted agent account:
+
+```bash
+a4 --profile agent auth signup --if-missing --json
+```
+
+That stores an `a4_ak_*` key in the `agent` profile and never prints it. The
+CLI and the MCP server load it for you; `ARETE_API_KEY` set to the agent's
+secret key works too, for hosts where you configure the server by hand.
+
+To attach the agent to your account, have it create a claim link and open the
+link yourself:
+
+```bash
+a4 auth claim-link
+```
+
+The MCP server's `create_claim_link` tool does the same. The agent hands the
+link to you and must not open it itself.
+
+## Grants
+
+A grant gives one agent access to one sandbox, for a set of actions:
+
+| Action     | Lets the agent                                                    |
+| ---------- | ----------------------------------------------------------------- |
+| `invoke`   | Run named instructions of the programs your rules enable          |
+| `swap`     | Swap tokens through the venues your rules allow                   |
+| `withdraw` | Send SOL to your wallet, the only destination a withdraw can have |
+
+Grants are managed on the sandbox's page in the dashboard. An action you
+didn't grant is refused before anything is sent, with
+`sandbox-action-not-granted` and rule `session-grant`. `sandbox_status` tells
+the agent which actions it holds.
+
+## How the grant is enforced
+
+The agent's API key does not call the sandbox directly. The MCP server and
+`a4 sandbox` exchange it for a short-lived token for one sandbox, carrying
+one scope per granted action. That exchange succeeds only while the grant
+exists.
+
+## Revoke
+
+Revoke a grant on the sandbox's page. The agent's next token request fails
+and its next call is refused with `sandbox-grant-missing` or
+`sandbox-session-revoked`. Nothing the agent holds lets it keep going.
+
+To stop every agent at once, [pause](/sandboxes/funding/#pause) the sandbox.
+
+## What agents can never do
+
+- Change the rules, grants, pause state or revocations. These are owner
+  operations, done in the dashboard, and no agent tool reaches them.
+- See a private key, a transaction to sign or an RPC URL.
+- Change authorities or delegates on the sandbox's accounts.

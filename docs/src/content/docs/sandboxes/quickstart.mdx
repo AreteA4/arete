@@ -1,0 +1,111 @@
+---
+title: "Quickstart: your first sandbox"
+description: Create a sandbox, fund it, sign its rules, grant your agent access and have it run its first action.
+---
+
+import CopyPrompt from "../../../components/CopyPrompt.astro";
+
+This walks through one sandbox from start to finish. You need an Arete
+account, a Solana wallet with a little SOL, and a coding agent that supports
+MCP (Claude Code, Cursor, Codex and others; see
+[Connect your agent](/sandboxes/connect-agent/)).
+
+:::caution[Real funds]
+A sandbox holds real SOL. Start with a small amount you are prepared to lose.
+:::
+
+## 1. Set up your agent
+
+Open your agent in a project folder and paste:
+
+<CopyPrompt>
+Read https://docs.arete.run/agent.md and follow it to set up Arete in your
+environment. Verify the setup, and simply explain what Arete is capable of.
+</CopyPrompt>
+
+The agent installs the `a4` CLI, signs up for its own agent account and
+configures the Arete MCP server. The agent's account is separate from yours:
+it gets its own API key and never needs yours.
+
+## 2. Create and fund the sandbox
+
+On the [Sandboxes page](https://app.arete.run/dashboard/sandboxes) of the
+dashboard, create a sandbox. It gets a wallet address. Send SOL to that
+address from your own wallet.
+
+The wallet you fund from matters: your wallet is always an allowed
+destination, so funds can always come back to you.
+
+## 3. Build and sign the rules
+
+In the rules builder:
+
+1. Turn on the programs the agent may use.
+2. Optionally narrow each program to certain instructions, and set a spend
+   limit (for example, at most 1 SOL per day through that program).
+3. Add any other addresses funds may go to. Leave this empty unless you need
+   it.
+4. Sign once with your wallet.
+
+The builder generates a [Rules v3](/sandboxes/rules/) document. You can also
+write one by hand and check it with `a4 sandbox rules validate rules.json`.
+
+## 4. Grant your agent
+
+Grant your agent's account access to the sandbox and choose the actions it may
+run: `invoke` (program instructions), `swap` and `withdraw`. You can change or
+revoke the grant at any time. See [Agents and access](/sandboxes/agents/).
+
+## 5. Point the agent at the sandbox
+
+Give the agent the sandbox id and restart its MCP server with it:
+
+```bash
+export ARETE_SANDBOX_ID=<sandbox id>
+a4 mcp
+```
+
+Most agent hosts start the MCP server for you: add `ARETE_SANDBOX_ID` to the
+`env` of the `arete` server in your host's MCP configuration and restart the
+host. The `sandbox_*` tools then appear.
+
+## 6. Let the agent look around
+
+Ask it to read before it acts:
+
+<CopyPrompt>
+Use the sandbox tools. Show me the sandbox's balance, the actions you are
+granted, and which programs and instructions the rules allow.
+</CopyPrompt>
+
+The agent calls `sandbox_status` and `sandbox_rules`. These change nothing.
+
+## 7. Preview, then run
+
+Give it a task within the rules, and ask it to preview first:
+
+<CopyPrompt>
+Preview the action first with sandbox_preview and tell me what the wallet
+would lose. If it passes, run it with sandbox_invoke and show me the result.
+</CopyPrompt>
+
+`sandbox_preview` builds the transaction and runs every check without signing
+anything. It returns `pass` with what the wallet would lose, or the refusal
+with its `code`, `rule` and a `hint`. `sandbox_invoke` runs the same action
+for real; it is the only tool that moves funds.
+
+## 8. Check the record
+
+Every action is recorded, refusals included:
+
+```bash
+export ARETE_SANDBOX_ID=<sandbox id>
+a4 sandbox history
+a4 sandbox holdings
+```
+
+## Next
+
+- [Rules](/sandboxes/rules/): what each field does and how to tighten them
+- [Actions](/sandboxes/actions/): invoke, swap and withdraw in detail
+- [Use cases](/sandboxes/use-cases/): rule sets for common agents

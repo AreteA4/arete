@@ -1,98 +1,103 @@
 ---
 title: Arete
-description: Get started with Arete by giving your coding agent one setup prompt. Explore protocols, cloud dev environments, and application integration when you want to learn more.
+description: Give your AI agent a funded Solana wallet it can use but never holds the key to. One set of rules you sign decides what it can do and what it can see.
 ---
 
 import { Card, CardGrid } from "@astrojs/starlight/components";
 import CopyPrompt from "../../components/CopyPrompt.astro";
 
-# Get started with Arete
+# Sandboxes for AI agents on Solana
 
-Open your project in a coding agent and paste this prompt:
+An Arete **sandbox** is a financial virtual machine for your agent: a funded
+Solana wallet the agent can trade and act from, inside rules you sign. The
+agent asks for an action; Arete builds the transaction, checks it against your
+rules, signs it and sends it. The agent never sees a private key, a
+transaction to sign or an RPC URL.
+
+:::caution[Alpha]
+Sandboxes are in public alpha and hold real funds. Fund a sandbox only with
+what you are prepared to lose.
+:::
+
+## Start with one prompt
+
+Open your agent and paste:
 
 <CopyPrompt>
 Read https://docs.arete.run/agent.md and follow it to set up Arete in your
 environment. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-Your agent installs the tools, configures the project, and checks the setup.
-Then tell it what you want to build. You can get going from that conversation;
-the guides below are here whenever you want to understand more.
+The agent installs the `a4` CLI and the Arete MCP server. Then
+[create a sandbox](/sandboxes/quickstart/), grant the agent access and give it
+the sandbox id.
 
-## Explore what you can build
-
-Arete lets you compose Solana programs into a protocol with defined steps,
-permissions, and lifecycle. Develop against a persistent mainnet fork, then
-connect an app or agent through the generated client.
+## Why a sandbox
 
 <CardGrid>
-  <Card title="Build your first protocol" icon="laptop">
-    Start a tip jar, run its steps with dev wallets, and watch its state change.
-
-    <a href="/using-stacks/quickstart/" data-docs-cta="install">Start building →</a>
+  <Card title="No key handover" icon="seti:lock">
+    The wallet's key never leaves Arete. The agent names actions; Arete signs
+    them, and only when they pass your rules.
   </Card>
-  <Card title="Integrate an existing protocol" icon="puzzle">
-    Install a published protocol and connect to its deployment with your own key.
-
-    [Build an integration →](/integrating-protocols/overview/)
+  <Card title="Write scope" icon="approve-check">
+    Only the programs and instructions you enabled, within per-program spend
+    limits. Funds can leave only to your wallet, addresses you allowed, or the
+    sandbox's own accounts.
+  </Card>
+  <Card title="Read scope" icon="magnifier">
+    The same rules decide what the agent can see. Program reads and live views
+    are the sandbox's read side: a program that isn't in the sandbox is one
+    the agent can't call and can't read.
+  </Card>
+  <Card title="Auditable and revocable" icon="list-format">
+    Every action is recorded, refusals included, with decoded instructions,
+    events and balance changes. Revoke a grant and the agent stops at its next
+    call.
+  </Card>
+  <Card title="Refusals an agent can act on" icon="information">
+    Each refusal names its `code`, the `rule` that refused, whether to retry
+    and what to change, so the agent corrects the request instead of guessing.
+  </Card>
+  <Card title="Exits always allowed" icon="right-arrow">
+    The agent may always sell or exit a token the sandbox bought, so a
+    position is never stuck behind a rule.
   </Card>
 </CardGrid>
 
-## Define what your product does
+Read scoping is rolling out; see [Read scope](/sandboxes/read-scope/) for what
+applies today.
 
-A raise has contributors, a deadline, and different outcomes. A deal has
-counterparties and a settlement step. These are more than individual
-transactions: they have instances, participants, permissions, and state.
+## Where to go next
 
-An **Arete Protocol** describes that workflow. Its steps compose instructions
-from installed programs, check guards, and declare who signs. Its lifecycle
-can respond to confirmed activity, chain state, and time. Generated clients
-expose those steps and their typed arguments, current state, and events.
+<CardGrid>
+  <Card title="Your first sandbox" icon="rocket">
+    Create, fund, write rules, grant your agent and run its first action.
 
-[Understand protocols →](/getting-started/what-is-arete/)
+    <a href="/sandboxes/quickstart/" data-docs-cta="install">Quickstart →</a>
 
-## Act for users, even when they are away
+  </Card>
+  <Card title="How it works" icon="setting">
+    What happens between the agent's request and a landed transaction.
 
-Some steps need the user's own signature: a deposit, a refund, a claim, a
-rebalance. With `@usearete/automations`, your backend can run them for users
-who opted in, when an event fires, a schedule comes round, or live data
-changes. Each step stays inside limits the user signed, and the key stays
-with your wallet provider; Arete never holds it. That makes products possible
-that a protocol cannot offer on its own: savings that follow the best rate,
-recurring buys, automatic refunds, claim-and-re-enter.
+    [How a request flows →](/sandboxes/how-it-works/)
 
-[Automate steps for users →](/automations/overview/)
+  </Card>
+  <Card title="Rules" icon="document">
+    Which programs, which instructions, how much, and where funds may go.
 
-## Develop against real programs
+    [Write rules →](/sandboxes/rules/)
 
-`a4 dev up` runs your protocol in a cloud dev environment: a persistent fork
-of mainnet hosted for your account. Fund test wallets, advance time, inspect
-activity, save checkpoints, and replay steps. Your local app and coding agent
-use the protocol API against that environment while you edit.
+  </Card>
+  <Card title="Connect your agent" icon="puzzle">
+    MCP tools, the `a4` CLI and agent host configuration.
 
-There is no local validator to install. The CLI, dev UI, and wallet keys stay
-on your machine. Dev-environment SOL has no mainnet value.
+    [Connect an agent →](/sandboxes/connect-agent/)
 
-[Develop and test →](/cli/local-development/)
+  </Card>
+</CardGrid>
 
-## Connect an app or agent
+## Also in Arete
 
-Install a protocol to get its generated client, including the stacks and
-programs it depends on. An app can discover what a wallet can do, prepare a
-step, ask the wallet to sign, submit it, and follow the outcome. React hooks
-follow instances, participants, and available actions. MCP gives agents the
-same protocol workflow.
-
-[Application integration →](/integrating-protocols/overview/) ·
-[Protocols for agents →](/agent-skills/protocols/)
-
-## Extend with programs and live data
-
-Program SDKs provide account readers, address helpers, and instruction builders.
-Live views arrange chain data for your application; stacks bundle those views
-with their programs. Use them within a protocol or independently when your
-application only needs reads, transactions, or subscriptions.
-
-[Program SDKs →](/using-programs/overview/) ·
-[Live views →](/using-stacks/connect/) ·
-[Custom live data →](/building-stacks/workflow/)
+Arete Protocols, automations, cloud dev environments, custom live data and
+the SDKs are in [private beta](/private-beta/). Their docs are public; access
+is enabled per account.

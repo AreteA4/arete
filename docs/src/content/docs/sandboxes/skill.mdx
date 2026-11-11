@@ -1,0 +1,55 @@
+---
+title: The sandbox skill
+description: The arete-sandbox agent skill teaches an agent the sandbox loop, refusals and retries. a4 init installs the skills your account can use.
+---
+
+A skill is a set of instructions an agent loads when a task calls for it.
+`arete-sandbox` teaches an agent to act from a sandbox:
+
+- read `sandbox_status` and `sandbox_rules` before acting;
+- preview every action with `sandbox_preview`, then run it with
+  `sandbox_invoke`;
+- pass amounts as decimal strings in the smallest unit;
+- follow a refusal's `hint`, and never route around a rule;
+- after a timeout, look the action up with `sandbox_action` before retrying;
+- answer "what did you do" from `sandbox_history`; and
+- never ask for a private key or the owner's API key.
+
+The agent loads it when `ARETE_SANDBOX_ID` is set, the `sandbox_*` tools are
+listed, or you ask it to trade, swap, withdraw or explain a refusal.
+
+## Install
+
+`a4 init` installs it, with the MCP configuration, for the agent running the
+command and any agent configured in the project:
+
+```bash
+a4 init -y
+```
+
+To install the skill on its own:
+
+```bash
+npx skills add AreteA4/skills --skill arete-sandbox
+npx skills add AreteA4/skills --skill arete-sandbox --agent claude-code
+```
+
+## Skills follow your account
+
+`a4 init` installs only the skills your account's command groups cover, the
+same groups that decide which `a4` commands are listed. An agent account with
+sandbox access gets:
+
+| Skill            | Group     | Use                                                   |
+| ---------------- | --------- | ----------------------------------------------------- |
+| `arete-sandbox`  | sandboxes | Acting from a sandbox                                 |
+| `arete`          | registry  | Discovery, exact descriptors and project dependencies |
+| `arete-programs` | registry  | Program accounts, PDAs and transactions               |
+
+Accounts in the [private beta](/private-beta/) also get the skills for
+streams, stacks, protocols and dev environments; see
+[Agent skills](/agent-skills/overview/). When the API can't be reached, or
+`a4 init` runs without an account key, it installs every skill.
+
+Run `a4 init -y` again after your account gains access to more, and
+`a4 doctor` reports any skill your account should have that is missing.

@@ -1,15 +1,15 @@
 ---
 title: About Arete
-description: "About Arete, the platform for building and running Solana protocols, and this documentation site at docs.arete.run."
+description: "About Arete, sandboxes for AI agents on Solana, and this documentation site at docs.arete.run."
 sidebar:
   hidden: true
 ---
 
-Arete is a platform for building and running protocols on Solana. Compose
-programs into typed steps with permissions and lifecycle, develop in a
-persistent cloud mainnet fork, and connect applications and agents through
-generated clients. Program SDKs and live views support those protocols and
-remain useful independently.
+Arete gives AI agents sandboxes on Solana: a funded wallet the agent can use
+but never holds the key to, inside rules its owner signs. The rules decide
+which programs the agent may act on and which it may read; program reads and
+live views are the sandbox's read side. Protocols, automations, cloud dev
+environments and SDKs are in private beta.
 
 This website, [docs.arete.run](https://docs.arete.run/), is the documentation
 and developer surface for that platform. It is not a consumer app and it is
@@ -18,21 +18,16 @@ not a generic Solana RPC. The marketing homepage lives at
 
 ## What Arete is for
 
-- Define protocols with steps, guards, roles, instance and participant state,
-  reactions, metadata, and events.
-- Develop in a cloud mainnet fork with local wallets, live activity,
-  checkpoints, scenarios, and replay.
-- Integrate published protocols from apps and agents, with local signing and
-  explicit execution outcomes.
-- Discover programs and stacks from a product question, without guessing
-  program IDs, account layouts, or endpoints.
-- Explore live views through MCP or `a4 stream`.
-- Generate TypeScript, React, Rust, or Python clients bound to an exact
-  catalog descriptor.
-- Read typed program accounts and construct instructions through generated
-  SDKs. Signing and submission stay under user authority.
-- Author a custom stack in the Rust DSL only when the catalog does not already
-  expose the required read model.
+- Give an agent a funded wallet without giving it a key.
+- Limit the agent to the programs, instructions, spend limits and
+  destinations you sign.
+- Scope what the agent can read to the same programs.
+- Record every action an agent asks for, refusals included, with decoded
+  instructions, events and balance changes.
+- Read typed program accounts and live views from the CLI, MCP or generated
+  SDKs.
+- In private beta: compose programs into protocols, automate steps for users,
+  develop in cloud mainnet forks, and author custom live data.
 
 ## What is open source
 
@@ -49,8 +44,8 @@ skills live in [AreteA4/skills](https://github.com/AreteA4/skills).
 
 ## How to start
 
-1. Follow <a href="/using-stacks/quickstart/" data-docs-cta="install">Build your first protocol</a> for a new workflow.
-2. Or [integrate an existing protocol](/integrating-protocols/overview/).
+1. Read [What is a sandbox?](/sandboxes/overview/).
+2. Follow the <a href="/sandboxes/quickstart/" data-docs-cta="install">sandbox quickstart</a>.
 3. Use the [home page's agent prompt](/) for tooling setup.
 
 For contact paths, see [Contact](/contact/). For how this docs site handles

@@ -1,0 +1,50 @@
+---
+title: Read scope
+description: A sandbox's rules decide what an agent can read as well as what it can do. Program reads and live views are the sandbox's read side.
+---
+
+A sandbox is a read sandbox as well as a write sandbox. The programs in its
+rules are the programs the agent can act on, and also the programs it can
+look at. An agent can't act on a program that isn't in the sandbox, and it
+can't read one either.
+
+## Why scope reads
+
+- **Focus.** An agent that can see only the venues you chose reasons about
+  those venues, not everything on chain.
+- **No side channels.** The agent can't use reads to explore protocols you
+  never meant it to touch, or to plan around the rules.
+- **One document.** You decide what the agent may touch once, in the rules
+  you sign. You don't keep a separate read list in step with it.
+
+## The read surface
+
+| Read                                            | What it gives the agent                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Sandbox reads                                   | The wallet's status, rules, holdings and history                                                |
+| [Program Reads](/using-programs/program-reads/) | Typed accounts of a program, decoded with the exact release of its schema                       |
+| [Live views](/using-stacks/connect/)            | Application-shaped data that stays current as chain activity arrives: prices, positions, rounds |
+| [Chain reads](/using-programs/chain-reads/)     | General Solana state: balances, token accounts, transactions                                    |
+
+In a sandbox, program reads and live views are limited to the programs the
+rules enable.
+
+## What applies today
+
+| Read                         | Today                                                                | Coming                                             |
+| ---------------------------- | -------------------------------------------------------------------- | -------------------------------------------------- |
+| Sandbox reads                | Scoped to the sandbox; need a grant                                  |                                                    |
+| Program reads and live views | Through the agent account's own access, not yet limited by the rules | Limited to the programs the sandbox's rules enable |
+| Chain reads                  | Through the agent account's own access                               | Limited to what the sandbox's rules enable         |
+
+Until read scoping lands, treat program reads and live views as the agent's
+account-level reads: useful for deciding what to do, but not yet a boundary.
+The write side is enforced today whatever the agent reads.
+
+## Using reads from an agent
+
+The Arete MCP server gives the agent tools to read live views once
+(`read_view`), to follow them, and to look programs up in the catalog. The
+CLI equivalents are `a4 get`, `a4 stream` and `a4 explore`. See
+[Connect your agent](/sandboxes/connect-agent/) and the
+[MCP reference](/agent-skills/mcp/).

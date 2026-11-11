@@ -1,127 +1,64 @@
 ---
 title: What is Arete?
-description: Compose Solana programs into protocols with steps, permissions, lifecycle, generated clients, and a cloud development environment.
+description: Arete gives AI agents sandboxes on Solana, with program reads and live views as their read side. A short map of the product and a glossary.
 ---
 
-To start using Arete, [give your coding agent the setup prompt](/). The rest
-of this page explains what you can build with it.
+To start using Arete, [give your coding agent the setup prompt](/). This page
+is a map of the product and a glossary.
 
-Arete is a platform for building and running protocols on Solana. You define
-what people can do, who may do it, and how each instance progresses. Arete
-prepares the transactions, tracks the workflow, and generates the interface
-your application or agent uses.
+## Sandboxes
 
-For example, a token raise might let a creator open a raise, participants
-contribute, and eligible wallets claim or refund after the outcome is known.
-Each step uses existing Solana programs. A protocol can compose their
-instructions without requiring a new on-chain program for the composition.
-The underlying programs must still enforce the asset rules your product needs.
+A [sandbox](/sandboxes/overview/) is a financial virtual machine for an AI
+agent: a funded Solana wallet the agent can use but never holds the key to.
+You sign rules that decide which programs the agent may use, which
+instructions, how much it may spend and where funds may go. The agent asks
+for actions; Arete builds, checks, signs and sends them, and records every
+one, refusals included.
 
-## The protocol is the application workflow
+## The read side
 
-An **Arete Protocol** defines:
+The same rules decide what the agent can see. [Program
+reads](/using-programs/program-reads/) return a program's accounts as typed
+data, decoded with the exact release of its schema. [Live
+views](/using-stacks/connect/) keep application-shaped data current as chain
+activity arrives. In a sandbox, both are limited to the programs the rules
+enable. See [Read scope](/sandboxes/read-scope/).
 
-- **Steps:** actions with typed arguments and instruction templates, or custom
-  handlers when templates are insufficient.
-- **Guards and authority:** checks on a step and the wallet or role that signs.
-- **Lifecycle:** state machines for instances and, when needed, participants.
-- **Reactions:** responses to time, conditions, transitions, or confirmations.
-- **Data:** metadata, named events, and the protocol's generated live views.
+## Agent tooling
 
-One raise is an **instance**. A contributor is a **participant** whose state
-can differ from the raise's state. This lets your app ask both “is the raise
-open?” and “has this wallet already claimed?”
+Agents use Arete through the `a4` CLI and its MCP server (`a4 mcp`). One
+setup prompt installs both, signs the agent up for its own restricted account
+and configures the agent host. See [Connect your agent](/sandboxes/connect-agent/).
 
-[Core concepts →](/concepts/protocols/)
+## Private beta
 
-## The development environment is part of the workflow
+Arete Protocols, automations, cloud dev environments, custom live data,
+Squads and the generated SDKs are in [private beta](/private-beta/). Their
+docs are public; access is enabled per account.
 
-Start with `a4 protocol init`, then run `a4 dev up`. Arete builds the protocol
-and deploys it privately into your cloud dev environment, a persistent mainnet
-fork. You can execute steps with test wallets, inspect live activity, change
-balances, move time forward, and repeat experiments from checkpoints.
+## Glossary
 
-Editing the protocol rebuilds and deploys a new release. Its generated client
-follows the local build, so your app can develop alongside the protocol.
-Custom handlers can run without review in private dev environments; production
-handler releases require review.
-
-[Build your first protocol →](/using-stacks/quickstart/)
-
-## Applications and agents call the same protocol
-
-An integrator installs a published protocol with `a4 install protocol` and
-calls its deployment. There is no need to deploy a copy just to use an
-available public protocol.
-
-The generated client exposes the protocol's typed steps, instances,
-participants, metadata, events, and wallet action discovery. A composed
-session brings installed dependencies together:
-
-- `session.protocols` contains protocol clients;
-- `session.stacks` contains their live data and other installed stacks;
-- `session.programs` contains their programs and standalone Program SDKs;
-- `session.chain` provides general Solana reads.
-
-Agents use MCP tools to inspect actions and prepare and submit steps. An
-optional local signer can execute under an explicit policy. Your application
-uses generated SDKs directly.
-
-[Integrate a protocol →](/integrating-protocols/overview/) ·
-[Use an agent →](/agent-skills/protocols/)
-
-## Programs and views remain useful on their own
-
-A **Program SDK** provides typed accounts, address helpers, and transaction
-builders for a Solana program. A **live view** maintains data in the shape an
-app needs. A **stack** bundles selected live views with the programs they use.
-You can use each independently of protocols.
-
-Discover programs and stacks by intent through the catalog. Open the exact
-descriptor before installing: it reports which `read`, `build`, and
-`subscribe` modes and SDK targets are available. Protocol listings are a
-separate directory of callable Arete Protocols.
-
-[Programs, views, and stacks →](/concepts/programs-views-stacks/)
-
-## Execution and trust
-
-Preparing a step returns transactions for inspection and signing. Submitting
-the signed transactions starts execution; confirmation determines its outcome.
-Available actions can change between discovery and preparation.
-
-Your wallet signs locally. Protocol guards govern the Arete workflow;
-on-chain programs enforce asset rules, and users may interact with those
-programs outside Arete. A reviewed release and an execution receipt provide
-specific evidence, not a guarantee about every use of the underlying programs.
-
-[Review, trust, and receipts →](/deploying-protocols/trust/)
-
-## Quick glossary
-
-| Term            | Meaning                                                                                  |
-| --------------- | ---------------------------------------------------------------------------------------- |
-| Protocol        | A defined workflow composed from Solana programs, with steps, permissions, and lifecycle |
-| Instance        | One occurrence of the workflow, such as a raise or deal                                  |
-| Participant     | A wallet's relationship and state within an instance                                     |
-| Step            | An action with arguments, checks, authority, and transaction construction                |
-| Guard           | A named condition that must pass to prepare a step                                       |
-| Release         | An immutable version of protocol behavior                                                |
-| Deployment      | A release configured to run with selected resources, fees, and access                    |
-| Dev environment | A persistent mainnet fork for development and testing                                    |
-| Automation      | A backend running a user's steps for them, within limits the user signed                 |
-| Consent         | The message a user signs to opt in to automations: steps, limits, settings, expiry       |
-| Program         | An on-chain Solana program, also called a smart contract                                 |
-| Program SDK     | Generated readers, addresses, and builders for a program                                 |
-| View            | Application-shaped data kept current as chain activity arrives                           |
-| Stack           | An installable bundle of selected views and their Program SDKs                           |
-| Descriptor      | The exact capabilities and identities of an installable package                          |
-| Catalog         | Discovery for programs and stacks by intent and available mode                           |
-| MCP             | Model Context Protocol, the interface agents use to call tools                           |
-| Agent           | A coding assistant that can run commands and edit your project                           |
-| `a4`            | Arete's command-line tool                                                                |
-| PDA             | Program-derived address, calculated from a program and its seeds                         |
-
-“Protocol” in these guides means an Arete Protocol. Catalog knowledge may also
-describe external Solana protocols. MCP and the WebSocket protocol are
-communication formats, separate from the product's Protocol feature.
+| Term            | Meaning                                                                                        |
+| --------------- | ---------------------------------------------------------------------------------------------- |
+| Sandbox         | A hosted wallet an agent can use within rules its owner signed, without holding its key        |
+| Owner           | The person who creates, funds and sets the rules of a sandbox                                  |
+| Rules           | The signed document listing a sandbox's programs, instructions, spend limits and destinations  |
+| Grant           | An owner's permission for one agent to use one sandbox, for chosen actions                     |
+| Action          | What an agent asks a sandbox to run: `invoke`, `swap` or `withdraw`                            |
+| Preview         | A dry run of an action: every check, nothing signed                                            |
+| Refusal         | An action the rules stopped, with its `code`, `rule` and a `hint`                              |
+| Allowlist       | Extra addresses funds may go to, besides the owner's wallet and the sandbox's own accounts     |
+| Spend limit     | The most SOL a sandbox may spend through one program per window                                |
+| Read scope      | The rule that an agent can read only the programs its sandbox enables                          |
+| Program         | An on-chain Solana program, also called a smart contract                                       |
+| Program Read    | Typed reads of a program's accounts through an exact, release-pinned decoder                   |
+| View            | Application-shaped data kept current as chain activity arrives                                 |
+| Stack           | An installable bundle of selected views and the programs they read                             |
+| Catalog         | Discovery for programs and stacks by intent                                                    |
+| MCP             | Model Context Protocol, the interface agents use to call tools                                 |
+| Agent           | An AI assistant that can call tools, run commands and edit a project                           |
+| `a4`            | Arete's command-line tool                                                                      |
+| PDA             | Program-derived address, calculated from a program and its seeds                               |
+| Protocol        | (Private beta) A workflow composed from Solana programs, with steps, permissions and lifecycle |
+| Automation      | (Private beta) A backend running a user's protocol steps within limits the user signed         |
+| Dev environment | (Private beta) A persistent mainnet fork for development and testing                           |
