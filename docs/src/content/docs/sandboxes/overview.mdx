@@ -48,9 +48,10 @@ sandbox, and it can't read one either.
 That keeps an agent focused on the venues you chose, and stops it from
 wandering into protocols you never meant it to touch.
 
-:::note[Rolling out]
-Write scoping is enforced today. Read scoping is being rolled out; see
-[Read scope](/sandboxes/read-scope/) for what applies now.
+:::note[What applies today]
+Writes are scoped, and so are program reads and live views read through the
+sandbox. General chain reads are not scoped yet; see
+[Read scope](/sandboxes/read-scope/).
 :::
 
 ## Who does what

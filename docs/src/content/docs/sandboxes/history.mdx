@@ -10,7 +10,8 @@ Both reads are read-only.
 ## From the CLI
 
 ```bash
-export ARETE_SANDBOX_ID=<sandbox id>
+a4 sandbox list                            # granted sandboxes; * marks the one in use
+a4 sandbox use <id or name>                # choose one for this folder
 a4 sandbox history                         # newest first, 20 per page
 a4 sandbox history --status landed --since 24h
 a4 sandbox history --program Pump.fun --all --json
@@ -29,17 +30,17 @@ Sandbox 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10  history, newest first
 More: a4 sandbox history --cursor eyJpZCI6ImEyIn0
 ```
 
-| Flag             | Meaning                                                      |
-| ---------------- | ------------------------------------------------------------ |
-| `--sandbox <id>` | The sandbox (default: `ARETE_SANDBOX_ID`)                    |
-| `--limit <n>`    | Actions per page, 1 to 100                                   |
-| `--cursor <c>`   | Carry on from a previous page                                |
-| `--status <s>`   | `landed`, `failed`, `rejected`, `sent`, …                    |
-| `--program <p>`  | Only actions that called this program, by id or name         |
-| `--mint <m>`     | Only actions that moved this token mint                      |
-| `--since <t>`    | RFC 3339, or an age such as `30m`, `24h`, `7d`               |
-| `--all`          | Read every page                                              |
-| `--raw`          | Keep each action's raw parsed transaction in `--json` output |
+| Flag                   | Meaning                                                                                                           |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `--sandbox <id\|name>` | Another sandbox, for this command only (default: the one chosen with `a4 sandbox use`, else the only one granted) |
+| `--limit <n>`          | Actions per page, 1 to 100                                                                                        |
+| `--cursor <c>`         | Carry on from a previous page                                                                                     |
+| `--status <s>`         | `landed`, `failed`, `rejected`, `sent`, …                                                                         |
+| `--program <p>`        | Only actions that called this program, by id or name                                                              |
+| `--mint <m>`           | Only actions that moved this token mint                                                                           |
+| `--since <t>`          | RFC 3339, or an age such as `30m`, `24h`, `7d`                                                                    |
+| `--all`                | Read every page                                                                                                   |
+| `--raw`                | Keep each action's raw parsed transaction in `--json` output                                                      |
 
 The filters are applied by the client to the pages it reads. A filtered read
 keeps reading pages until enough actions match (up to 10 pages per call),

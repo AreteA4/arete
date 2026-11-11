@@ -7,8 +7,9 @@ description: Create a sandbox, put funds into its wallet, pause it, and get fund
 
 Create a sandbox on the
 [Sandboxes page](https://app.arete.run/dashboard/sandboxes) of the
-dashboard. It gets an id (a UUID) and a Solana wallet address. The id is what
-you give an agent; the address is where funds go.
+dashboard. It gets a name, an id (a UUID) and a Solana wallet address. The
+address is where funds go. An agent you grant it to finds it by name or id
+with `sandbox_list`; you don't need to pass it the id.
 
 Sandboxes are available per account during the alpha.
 

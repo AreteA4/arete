@@ -31,6 +31,7 @@ allowed. This page sets out exactly where that line is.
 | Grants                    | Only agents you granted can act, and only with the actions you granted; revoking stops the agent at its next call |
 | Trial run                 | A transaction that would fail is refused before it is signed                                                      |
 | Record                    | Every action is recorded, refusals included                                                                       |
+| Scoped reads              | Program reads and live views read through the sandbox reach only the programs in its rules                        |
 
 ## Not enforced yet
 
@@ -41,7 +42,9 @@ allowed. This page sets out exactly where that line is.
   per token yet. Use per-program spend limits.
 - **Global caps.** Version 3 rules have no sandbox-wide per-action or
   per-window caps. The per-program spend limit replaces them.
-- **Read scoping.** Rolling out. See [Read scope](/sandboxes/read-scope/).
+- **Chain reads.** Program reads and live views read through a sandbox are
+  scoped to its rules; general chain reads are not yet. See
+  [Read scope](/sandboxes/read-scope/).
 - **Decoded positions.** Lending and liquidity positions show as labelled raw
   accounts, not as decoded balances.
 

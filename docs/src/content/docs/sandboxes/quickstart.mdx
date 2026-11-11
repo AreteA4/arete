@@ -56,18 +56,21 @@ Grant your agent's account access to the sandbox and choose the actions it may
 run: `invoke` (program instructions), `swap` and `withdraw`. You can change or
 revoke the grant at any time. See [Agents and access](/sandboxes/agents/).
 
-## 5. Point the agent at the sandbox
+## 5. Let the agent find the sandbox
 
-Give the agent the sandbox id and restart its MCP server with it:
+There is no sandbox id to copy into the agent's configuration. The MCP server
+asks Arete which sandboxes the agent has been granted. If this is the only
+one, every tool uses it.
 
-```bash
-export ARETE_SANDBOX_ID=<sandbox id>
-a4 mcp
-```
+If you have granted the agent more than one, ask it to choose:
 
-Most agent hosts start the MCP server for you: add `ARETE_SANDBOX_ID` to the
-`env` of the `arete` server in your host's MCP configuration and restart the
-host. The `sandbox_*` tools then appear.
+<CopyPrompt>
+List the sandboxes you have been granted with sandbox_list, then select the
+one called Treasury with sandbox_select.
+</CopyPrompt>
+
+The choice is saved for the project folder. Restart the agent host if it was
+already running before setup, so the `sandbox_*` tools appear.
 
 ## 6. Let the agent look around
 
@@ -99,7 +102,7 @@ for real; it is the only tool that moves funds.
 Every action is recorded, refusals included:
 
 ```bash
-export ARETE_SANDBOX_ID=<sandbox id>
+a4 sandbox list        # the sandboxes granted to the agent, and the one in use
 a4 sandbox history
 a4 sandbox holdings
 ```

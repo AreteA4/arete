@@ -29,7 +29,10 @@ Solana
 ## Authentication
 
 The agent uses its own account's secret API key (`ARETE_API_KEY`, or its
-`a4` login). The MCP server exchanges it for a short-lived token for one
+`a4` login). With it, the MCP server lists the sandboxes the agent has been
+granted and picks the one a call is for: the call's `sandbox` argument, else
+the one chosen with `sandbox_select`, else the only active sandbox granted.
+It then exchanges the key for a short-lived token for that one
 sandbox. The exchange succeeds only while you grant that agent access, and the
 token carries one scope per action you granted. When the token expires it is
 minted again; when you revoke the grant, the next mint fails and the agent

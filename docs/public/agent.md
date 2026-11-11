@@ -47,17 +47,26 @@ Never read, print, or copy credential files or keys. Never put a key in source.
 
 A sandbox is a hosted wallet you can use without holding its key, within
 rules its owner signed. The owner creates and funds it, signs the rules and
-grants this agent's account access in the dashboard, then gives you the
-sandbox id. Set `ARETE_SANDBOX_ID` in the `arete` MCP server's `env` (or the
-shell) and the `sandbox_*` tools appear. Loop: `sandbox_status` and
-`sandbox_rules` first, `sandbox_preview` every action, then `sandbox_invoke`
-(the only tool that moves funds). On a refusal, follow its `hint`; after a
-`sandbox_invoke` timeout, look the action up with `sandbox_action` and its
-`idempotencyKey` before retrying. `a4 sandbox history`, `a4 sandbox holdings`
-and `a4 sandbox rules show` read the same sandbox from the CLI. Guide:
-https://docs.arete.run/sandboxes/connect-agent/. Never ask the owner for a
-private key or their own API key; owner operations (rules, grants, pause,
-revoke) are not available to agents.
+grants this agent's account access in the dashboard. You need no sandbox id:
+with the agent key, the `arete` MCP server lists the `sandbox_*` tools. Call
+`sandbox_list` to see the sandboxes you have been granted; with exactly one
+active, every tool uses it, and with several, choose one with `sandbox_select`
+(saved for the project) or pass `sandbox` (id or name) on a single call. A
+refusal with `sandbox-selection-required` or `sandbox-none-granted` means
+list and select first.
+
+Loop: `sandbox_status` and `sandbox_rules` first, `sandbox_preview` every
+action, then `sandbox_invoke` (the only tool that moves funds). On a refusal,
+follow its `hint`; after a `sandbox_invoke` timeout, look the action up with
+`sandbox_action` and its `idempotencyKey` before retrying. Read through the
+sandbox: `sandbox_reads` lists the programs its rules let you read, and
+`program_read_account`, `read_view` and `connect` take the same `sandbox`.
+From the CLI: `a4 sandbox list`, `a4 sandbox use <id|name>`,
+`a4 sandbox history`, `a4 sandbox holdings`, `a4 sandbox rules show`,
+`a4 sandbox reads`, and `--sandbox <id|name>` on `a4 program account decode`,
+`a4 get` and `a4 stream`. Guide: https://docs.arete.run/sandboxes/connect-agent/.
+Never ask the owner for a private key or their own API key; owner operations
+(rules, grants, pause, revoke) are not available to agents.
 
 ## Protocol workflows (private beta)
 
@@ -115,7 +124,8 @@ Arete can:
 - give an agent a sandbox: a funded Solana wallet it uses without holding the key, within rules its owner signed (programs, instructions, per-program spend limits, allowed destinations), with exits always allowed (https://docs.arete.run/sandboxes/overview/);
 - preview any sandbox action as a dry run, run it exactly once under an idempotency key, and explain refusals with a code, the rule and a hint;
 - record every sandbox action, refusals included, with decoded instructions, events and balance changes, and report holdings;
-- scope the agent's reads to the programs its sandbox enables, through program reads and live views (rolling out: https://docs.arete.run/sandboxes/read-scope/);
+- list the sandboxes an agent has been granted and select one (`sandbox_list`, `sandbox_select`, `a4 sandbox use`), with no sandbox id to configure;
+- scope the agent's program reads and live views to the programs its sandbox enables, by reading through the sandbox (https://docs.arete.run/sandboxes/read-scope/);
 - discover relevant programs and stacks from intent through the public catalog;
 - read deployed live views once with `a4 get` (or MCP `read_view`), or follow them with MCP or `a4 stream`;
 - read typed program accounts and generic Solana chain state;

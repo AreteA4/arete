@@ -6,6 +6,8 @@ description: The arete-sandbox agent skill teaches an agent the sandbox loop, re
 A skill is a set of instructions an agent loads when a task calls for it.
 `arete-sandbox` teaches an agent to act from a sandbox:
 
+- find its sandbox with `sandbox_list`, and choose one with `sandbox_select`
+  when several are granted;
 - read `sandbox_status` and `sandbox_rules` before acting;
 - preview every action with `sandbox_preview`, then run it with
   `sandbox_invoke`;
@@ -15,8 +17,8 @@ A skill is a set of instructions an agent loads when a task calls for it.
 - answer "what did you do" from `sandbox_history`; and
 - never ask for a private key or the owner's API key.
 
-The agent loads it when `ARETE_SANDBOX_ID` is set, the `sandbox_*` tools are
-listed, or you ask it to trade, swap, withdraw or explain a refusal.
+The agent loads it when the `sandbox_*` tools are listed, or you ask it to
+trade, swap, withdraw, read through a sandbox or explain a refusal.
 
 ## Install
 

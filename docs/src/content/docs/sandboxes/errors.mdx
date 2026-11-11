@@ -20,6 +20,20 @@ and what triggered it (`program`, `instruction`, `mint`, `attempted`, `cap`,
   `idempotencyKey` first: if it ran, don't repeat it; if it was refused, retry
   with a new key; if no action has the key, retry with the same key.
 
+## Choosing a sandbox
+
+A call that can't tell which sandbox it is for is refused before anything is
+sent to a sandbox. The hint names the tools to call: `sandbox_list`, then
+`sandbox_select` (or `a4 sandbox list` and `a4 sandbox use`).
+
+| Code                         | Meaning                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `sandbox-selection-required` | Several sandboxes are granted and none is chosen; the error lists them                    |
+| `sandbox-none-granted`       | No sandbox has been granted to this agent yet                                             |
+| `sandbox-unknown`            | The `sandbox` argument matches no granted sandbox                                         |
+| `sandbox-paused`             | Every granted sandbox is paused                                                           |
+| `sandbox-not-configured`     | The API can't list grants (an older server): pass a sandbox id, or set `ARETE_SANDBOX_ID` |
+
 ## Rules
 
 | Code                                                                                 | Meaning                                                                |

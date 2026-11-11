@@ -44,6 +44,10 @@ didn't grant is refused before anything is sent, with
 `sandbox-action-not-granted` and rule `session-grant`. `sandbox_status` tells
 the agent which actions it holds.
 
+The agent sees every sandbox granted to it with `sandbox_list` (or
+`a4 sandbox list`): you don't pass it an id. With more than one, it picks the
+one a task is for with `sandbox_select`, or names it on a single call.
+
 ## How the grant is enforced
 
 The agent's API key does not call the sandbox directly. The MCP server and

@@ -4,9 +4,9 @@ description: Read generic Solana state through the managed gateway or an explici
 ---
 
 :::note[In a sandbox]
-Program reads are a sandbox's read side: a sandbox's rules limit them to the
-programs it enables. This is rolling out; see
-[Read scope](/sandboxes/read-scope/) for what applies today.
+Chain reads are not yet scoped by a sandbox's rules: they use the agent
+account's own access. Program reads and live views are; see
+[Read scope](/sandboxes/read-scope/).
 :::
 
 Some data belongs to Solana itself and not to any one program: a wallet's SOL
