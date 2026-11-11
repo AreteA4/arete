@@ -414,6 +414,7 @@ returned.
 | `sandbox_action`   | `actionId` or `idempotencyKey`                                               | one action's status                                                                            |
 | `sandbox_history`  | `cursor?`, `limit?`, `status?`, `program?`, `mint?`, `since?`, `includeRaw?` | read-only: past actions, newest first, with decoded instructions and balance changes           |
 | `sandbox_holdings` | `includeRaw?`                                                                | read-only: SOL, tokens (with `acquiredBySandbox`) and program positions                        |
+| `sandbox_reads`    |                                                                              | read-only: the programs the sandbox can read, exactly the programs its rules enable            |
 
 Every tool from `sandbox_status` down also takes `sandbox?` (an id or a
 granted sandbox's name) for that call alone. Without it, a call uses the
@@ -430,6 +431,35 @@ Every `sandbox_*` error carries `code`, `retryable` and a `hint`, even when
 the API could not be reached. With `retryable: true`, retry a read or a
 `sandbox_preview` as is; after a `sandbox_invoke`, look the action up with
 `sandbox_action` and its `idempotencyKey` first.
+
+### Reading through a sandbox
+
+`sandbox_reads` lists the programs a sandbox can read: exactly the programs
+its owner-signed rules enable. The read tools take an optional `sandbox` (a
+`sandboxId` or name from `sandbox_list`) to read through it:
+
+| Tool                   | Arguments                                                     | Returns                                                                                               |
+| ---------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `program_read_account` | `address`, `program?`, `account?`, `sandbox?`                 | one account decoded by Program Read: `program`, `programId`, `account`, release, `value`, `selection` |
+| `read_view`            | as in [Reading a view once](#reading-a-view-once), `sandbox?` | a view's current entities                                                                             |
+| `connect`              | `url`, `sandbox?`                                             | a connection whose sessions are minted through the sandbox                                            |
+
+Through a sandbox, the read session is minted through it, not with the
+account's key: only programs in its rules can be read, and a stack opens only
+when every program it decodes is in them. A refusal carries `code` (such as
+`sandbox-program-not-allowlisted`, with the `programs` the rules leave out),
+`retryable` and a `hint`. A followed view's session is re-minted about every
+minute through the same sandbox, so a rules change, pause or revoke reaches it
+within a minute.
+
+An account whose groups grant only `sandboxes` among a read tool's groups
+reads through a sandbox without `sandbox`: the one the `sandbox_*` tools
+resolve to (chosen with `sandbox_select`, else `ARETE_SANDBOX_ID`, else the
+only active sandbox granted). When none resolves, the tool fails with the same
+code and hint as the sandbox tools (`sandbox-selection-required`,
+`sandbox-none-granted`, `sandbox-unknown`, `sandbox-paused`): call
+`sandbox_list`, then `sandbox_select`. It never falls back to the account's
+key. Any other account reads with its own key unless `sandbox` is given.
 
 ### Dev environment tools
 

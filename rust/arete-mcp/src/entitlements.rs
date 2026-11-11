@@ -26,7 +26,8 @@ pub enum Group {
     Account,
     /// Sandbox wallets (`sandbox_*` tools).
     Sandboxes,
-    /// Live stack streams, views and snapshots (`a4 stream`, `a4 get`).
+    /// Live stack streams, views and snapshots (`a4 stream`, `a4 get`), and
+    /// program reads (`a4 program account`).
     Streams,
     /// The account's own stacks and programs (`a4 create`, `a4 up`,
     /// `a4 stack`, `a4 program`).
@@ -119,7 +120,8 @@ impl Surface {
 pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
     const ACCOUNT: &[Group] = &[Group::Account];
     const SANDBOXES: &[Group] = &[Group::Sandboxes];
-    const STREAMS: &[Group] = &[Group::Streams];
+    const STREAM_READS: &[Group] = &[Group::Streams, Group::Sandboxes];
+    const PROGRAM_READS: &[Group] = &[Group::Stacks, Group::Streams, Group::Sandboxes];
     const REGISTRY: &[Group] = &[Group::Registry];
     const PROTOCOLS: &[Group] = &[Group::Protocols];
     const DEV: &[Group] = &[Group::Dev];
@@ -135,9 +137,12 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
         | "get_program_knowledge"
         | "get_recipe"
         | "list_concepts" => REGISTRY,
+        // Live views and program reads: a sandbox reads its own programs
+        // through them when it is the only one of their groups granted.
         "connect" | "disconnect" | "read_view" | "subscribe" | "unsubscribe" | "query_entities"
         | "get_entity" | "list_entities" | "get_recent" | "list_subscriptions"
-        | "list_connections" => STREAMS,
+        | "list_connections" => STREAM_READS,
+        "program_read_account" => PROGRAM_READS,
         _ if tool.starts_with("sandbox_") => SANDBOXES,
         _ if tool.starts_with("explore_") => REGISTRY,
         _ if tool.starts_with("dev_") => DEV,
@@ -217,7 +222,16 @@ mod tests {
         assert!(mcp_tool_visible(&sandboxes, "sandbox_invoke"));
         assert!(!mcp_tool_visible(&sandboxes, "dev_status"));
         assert!(!mcp_tool_visible(&sandboxes, "protocol_submit"));
-        assert!(!mcp_tool_visible(&sandboxes, "connect"));
+        // A sandbox reads its own programs and their stacks.
+        for read in ["connect", "read_view", "subscribe", "program_read_account"] {
+            assert!(mcp_tool_visible(&sandboxes, read), "{read}");
+        }
+        let registry = Surface::Groups([Group::Registry].into_iter().collect());
+        assert!(!mcp_tool_visible(&registry, "read_view"));
+        assert!(!mcp_tool_visible(&registry, "program_read_account"));
+        let stacks = Surface::Groups([Group::Stacks].into_iter().collect());
+        assert!(mcp_tool_visible(&stacks, "program_read_account"));
+        assert!(!mcp_tool_visible(&stacks, "read_view"));
         assert!(!mcp_tool_visible(&sandboxes, "explore_stacks"));
         assert!(!mcp_tool_visible(&sandboxes, "describe_sdk"));
         assert!(mcp_tool_visible(&Surface::Everything, "dev_status"));

@@ -18,6 +18,7 @@ pub mod field_amounts;
 mod filter;
 pub mod oneshot;
 pub mod prepared_summary;
+pub mod program_read;
 pub mod protocol;
 pub mod protocol_agent;
 pub mod protocol_api;

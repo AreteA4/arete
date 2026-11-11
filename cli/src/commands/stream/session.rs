@@ -419,14 +419,14 @@ impl StreamSession {
                 let read = self.read(socket, handler, stop.as_mut());
                 tokio::select! {
                     end = read => Step::Ended(end?),
-                    retarget = next_retarget(&mut follow) => Step::Retarget(retarget),
+                    retarget = next_retarget(&mut follow) => Step::Retarget(Box::new(retarget)),
                 }
             };
             // A redeploy drops the read, and the socket with it.
             let end = match step {
                 Step::Ended(end) => Some(end),
                 Step::Retarget(retarget) => {
-                    self.retarget(retarget, handler);
+                    self.retarget(*retarget, handler);
                     None
                 }
             };
@@ -448,6 +448,9 @@ impl StreamSession {
                             continue;
                         }
                         Err(error) => {
+                            if let Some(refused) = token::fatal_refusal(&error) {
+                                return Ok(StreamEnd::Failed(StreamFailure::Refused(refused)));
+                            }
                             reason = format!("{error:#}");
                             retry = true;
                         }
@@ -491,6 +494,9 @@ impl StreamSession {
                 match connected {
                     Ok(socket) => break socket,
                     Err(error) => {
+                        if let Some(refused) = token::fatal_refusal(&error) {
+                            return Ok(StreamEnd::Failed(StreamFailure::Refused(refused)));
+                        }
                         reason = format!("{error:#}");
                         retry = true;
                     }
@@ -541,7 +547,7 @@ impl StreamSession {
 /// What ended one connection's read.
 enum Step {
     Ended(StreamEnd),
-    Retarget(Retarget),
+    Retarget(Box<Retarget>),
 }
 
 /// The next redeploy to follow; never resolves without a watcher, or once
@@ -623,6 +629,10 @@ where
                 }
                 token::RefreshEvent::Failed(error) => {
                     handler.on_notice(Notice::RefreshFailed(&error));
+                }
+                token::RefreshEvent::Refused(reason) => {
+                    let _ = sink.send(Message::Close(None)).await;
+                    return Ok(StreamEnd::Failed(StreamFailure::Refused(reason)));
                 }
             },
         }

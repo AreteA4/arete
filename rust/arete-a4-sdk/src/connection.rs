@@ -1,6 +1,6 @@
 use crate::auth::{
-    build_websocket_url, hosted_auth_required_error, parse_jwt_expiry, token_is_expiring,
-    token_refresh_delay, AuthConfig, AuthToken, ResolvedAuthStrategy, TokenEndpointRequest,
+    build_websocket_url, hosted_auth_required_error, parse_jwt_expiry, token_is_expiring_since,
+    token_refresh_delay_since, AuthConfig, AuthToken, ResolvedAuthStrategy, TokenEndpointRequest,
     TokenEndpointResponse, TokenTransport, MIN_REFRESH_DELAY_SECONDS,
 };
 use crate::config::ConnectionConfig;
@@ -394,6 +394,9 @@ struct RuntimeAuthState {
     handshake_headers: HashMap<String, String>,
     current_token: Option<String>,
     token_expiry: Option<u64>,
+    /// When the current token was obtained, so a short-lived one is
+    /// refreshed halfway through its life.
+    token_issued_at: Option<u64>,
     http_client: reqwest::Client,
 }
 
@@ -409,6 +412,7 @@ impl RuntimeAuthState {
             handshake_headers,
             current_token: None,
             token_expiry: None,
+            token_issued_at: None,
             http_client: reqwest::Client::new(),
         }
     }
@@ -429,17 +433,26 @@ impl RuntimeAuthState {
     fn clear_cached_token(&mut self) {
         self.current_token = None;
         self.token_expiry = None;
+        self.token_issued_at = None;
     }
 
     fn refresh_timer(&self) -> Option<Pin<Box<Sleep>>> {
-        let delay = token_refresh_delay(self.token_expiry, current_unix_timestamp())?;
+        let delay = token_refresh_delay_since(
+            self.token_expiry,
+            self.token_issued_at,
+            current_unix_timestamp(),
+        )?;
         Some(Box::pin(sleep(Duration::from_secs(delay))))
     }
 
     async fn resolve_token(&mut self, force_refresh: bool) -> Result<Option<String>, AreteError> {
         if !force_refresh {
             if let Some(token) = self.current_token.clone() {
-                if !token_is_expiring(self.token_expiry, current_unix_timestamp()) {
+                if !token_is_expiring_since(
+                    self.token_expiry,
+                    self.token_issued_at,
+                    current_unix_timestamp(),
+                ) {
                     return Ok(Some(token));
                 }
             }
@@ -485,7 +498,8 @@ impl RuntimeAuthState {
         }
 
         let expires_at = token.expires_at.or_else(|| parse_jwt_expiry(&token_value));
-        if expires_at.is_some() && token_is_expiring(expires_at, current_unix_timestamp()) {
+        let now = current_unix_timestamp();
+        if expires_at.is_some() && token_is_expiring_since(expires_at, Some(now), now) {
             return Err(AreteError::WebSocket {
                 message: "Authentication token is expired".to_string(),
                 code: Some(crate::error::AuthErrorCode::TokenExpired),
@@ -494,6 +508,7 @@ impl RuntimeAuthState {
 
         self.current_token = Some(token_value.clone());
         self.token_expiry = expires_at;
+        self.token_issued_at = Some(now);
         Ok(token_value)
     }
 
@@ -755,6 +770,7 @@ fn spawn_connection_loop(
                                             if refresh_response.success {
                                                 if let Some(expires_at) = refresh_response.expires_at {
                                                     auth_state.token_expiry = Some(expires_at);
+                                                    auth_state.token_issued_at = Some(current_unix_timestamp());
                                                 }
                                                 refresh_timer = auth_state.refresh_timer();
                                             } else {

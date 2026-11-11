@@ -132,6 +132,7 @@ Scripts that read inside those pass-through objects should accept both spellings
 | `a4 sandbox list`                                                             | The sandboxes your agent has been granted, and the one in use     |
 | `a4 sandbox use <id\|name>`                                                   | Choose the sandbox `a4 sandbox` and `a4 mcp` use in this folder   |
 | `a4 sandbox history\|holdings\|rules show`                                    | A sandbox's actions, holdings and rules (alpha)                   |
+| `a4 sandbox reads`                                                            | The programs a sandbox can read (alpha)                           |
 | `a4 sandbox rules validate <file>`                                            | Check a Rules v3 file locally                                     |
 | `a4 protocol squads proposer\|status [target]`                                | Bring your own Squads multisig: the proposer and its status       |
 | `a4 status`                                                                   | Show project overview                                             |
@@ -1001,6 +1002,9 @@ a4 get OreRound/latest --stack ore --limit 1
 a4 get OreRound/latest --stack ore --limit 1 \
   --select id.round_id,state.total_deployed,treasury.motherlode
 
+# Through a sandbox: only stacks whose programs are all in its rules
+a4 get OreRound/latest --stack ore --limit 1 --sandbox <id|name>
+
 # Whole nested objects, kept nested
 a4 get OreRound/latest --stack ore --limit 1 --select id,state.*
 
@@ -1067,7 +1071,7 @@ field's `amount` (see [Token amounts](#a4-explore)).
 ### a4 stream \<Entity\>/\<view\>
 
 Follow a view's live updates. Run `a4 stream --help` for filtering,
-selection, history, recording and TUI options.
+selection, history, recording and TUI options. `--sandbox <id|name>` streams through a sandbox (see [Reading through a sandbox](#reading-through-a-sandbox)).
 
 **Dev environments.** `--dev` streams from the stacks serving in the
 project's cloud dev environment instead of a named stack, protocol first: it
@@ -1407,6 +1411,7 @@ a4 sandbox history --cursor <nextCursor>          # the next page
 a4 sandbox history --all --json                   # every page, as JSON
 a4 sandbox holdings                               # SOL, tokens, positions
 a4 sandbox rules show                             # the rules, as the agent sees them
+a4 sandbox reads                                  # the programs the sandbox can read
 a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: stdin)
 ```
 
@@ -1437,6 +1442,44 @@ exits 1 when the file has errors, and prints the errors and warnings with
 the JSON path of each (`--json`: `{ valid, errors, warnings, enabledPrograms }`).
 A refusal from the API exits 77 (not granted or not signed in), 75 (rate
 limited) or 1, and with `--json` prints its problem body.
+
+#### Reading through a sandbox
+
+A sandbox's rules decide what it can read as well as what it can do. Find
+the sandbox first, then read through it:
+
+```bash
+a4 sandbox list                                           # granted sandboxes; * marks the one in use
+a4 sandbox use Treasury                                   # choose one (id or name) for this folder
+a4 sandbox reads                                          # the programs it can read
+a4 program account decode <address> --sandbox Treasury    # an account of a program in its rules
+a4 get OreRound/latest --stack ore --sandbox Treasury     # a stack's view, once
+a4 stream OreRound/latest --stack ore --sandbox Treasury  # a stack's view, live
+```
+
+`a4 sandbox reads` lists exactly the programs the sandbox's owner-signed rules
+enable. `--sandbox` takes an id or a granted sandbox's name. Through a
+sandbox, the session for Program Read or the stack is minted through it
+(`POST /api/sandbox/v1/sessions`, with the sandbox's token), not with the
+account's API key. Only a program in the rules can be read, and a stack opens
+only when every program it decodes is in them. A refusal names the programs
+the rules leave out (`sandbox-program-not-allowlisted`) and exits 77. Stream
+sessions last about a minute and `a4 stream` re-mints them through the same
+sandbox, so a rules change, pause or revoke ends an open stream within a
+minute. When the sandbox can read exactly one program, `program account
+decode` reads that program without `--program`. Sandbox reads cover mainnet
+only.
+
+**Which sandbox.** For an account whose command groups grant `sandboxes` but
+not the read command's own group (`streams`, or `stacks` for `program
+account`), the read commands go through a sandbox without `--sandbox`: the
+one the other `a4 sandbox` commands use (chosen with `a4 sandbox use` in this
+folder, else `ARETE_SANDBOX_ID`, else the only active sandbox granted). When
+none of these picks one, the command fails with the same code and hint as
+`a4 sandbox` (`sandbox-selection-required`: run `a4 sandbox use`;
+`sandbox-none-granted`; `sandbox-unknown`; `sandbox-paused`) and never falls
+back to the account's key. An account with the read command's own group reads
+with its own key unless `--sandbox` is given.
 
 ### a4 protocol squads
 
@@ -1680,15 +1723,17 @@ a4 program account decode <address> \
 a4 program account decode <address>                  # the owner's program, the matching type
 a4 program account decode <address> --program ore --account Round
 a4 program account decode <address> --dev            # the fork's value
+a4 program account decode <address> --sandbox <id|name>   # through a sandbox: programs in its rules
 ```
 
-| Flag                         | Description                                                                                              |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `--program <alias\|package>` | The program: an `arete.toml` alias, else a registry package. Default: the program that owns the account  |
-| `--account <Type>`           | The account type, by its IDL name. Default: the IDL account whose discriminator starts the data          |
-| `--dev`                      | Read the account from the project's cloud dev environment and decode it there                            |
-| `--env <name\|id>`           | With `--dev`: the environment (default `ARETE_DEV_ENV`, else the project's environment from `a4 dev up`) |
-| `--project <dir>`            | With `--dev`: the project directory; its `arete.toml` names the aliases                                  |
+| Flag                         | Description                                                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `--program <alias\|package>` | The program: an `arete.toml` alias, else a registry package. Default: the program that owns the account          |
+| `--account <Type>`           | The account type, by its IDL name. Default: the IDL account whose discriminator starts the data                  |
+| `--dev`                      | Read the account from the project's cloud dev environment and decode it there                                    |
+| `--env <name\|id>`           | With `--dev`: the environment (default `ARETE_DEV_ENV`, else the project's environment from `a4 dev up`)         |
+| `--project <dir>`            | With `--dev`: the project directory; its `arete.toml` names the aliases                                          |
+| `--sandbox <id\|name>`       | Read through a sandbox: only programs in its rules (see [Reading through a sandbox](#reading-through-a-sandbox)) |
 
 **Production and dev.** Without `--dev`, the account is read from mainnet
 through Arete's managed Solana gateway (`confirmed` commitment) and decoded by

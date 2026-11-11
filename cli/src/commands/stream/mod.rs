@@ -46,6 +46,14 @@ pub struct StreamArgs {
     #[arg(short, long)]
     pub stack: Option<String>,
 
+    /// Stream through this sandbox (an id or name from `a4 sandbox list`):
+    /// the session is minted for the sandbox, so only stacks whose programs
+    /// are all in its rules open, and the stream ends within about a minute
+    /// of a program leaving them [default, when the account reads only
+    /// through a sandbox: the one `a4 sandbox` uses]
+    #[arg(long, value_name = "ID|NAME", conflicts_with_all = ["dev", "load"])]
+    pub sandbox: Option<String>,
+
     /// Stream from the running `a4 dev` session: finds it, lists its stacks,
     /// mints session tokens and follows redeploys
     #[arg(long, conflicts_with_all = ["url", "load"])]
@@ -363,6 +371,15 @@ fn run_dev(args: StreamArgs, json: bool) -> Result<()> {
     })
 }
 
+/// A sandbox refusal of a stream's first session, printed as the sandbox
+/// commands print theirs; any other error as it is.
+fn sandbox_refused(error: anyhow::Error, json: bool) -> anyhow::Error {
+    match error.downcast::<arete_mcp::sandbox::SandboxRefusal>() {
+        Ok(refusal) => crate::commands::sandbox::read_refused(refusal, json),
+        Err(error) => error,
+    }
+}
+
 /// The feeds `target` streams from `stack`, labelled with its protocol.
 fn dev_feeds(stack: &dev::DevStack, target: &protocols::DevTarget) -> Result<Vec<client::Feed>> {
     use protocols::{DevTarget, ViewEntry};
@@ -438,9 +455,19 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
     };
 
     let url = resolve_url(&args, config_path, view)?;
-    let (url, refresh) = token::ensure_hosted_ws_token(url)?;
+    let sandbox = crate::commands::sandbox::read_sandbox(
+        args.sandbox.as_deref(),
+        &[arete_mcp::entitlements::Group::Streams],
+        config_path,
+    );
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    let (url, refresh) = match sandbox {
+        Some(sandbox) => rt
+            .block_on(token::sandbox_ws_token(url, sandbox))
+            .map_err(|error| sandbox_refused(error, json))?,
+        None => token::ensure_hosted_ws_token(url)?,
+    };
 
     if args.tui {
         check_tui_args(&args)?;

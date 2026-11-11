@@ -34,15 +34,26 @@ pub async fn read_view(
     take: Option<usize>,
     deadline: Instant,
 ) -> Result<Vec<Value>, ReadError> {
-    let mut config = ConnectionConfig {
+    let auth = api_key.map(|key| AuthConfig::default().with_api_key(key));
+    read_view_with(url, auth, view, key, take, deadline).await
+}
+
+/// [`read_view`] with `auth` (none: the stack must be public).
+pub async fn read_view_with(
+    url: String,
+    auth: Option<AuthConfig>,
+    view: &str,
+    key: Option<String>,
+    take: Option<usize>,
+    deadline: Instant,
+) -> Result<Vec<Value>, ReadError> {
+    let config = ConnectionConfig {
         // A one-shot read reports a dropped connection instead of retrying
         // past its deadline.
         auto_reconnect: false,
+        auth,
         ..ConnectionConfig::default()
     };
-    if let Some(key) = api_key {
-        config.auth = Some(AuthConfig::default().with_api_key(key));
-    }
     let store = SharedStore::new();
     let manager =
         tokio::time::timeout_at(deadline, ConnectionManager::new(url, config, store.clone()))

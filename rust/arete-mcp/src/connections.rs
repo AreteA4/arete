@@ -73,10 +73,23 @@ impl ConnectionRegistry {
         url: String,
         api_key: Option<String>,
     ) -> Result<ConnectionId, AreteError> {
-        let mut config = ConnectionConfig::default();
-        if let Some(key) = api_key {
-            config.auth = Some(AuthConfig::default().with_api_key(key));
-        }
+        self.connect_with(
+            url,
+            api_key.map(|key| AuthConfig::default().with_api_key(key)),
+        )
+        .await
+    }
+
+    /// Open a new connection with `auth` (none: the stack must be public).
+    pub async fn connect_with(
+        &self,
+        url: String,
+        auth: Option<AuthConfig>,
+    ) -> Result<ConnectionId, AreteError> {
+        let config = ConnectionConfig {
+            auth,
+            ..ConnectionConfig::default()
+        };
 
         // TODO(HYP-189): SDK's StoreConfig defaults to 10k entries/view.
         // Revisit per-subscription overrides once we have real agent usage data.

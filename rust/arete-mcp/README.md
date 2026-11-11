@@ -137,7 +137,7 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 | Group | Tools | Auth |
 |-------|-------|------|
 | Discovery | `explore_stacks`, `explore_stack`, `explore_stack_views`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
-| One-shot read | `read_view` | Key resolved automatically; required for hosted stacks |
+| One-shot read | `read_view`, `program_read_account` | Key resolved automatically; required for hosted stacks. With `sandbox`, minted through the sandbox |
 | Knowledge | `search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts` | **API key required** — fails up front without one |
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
 | Subscription | `subscribe`, `unsubscribe`, `list_subscriptions` | Per connection |
@@ -154,8 +154,9 @@ always listed.
 
 | Group | Tools |
 |-------|-------|
-| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`) |
-| `streams` | connection, subscription and cache tools, and `read_view` |
+| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`), and the read tools below, which then read through a sandbox |
+| `streams` | connection, subscription and cache tools, `read_view` and `program_read_account` |
+| `stacks` | `program_read_account` |
 | `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
 | `protocols` | `protocol_*`, `squads_*` |
 | `dev` | `dev_*` |
@@ -667,6 +668,29 @@ resolves, the call is refused before any token is minted, with
 The two reads call `GET /api/sandbox/v1/sandboxes/<id>/actions?limit&cursor`
 and `GET /api/sandbox/v1/sandboxes/<id>/holdings` with the same sandbox
 token as the other calls to that sandbox; they run no action.
+
+**Reading through a sandbox.** A sandbox's rules bound what an agent reads
+as well as what it does.
+
+- `sandbox_reads({ sandbox? })` — read-only. `programs`: exactly the
+  enabled programs of the sandbox's owner-signed rules (`programId`, and
+  `name` when the owner gave one), with `selection`
+  (`GET /api/sandbox/v1/reads`).
+- `program_read_account({ address, program?, account?, sandbox? })`,
+  `read_view({ ..., sandbox? })` and `connect({ url, sandbox? })` read
+  through a sandbox when given `sandbox` (an id or a name from
+  `sandbox_list`). Their sessions are minted with the sandbox token at
+  `POST /api/sandbox/v1/sessions`, never with the account key, so only
+  programs in the rules can be read and a stack opens only when every
+  program it decodes is in them (else `sandbox-program-not-allowlisted`,
+  with the `programs` the rules leave out). A read session lasts at most a
+  minute; a followed view re-mints it through the same sandbox, so a rules
+  change, pause or revoke reaches it within a minute.
+- An account whose groups grant `sandboxes` but none of a read tool's own
+  groups reads through a sandbox without `sandbox`: the one the `sandbox_*`
+  tools resolve to. When none resolves, the tool fails with the same code
+  and hint (`sandbox-selection-required`, `sandbox-none-granted`, ...) and
+  never falls back to the account key.
 
 **Rules v3.** Under version 3 rules the owner turns each supported program
 on or off, may narrow its instructions (else the registry's safe set) and

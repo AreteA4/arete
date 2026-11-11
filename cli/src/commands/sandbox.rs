@@ -1,6 +1,7 @@
 //! `a4 sandbox`: list the sandboxes the account has been granted and choose
-//! one, read a sandbox wallet's history, holdings and rules, and check a
-//! Rules v3 document before its owner signs it.
+//! one, read a sandbox wallet's history, holdings and rules, list the
+//! programs it can read, and check a Rules v3 document before its owner
+//! signs it.
 //!
 //! The reads go to the Arete API's sandbox routes with a short-lived token
 //! the account's API key mints for the sandbox (as the MCP `sandbox_*` tools
@@ -40,6 +41,10 @@ pub enum SandboxCommands {
     /// The sandbox's rules: show them, or check a Rules v3 file
     #[command(subcommand)]
     Rules(RulesCommands),
+    /// The programs the sandbox can read: their accounts with `a4 program
+    /// account decode` and their stacks with `a4 get` / `a4 stream`, each with
+    /// --sandbox
+    Reads(SandboxTarget),
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -128,7 +133,40 @@ pub fn run(command: SandboxCommands, json: bool) -> Result<()> {
         SandboxCommands::Holdings(args) => holdings(args, json),
         SandboxCommands::Rules(RulesCommands::Show(target)) => rules_show(target, json),
         SandboxCommands::Rules(RulesCommands::Validate { file }) => rules_validate(&file, json),
+        SandboxCommands::Reads(target) => reads_show(target, json),
     }
+}
+
+/// The sandbox a read command (`program account decode`, `get`, `stream`)
+/// reads through, before it resolves: `requested` (an id or a granted
+/// sandbox's name), else, when the account's command groups grant
+/// `sandboxes` and none of the command's `usual` groups, the sandbox the
+/// other `a4 sandbox` commands use (chosen with `a4 sandbox use`, else
+/// ARETE_SANDBOX_ID, else the only one granted). None: the account's own key
+/// reads. The caller resolves it with [`SandboxClient::pin`], and a sandbox
+/// that does not resolve is refused with the resolver's hint, never read
+/// with the account's key.
+pub fn read_sandbox(
+    requested: Option<&str>,
+    usual: &[arete_mcp::entitlements::Group],
+    config: &str,
+) -> Option<SandboxClient> {
+    use arete_mcp::entitlements::Group;
+    let requested = requested.map(str::trim).filter(|wanted| !wanted.is_empty());
+    if requested.is_none() {
+        let surface = crate::entitlements::account_surface(None, None, config);
+        let only_sandbox =
+            surface.allows(Group::Sandboxes) && !usual.iter().any(|group| surface.allows(*group));
+        if !only_sandbox {
+            return None;
+        }
+    }
+    Some(SandboxClient::from_env().targeting(requested))
+}
+
+/// A sandbox refusal of a read, printed like the other sandbox refusals.
+pub fn read_refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
+    refused(refusal, json)
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
@@ -788,6 +826,55 @@ fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
     Ok(())
 }
 
+// ---- reads --------------------------------------------------------------------
+
+fn reads_show(target: SandboxTarget, json: bool) -> Result<()> {
+    let runtime = runtime()?;
+    let (client, sandbox_id) = client(&runtime, &target, json)?;
+    let body = runtime
+        .block_on(client.reads())
+        .map_err(|refusal| refused(refusal, json))?;
+    if json {
+        println!("{body}");
+    } else {
+        print!("{}", render_reads(&body, &sandbox_id));
+    }
+    Ok(())
+}
+
+/// The human rendering of the programs a sandbox can read.
+pub fn render_reads(body: &Value, sandbox_id: &str) -> String {
+    let programs = arete_mcp::program_read::readable_programs(body);
+    let mut out = String::new();
+    if programs.is_empty() {
+        out.push_str(&format!(
+            "Sandbox {sandbox_id} can read no programs: its rules enable none.\n"
+        ));
+        return out;
+    }
+    let version = body["rulesVersion"]
+        .as_u64()
+        .map(|version| format!(" (rules v{version})"))
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "Sandbox {sandbox_id} can read {} program{}{version}:\n",
+        programs.len(),
+        if programs.len() == 1 { "" } else { "s" }
+    ));
+    for (id, name) in &programs {
+        match name {
+            Some(name) => out.push_str(&format!("  {name:<24} {id}\n")),
+            None => out.push_str(&format!("  {id}\n")),
+        }
+    }
+    out.push_str(&format!(
+        "\nRead an account:  a4 program account decode <address> --sandbox {sandbox_id}\n\
+         Read a stack:     a4 get <View> --stack <stack> --sandbox {sandbox_id}\n\
+         A stack opens only when every program it decodes is listed here.\n"
+    ));
+    out
+}
+
 fn rules_validate(file: &std::path::Path, json: bool) -> Result<()> {
     let (name, text) = if file.as_os_str() == "-" {
         let mut text = String::new();
@@ -1131,6 +1218,25 @@ mod tests {
             assert!(!hint.contains("sandbox_"), "{code}: {hint}");
         }
         assert_eq!(cli_hint("sandbox-paused"), None);
+    }
+
+    #[test]
+    fn reads_render_the_programs_and_how_to_read_them() {
+        let body = json!({
+            "sandboxId": "s",
+            "rulesVersion": 7,
+            "programs": [
+                {"programId": "JUP6", "name": "Jupiter"},
+                {"programId": "KLend"},
+            ],
+        });
+        let text = render_reads(&body, "s");
+        assert!(text.contains("can read 2 programs (rules v7)"), "{text}");
+        assert!(text.contains("Jupiter"), "{text}");
+        assert!(text.contains("  KLend\n"), "{text}");
+        assert!(text.contains("--sandbox s"), "{text}");
+        let none = render_reads(&json!({"programs": []}), "s");
+        assert!(none.contains("can read no programs"), "{none}");
     }
 
     #[test]

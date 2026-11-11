@@ -53,14 +53,23 @@ const TOKEN_REFRESH_MARGIN_SECS: u64 = 30;
 const GRANTS_TTL: Duration = Duration::from_secs(60);
 /// The agent route listing the sandboxes the account's key may use.
 const GRANTS_PATH: &str = "/api/agent/sandboxes";
+/// A read session lasts at most as long as the sandbox token left, and the
+/// API refuses to mint one from a token about to expire. A token with less
+/// than this left (or half its life, when shorter) is re-minted before a
+/// read session is minted from it.
+const READ_MINT_MARGIN_SECS: u64 = 120;
+/// How long a sandbox's readable programs are reused before they are read
+/// again. A rules change applies at once, so this stays short.
+const READS_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// The tools this module backs, hidden when there is neither an API key to
 /// list grants with nor a sandbox id.
-pub const TOOL_NAMES: [&str; 10] = [
+pub const TOOL_NAMES: [&str; 11] = [
     "sandbox_list",
     "sandbox_select",
     "sandbox_status",
     "sandbox_rules",
+    "sandbox_reads",
     "sandbox_derive",
     "sandbox_preview",
     "sandbox_invoke",
@@ -73,7 +82,8 @@ pub const TOOL_NAMES: [&str; 10] = [
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CallKind {
     /// Changes nothing: the wallet, rules, an address, an action lookup,
-    /// history, holdings, and minting the sandbox token.
+    /// history, holdings, the readable programs, and minting the sandbox
+    /// token or a read session.
     #[default]
     Read,
     /// A dry run: nothing is signed, sent or recorded.
@@ -94,7 +104,10 @@ impl CallKind {
     /// `path` is the sandbox route, e.g. `/actions/invoke`.
     pub fn of(method: &reqwest::Method, path: &str) -> Self {
         let path = path.split('?').next().unwrap_or(path).trim_end_matches('/');
-        if method == reqwest::Method::GET || path.ends_with("/derive") {
+        if method == reqwest::Method::GET
+            || path.ends_with("/derive")
+            || path.ends_with("/sessions")
+        {
             Self::Read
         } else if path.ends_with("/preview") {
             Self::Preview
@@ -295,6 +308,18 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
             "The owner has not granted this agent that action (sandbox_status lists the granted ones). Only the owner can grant it, in the dashboard."
         }
         "sandbox-paused" => "The sandbox is paused. Only its owner can resume it.",
+        "sandbox-inactive" => {
+            "The sandbox is not active. Only its owner can reactivate it, in the dashboard."
+        }
+        "sandbox-read-programs-unknown" => {
+            "Arete could not tell which programs this stack decodes, so a sandbox cannot read it. Read the programs the sandbox allows (sandbox_reads lists them) directly with program_read_account."
+        }
+        "sandbox-read-target-unsupported" => {
+            "A sandbox reads only Program Read bindings and stack views, with the `read` scope. Read a program the sandbox allows (sandbox_reads) or one of its stacks."
+        }
+        "sandbox-reads-mainnet-only" => {
+            "Sandbox reads cover mainnet stacks and programs only; this sandbox or stack runs on a dev environment."
+        }
         "sandbox-rules-missing" | "sandbox-rules-unsigned" => {
             "The owner must set or re-sign the sandbox's rules in the dashboard."
         }
@@ -351,12 +376,157 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
     .to_string())
 }
 
+/// What a sandbox read session is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadTarget {
+    /// One program's Program Read binding, at one release.
+    ProgramRead {
+        binding_id: String,
+        program_release_hash: String,
+    },
+    /// A stack's live views, by its WebSocket URL (without `hs_token`).
+    Stack { websocket_url: String },
+}
+
+impl ReadTarget {
+    fn body(&self) -> Value {
+        match self {
+            Self::ProgramRead {
+                binding_id,
+                program_release_hash,
+            } => json!({
+                "targetKind": "program-read-binding",
+                "targetId": binding_id,
+                "programReleaseHash": program_release_hash,
+                "scopes": ["read"],
+            }),
+            Self::Stack { websocket_url } => json!({ "websocketUrl": websocket_url }),
+        }
+    }
+}
+
+/// A read session minted through a sandbox.
+#[derive(Clone)]
+pub struct ReadSession {
+    pub token: String,
+    /// Unix seconds, when the API said.
+    pub expires_at: Option<u64>,
+}
+
+impl std::fmt::Debug for ReadSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ReadSession")
+            .field("token", &"<redacted>")
+            .field("expires_at", &self.expires_at)
+            .finish()
+    }
+}
+
+impl SandboxRefusal {
+    /// Whether the same call may succeed later. A refusal that is not
+    /// retryable (a program the rules leave out, a paused or revoked
+    /// sandbox) ends a stream instead of being retried.
+    pub fn retryable(&self) -> bool {
+        self.to_json()
+            .get("retryable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }
+
+    /// The refusal's code.
+    pub fn code(&self) -> String {
+        self.to_json()
+            .get("code")
+            .and_then(Value::as_str)
+            .unwrap_or("sandbox-request-refused")
+            .to_string()
+    }
+
+    /// One line for a terminal: the API's message, its code, and the hint.
+    pub fn message(&self) -> String {
+        let shown = self.to_json();
+        let error = shown
+            .get("error")
+            .and_then(Value::as_str)
+            .or_else(|| shown.get("message").and_then(Value::as_str))
+            .unwrap_or("The sandbox refused the request");
+        let mut text = format!("{error} ({})", self.code());
+        if let Some(programs) = shown.get("programs").and_then(Value::as_array) {
+            let programs: Vec<&str> = programs.iter().filter_map(Value::as_str).collect();
+            if !programs.is_empty() {
+                text.push_str(&format!("; not in the rules: {}", programs.join(", ")));
+            }
+        }
+        if let Some(hint) = shown.get("hint").and_then(Value::as_str) {
+            text.push_str(". ");
+            text.push_str(hint);
+        }
+        text
+    }
+}
+
+impl std::fmt::Display for SandboxRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message())
+    }
+}
+
+impl std::error::Error for SandboxRefusal {}
+
+/// The last refusal a sandbox stream's token provider met, so the tool that
+/// opened the stream can answer with the sandbox's own refusal.
+pub type LastRefusal = Arc<Mutex<Option<SandboxRefusal>>>;
+
+impl SandboxClient {
+    /// Stream auth for the stack at `websocket_url` through this sandbox:
+    /// every session token (the first, each refresh and each reconnect) is
+    /// minted with [`Self::read_session`]. A refusal is kept in `refused`
+    /// and reported to the SDK as a failed auth request.
+    pub fn stream_auth(&self, websocket_url: &str, refused: LastRefusal) -> arete_sdk::AuthConfig {
+        let sandbox = self.clone();
+        let target = ReadTarget::Stack {
+            websocket_url: websocket_url.to_string(),
+        };
+        arete_sdk::AuthConfig::default().with_token_provider(move || {
+            let sandbox = sandbox.clone();
+            let target = target.clone();
+            let refused = refused.clone();
+            async move {
+                match sandbox.read_session(&target).await {
+                    Ok(session) => {
+                        let token = arete_sdk::AuthToken::new(session.token);
+                        Ok(match session.expires_at {
+                            Some(expires_at) => token.with_expiry(expires_at),
+                            None => token,
+                        })
+                    }
+                    Err(refusal) => {
+                        let error = arete_sdk::AreteError::AuthRequestFailed {
+                            status: refusal.status,
+                            message: refusal.message(),
+                            code: None,
+                            stack_version: None,
+                            problem: None,
+                        };
+                        if let Ok(mut last) = refused.lock() {
+                            *last = Some(refusal);
+                        }
+                        Err(error)
+                    }
+                }
+            }
+        })
+    }
+}
+
 /// A minted sandbox token and what it may do.
 #[derive(Clone)]
 struct SessionToken {
     token: String,
     /// Unix seconds; 0 when the API did not say.
     expires_at: u64,
+    /// Unix seconds, when it was minted here.
+    minted_at: u64,
     /// The granted actions (`sandbox:<action>` scopes without the prefix).
     actions: Vec<String>,
 }
@@ -364,6 +534,15 @@ struct SessionToken {
 impl SessionToken {
     fn fresh(&self, now: u64) -> bool {
         self.expires_at > now + TOKEN_REFRESH_MARGIN_SECS
+    }
+
+    /// Whether enough is left to mint a read session from: the read margin,
+    /// or half the token's life when it was minted shorter than twice that,
+    /// so a short-lived token is not re-minted for every read.
+    fn fresh_for_reads(&self, now: u64) -> bool {
+        let lifetime = self.expires_at.saturating_sub(self.minted_at);
+        let margin = READ_MINT_MARGIN_SECS.min(lifetime / 2);
+        self.expires_at > now + margin.max(TOKEN_REFRESH_MARGIN_SECS)
     }
 }
 
@@ -396,6 +575,19 @@ pub struct SandboxClient {
     store: Option<SelectionStore>,
     /// The last listing of granted sandboxes, reused while fresh.
     grants: Arc<Mutex<Option<CachedGrants>>>,
+    /// The last `GET /reads` answer per sandbox id, and when it was read.
+    reads: Arc<Mutex<HashMap<String, (Instant, Value)>>>,
+}
+
+impl std::fmt::Debug for SandboxClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SandboxClient")
+            .field("api_base", &self.api_base)
+            .field("default_sandbox", &self.default_sandbox)
+            .field("explicit", &self.explicit)
+            .field("api_key", &self.api_key.as_ref().map(|_| "<redacted>"))
+            .finish_non_exhaustive()
+    }
 }
 
 /// A listing of granted sandboxes and when it was made.
@@ -455,6 +647,7 @@ impl SandboxClient {
             choice: Arc::new(Mutex::new(None)),
             store: None,
             grants: Arc::new(Mutex::new(None)),
+            reads: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -810,6 +1003,7 @@ impl SandboxClient {
             })
             .unwrap_or_default();
         let minted = SessionToken {
+            minted_at: unix_now(),
             token: token.to_string(),
             expires_at: body.get("expiresAt").and_then(Value::as_u64).unwrap_or(0),
             actions,
@@ -1009,6 +1203,100 @@ impl SandboxClient {
 
     pub async fn rules(&self) -> Result<Value, SandboxRefusal> {
         self.call(reqwest::Method::GET, "/rules", None, None).await
+    }
+
+    /// This client pinned to the sandbox it resolves to now, and how it
+    /// resolved. A read that makes several calls (a stream's refreshes, a
+    /// check then a mint) pins first, so every call names the same sandbox
+    /// whatever is selected meanwhile, and none lists the grants again.
+    pub async fn pin(&self) -> Result<(Self, Resolved), SandboxRefusal> {
+        let resolved = self.resolve().await?;
+        Ok((self.targeting(Some(&resolved.sandbox_id)), resolved))
+    }
+
+    /// The programs this sandbox may read: exactly the enabled programs of
+    /// its active, owner-signed rules (`GET /reads`), with the sandbox the
+    /// call resolved to (`selection`).
+    pub async fn reads(&self) -> Result<Value, SandboxRefusal> {
+        let target = self.resolve().await?;
+        let mut reads = self.reads_of(&target.sandbox_id).await?;
+        if let Some(object) = reads.as_object_mut() {
+            object
+                .entry("selection")
+                .or_insert_with(|| target.to_json());
+        }
+        Ok(reads)
+    }
+
+    async fn reads_of(&self, sandbox_id: &str) -> Result<Value, SandboxRefusal> {
+        let reads = self
+            .call_in(sandbox_id, None, reqwest::Method::GET, "/reads", None, None)
+            .await?;
+        if let Ok(mut cached) = self.reads.lock() {
+            cached.insert(sandbox_id.to_string(), (Instant::now(), reads.clone()));
+        }
+        Ok(reads)
+    }
+
+    /// [`Self::reads`], reusing an answer read in the last minute. For the
+    /// client's own check before a read: the API checks every mint again.
+    pub async fn reads_cached(&self) -> Result<Value, SandboxRefusal> {
+        let sandbox_id = self.resolve().await?.sandbox_id;
+        let cached = self.reads.lock().ok().and_then(|cached| {
+            cached
+                .get(&sandbox_id)
+                .filter(|(at, _)| at.elapsed() < READS_CACHE_TTL)
+                .map(|(_, reads)| reads.clone())
+        });
+        match cached {
+            Some(reads) => Ok(reads),
+            None => self.reads_of(&sandbox_id).await,
+        }
+    }
+
+    /// A read session for `target` (`POST /sessions`), minted with the
+    /// sandbox token: the API mints it only when every program `target`
+    /// decodes is in the sandbox's rules. The token is used as one minted
+    /// with an API key: a bearer token for Program Read, `hs_token` (or
+    /// `refresh_auth`) for a stack's live view. It lasts a minute at most,
+    /// so a stream re-mints it here before `expires_at`, which is how a rules
+    /// change, pause or revoke reaches it.
+    pub async fn read_session(&self, target: &ReadTarget) -> Result<ReadSession, SandboxRefusal> {
+        // Re-mint a sandbox token near its end first: a read session lasts no
+        // longer than the token it is minted from, and the API refuses one
+        // minted from a token about to expire.
+        let sandbox_id = self.resolve().await?.sandbox_id;
+        let stale = self
+            .cached_token(&sandbox_id)
+            .is_some_and(|token| !token.fresh_for_reads(unix_now()));
+        if stale {
+            self.forget_token(&sandbox_id);
+        }
+        let body = self
+            .call_in(
+                &sandbox_id,
+                None,
+                reqwest::Method::POST,
+                "/sessions",
+                Some(target.body()),
+                None,
+            )
+            .await?;
+        let token = body
+            .get("token")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| {
+                SandboxRefusal::local(
+                    "sandbox-response-unreadable",
+                    "The Arete API minted no read session token",
+                )
+            })?;
+        Ok(ReadSession {
+            token: token.to_string(),
+            expires_at: body.get("expiresAt").and_then(Value::as_u64),
+        })
     }
 
     /// An address for `args`. A PDA is derived here, without the API or
@@ -1645,19 +1933,19 @@ impl SandboxHistoryArgs {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{Read, Write};
     use std::sync::{Arc, Mutex};
 
     use super::*;
 
-    const SANDBOX: &str = "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10";
+    pub(crate) const SANDBOX: &str = "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10";
 
     /// An API that records each request (head and body) and answers from
     /// `routes` by method and path; anything else is a 404. `POST
     /// /ws/sessions` mints `tok-<n>` (granting `scopes`) unless `routes`
     /// answers it.
-    fn stub_with(
+    pub(crate) fn stub_with(
         routes: Vec<(&'static str, &'static str, u16, Value)>,
         scopes: Value,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -1724,7 +2012,7 @@ mod tests {
         (format!("http://{address}"), seen)
     }
 
-    fn stub(
+    pub(crate) fn stub(
         routes: Vec<(&'static str, &'static str, u16, Value)>,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
         stub_with(
@@ -1745,8 +2033,161 @@ mod tests {
         seen.lock().unwrap().clone()
     }
 
-    fn body_of(request: &str) -> Value {
+    pub(crate) fn body_of(request: &str) -> Value {
         serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn reads_and_read_sessions_go_through_the_sandbox_token() {
+        let (base, seen) = stub(vec![
+            (
+                "GET",
+                "/api/sandbox/v1/reads",
+                200,
+                json!({ "sandboxId": SANDBOX, "programs": [{ "programId": "JUP6", "name": "Jupiter" }] }),
+            ),
+            (
+                "POST",
+                "/api/sandbox/v1/sessions",
+                200,
+                json!({ "token": " read-tok ", "expiresAt": 1_731_300_000u64, "scopes": ["read"] }),
+            ),
+        ]);
+        let client = client(&base);
+        assert_eq!(
+            client.reads().await.unwrap()["programs"][0]["name"],
+            "Jupiter"
+        );
+        let program = client
+            .read_session(&ReadTarget::ProgramRead {
+                binding_id: "prb_1".into(),
+                program_release_hash: "rel".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(program.token, "read-tok");
+        assert_eq!(program.expires_at, Some(1_731_300_000));
+        client
+            .read_session(&ReadTarget::Stack {
+                websocket_url: "wss://ore.stack.arete.run".into(),
+            })
+            .await
+            .unwrap();
+        let seen = requests(&seen);
+        assert_eq!(seen.len(), 4, "one sandbox mint, reused: {seen:?}");
+        assert_eq!(
+            body_of(&seen[2]),
+            json!({
+                "targetKind": "program-read-binding",
+                "targetId": "prb_1",
+                "programReleaseHash": "rel",
+                "scopes": ["read"],
+            })
+        );
+        assert_eq!(
+            body_of(&seen[3]),
+            json!({ "websocketUrl": "wss://ore.stack.arete.run" })
+        );
+        for request in &seen[1..] {
+            let request = request.to_ascii_lowercase();
+            assert!(request.contains("authorization: bearer tok-1"), "{request}");
+            assert!(!request.contains("a4_sk_agent"), "{request}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_token_near_its_end_is_reminted_before_a_read_session() {
+        let (base, seen) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/sessions",
+            200,
+            json!({ "token": "read-tok", "expiresAt": 1_900_000_000u64 }),
+        )]);
+        let client = client(&base);
+        let now = unix_now();
+        // A ten-minute token with 90 s left: enough for other calls, not
+        // for a read session.
+        client.tokens.lock().unwrap().insert(
+            SANDBOX.into(),
+            SessionToken {
+                token: "old".into(),
+                expires_at: now + 90,
+                minted_at: now - 510,
+                actions: Vec::new(),
+            },
+        );
+        let stack = ReadTarget::Stack {
+            websocket_url: "wss://ore.stack.arete.run".into(),
+        };
+        client.read_session(&stack).await.unwrap();
+        let first = requests(&seen);
+        assert!(first[0].starts_with("POST /ws/sessions"), "{first:?}");
+        assert!(first[1].to_ascii_lowercase().contains("bearer tok-1"));
+        // The fresh token is reused.
+        client.read_session(&stack).await.unwrap();
+        let all = requests(&seen);
+        assert_eq!(all.len(), 3, "{all:?}");
+        assert!(all[2].starts_with("POST /api/sandbox/v1/sessions"));
+    }
+
+    #[tokio::test]
+    async fn readable_programs_are_reused_for_a_minute() {
+        let (base, seen) = stub(vec![(
+            "GET",
+            "/api/sandbox/v1/reads",
+            200,
+            json!({ "programs": [{ "programId": "JUP6" }] }),
+        )]);
+        let client = client(&base);
+        client.reads_cached().await.unwrap();
+        client.reads_cached().await.unwrap();
+        let reads = requests(&seen)
+            .iter()
+            .filter(|request| request.starts_with("GET /api/sandbox/v1/reads"))
+            .count();
+        assert_eq!(reads, 1);
+        // An explicit listing reads again.
+        client.reads().await.unwrap();
+        assert_eq!(requests(&seen).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_read_outside_the_rules_is_refused_for_good() {
+        let (base, _) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/sessions",
+            403,
+            json!({
+                "code": "sandbox-program-not-allowlisted",
+                "error": "The stack decodes a program the sandbox's rules leave out",
+                "retryable": false,
+                "programs": ["KLend"],
+            }),
+        )]);
+        let refusal = client(&base)
+            .read_session(&ReadTarget::Stack {
+                websocket_url: "wss://klend.stack.arete.run".into(),
+            })
+            .await
+            .unwrap_err();
+        assert!(!refusal.retryable());
+        assert_eq!(refusal.code(), "sandbox-program-not-allowlisted");
+        let message = refusal.message();
+        assert!(message.contains("not in the rules: KLend"), "{message}");
+        assert!(message.contains("Only the owner can add it"), "{message}");
+        // A read mint is a read: rate limits and outages are retried.
+        assert_eq!(
+            CallKind::of(&reqwest::Method::POST, "/sessions"),
+            CallKind::Read
+        );
+        for code in [
+            "sandbox-read-programs-unknown",
+            "sandbox-read-target-unsupported",
+            "sandbox-reads-mainnet-only",
+            "sandbox-inactive",
+        ] {
+            assert!(hint_for(code, false, CallKind::Read).is_some(), "{code}");
+        }
     }
 
     #[test]

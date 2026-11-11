@@ -130,6 +130,9 @@ pub struct AreteMcp {
     /// The sandbox wallet tools' API client: the account's grants, the
     /// chosen sandbox and `ARETE_SANDBOX_ID`.
     sandbox: crate::sandbox::SandboxClient,
+    /// The account's command groups. A read tool whose only granted group
+    /// is `sandboxes` reads through the configured sandbox.
+    surface: crate::entitlements::Surface,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -144,6 +147,32 @@ pub struct ConnectArgs {
     /// the model context or chat transcript.
     #[serde(default)]
     pub api_key: Option<String>,
+    /// Read through this sandbox (a `sandboxId` or name from
+    /// `sandbox_list`): the session is minted for the sandbox, so only stacks
+    /// whose programs are all in its rules open. An account whose only read
+    /// access is a sandbox uses the one the sandbox tools use without this.
+    #[serde(default)]
+    pub sandbox: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ProgramReadAccountArgs {
+    /// The account's address (base58).
+    pub address: String,
+    /// The program: a registry install name (`explore_programs`) or a
+    /// program id. Default: the account's owner.
+    #[serde(default)]
+    pub program: Option<String>,
+    /// The account type, by its IDL name. Default: the IDL account whose
+    /// discriminator the data starts with.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// Read through this sandbox (a `sandboxId` or name from
+    /// `sandbox_list`): only programs in its rules can be read. An account
+    /// whose only read access is a sandbox uses the one the sandbox tools
+    /// use without this.
+    #[serde(default)]
+    pub sandbox: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
@@ -1478,6 +1507,12 @@ pub struct ReadViewArgs {
     /// capped at 60.
     #[serde(default, deserialize_with = "lenient::opt_usize")]
     pub timeout_secs: Option<usize>,
+    /// Read through this sandbox (a `sandboxId` or name from
+    /// `sandbox_list`): only stacks whose programs are all in its rules can
+    /// be read. An account whose only read access is a sandbox uses the one
+    /// the sandbox tools use without this.
+    #[serde(default)]
+    pub sandbox: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1573,6 +1608,7 @@ impl AreteMcp {
         }
         Self {
             sandbox,
+            surface: crate::entitlements::Surface::Everything,
             tool_router,
             connections: ConnectionRegistry::new(),
             subscriptions: SubscriptionRegistry::new(),
@@ -1598,7 +1634,50 @@ impl AreteMcp {
         for name in hidden {
             self.tool_router.remove_route(&name);
         }
+        self.surface = surface.clone();
         self
+    }
+
+    /// The sandbox a read tool reads through, pinned, and how it resolved:
+    /// `requested` (an id or a granted sandbox's name), else, when
+    /// `sandboxes` is the account's only group among the tool's `usual`
+    /// ones, the sandbox the sandbox tools resolve to (the one chosen with
+    /// `sandbox_select`, `ARETE_SANDBOX_ID`, or the only one granted). None:
+    /// the account reads with its own key. A sandbox that does not resolve
+    /// is the resolver's refusal, never a read with the account's key.
+    async fn read_sandbox(
+        &self,
+        requested: Option<&str>,
+        usual: &[crate::entitlements::Group],
+    ) -> Result<
+        Option<(
+            crate::sandbox::SandboxClient,
+            crate::sandbox::selection::Resolved,
+        )>,
+        McpError,
+    > {
+        use crate::entitlements::Group;
+        let requested = requested.map(str::trim).filter(|id| !id.is_empty());
+        let only_sandbox = self.surface.allows(Group::Sandboxes)
+            && !usual.iter().any(|group| self.surface.allows(*group));
+        if requested.is_none() && !only_sandbox {
+            return Ok(None);
+        }
+        match self.sandbox.targeting(requested).pin().await {
+            Ok(pinned) => Ok(Some(pinned)),
+            Err(refusal) => Err(sandbox_refusal_error(&refusal)),
+        }
+    }
+
+    /// One program's install descriptor, for a read.
+    async fn read_install(&self, program: &str) -> Result<crate::program_read::Install, McpError> {
+        let body = self
+            .registry_body(self.registry.program_install(program.trim()).await)
+            .await?;
+        let value: Value = serde_json::from_str(&body)
+            .map_err(|error| McpError::internal_error(error.to_string(), None))?;
+        crate::program_read::Install::parse(&value)
+            .map_err(|error| McpError::internal_error(error, None))
     }
 
     /// The names of the tools this server lists.
@@ -1670,6 +1749,199 @@ impl AreteMcp {
     ) -> Result<CallToolResult, McpError> {
         let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
         Ok(sandbox_result(sandbox.rules().await, None))
+    }
+
+    #[tool(
+        description = "The programs this sandbox can read: exactly the enabled programs of its owner-signed rules (`programs`: `programId` and, when known, `name`). Takes `sandbox` (a `sandboxId` or name from sandbox_list) like the other sandbox tools. Read the programs' accounts with `program_read_account` and their stacks' live views with `read_view` or `connect` + `subscribe`, passing the same `sandbox` (or leave it out when this account reads only through a sandbox: they then use the sandbox the sandbox tools use). A stack opens only when every program it decodes is listed here. A rules change applies at once: an open stream stops within about a minute when its programs leave the rules."
+    )]
+    async fn sandbox_reads(
+        &self,
+        Parameters(args): Parameters<crate::sandbox::SandboxTargetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let sandbox = self.sandbox.targeting(args.sandbox.as_deref());
+        Ok(sandbox_result(sandbox.reads().await, None))
+    }
+
+    #[tool(
+        description = "Read one account, decoded by Program Read for the program's registry release: `{address, program, programId, account, programReleaseHash, value}`. Pass the account `address`; `program` (an install name from `explore_programs`, or a program id) and `account` (the IDL account type) default to the account's owner (through a sandbox that reads one program, that program) and the type its discriminator matches.\n\nWith `sandbox` (a `sandboxId` or name from sandbox_list; by default, when this account reads only through a sandbox, the one the sandbox tools use) the read session is minted for the sandbox, so only programs in its rules can be read (`sandbox_reads` lists them) and `selection` names the sandbox. A refusal carries `code` and `hint`: when no sandbox resolves, sandbox_list and sandbox_select say which to use. Through a sandbox, passing both `program` and `account` skips the gateway read that finds the owner."
+    )]
+    async fn program_read_account(
+        &self,
+        Parameters(args): Parameters<ProgramReadAccountArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        use crate::entitlements::Group;
+        use crate::program_read::{self as reads, ReadAuth, ReadError};
+        let address = args.address.trim();
+        if !crate::dev_env::is_pubkey(address) {
+            return Err(McpError::invalid_params(
+                format!("`{address}` is not a Solana address"),
+                None,
+            ));
+        }
+        let sandbox = self
+            .read_sandbox(args.sandbox.as_deref(), &[Group::Stacks, Group::Streams])
+            .await?;
+        let selection = sandbox.as_ref().map(|(_, resolved)| resolved.to_json());
+        let sandbox = sandbox.map(|(sandbox, _)| sandbox);
+        let readable = match &sandbox {
+            Some(sandbox) => match sandbox.reads_cached().await {
+                Ok(readable) => Some(readable),
+                Err(refusal) => return Err(sandbox_refusal_error(&refusal)),
+            },
+            None => None,
+        };
+        let http = reads::http();
+        let key = reads::AccountKey::from_env();
+        let failed = |message: String| McpError::internal_error(message, None);
+        let raw_read = |chain: Option<reads::ChainBinding>| {
+            let http = http.clone();
+            let key = key.clone();
+            async move {
+                let key = key.ok_or_else(|| {
+                    McpError::invalid_params(
+                        "Finding the account's program reads it through the Arete gateway with \
+                         the account's API key, and none is set (ARETE_API_KEY or `a4 auth \
+                         login`). Pass `program` and `account` to read through a sandbox \
+                         without it."
+                            .to_string(),
+                        None,
+                    )
+                })?;
+                let chain = chain.ok_or_else(|| {
+                    McpError::internal_error(
+                        "The registry names no gateway to read the account through".to_string(),
+                        None,
+                    )
+                })?;
+                reads::read_raw(&http, &key, &chain, address)
+                    .await
+                    .map_err(|message| McpError::internal_error(message, None))?
+                    .ok_or_else(|| {
+                        McpError::invalid_params(format!("No account exists at {address}"), None)
+                    })
+            }
+        };
+
+        // A sandbox that reads one program reads that one by default.
+        let only_readable = readable.as_ref().and_then(|readable| {
+            let mut programs = reads::readable_programs(readable);
+            (programs.len() == 1).then(|| programs.remove(0).0)
+        });
+        let program = args
+            .program
+            .as_deref()
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .or(only_readable.as_deref());
+        let (install, raw) = match program {
+            Some(program) => {
+                let install = self.read_install(program).await?;
+                let skip_raw = sandbox.is_some() && args.account.is_some();
+                let raw = if skip_raw {
+                    None
+                } else {
+                    Some(raw_read(install.chain.clone()).await?)
+                };
+                (install, raw)
+            }
+            None => {
+                // Any program's install names the gateway; a sandbox's
+                // first readable program, else the registry's first.
+                let gateway = match &readable {
+                    Some(readable) => reads::readable_programs(readable)
+                        .into_iter()
+                        .next()
+                        .map(|(id, _)| id)
+                        .ok_or_else(|| {
+                            McpError::invalid_params(
+                                "The sandbox's rules allow no programs, so it can read none"
+                                    .to_string(),
+                                None,
+                            )
+                        })?,
+                    None => {
+                        let body = self
+                            .registry_body(self.registry.list_programs().await)
+                            .await?;
+                        first_install_name(&body).ok_or_else(|| {
+                            failed("The registry lists no programs to read through".into())
+                        })?
+                    }
+                };
+                let gateway = self.read_install(&gateway).await?;
+                let raw = raw_read(gateway.chain.clone()).await?;
+                let install = if raw.owner == gateway.program_id {
+                    gateway
+                } else {
+                    self.read_install(&raw.owner).await?
+                };
+                (install, Some(raw))
+            }
+        };
+        if let Some(raw) = &raw {
+            if raw.owner != install.program_id {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "{address} is owned by {}, not {} ({})",
+                        raw.owner, install.install_name, install.program_id
+                    ),
+                    None,
+                ));
+            }
+        }
+        if let Some(readable) = &readable {
+            let allowed = reads::readable_programs(readable)
+                .iter()
+                .any(|(id, _)| *id == install.program_id);
+            if !allowed {
+                let refusal =
+                    reads::not_allowlisted(&install.program_id, &install.install_name, readable);
+                return Err(sandbox_refusal_error(&refusal));
+            }
+        }
+        let data = raw
+            .as_ref()
+            .map(|raw| raw.data.as_slice())
+            .unwrap_or_default();
+        let account = reads::account_type(
+            &install.install_name,
+            &install.idl,
+            data,
+            args.account.as_deref().map(str::trim),
+        )
+        .map_err(|message| McpError::invalid_params(message, None))?;
+
+        let auth = match &sandbox {
+            Some(sandbox) => ReadAuth::Sandbox(sandbox.clone()),
+            None => ReadAuth::Key(key.clone().ok_or_else(|| {
+                McpError::invalid_params(
+                    "Program Read needs the account's API key (ARETE_API_KEY or `a4 auth login`), \
+                     or a sandbox"
+                        .to_string(),
+                    None,
+                )
+            })?),
+        };
+        let token = match reads::read_session(&http, &auth, &install).await {
+            Ok(token) => token,
+            Err(ReadError::Sandbox(refusal)) => return Err(sandbox_refusal_error(&refusal)),
+            Err(ReadError::Failed(message)) => return Err(failed(message)),
+        };
+        let value = reads::read_decoded(&http, &install, &token, &account, address)
+            .await
+            .map_err(failed)?;
+        let mut payload = json!({
+            "address": address,
+            "program": install.install_name,
+            "programId": install.program_id,
+            "account": account,
+            "programReleaseHash": install.release,
+            "value": value,
+        });
+        if let Some(selection) = selection {
+            payload["selection"] = selection;
+        }
+        shaped_result(&payload)
     }
 
     #[tool(
@@ -3641,6 +3913,31 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<ConnectArgs>,
     ) -> Result<CallToolResult, McpError> {
+        use crate::entitlements::Group;
+        if let Some((sandbox, _)) = self
+            .read_sandbox(args.sandbox.as_deref(), &[Group::Streams])
+            .await?
+        {
+            let refused = crate::sandbox::LastRefusal::default();
+            let auth = sandbox.stream_auth(&args.url, refused.clone());
+            let id = match self
+                .connections
+                .connect_with(args.url.clone(), Some(auth))
+                .await
+            {
+                Ok(id) => id,
+                Err(error) => return Err(self.sandbox_stream_error(error, &refused).await),
+            };
+            let info = ConnectionInfo {
+                connection_id: id,
+                url: args.url,
+                state: "Connecting".to_string(),
+                key_source: Some("sandbox"),
+            };
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::to_string(&info).unwrap_or_default(),
+            )]));
+        }
         let resolved = credentials::resolve(args.api_key, &args.url)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
@@ -3717,6 +4014,13 @@ impl AreteMcp {
         Parameters(args): Parameters<ReadViewArgs>,
     ) -> Result<CallToolResult, McpError> {
         validate_view_name(&args.view)?;
+        let sandbox = self
+            .read_sandbox(
+                args.sandbox.as_deref(),
+                &[crate::entitlements::Group::Streams],
+            )
+            .await?
+            .map(|(sandbox, _)| sandbox);
         let mut compiled = Filter::parse(&args.r#where)
             .map_err(|e| McpError::invalid_params(format!("invalid where: {e}"), None))?;
         let structured = Filter::from_structured(&args.filters)
@@ -3749,15 +4053,21 @@ impl AreteMcp {
                     None,
                 )),
             };
-        let resolved = credentials::resolve(None, &url)
-            .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
+        let refused = crate::sandbox::LastRefusal::default();
+        let auth = match &sandbox {
+            Some(sandbox) => Some(sandbox.stream_auth(&url, refused.clone())),
+            None => credentials::resolve(None, &url)
+                .map_err(|e| McpError::invalid_params(e.to_string(), None))?
+                .key
+                .map(|key| arete_sdk::AuthConfig::default().with_api_key(key)),
+        };
 
         // Without filters the server can cut the snapshot to `limit`; with
         // them the whole snapshot is needed to find the matches.
         let take = (args.key.is_none() && compiled.is_empty()).then_some(limit);
-        let entities = match crate::oneshot::read_view(
+        let entities = match crate::oneshot::read_view_with(
             url.clone(),
-            resolved.key,
+            auth,
             args.view.trim(),
             args.key.clone(),
             take,
@@ -3766,6 +4076,9 @@ impl AreteMcp {
         .await
         {
             Ok(entities) => entities,
+            Err(crate::oneshot::ReadError::Sdk(error)) if sandbox.is_some() => {
+                return Err(self.sandbox_stream_error(error, &refused).await)
+            }
             Err(crate::oneshot::ReadError::Sdk(error)) => return Err(self.sdk_error(error).await),
 
             Err(crate::oneshot::ReadError::TimedOut { waiting_for }) => {
@@ -4268,6 +4581,18 @@ fn discovery_tool_result(
 /// A shaped (summary, sections, views or operation) result. It is cut from a
 /// descriptor that was already bounded, but the 512 KiB cap is re-checked on
 /// the bytes actually returned so the advertised bound holds for every tool.
+/// The first `installName` of a `GET /api/registry/programs` answer (a
+/// list, or `{programs: [...]}`).
+fn first_install_name(body: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(body).ok()?;
+    let list = value
+        .as_array()
+        .or_else(|| value.get("programs").and_then(Value::as_array))?;
+    list.iter()
+        .find_map(|program| program.get("installName").and_then(Value::as_str))
+        .map(str::to_string)
+}
+
 fn shaped_result(value: &serde_json::Value) -> Result<CallToolResult, McpError> {
     let text = serde_json::to_string(value)
         .map_err(|error| McpError::internal_error(error.to_string(), None))?;
@@ -4393,6 +4718,20 @@ impl AreteMcp {
             "retryAfterSeconds": error.retry_after(),
         });
         McpError::internal_error("Arete connection failed", Some(data))
+    }
+
+    /// A stream opened through a sandbox failed: the sandbox's refusal when
+    /// it refused the session, else the connection error.
+    async fn sandbox_stream_error(
+        &self,
+        error: AreteError,
+        refused: &crate::sandbox::LastRefusal,
+    ) -> McpError {
+        let refusal = refused.lock().ok().and_then(|mut last| last.take());
+        match refusal {
+            Some(refusal) => sandbox_refusal_error(&refusal),
+            None => self.sdk_error(error).await,
+        }
     }
 
     async fn registry_body(&self, result: anyhow::Result<String>) -> Result<String, McpError> {
@@ -4705,6 +5044,12 @@ impl Default for AreteMcp {
 /// A sandbox API answer as a tool result. A refusal is a tool error the
 /// agent can read (code, rule, details, hint), not a protocol error. The
 /// idempotency key an action ran under is echoed either way.
+/// A sandbox refusal as a tool error: its message, with the refusal's JSON
+/// (code, hint, the programs the rules leave out) as the data.
+fn sandbox_refusal_error(refusal: &crate::sandbox::SandboxRefusal) -> McpError {
+    McpError::invalid_request(refusal.message(), Some(refusal.to_json()))
+}
+
 fn sandbox_result(
     result: Result<serde_json::Value, crate::sandbox::SandboxRefusal>,
     idempotency_key: Option<&str>,
@@ -6246,7 +6591,10 @@ mod describe_sdk_tests {
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::ErrorCode;
 
+    use serde_json::{json, Value};
+
     use super::{AreteMcp, DescribeSdkArgs};
+    use crate::registry::RegistryClient;
     use crate::sdk_reference::{DescribeRequest, SdkKind, SdkReferenceSource, Selection};
 
     /// Records each request, answers with a canned reference or error.
@@ -6369,6 +6717,352 @@ mod describe_sdk_tests {
         );
     }
 
+    const KLEND: &str = "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD";
+    const ADDRESS: &str = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59";
+
+    /// A sandbox-only server whose registry, sandbox routes and Program Read
+    /// are the stub at `base`.
+    fn sandbox_reader(base: &str) -> AreteMcp {
+        use crate::entitlements::{Group, Surface};
+        AreteMcp {
+            registry: RegistryClient::with_base_url(base),
+            ..AreteMcp::with_agents(
+                crate::protocol_agent::ProtocolAgent::new(None),
+                crate::sandbox::SandboxClient::from_values(
+                    Some(crate::sandbox::tests::SANDBOX.into()),
+                    Some("a4_sk_agent".into()),
+                    Some(base.into()),
+                ),
+            )
+        }
+        .with_surface(&Surface::Groups(
+            [Group::Account, Group::Sandboxes].into_iter().collect(),
+        ))
+    }
+
+    fn klend_install(base: &str) -> Value {
+        json!({
+            "installName": "klend",
+            "definition": {
+                "programId": KLEND,
+                "idlPayload": {"accounts": [{"name": "Reserve", "discriminator": [9, 9, 9, 9, 9, 9, 9, 9]}]},
+            },
+            "release": {"programReleaseHash": "rel"},
+            "transport": {"kind": "hosted-binding", "binding": {
+                "endpoint": base,
+                "programReadBindingId": "prb_1",
+                "auth": {"sessionEndpoint": format!("{base}/ws/sessions")},
+            }},
+        })
+    }
+
+    /// The stub's base URL is only known once it listens, so the install
+    /// descriptor (which names it) is served from a second stub.
+    fn leak(text: String) -> &'static str {
+        Box::leak(text.into_boxed_str())
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_only_account_reads_a_program_through_its_sandbox() {
+        let decoded = leak(format!("/v1/releases/rel/accounts/Reserve/{ADDRESS}"));
+        let reads = json!({"programs": [{"programId": KLEND, "name": "Kamino Lend"}]});
+        // The Program Read endpoint and the API share the stub; its own
+        // address is filled in by a first stub serving only the descriptor.
+        let (base, seen) = crate::sandbox::tests::stub(vec![
+            ("GET", "/api/sandbox/v1/reads", 200, reads),
+            (
+                "POST",
+                "/api/sandbox/v1/sessions",
+                200,
+                json!({"token": "read-tok", "expiresAt": 1_900_000_000u64}),
+            ),
+            ("GET", decoded, 200, json!({"liquidity": "5"})),
+        ]);
+        let install_path =
+            "/api/registry/programs/klend/install?capabilities=managed-solana-gateway-v1";
+        let (registry, _) =
+            crate::sandbox::tests::stub(vec![("GET", install_path, 200, klend_install(&base))]);
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&registry),
+            ..sandbox_reader(&base)
+        };
+        let result = server
+            .program_read_account(Parameters(super::ProgramReadAccountArgs {
+                address: ADDRESS.into(),
+                program: Some("klend".into()),
+                account: Some("Reserve".into()),
+                sandbox: None,
+            }))
+            .await
+            .expect("read");
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(text.contains(r#"\"liquidity\":\"5\""#), "{text}");
+        assert!(text.contains(crate::sandbox::tests::SANDBOX), "{text}");
+        assert!(text.contains("env:ARETE_SANDBOX_ID"), "{text}");
+        let seen = seen.lock().unwrap().clone();
+        let session = seen
+            .iter()
+            .find(|request| request.starts_with("POST /api/sandbox/v1/sessions"))
+            .expect("a sandbox read session");
+        assert_eq!(crate::sandbox::tests::body_of(session)["targetId"], "prb_1");
+        let read = seen
+            .iter()
+            .find(|request| request.starts_with(&format!("GET {decoded}")))
+            .expect("a Program Read call")
+            .to_ascii_lowercase();
+        assert!(read.contains("authorization: bearer read-tok"), "{read}");
+        // The account key minted only the sandbox token.
+        assert_eq!(
+            seen.iter()
+                .filter(|request| request.contains("a4_sk_agent"))
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_that_reads_one_program_reads_it_by_default() {
+        let decoded = leak(format!("/v1/releases/rel/accounts/Reserve/{ADDRESS}"));
+        let reads = json!({"programs": [{"programId": KLEND}]});
+        let (base, _) = crate::sandbox::tests::stub(vec![
+            ("GET", "/api/sandbox/v1/reads", 200, reads),
+            (
+                "POST",
+                "/api/sandbox/v1/sessions",
+                200,
+                json!({"token": "read-tok", "expiresAt": 1_900_000_000u64}),
+            ),
+            ("GET", decoded, 200, json!({"liquidity": "5"})),
+        ]);
+        let install_path = leak(format!(
+            "/api/registry/programs/{KLEND}/install?capabilities=managed-solana-gateway-v1"
+        ));
+        let (registry, _) =
+            crate::sandbox::tests::stub(vec![("GET", install_path, 200, klend_install(&base))]);
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&registry),
+            ..sandbox_reader(&base)
+        };
+        let result = server
+            .program_read_account(Parameters(super::ProgramReadAccountArgs {
+                address: ADDRESS.into(),
+                program: None,
+                account: Some("Reserve".into()),
+                sandbox: None,
+            }))
+            .await
+            .expect("read");
+        let text = serde_json::to_string(&result).unwrap();
+        assert!(text.contains(r#"\"program\":\"klend\""#), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_program_outside_the_sandbox_rules_is_refused_before_any_mint() {
+        let reads = json!({"programs": [{"programId": "JUP6", "name": "Jupiter"}]});
+        let (base, seen) =
+            crate::sandbox::tests::stub(vec![("GET", "/api/sandbox/v1/reads", 200, reads)]);
+        let install_path =
+            "/api/registry/programs/klend/install?capabilities=managed-solana-gateway-v1";
+        let (registry, _) =
+            crate::sandbox::tests::stub(vec![("GET", install_path, 200, klend_install(&base))]);
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&registry),
+            ..sandbox_reader(&base)
+        };
+        let error = server
+            .program_read_account(Parameters(super::ProgramReadAccountArgs {
+                address: ADDRESS.into(),
+                program: Some("klend".into()),
+                account: Some("Reserve".into()),
+                sandbox: None,
+            }))
+            .await
+            .unwrap_err();
+        let data = error.data.clone().expect("refusal data");
+        assert_eq!(data["code"], "sandbox-program-not-allowlisted");
+        assert_eq!(data["programs"], json!([KLEND]));
+        assert_eq!(data["readable"], json!(["Jupiter (JUP6)"]));
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.contains("/api/sandbox/v1/sessions")));
+    }
+
+    #[tokio::test]
+    async fn a_stream_the_sandbox_refuses_reports_the_sandbox_refusal() {
+        let (base, _) = crate::sandbox::tests::stub(vec![(
+            "POST",
+            "/api/sandbox/v1/sessions",
+            403,
+            json!({
+                "code": "sandbox-program-not-allowlisted",
+                "error": "The stack decodes a program the sandbox's rules leave out",
+                "retryable": false,
+                "programs": [KLEND],
+            }),
+        )]);
+        let error = sandbox_reader(&base)
+            .read_view(Parameters(super::ReadViewArgs {
+                stack: None,
+                url: Some("ws://127.0.0.1:9/stack".into()),
+                view: "Reserve/list".into(),
+                key: None,
+                r#where: Vec::new(),
+                filters: Vec::new(),
+                select: None,
+                limit: None,
+                timeout_secs: Some(5),
+                sandbox: None,
+            }))
+            .await
+            .unwrap_err();
+        let data = error.data.clone().expect("refusal data");
+        assert_eq!(data["code"], "sandbox-program-not-allowlisted", "{error:?}");
+        assert!(error.message.contains(KLEND), "{}", error.message);
+    }
+
+    /// A sandbox-only server whose API (at `base`) lists its grants.
+    fn granted_reader(base: &str) -> AreteMcp {
+        use crate::entitlements::{Group, Surface};
+        AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(
+                None,
+                Some("a4_sk_agent".into()),
+                Some(base.into()),
+            ),
+        )
+        .with_surface(&Surface::Groups(
+            [Group::Account, Group::Sandboxes].into_iter().collect(),
+        ))
+    }
+
+    const OTHER_SANDBOX: &str = "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20";
+
+    fn two_grants() -> Value {
+        json!({"sandboxes": [
+            {"sandboxId": crate::sandbox::tests::SANDBOX, "name": "Bot", "status": "active"},
+            {"sandboxId": OTHER_SANDBOX, "name": "Treasury", "status": "active"},
+        ]})
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_only_read_needs_a_resolved_sandbox_and_never_uses_the_key() {
+        use crate::entitlements::Group;
+        let (base, seen) =
+            crate::sandbox::tests::stub(vec![("GET", "/api/agent/sandboxes", 200, two_grants())]);
+        let server = granted_reader(&base);
+        // Two grants, none chosen: the resolver's refusal and hint.
+        let error = server
+            .read_sandbox(None, &[Group::Streams])
+            .await
+            .unwrap_err();
+        let data = error.data.clone().expect("refusal data");
+        assert_eq!(data["code"], "sandbox-selection-required");
+        assert!(
+            data["hint"].as_str().unwrap().contains("sandbox_select"),
+            "{data}"
+        );
+        // So `read_view` refuses before connecting anywhere.
+        let error = server
+            .read_view(Parameters(super::ReadViewArgs {
+                stack: None,
+                url: Some("ws://127.0.0.1:9/stack".into()),
+                view: "Reserve/list".into(),
+                key: None,
+                r#where: Vec::new(),
+                filters: Vec::new(),
+                select: None,
+                limit: None,
+                timeout_secs: Some(5),
+                sandbox: None,
+            }))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.data.clone().unwrap()["code"],
+            "sandbox-selection-required"
+        );
+        assert!(!seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.starts_with("POST ")));
+
+        // A name picks one of the grants.
+        let (_, resolved) = server
+            .read_sandbox(Some("treasury"), &[Group::Streams])
+            .await
+            .unwrap()
+            .expect("a sandbox");
+        assert_eq!(resolved.sandbox_id, OTHER_SANDBOX);
+        assert_eq!(resolved.source.as_str(), "argument");
+        let error = server
+            .read_sandbox(Some("nobody"), &[Group::Streams])
+            .await
+            .unwrap_err();
+        assert_eq!(error.data.clone().unwrap()["code"], "sandbox-unknown");
+
+        // The sandbox chosen with sandbox_select is the default.
+        server
+            .sandbox
+            .select(Some("Bot"), false)
+            .await
+            .expect("selected");
+        let (_, resolved) = server
+            .read_sandbox(None, &[Group::Streams])
+            .await
+            .unwrap()
+            .expect("a sandbox");
+        assert_eq!(resolved.sandbox_id, crate::sandbox::tests::SANDBOX);
+        assert_eq!(resolved.source.as_str(), "selected");
+    }
+
+    #[tokio::test]
+    async fn the_only_grant_is_read_through_and_no_grant_is_refused() {
+        use crate::entitlements::Group;
+        let only = json!({"sandboxes": [
+            {"sandboxId": crate::sandbox::tests::SANDBOX, "name": "Bot", "status": "active"},
+        ]});
+        let (base, _) =
+            crate::sandbox::tests::stub(vec![("GET", "/api/agent/sandboxes", 200, only)]);
+        let (_, resolved) = granted_reader(&base)
+            .read_sandbox(None, &[Group::Streams])
+            .await
+            .unwrap()
+            .expect("a sandbox");
+        assert_eq!(resolved.source.as_str(), "only-grant");
+
+        let none = json!({"sandboxes": []});
+        let (base, _) =
+            crate::sandbox::tests::stub(vec![("GET", "/api/agent/sandboxes", 200, none)]);
+        let error = granted_reader(&base)
+            .read_sandbox(None, &[Group::Streams])
+            .await
+            .unwrap_err();
+        assert_eq!(error.data.clone().unwrap()["code"], "sandbox-none-granted");
+    }
+
+    #[tokio::test]
+    async fn an_account_with_the_read_group_reads_with_its_key_unless_told() {
+        use crate::entitlements::{Group, Surface};
+        let streams = AreteMcp::new().with_surface(&Surface::Groups(
+            [Group::Streams, Group::Sandboxes].into_iter().collect(),
+        ));
+        assert!(streams
+            .read_sandbox(None, &[Group::Streams])
+            .await
+            .unwrap()
+            .is_none());
+        let (_, resolved) = streams
+            .read_sandbox(Some(crate::sandbox::tests::SANDBOX), &[Group::Streams])
+            .await
+            .unwrap()
+            .expect("an explicit sandbox");
+        assert_eq!(resolved.sandbox_id, crate::sandbox::tests::SANDBOX);
+    }
+
     #[test]
     fn tools_are_listed_per_entitlement_group() {
         use crate::entitlements::{Group, Surface};
@@ -6388,6 +7082,21 @@ mod describe_sdk_tests {
             .tool_names();
         let mut expected: Vec<&str> = vec!["ping", "account_status", "create_claim_link"];
         expected.extend(crate::sandbox::TOOL_NAMES);
+        // A sandbox reads its own programs and their stacks' live views.
+        expected.extend([
+            "program_read_account",
+            "connect",
+            "disconnect",
+            "read_view",
+            "subscribe",
+            "unsubscribe",
+            "query_entities",
+            "get_entity",
+            "list_entities",
+            "get_recent",
+            "list_subscriptions",
+            "list_connections",
+        ]);
         let mut listed: Vec<&str> = sandboxes.iter().map(String::as_str).collect();
         listed.sort_unstable();
         expected.sort_unstable();

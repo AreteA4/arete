@@ -54,6 +54,13 @@ pub struct GetArgs {
     /// Seconds to wait for the connection and snapshot before failing
     #[arg(long, value_name = "SECS", default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..))]
     pub timeout: u64,
+
+    /// Read through this sandbox (an id or name from `a4 sandbox list`):
+    /// only stacks whose programs are all in its rules can be read
+    /// [default, when the account reads only through a sandbox: the one
+    /// `a4 sandbox` uses]
+    #[arg(long, value_name = "ID|NAME")]
+    pub sandbox: Option<String>,
 }
 
 /// Units and the output shape, for `a4 get --help`.
@@ -86,7 +93,7 @@ Examples:
   a4 get OreRound/latest --stack ore --limit 1 --select id,state.*
   a4 get OreMiner/state --stack ore --key <authority>";
 
-pub fn run(args: GetArgs) -> Result<()> {
+pub fn run(args: GetArgs, config_path: &str, json: bool) -> Result<()> {
     let view = args.view.trim();
     if !view.contains('/') {
         bail!("<VIEW> must be EntityName/mode (e.g. OreRound/latest), got '{view}'");
@@ -99,9 +106,19 @@ pub fn run(args: GetArgs) -> Result<()> {
         .transpose()?;
 
     let url = super::resolve_ws_url(args.url.as_deref(), args.stack.as_deref())?;
-    let (url, refresh) = token::ensure_hosted_ws_token(url)?;
+    let sandbox = crate::commands::sandbox::read_sandbox(
+        args.sandbox.as_deref(),
+        &[arete_mcp::entitlements::Group::Streams],
+        config_path,
+    );
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    let (url, refresh) = match sandbox {
+        Some(sandbox) => rt
+            .block_on(token::sandbox_ws_token(url, sandbox))
+            .map_err(|error| super::sandbox_refused(error, json))?,
+        None => token::ensure_hosted_ws_token(url)?,
+    };
     let timeout = Duration::from_secs(args.timeout);
     // Without filters the server can cut the snapshot to --limit; with them
     // the whole snapshot is needed to find the matches.
