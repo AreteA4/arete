@@ -21,11 +21,14 @@ Python SDKs; build instructions, transactions and multi-step flows signed
 through application wallets; and author and deploy custom live read models
 (stacks).
 
-- Sandbox: with `ARETE_SANDBOX_ID` set, the `arete` MCP server lists the
-  `sandbox_*` tools. Read `sandbox_status` and `sandbox_rules` first, preview
-  every action with `sandbox_preview`, then run it with `sandbox_invoke`; the
-  `arete-sandbox` skill has the loop. Never ask for a private key or the
-  owner's API key.
+- Sandbox: with the agent's API key set (or `ARETE_SANDBOX_ID`), the `arete`
+  MCP server lists the `sandbox_*` tools. `sandbox_list` shows the sandboxes
+  the owner granted; with more than one, choose with `sandbox_select`
+  (remembered for this project; `a4 sandbox use` in the CLI). Read
+  `sandbox_status` and `sandbox_rules` first, preview every action with
+  `sandbox_preview`, then run it with `sandbox_invoke`; `sandbox_reads` lists
+  the programs it can read. The `arete-sandbox` skill has the loop. Never ask
+  for a private key or the owner's API key.
 - Health check first: `a4 doctor --summary --json` (ready when top-level
   `status` is `"ok"`; exit 0 can include warnings; `checks` lists only what
   needs attention, and an `info` check there is optional unless you need
