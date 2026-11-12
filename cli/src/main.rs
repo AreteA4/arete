@@ -2036,7 +2036,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Protocol(command) => commands::protocol::run(command, cli.json),
         Commands::Squads(command) => commands::squads::run(command, cli.json),
-        Commands::Sandbox(command) => commands::sandbox::run(command, cli.json),
+        Commands::Sandbox(command) => commands::sandbox::run(command, &cli.config, cli.json),
         Commands::Build(build_cmd) => match build_cmd {
             BuildCommands::List { limit, status } => {
                 commands::build::list(limit, status.as_deref(), cli.json)
@@ -2049,7 +2049,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Idl(args) => commands::idl::run(args),
         Commands::Stream(args) => commands::stream::run(args, &cli.config, cli.json),
-        Commands::Get(args) => commands::stream::run_get(args),
+        Commands::Get(args) => commands::stream::run_get(args, &cli.config, cli.json),
         Commands::Telemetry(telemetry_cmd) => match telemetry_cmd {
             TelemetryCommands::Status => commands::telemetry::status(),
             TelemetryCommands::Enable => commands::telemetry::enable(),
@@ -2647,17 +2647,41 @@ mod tests {
                 "{core} missing:\n{help}"
             );
         }
-        for hidden in [
-            "install", "dev", "protocol", "stream", "explore", "program", "sdk",
-        ] {
+        for hidden in ["install", "dev", "protocol", "explore", "sdk", "up"] {
             assert!(
                 !help.contains(&format!("  {hidden} ")),
                 "{hidden} listed:\n{help}"
             );
         }
+        // A sandbox reads its programs and their stacks: the read commands
+        // are listed, and of `program` only `account`.
+        for read in ["get", "stream", "program", "sandbox"] {
+            assert!(
+                help.contains(&format!("  {read} ")),
+                "{read} missing:\n{help}"
+            );
+        }
+        let (program_help, _) =
+            rendered_help(sandboxes.find_subcommand("program").unwrap().clone());
+        assert!(program_help.contains("  account "), "{program_help}");
+        for hidden in ["push", "build", "archive", "promote"] {
+            assert!(
+                !program_help.contains(&format!("  {hidden} ")),
+                "program {hidden} listed:\n{program_help}"
+            );
+        }
+        // Hidden subcommands still parse.
+        assert!(sandboxes
+            .clone()
+            .try_get_matches_from(["a4", "program", "list"])
+            .is_ok());
+        let stacks = entitlements::visible(Cli::command(), &surface(&[Group::Stacks]));
+        let (program_help, _) = rendered_help(stacks.find_subcommand("program").unwrap().clone());
+        assert!(program_help.contains("  push "), "{program_help}");
         let completions = fish_completions(sandboxes.clone());
         assert!(completes_top_level(&completions, "doctor"));
-        for hidden in ["install", "protocol", "dev", "stream"] {
+        assert!(completes_top_level(&completions, "stream"));
+        for hidden in ["install", "protocol", "dev"] {
             assert!(
                 !completes_top_level(&completions, hidden),
                 "{hidden} completes"

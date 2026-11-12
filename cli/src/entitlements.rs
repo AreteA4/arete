@@ -9,6 +9,10 @@
 //! (`a4 explore --help`, `a4 help explore`, `a4 get` with a missing
 //! argument) is never hidden: its own help and errors are shown as for any
 //! account.
+//!
+//! Read commands (`get`, `stream`, `program account`) are also listed for an
+//! account granted `sandboxes`: a sandbox reads the programs in its rules and
+//! their stacks through them (`--sandbox`).
 
 use arete_mcp::entitlements::{Group, Surface};
 use clap::Command;
@@ -23,8 +27,11 @@ pub fn command_groups(name: &str) -> Option<&'static [Group]> {
     Some(match name {
         "init" | "doctor" | "self" | "upgrade" | "mcp" | "auth" | "login" | "config"
         | "telemetry" | "help" => &[Group::Account],
-        "stream" | "get" => &[Group::Streams],
-        "up" | "status" | "stack" | "build" | "program" | "idl" => &[Group::Stacks],
+        "stream" | "get" => &[Group::Streams, Group::Sandboxes],
+        "up" | "status" | "stack" | "build" | "idl" => &[Group::Stacks],
+        // `program account` reads; the rest manage the account's programs
+        // (see `subcommand_groups`).
+        "program" => &[Group::Stacks, Group::Streams, Group::Sandboxes],
         "explore" | "know" | "install" | "update" | "remove" | "sdk" => &[Group::Registry],
         "protocol" | "squads" => &[Group::Protocols],
         "dev" => &[Group::Dev],
@@ -33,6 +40,16 @@ pub fn command_groups(name: &str) -> Option<&'static [Group]> {
         "create" => &[Group::Stacks, Group::Protocols],
         _ => return None,
     })
+}
+
+/// The groups of a subcommand that differ from its parent's: `None` when the
+/// subcommand has its parent's groups.
+pub fn subcommand_groups(parent: &str, name: &str) -> Option<&'static [Group]> {
+    match (parent, name) {
+        ("program", "account" | "help") => None,
+        ("program", _) => Some(&[Group::Stacks]),
+        _ => None,
+    }
 }
 
 /// The help footer when `visible` leaves commands out: they still run, and
@@ -54,6 +71,7 @@ pub fn visible(cmd: Command, surface: &Surface) -> Command {
             command_groups(sub.get_name()).is_none_or(|groups| surface.allows_any(groups))
         })
         .cloned()
+        .map(|sub| hide_subcommands(sub, surface))
         .collect();
     // clap can't remove a subcommand, so rebuild the root with the same
     // settings (pinned by the test that compares the rendered help).
@@ -68,6 +86,22 @@ pub fn visible(cmd: Command, surface: &Surface) -> Command {
         root = root.after_help(HIDDEN_COMMANDS_NOTE);
     }
     root.args(cmd.get_arguments().cloned()).subcommands(kept)
+}
+
+/// `cmd` with the subcommands `surface` does not grant hidden from its help
+/// and completions; they still run when named.
+fn hide_subcommands(cmd: Command, surface: &Surface) -> Command {
+    let parent = cmd.get_name().to_string();
+    let hidden: Vec<String> = cmd
+        .get_subcommands()
+        .map(|sub| sub.get_name().to_string())
+        .filter(|name| {
+            subcommand_groups(&parent, name).is_some_and(|groups| !surface.allows_any(groups))
+        })
+        .collect();
+    hidden.iter().fold(cmd, |cmd, name| {
+        cmd.mut_subcommand(name, |sub| sub.hide(true))
+    })
 }
 
 /// The top-level command the raw arguments name, as typed: the first

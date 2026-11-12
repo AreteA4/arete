@@ -28,19 +28,46 @@ allow, and that funds cannot leave to somewhere you cannot recover them from.
    options for each, add any addresses funds may go to, and sign once.
 3. Grant your agent access. The agent uses its own account's API key; it
    never gets yours.
-4. Give the agent the sandbox id and run the Arete MCP server:
+4. Run the Arete MCP server with the agent's key:
 
 ```bash
-export ARETE_SANDBOX_ID=<sandbox id>
 export ARETE_API_KEY=<the agent account's secret key>   # or `a4 login` as the agent
 a4 mcp
 ```
 
-The [MCP server](/agent-skills/mcp/) then lists the `sandbox_*` tools:
+No sandbox id is needed. The server asks Arete which sandboxes the agent has
+been granted: with exactly one active sandbox, every tool uses it. With
+several, the agent lists them with `sandbox_list` and picks one with
+`sandbox_select`, and the choice is remembered for the project.
+
+The [MCP server](/agent-skills/mcp/) lists the `sandbox_*` tools:
+`sandbox_list` and `sandbox_select` to find and choose a sandbox,
 `sandbox_status`, `sandbox_rules` and `sandbox_derive` to look around,
 `sandbox_preview` for a dry run, `sandbox_invoke` to run an action (the only
 tool that moves funds), `sandbox_action` to look one up, and the read-only
 `sandbox_history` and `sandbox_holdings`.
+
+### Which sandbox the agent uses
+
+Every `sandbox_*` tool takes an optional `sandbox` argument (a sandbox id,
+or a granted sandbox's name). Without it, a call uses the first of:
+
+1. the sandbox chosen with `sandbox_select` (or `a4 sandbox use`), saved for
+   the project: the directory `a4 mcp` runs in;
+2. `ARETE_SANDBOX_ID`, if set;
+3. the only active sandbox the agent has been granted.
+
+Paused sandboxes are listed but never picked on their own; their actions are
+refused until you resume them. When no sandbox can be chosen, the tool says
+which to call:
+
+| Code                         | Meaning                                                                            |
+| ---------------------------- | ---------------------------------------------------------------------------------- |
+| `sandbox-none-granted`       | No sandbox has been granted to this agent yet                                      |
+| `sandbox-selection-required` | Several sandboxes are granted and none is chosen; the error lists them             |
+| `sandbox-unknown`            | The `sandbox` argument matches no granted sandbox                                  |
+| `sandbox-paused`             | Every granted sandbox is paused                                                    |
+| `sandbox-not-configured`     | The API cannot list grants (an older server): set `ARETE_SANDBOX_ID` or pass an id |
 
 ## Rules (version 3)
 
@@ -128,7 +155,8 @@ The agent, and you through the CLI, can read every action the sandbox ran and
 what it holds now. Both are read-only.
 
 ```bash
-export ARETE_SANDBOX_ID=<sandbox id>
+a4 sandbox list                            # the sandboxes granted, and the one in use
+a4 sandbox use <id or name>                # choose one for this directory
 a4 sandbox history                         # newest first, 20 per page
 a4 sandbox history --status landed --since 24h
 a4 sandbox history --program Pump.fun --all --json

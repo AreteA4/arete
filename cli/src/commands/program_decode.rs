@@ -7,6 +7,13 @@
 //!   environment and decoded by the environment's Program Read, so it shows
 //!   the fork's values. The read session is minted for the environment with
 //!   the account's key, as `a4 dev` does.
+//! - **Sandbox** (`--sandbox <id|name>`, or for an account whose only read
+//!   access is a sandbox, the sandbox `a4 sandbox` resolves to): as
+//!   production, but the Program
+//!   Read session is minted through the sandbox
+//!   (`POST /api/sandbox/v1/sessions`), so only programs in its rules can be
+//!   read. With both `--program` and `--account`, the account is not read
+//!   through the gateway first.
 //!
 //! A program the project depends on decodes at the release arete.lock pins.
 //! Without `--program`, the program is the account's owner, looked up in the
@@ -53,8 +60,73 @@ pub struct DecodeArgs {
     #[arg(long)]
     pub dev: bool,
 
+    /// Read through this sandbox (an id or name from `a4 sandbox list`):
+    /// only programs in its rules can be read (`a4 sandbox reads` lists
+    /// them) [default, when the account reads only through a sandbox: the
+    /// one `a4 sandbox` uses]
+    #[arg(long, value_name = "ID|NAME", conflicts_with = "dev")]
+    pub sandbox: Option<String>,
+
     #[command(flatten)]
     pub env: EnvArgs,
+}
+
+/// A read through a sandbox: its client, the runtime its calls run on, and
+/// the programs it can read.
+struct SandboxRead {
+    /// Pinned to the sandbox it resolved to.
+    client: arete_mcp::sandbox::SandboxClient,
+    sandbox_id: String,
+    runtime: tokio::runtime::Runtime,
+    reads: Value,
+    json: bool,
+}
+
+impl SandboxRead {
+    fn open(client: arete_mcp::sandbox::SandboxClient, json: bool) -> Result<Self> {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .context("Failed to start the async runtime")?;
+        let refused = |refusal| crate::commands::sandbox::read_refused(refusal, json);
+        let (client, resolved) = runtime.block_on(client.pin()).map_err(refused)?;
+        let reads = runtime.block_on(client.reads_cached()).map_err(refused)?;
+        Ok(Self {
+            client,
+            sandbox_id: resolved.sandbox_id,
+            runtime,
+            reads,
+            json,
+        })
+    }
+
+    /// Refuse `install` here when the sandbox's rules leave its program out.
+    fn check(&self, install: &RegistryProgramInstallResponse) -> Result<()> {
+        let program_id = &install.definition.program_id;
+        let allowed = arete_mcp::program_read::readable_programs(&self.reads)
+            .iter()
+            .any(|(id, _)| id == program_id);
+        if allowed {
+            return Ok(());
+        }
+        let refusal = arete_mcp::program_read::not_allowlisted(
+            program_id,
+            &install.install_name,
+            &self.reads,
+        );
+        Err(crate::commands::sandbox::read_refused(refusal, self.json))
+    }
+
+    fn mint(&self, binding_id: &str, release: &str) -> Result<String> {
+        let target = arete_mcp::sandbox::ReadTarget::ProgramRead {
+            binding_id: binding_id.to_string(),
+            program_release_hash: release.to_string(),
+        };
+        self.runtime
+            .block_on(self.client.read_session(&target))
+            .map(|session| session.token)
+            .map_err(|refusal| crate::commands::sandbox::read_refused(refusal, self.json))
+    }
 }
 
 /// Where the read goes. `--dev` selects the environment today; when the
@@ -80,8 +152,35 @@ pub fn run(config_path: &str, args: DecodeArgs, json_output: bool) -> Result<()>
         bail!("'{}' is not a Solana address", args.address);
     }
     let client = ApiClient::new()?;
+    let usual = [
+        arete_mcp::entitlements::Group::Stacks,
+        arete_mcp::entitlements::Group::Streams,
+    ];
+    let sandbox = match args.dev {
+        true => None,
+        false => {
+            crate::commands::sandbox::read_sandbox(args.sandbox.as_deref(), &usual, config_path)
+        }
+    };
     let decoded = match read_target(&args)? {
-        ReadTarget::Production => decode_production(&client, config_path, &args)?,
+        ReadTarget::Production => match sandbox {
+            Some(sandbox) => {
+                let sandbox = SandboxRead::open(sandbox, json_output)?;
+                decode_production(&client, config_path, &args, Some(&sandbox))?
+            }
+            None => match decode_production(&client, config_path, &args, None) {
+                Ok(decoded) => decoded,
+                // A key a sandbox grant binds reads through that sandbox.
+                Err(error) => match crate::commands::sandbox::read_required(&error) {
+                    Some(refusal) => {
+                        let reader = crate::commands::sandbox::bound_reader(&refusal, json_output)?;
+                        let sandbox = SandboxRead::open(reader, json_output)?;
+                        decode_production(&client, config_path, &args, Some(&sandbox))?
+                    }
+                    None => return Err(error),
+                },
+            },
+        },
         ReadTarget::Dev(env) => decode_dev(&client, config_path, &args, env)?,
     };
     print_decoded(&decoded, json_output)
@@ -97,27 +196,35 @@ struct Decoded {
     release: String,
     /// `production`, or the dev environment's id.
     environment: String,
+    /// The sandbox the read went through.
+    sandbox: Option<String>,
     value: Value,
 }
 
 fn print_decoded(decoded: &Decoded, json_output: bool) -> Result<()> {
     if json_output {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json!({
-                "address": decoded.address,
-                "program": decoded.program,
-                "programId": decoded.program_id,
-                "account": decoded.account,
-                "programReleaseHash": decoded.release,
-                "environment": decoded.environment,
-                "value": decoded.value,
-            }))?
-        );
+        let mut shown = json!({
+            "address": decoded.address,
+            "program": decoded.program,
+            "programId": decoded.program_id,
+            "account": decoded.account,
+            "programReleaseHash": decoded.release,
+            "environment": decoded.environment,
+            "value": decoded.value,
+        });
+        if let Some(sandbox) = &decoded.sandbox {
+            shown["sandbox"] = json!(sandbox);
+        }
+        println!("{}", serde_json::to_string_pretty(&shown)?);
         return Ok(());
     }
+    let through = decoded
+        .sandbox
+        .as_ref()
+        .map(|sandbox| format!(", sandbox {sandbox}"))
+        .unwrap_or_default();
     println!(
-        "{} {} ({} of {}, {})",
+        "{} {} ({} of {}, {}{through})",
         decoded.address, decoded.account, decoded.account, decoded.program, decoded.environment
     );
     println!("{}", serde_json::to_string_pretty(&decoded.value)?);
@@ -131,12 +238,33 @@ struct RawAccount {
     data: Vec<u8>,
 }
 
-fn decode_production(client: &ApiClient, config_path: &str, args: &DecodeArgs) -> Result<Decoded> {
-    let named = args
-        .program
-        .as_deref()
-        .map(|program| install_for(client, config_path, program))
-        .transpose()?;
+fn decode_production(
+    client: &ApiClient,
+    config_path: &str,
+    args: &DecodeArgs,
+    sandbox: Option<&SandboxRead>,
+) -> Result<Decoded> {
+    // A sandbox that reads one program reads that one by default.
+    let only_readable = sandbox.and_then(|sandbox| {
+        let mut programs = arete_mcp::program_read::readable_programs(&sandbox.reads);
+        (programs.len() == 1).then(|| programs.remove(0).0)
+    });
+    let named = match (args.program.as_deref(), only_readable.as_deref()) {
+        (Some(program), _) => Some(install_for(client, config_path, program)?),
+        (None, Some(program_id)) => Some(install_by_id(client, config_path, program_id)?),
+        (None, None) => None,
+    };
+    // Through a sandbox, a named program and account type need no gateway
+    // read: Program Read reads the account itself.
+    if let (Some(sandbox), Some(install), Some(account)) = (sandbox, &named, &args.account) {
+        sandbox.check(install)?;
+        let raw = RawAccount {
+            owner: install.definition.program_id.clone(),
+            data: Vec::new(),
+        };
+        let account = account_type(install, &raw, Some(account))?;
+        return read_through_sandbox(install, account, args, sandbox);
+    }
     // Any program's chain binding names the managed Solana gateway, which
     // reads any account; without --program, the registry's first program
     // provides one.
@@ -164,19 +292,50 @@ fn decode_production(client: &ApiClient, config_path: &str, args: &DecodeArgs) -
         Some(install) => install,
         None => owner_install(client, config_path, &raw.owner, &args.address)?,
     };
-    let (binding_id, endpoint, session_endpoint) = program_read_binding(&install)?;
     let account = account_type(&install, &raw, args.account.as_deref())?;
     check_owner(&install, &raw, &args.address)?;
+    match sandbox {
+        Some(sandbox) => {
+            sandbox.check(&install)?;
+            read_through_sandbox(&install, account, args, sandbox)
+        }
+        None => {
+            let (binding_id, endpoint, session_endpoint) = program_read_binding(&install)?;
+            let release = install.release.program_release_hash.clone();
+            let token = client.mint_target_session(
+                &session_endpoint,
+                &json!({
+                    "scopes": ["read"],
+                    "targetKind": "program-read-binding",
+                    "targetId": binding_id,
+                    "programReleaseHash": release,
+                }),
+            )?;
+            let value = read_decoded(&endpoint, &release, &account, &args.address, &token)?;
+            Ok(Decoded {
+                address: args.address.clone(),
+                program: install.install_name.clone(),
+                program_id: install.definition.program_id.clone(),
+                account,
+                release,
+                environment: "production".to_string(),
+                sandbox: None,
+                value,
+            })
+        }
+    }
+}
+
+/// Read `account` at the address with a session minted through `sandbox`.
+fn read_through_sandbox(
+    install: &RegistryProgramInstallResponse,
+    account: String,
+    args: &DecodeArgs,
+    sandbox: &SandboxRead,
+) -> Result<Decoded> {
+    let (binding_id, endpoint, _) = program_read_binding(install)?;
     let release = install.release.program_release_hash.clone();
-    let token = client.mint_target_session(
-        &session_endpoint,
-        &json!({
-            "scopes": ["read"],
-            "targetKind": "program-read-binding",
-            "targetId": binding_id,
-            "programReleaseHash": release,
-        }),
-    )?;
+    let token = sandbox.mint(&binding_id, &release)?;
     let value = read_decoded(&endpoint, &release, &account, &args.address, &token)?;
     Ok(Decoded {
         address: args.address.clone(),
@@ -185,6 +344,7 @@ fn decode_production(client: &ApiClient, config_path: &str, args: &DecodeArgs) -
         account,
         release,
         environment: "production".to_string(),
+        sandbox: Some(sandbox.sandbox_id.clone()),
         value,
     })
 }
@@ -268,6 +428,7 @@ fn decode_dev(
         account,
         release,
         environment: env,
+        sandbox: None,
         value,
     })
 }
@@ -421,6 +582,24 @@ fn owner_install(
             )
         })?;
     client.get_registry_program_install(&program.install_name, None)
+}
+
+/// The install for the program with `program_id`: the project's dependency
+/// on it at the release arete.lock pins, else the registry's.
+fn install_by_id(
+    client: &ApiClient,
+    config_path: &str,
+    program_id: &str,
+) -> Result<RegistryProgramInstallResponse> {
+    let pinned = project_install(Path::new(config_path), |_, locked| {
+        locked.is_some_and(|entry| entry.program_id.as_deref() == Some(program_id))
+    })?;
+    if let Some(install) = owning(pinned, program_id) {
+        return Ok(install);
+    }
+    client
+        .get_registry_program_install(program_id, None)
+        .with_context(|| format!("Could not resolve program {program_id}"))
 }
 
 /// The install when its program is `owner`. A lock older than arete.toml can
@@ -936,11 +1115,226 @@ mod tests {
             program: None,
             account: None,
             dev: false,
+            sandbox: None,
             env: EnvArgs {
                 project: Default::default(),
                 env: Some("main".into()),
             },
         };
         assert!(read_target(&args).is_err());
+    }
+
+    const SANDBOX: &str = "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10";
+    const ADDRESS: &str = "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59";
+
+    /// An API that answers, in order: the sandbox token, the sandbox's
+    /// readable programs, klend's install (its Program Read at `reads`),
+    /// then `rest`.
+    fn sandbox_api(
+        readable: &str,
+        reads: &crate::api_client::test_support::MockServer,
+        rest: Vec<(u16, String)>,
+    ) -> crate::api_client::test_support::MockServer {
+        let mut install = serde_json::to_value(install(json!([
+            {"name": "Reserve", "discriminator": [9, 9, 9, 9, 9, 9, 9, 9]},
+        ])))
+        .unwrap();
+        install["installName"] = json!("klend");
+        install["transport"]["binding"]["endpoint"] = json!(reads.base_url());
+        let mut answers = vec![
+            (
+                200,
+                json!({"token": "sbx", "expiresAt": 4_000_000_000u64, "scopes": []}).to_string(),
+            ),
+            (
+                200,
+                json!({"programs": [{"programId": readable, "name": "Readable"}]}).to_string(),
+            ),
+            (200, install.to_string()),
+        ];
+        answers.extend(rest);
+        crate::api_client::test_support::MockServer::json_sequence(answers)
+    }
+
+    fn sandbox_args() -> DecodeArgs {
+        DecodeArgs {
+            address: ADDRESS.into(),
+            program: Some("klend".into()),
+            account: Some("Reserve".into()),
+            dev: false,
+            sandbox: Some(SANDBOX.into()),
+            env: EnvArgs {
+                project: Default::default(),
+                env: None,
+            },
+        }
+    }
+
+    fn open_sandbox(api: &crate::api_client::test_support::MockServer) -> SandboxRead {
+        let client = arete_mcp::sandbox::SandboxClient::from_values(
+            Some(SANDBOX.into()),
+            Some("a4_sk_agent".into()),
+            Some(api.base_url().to_string()),
+        );
+        SandboxRead::open(client, true).expect("the sandbox's reads")
+    }
+
+    #[test]
+    fn a_sandbox_named_by_its_name_resolves_from_the_grants() {
+        let grants = json!({"sandboxes": [
+            {"sandboxId": "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20", "name": "Bot", "status": "active"},
+            {"sandboxId": SANDBOX, "name": "Treasury", "status": "active"},
+        ]});
+        let api = crate::api_client::test_support::MockServer::json_sequence(vec![
+            (200, grants.to_string()),
+            (
+                200,
+                json!({"token": "sbx", "expiresAt": 4_000_000_000u64, "scopes": []}).to_string(),
+            ),
+            (200, json!({"programs": [{"programId": KLEND}]}).to_string()),
+        ]);
+        let client = arete_mcp::sandbox::SandboxClient::from_values(
+            None,
+            Some("a4_sk_agent".into()),
+            Some(api.base_url().to_string()),
+        )
+        .targeting(Some("treasury"));
+        let sandbox = SandboxRead::open(client, true).expect("resolved by name");
+        assert_eq!(sandbox.sandbox_id, SANDBOX);
+        assert_eq!(
+            api.request().request_line,
+            "GET /api/agent/sandboxes HTTP/1.1"
+        );
+        let mint = api.request();
+        assert_eq!(
+            serde_json::from_str::<Value>(&mint.body).unwrap()["targetId"],
+            SANDBOX
+        );
+    }
+
+    #[test]
+    fn several_grants_and_no_choice_refuse_instead_of_using_the_key() {
+        let grants = json!({"sandboxes": [
+            {"sandboxId": "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20", "name": "Bot", "status": "active"},
+            {"sandboxId": SANDBOX, "name": "Treasury", "status": "active"},
+        ]});
+        let api = crate::api_client::test_support::MockServer::json(200, &grants.to_string());
+        let client = arete_mcp::sandbox::SandboxClient::from_values(
+            None,
+            Some("a4_sk_agent".into()),
+            Some(api.base_url().to_string()),
+        );
+        let error = SandboxRead::open(client, true).err().expect("refused");
+        assert!(
+            error.downcast_ref::<crate::ui::ExitCode>().is_some(),
+            "{error}"
+        );
+        // Only the listing was asked for: nothing was minted or read.
+        assert_eq!(
+            api.request().request_line,
+            "GET /api/agent/sandboxes HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn a_sandbox_read_mints_its_session_through_the_sandbox() {
+        let reads = crate::api_client::test_support::MockServer::json(200, r#"{"liquidity":"5"}"#);
+        let api = sandbox_api(
+            KLEND,
+            &reads,
+            vec![(
+                200,
+                json!({"token": "read-tok", "expiresAt": 4_000_000_000u64}).to_string(),
+            )],
+        );
+        let sandbox = open_sandbox(&api);
+        let client = ApiClient::with_base_url(api.base_url()).with_api_key("a4_sk_agent".into());
+        let decoded = decode_production(
+            &client,
+            "/nonexistent/arete.toml",
+            &sandbox_args(),
+            Some(&sandbox),
+        )
+        .expect("decoded");
+        assert_eq!(decoded.value, json!({"liquidity": "5"}));
+        assert_eq!(decoded.sandbox.as_deref(), Some(SANDBOX));
+        assert_eq!(decoded.account, "Reserve");
+
+        let requests: Vec<_> = (0..4).map(|_| api.request()).collect();
+        assert_eq!(
+            requests[1].request_line,
+            "GET /api/sandbox/v1/reads HTTP/1.1"
+        );
+        assert_eq!(
+            requests[3].request_line,
+            "POST /api/sandbox/v1/sessions HTTP/1.1"
+        );
+        assert_eq!(requests[3].header("authorization"), Some("Bearer sbx"));
+        let body: Value = serde_json::from_str(&requests[3].body).unwrap();
+        assert_eq!(body["targetKind"], "program-read-binding");
+        assert_eq!(body["targetId"], "prb_00000000000000000000000000000001");
+        let read = reads.request();
+        assert_eq!(
+            read.request_line,
+            format!(
+                "GET /v1/releases/arete:h1:program-release:sha256:aa/accounts/Reserve/{ADDRESS} HTTP/1.1"
+            )
+        );
+        assert_eq!(read.header("authorization"), Some("Bearer read-tok"));
+    }
+
+    #[test]
+    fn a_sandbox_that_reads_one_program_decodes_it_by_default() {
+        let reads = crate::api_client::test_support::MockServer::json(200, r#"{"liquidity":"5"}"#);
+        let api = sandbox_api(
+            KLEND,
+            &reads,
+            vec![(
+                200,
+                json!({"token": "read-tok", "expiresAt": 4_000_000_000u64}).to_string(),
+            )],
+        );
+        let sandbox = open_sandbox(&api);
+        let client = ApiClient::with_base_url(api.base_url()).with_api_key("a4_sk_agent".into());
+        let args = DecodeArgs {
+            program: None,
+            ..sandbox_args()
+        };
+        let decoded = decode_production(&client, "/nonexistent/arete.toml", &args, Some(&sandbox))
+            .expect("decoded");
+        assert_eq!(decoded.program, "klend");
+        // The sandbox token, then its readable programs, then the install.
+        let _token = api.request();
+        let _reads = api.request();
+        let install = api.request();
+        assert!(
+            install
+                .request_line
+                .starts_with(&format!("GET /api/registry/programs/{KLEND}/install")),
+            "{}",
+            install.request_line
+        );
+    }
+
+    #[test]
+    fn a_program_outside_the_sandbox_rules_is_refused_before_any_mint() {
+        let reads = crate::api_client::test_support::MockServer::json(200, "{}");
+        let api = sandbox_api("JUP6", &reads, Vec::new());
+        let sandbox = open_sandbox(&api);
+        let client = ApiClient::with_base_url(api.base_url()).with_api_key("a4_sk_agent".into());
+        let error = decode_production(
+            &client,
+            "/nonexistent/arete.toml",
+            &sandbox_args(),
+            Some(&sandbox),
+        )
+        .expect_err("refused");
+        // A refusal exits 77 like the other sandbox refusals.
+        assert_eq!(
+            error
+                .downcast_ref::<crate::ui::ExitCode>()
+                .map(|code| code.0),
+            Some(77)
+        );
     }
 }

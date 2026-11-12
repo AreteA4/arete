@@ -1,11 +1,16 @@
-//! `a4 sandbox`: read a sandbox wallet's history, holdings and rules, and
-//! check a Rules v3 document before its owner signs it.
+//! `a4 sandbox`: list the sandboxes the account has been granted and choose
+//! one, read a sandbox wallet's history, holdings and rules, list the
+//! programs it can read, and check a Rules v3 document before its owner
+//! signs it.
 //!
 //! The reads go to the Arete API's sandbox routes with a short-lived token
 //! the account's API key mints for the sandbox (as the MCP `sandbox_*` tools
 //! do), so they work for an agent the sandbox's owner has granted access.
-//! They never run an action: actions go through the MCP `sandbox_invoke`
-//! tool. `rules validate` reads a local file and sends nothing.
+//! The sandbox resolves as for the MCP tools: `--sandbox`, then the one
+//! chosen with `a4 sandbox use` for this directory, then `ARETE_SANDBOX_ID`,
+//! then the only active sandbox granted. They never run an action: actions
+//! go through the MCP `sandbox_invoke` tool. `rules validate` reads a local
+//! file and sends nothing.
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -25,6 +30,10 @@ const MAX_ALL_CALLS: usize = 50;
 
 #[derive(Subcommand, Debug)]
 pub enum SandboxCommands {
+    /// The sandboxes this account has been granted, and which one is used
+    List,
+    /// Choose the sandbox the other commands use in this directory
+    Use(UseArgs),
     /// The sandbox's actions, newest first (paginated, with filters)
     History(HistoryArgs),
     /// What the sandbox wallet holds now: SOL, tokens and program positions
@@ -32,13 +41,29 @@ pub enum SandboxCommands {
     /// The sandbox's rules: show them, or check a Rules v3 file
     #[command(subcommand)]
     Rules(RulesCommands),
+    /// The programs the sandbox can read: their accounts with `a4 program
+    /// account decode` and their stacks with `a4 get` / `a4 stream`, each with
+    /// --sandbox
+    Reads(SandboxTarget),
 }
 
 #[derive(Args, Debug, Clone, Default)]
 pub struct SandboxTarget {
-    /// The sandbox id (default: ARETE_SANDBOX_ID)
-    #[arg(long, value_name = "ID")]
+    /// The sandbox id or name (default: the one chosen with `a4 sandbox use`,
+    /// else ARETE_SANDBOX_ID, else the only sandbox granted)
+    #[arg(long, value_name = "ID|NAME")]
     pub sandbox: Option<String>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct UseArgs {
+    /// The sandbox id or name, as `a4 sandbox list` shows it
+    #[arg(value_name = "ID|NAME", required_unless_present = "clear")]
+    pub sandbox: Option<String>,
+
+    /// Forget the choice for this directory
+    #[arg(long, conflicts_with = "sandbox")]
+    pub clear: bool,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -100,13 +125,89 @@ pub enum RulesCommands {
     },
 }
 
-pub fn run(command: SandboxCommands, json: bool) -> Result<()> {
+pub fn run(command: SandboxCommands, config: &str, json: bool) -> Result<()> {
     match command {
+        SandboxCommands::List => list(json),
+        SandboxCommands::Use(args) => use_sandbox(args, json),
         SandboxCommands::History(args) => history(args, json),
         SandboxCommands::Holdings(args) => holdings(args, json),
         SandboxCommands::Rules(RulesCommands::Show(target)) => rules_show(target, json),
         SandboxCommands::Rules(RulesCommands::Validate { file }) => rules_validate(&file, json),
+        SandboxCommands::Reads(target) => reads_show(target, config, json),
     }
+}
+
+/// The sandbox a read command (`program account decode`, `get`, `stream`)
+/// reads through, before it resolves: `requested` (an id or a granted
+/// sandbox's name), else, when the account's command groups grant
+/// `sandboxes` and none of the command's `usual` groups, the sandbox the
+/// other `a4 sandbox` commands use (chosen with `a4 sandbox use`, else
+/// ARETE_SANDBOX_ID, else the only one granted). None: the account's own key
+/// reads. The caller resolves it with [`SandboxClient::pin`], and a sandbox
+/// that does not resolve is refused with the resolver's hint, never read
+/// with the account's key.
+pub fn read_sandbox(
+    requested: Option<&str>,
+    usual: &[arete_mcp::entitlements::Group],
+    config: &str,
+) -> Option<SandboxClient> {
+    let requested = requested.map(str::trim).filter(|wanted| !wanted.is_empty());
+    if requested.is_none() && !reads_through_sandbox(usual, config) {
+        return None;
+    }
+    Some(SandboxClient::from_env().targeting(requested))
+}
+
+/// Whether a read command whose own groups are `usual` goes through the
+/// sandbox without --sandbox: the account's groups grant `sandboxes` and
+/// none of them.
+fn reads_through_sandbox(usual: &[arete_mcp::entitlements::Group], config: &str) -> bool {
+    let surface = crate::entitlements::account_surface(None, None, config);
+    sandbox_only(&surface, usual)
+}
+
+/// Whether `surface` grants `sandboxes` and none of `usual`.
+fn sandbox_only(
+    surface: &arete_mcp::entitlements::Surface,
+    usual: &[arete_mcp::entitlements::Group],
+) -> bool {
+    use arete_mcp::entitlements::Group;
+    surface.allows(Group::Sandboxes) && !usual.iter().any(|group| surface.allows(*group))
+}
+
+/// A sandbox refusal of a read, printed like the other sandbox refusals.
+pub fn read_refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
+    refused(refusal, json)
+}
+
+/// One line for a terminal, with the hint in CLI terms.
+pub fn cli_message(refusal: &SandboxRefusal) -> String {
+    refusal.message_with_hint(cli_hint(refusal))
+}
+
+/// For a key a sandbox grant binds, refused a direct read with `refusal`
+/// (`sandbox-read-required`): a client pinned to the sandbox to read
+/// through, the one chosen with `a4 sandbox use` (else `ARETE_SANDBOX_ID`,
+/// else the only one the refusal lists). Else the refusal, printed with the
+/// sandboxes it lists.
+pub fn bound_reader(refusal: &SandboxRefusal, json: bool) -> Result<SandboxClient> {
+    let (client, _) = SandboxClient::from_env()
+        .read_through_bound(refusal)
+        .map_err(|refusal| refused(refusal, json))?;
+    Ok(client)
+}
+
+/// The refusal in `error` of a direct read by a key a sandbox grant binds
+/// (`sandbox-read-required`), from the API client or a stream's mint.
+pub fn read_required(error: &anyhow::Error) -> Option<SandboxRefusal> {
+    if let Some(refusal) = error.downcast_ref::<SandboxRefusal>() {
+        return (refusal.code() == arete_mcp::sandbox::READ_REQUIRED).then(|| refusal.clone());
+    }
+    let api = error.downcast_ref::<crate::api_client::ApiClientError>()?;
+    SandboxRefusal::read_required(
+        api.status.as_u16(),
+        serde_json::to_value(&api.problem).ok()?,
+    )
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime> {
@@ -116,21 +217,71 @@ fn runtime() -> Result<tokio::runtime::Runtime> {
         .context("Failed to start the async runtime")
 }
 
-fn client(target: &SandboxTarget) -> Result<SandboxClient> {
-    let client = SandboxClient::from_env_for(target.sandbox.clone());
-    if !client.configured() {
-        anyhow::bail!(
-            "No sandbox: pass --sandbox <id> or set ARETE_SANDBOX_ID to the sandbox id shown on the dashboard"
-        );
-    }
-    Ok(client)
+/// A client for the sandbox `target` resolves to, and its id.
+fn client(
+    runtime: &tokio::runtime::Runtime,
+    target: &SandboxTarget,
+    json: bool,
+) -> Result<(SandboxClient, String)> {
+    resolved_client(runtime, target, json).map(|(client, resolved)| (client, resolved.sandbox_id))
+}
+
+/// A client for the sandbox `target` resolves to, and how it resolved.
+fn resolved_client(
+    runtime: &tokio::runtime::Runtime,
+    target: &SandboxTarget,
+    json: bool,
+) -> Result<(SandboxClient, arete_mcp::sandbox::selection::Resolved)> {
+    let client = SandboxClient::from_env().targeting(target.sandbox.as_deref());
+    let resolved = runtime
+        .block_on(client.resolve())
+        .map_err(|refusal| refused(refusal, json))?;
+    // Resolved once: the calls below name the id, with no second listing.
+    let client = client.targeting(Some(&resolved.sandbox_id));
+    Ok((client, resolved))
+}
+
+/// The hint for `refusal` in CLI terms, where the MCP hint names MCP tools.
+pub fn cli_hint(refusal: &SandboxRefusal) -> Option<&'static str> {
+    let read = refusal.kind == arete_mcp::sandbox::CallKind::Read;
+    Some(match refusal.code().as_str() {
+        "sandbox-program-not-allowlisted" if read => {
+            "The sandbox can read only the programs in its rules: `a4 sandbox reads` lists them. Only the owner can add one, in the dashboard."
+        }
+        "sandbox-read-programs-unknown" => {
+            "Arete could not tell which programs this stack decodes, so a sandbox cannot read it. Read the programs the sandbox allows (`a4 sandbox reads` lists them) with `a4 program account decode`."
+        }
+        "sandbox-read-target-unsupported" => {
+            "A sandbox reads only program accounts (`a4 program account decode`) and stack views (`a4 get`, `a4 stream`) of the programs `a4 sandbox reads` lists."
+        }
+        arete_mcp::sandbox::READ_REQUIRED => {
+            "This API key reads programs and stacks only through a sandbox. Choose one with `a4 sandbox use <id|name>` (remembered for this directory), or pass --sandbox <id>."
+        }
+        "sandbox-none-granted" => {
+            "No sandbox owner has granted this agent access yet. Ask the owner to grant it access in the dashboard, then run `a4 sandbox list`."
+        }
+        "sandbox-selection-required" => {
+            "Choose one with `a4 sandbox use <id|name>` (remembered for this directory), or pass --sandbox."
+        }
+        "sandbox-unknown" => "`a4 sandbox list` shows the sandboxes this agent may use.",
+        "sandbox-not-configured" => {
+            "This Arete API cannot list the sandboxes granted to this agent: pass --sandbox <id> or set ARETE_SANDBOX_ID."
+        }
+        "sandbox-grant-missing" | "sandbox-consent-unsigned" => {
+            "The sandbox's owner has not granted this agent access to this sandbox (or must grant it again). `a4 sandbox list` shows the ones it may use and `a4 sandbox use` picks one; or ask the owner to grant access in the dashboard."
+        }
+        _ => return None,
+    })
 }
 
 /// Print a refusal the way API errors are printed (the problem as JSON on
 /// stdout with --json, else the message and a hint on stderr) and exit
 /// with 77 for auth refusals, 75 when rate limited, else 1.
 fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
-    let shown = refusal.to_json();
+    let mut shown = refusal.to_json();
+    if let Some(hint) = cli_hint(&refusal) {
+        shown["hint"] = json!(hint);
+    }
     if json {
         println!("{shown}");
     } else {
@@ -140,6 +291,9 @@ fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
             .or_else(|| shown["message"].as_str())
             .unwrap_or("the Arete API refused the request");
         eprintln!("{} {message} ({code})", "Error:".red().bold());
+        for sandbox in shown["sandboxes"].as_array().into_iter().flatten() {
+            eprintln!("  {}", sandbox_line(sandbox));
+        }
         if let Some(hint) = shown["hint"].as_str() {
             eprintln!("{hint}");
         } else if refusal.status == 404 {
@@ -156,10 +310,186 @@ fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
     ExitCode(code).into()
 }
 
+// ---- list and use -------------------------------------------------------------
+
+fn list(json: bool) -> Result<()> {
+    let client = SandboxClient::from_env();
+    let mut body = runtime()?
+        .block_on(client.list())
+        .map_err(|refusal| refused(refusal, json))?;
+    // The listing's note names the MCP tools; say it in CLI terms.
+    match list_note(&body) {
+        Some(note) => body["note"] = json!(note),
+        None => {
+            if let Some(object) = body.as_object_mut() {
+                object.remove("note");
+            }
+        }
+    }
+    if json {
+        println!("{body}");
+    } else {
+        print!("{}", render_list(&body));
+    }
+    Ok(())
+}
+
+fn use_sandbox(args: UseArgs, json: bool) -> Result<()> {
+    let client = SandboxClient::from_env();
+    let body = runtime()?
+        .block_on(client.select(args.sandbox.as_deref(), args.clear))
+        .map_err(|refusal| refused(refusal, json))?;
+    if json {
+        println!("{body}");
+        return Ok(());
+    }
+    let saved = body["saved"] == true;
+    if body["cleared"] == true {
+        println!("Forgot the sandbox chosen for this directory.");
+        match body["current"].as_object() {
+            Some(_) => println!(
+                "Sandbox commands now use {} ({}).",
+                body["current"]["sandboxId"].as_str().unwrap_or("?"),
+                source_label(body["current"]["source"].as_str().unwrap_or(""))
+            ),
+            None => println!("Pass --sandbox, or choose again with `a4 sandbox use`."),
+        }
+    } else {
+        println!(
+            "{} {}",
+            "Using".green().bold(),
+            sandbox_line(&body["selected"])
+        );
+        if saved {
+            println!("Remembered for this directory (by `a4 sandbox` and `a4 mcp`).");
+        }
+    }
+    if !saved {
+        println!(
+            "{} the choice could not be saved, so it lasted only for this command.",
+            "Warning:".yellow().bold()
+        );
+    }
+    if body["note"].is_string() {
+        println!(
+            "{}",
+            "Its actions are refused until the owner resumes it.".yellow()
+        );
+    }
+    Ok(())
+}
+
+/// What `a4 sandbox list` should say beneath the list, if anything.
+pub fn list_note(body: &Value) -> Option<String> {
+    let sandboxes = body["sandboxes"].as_array().cloned().unwrap_or_default();
+    let current = body["current"]["sandboxId"].as_str();
+    let entry = |id: &str| {
+        sandboxes
+            .iter()
+            .find(|sandbox| sandbox["sandboxId"].as_str() == Some(id))
+    };
+    match current {
+        Some(id) => match entry(id) {
+            None => Some(format!(
+                "The sandbox in use ({id}, from {}) is not granted to this agent, so its commands are refused. Choose a listed one with `a4 sandbox use`.",
+                source_label(body["current"]["source"].as_str().unwrap_or(""))
+            )),
+            Some(sandbox) if sandbox["status"] != "active" => Some(
+                "The sandbox in use is paused: its actions are refused until the owner resumes it."
+                    .into(),
+            ),
+            Some(_) => None,
+        },
+        None if sandboxes.is_empty() => Some(
+            "No sandbox is granted to this agent yet. Ask a sandbox owner to grant it access in the dashboard."
+                .into(),
+        ),
+        None if sandboxes.iter().all(|sandbox| sandbox["status"] != "active") => Some(
+            "Every sandbox granted to this agent is paused. Only an owner can resume one.".into(),
+        ),
+        None => Some(
+            "Several sandboxes are granted: choose one with `a4 sandbox use <id|name>`, or pass --sandbox."
+                .into(),
+        ),
+    }
+}
+
+/// Where the sandbox in use came from, in words.
+fn source_label(source: &str) -> &'static str {
+    match source {
+        "argument" => "--sandbox",
+        "selected" => "chosen with `a4 sandbox use`",
+        "saved" => "saved for this directory",
+        "env:ARETE_SANDBOX_ID" => "ARETE_SANDBOX_ID",
+        "only-grant" => "the only sandbox granted",
+        "bound-key" => "the only sandbox this API key reads through",
+        _ => "unknown",
+    }
+}
+
+/// One sandbox on one line: id, name, status, cluster, actions, wallet.
+fn sandbox_line(sandbox: &Value) -> String {
+    let mut line = sandbox["sandboxId"].as_str().unwrap_or("?").to_string();
+    if let Some(name) = sandbox["name"].as_str() {
+        line.push_str(&format!("  {}", name.bold()));
+    }
+    if let Some(status) = sandbox["status"].as_str() {
+        let status = if status == "active" {
+            status.green().to_string()
+        } else {
+            status.yellow().to_string()
+        };
+        line.push_str(&format!("  {status}"));
+    }
+    if let Some(cluster) = sandbox["cluster"].as_str() {
+        line.push_str(&format!("  {cluster}"));
+    }
+    if let Some(actions) = sandbox["actions"].as_array() {
+        let actions: Vec<&str> = actions.iter().filter_map(Value::as_str).collect();
+        let actions = if actions.is_empty() {
+            "none".to_string()
+        } else {
+            actions.join(", ")
+        };
+        line.push_str(&format!("  actions: {actions}"));
+    }
+    if let Some(wallet) = sandbox["walletAddress"].as_str() {
+        line.push_str(&format!("  wallet: {wallet}"));
+    }
+    line
+}
+
+/// The human rendering of `a4 sandbox list`.
+pub fn render_list(body: &Value) -> String {
+    let sandboxes = body["sandboxes"].as_array().cloned().unwrap_or_default();
+    let mut out = format!("{}\n\n", "Sandboxes granted to this agent".bold());
+    if sandboxes.is_empty() {
+        out.push_str("  none\n");
+    }
+    for sandbox in &sandboxes {
+        let mark = if sandbox["current"] == true { "*" } else { " " };
+        out.push_str(&format!("{mark} {}\n", sandbox_line(sandbox)));
+        if let Some(expires) = sandbox["grantExpiresAt"].as_str() {
+            out.push_str(&format!("    grant expires {expires}\n"));
+        }
+    }
+    if let Some(id) = body["current"]["sandboxId"].as_str() {
+        out.push_str(&format!(
+            "\nIn use: {id} ({})\n",
+            source_label(body["current"]["source"].as_str().unwrap_or(""))
+        ));
+    }
+    if let Some(note) = body["note"].as_str() {
+        out.push_str(&format!("\n{note}\n"));
+    }
+    out
+}
+
 // ---- history ------------------------------------------------------------------
 
 fn history(args: HistoryArgs, json: bool) -> Result<()> {
-    let client = client(&args.target)?;
+    let runtime = runtime()?;
+    let (client, sandbox_id) = client(&runtime, &args.target, json)?;
     let query = ledger::HistoryQuery {
         cursor: args.cursor.clone(),
         limit: Some(args.limit),
@@ -172,7 +502,6 @@ fn history(args: HistoryArgs, json: bool) -> Result<()> {
             .map(|text| parse_since(text, Utc::now()))
             .transpose()?,
     };
-    let runtime = runtime()?;
     let body = if args.all {
         let mut query = query.clone();
         let mut items = Vec::new();
@@ -202,15 +531,7 @@ fn history(args: HistoryArgs, json: bool) -> Result<()> {
     if json {
         println!("{body}");
     } else {
-        print!(
-            "{}",
-            render_history(
-                &body,
-                &args,
-                query.since,
-                client.sandbox_id().unwrap_or("?")
-            )
-        );
+        print!("{}", render_history(&body, &args, query.since, &sandbox_id));
     }
     Ok(())
 }
@@ -477,8 +798,9 @@ fn instruction_labels(item: &Value) -> String {
 // ---- holdings -----------------------------------------------------------------
 
 fn holdings(args: HoldingsArgs, json: bool) -> Result<()> {
-    let client = client(&args.target)?;
-    let body = runtime()?
+    let runtime = runtime()?;
+    let (client, sandbox_id) = client(&runtime, &args.target, json)?;
+    let body = runtime
         .block_on(client.holdings())
         .map_err(|refusal| refused(refusal, json))?;
     let body = if args.raw {
@@ -489,10 +811,7 @@ fn holdings(args: HoldingsArgs, json: bool) -> Result<()> {
     if json {
         println!("{body}");
     } else {
-        print!(
-            "{}",
-            render_holdings(&body, client.sandbox_id().unwrap_or("?"))
-        );
+        print!("{}", render_holdings(&body, &sandbox_id));
     }
     Ok(())
 }
@@ -558,8 +877,9 @@ pub fn render_holdings(body: &Value, sandbox_id: &str) -> String {
 // ---- rules --------------------------------------------------------------------
 
 fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
-    let client = client(&target)?;
-    let body = runtime()?
+    let runtime = runtime()?;
+    let (client, _) = client(&runtime, &target, json)?;
+    let body = runtime
         .block_on(client.rules())
         .map_err(|refusal| refused(refusal, json))?;
     if json {
@@ -568,6 +888,85 @@ fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
         print!("{}", render_rules(&body));
     }
     Ok(())
+}
+
+// ---- reads --------------------------------------------------------------------
+
+fn reads_show(target: SandboxTarget, config: &str, json: bool) -> Result<()> {
+    use arete_mcp::entitlements::Group;
+    let runtime = runtime()?;
+    let (client, resolved) = resolved_client(&runtime, &target, json)?;
+    let body = runtime
+        .block_on(client.reads())
+        .map_err(|refusal| refused(refusal, json))?;
+    if json {
+        println!("{body}");
+    } else {
+        // One lookup of the account's groups serves both commands.
+        let surface = crate::entitlements::account_surface(None, None, config);
+        let implicit = Implicit {
+            account: sandbox_only(&surface, &[Group::Stacks, Group::Streams]),
+            stack: sandbox_only(&surface, &[Group::Streams]),
+        };
+        print!("{}", render_reads(&body, &resolved, implicit));
+    }
+    Ok(())
+}
+
+/// Which read commands go through the sandbox without --sandbox for this
+/// account: `a4 program account decode`, and `a4 get` / `a4 stream`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Implicit {
+    pub account: bool,
+    pub stack: bool,
+}
+
+/// The human rendering of the programs a sandbox can read. A suggested
+/// command leaves out --sandbox only when it would read through this
+/// sandbox without it: the account reads that way only through a sandbox
+/// (`implicit`) and this one is chosen with `a4 sandbox use`.
+pub fn render_reads(
+    body: &Value,
+    resolved: &arete_mcp::sandbox::selection::Resolved,
+    implicit: Implicit,
+) -> String {
+    use arete_mcp::sandbox::selection::Source;
+    let sandbox_id = resolved.sandbox_id.as_str();
+    let programs = arete_mcp::program_read::readable_programs(body);
+    let mut out = String::new();
+    if programs.is_empty() {
+        out.push_str(&format!(
+            "Sandbox {sandbox_id} can read no programs: its rules enable none.\n"
+        ));
+        return out;
+    }
+    let version = body["rulesVersion"]
+        .as_u64()
+        .map(|version| format!(" (rules v{version})"))
+        .unwrap_or_default();
+    out.push_str(&format!(
+        "Sandbox {sandbox_id} can read {} program{}{version}:\n",
+        programs.len(),
+        if programs.len() == 1 { "" } else { "s" }
+    ));
+    for (id, name) in &programs {
+        match name {
+            Some(name) => out.push_str(&format!("  {name:<24} {id}\n")),
+            None => out.push_str(&format!("  {id}\n")),
+        }
+    }
+    let saved = matches!(resolved.source, Source::Saved | Source::Selected);
+    let flag = |implicit: bool| match saved && implicit {
+        true => String::new(),
+        false => format!(" --sandbox {sandbox_id}"),
+    };
+    let (account, stack) = (flag(implicit.account), flag(implicit.stack));
+    out.push_str(&format!(
+        "\nRead an account:  a4 program account decode <address>{account}\n\
+         Read a stack:     a4 get <View> --stack <stack>{stack}\n\
+         A stack opens only when every program it decodes is listed here.\n"
+    ));
+    out
 }
 
 fn rules_validate(file: &std::path::Path, json: bool) -> Result<()> {
@@ -819,6 +1218,78 @@ mod tests {
     use super::*;
 
     const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+    #[test]
+    fn a_direct_read_refused_for_a_bound_key_is_recognised() {
+        let bound = serde_json::json!({
+            "error": "This agent key is bound to a sandbox, so it reads programs and stacks only through it",
+            "code": "sandbox-read-required",
+            "retryable": false,
+            "sandboxes": [{"sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "name": "Trading"}],
+            "readRoute": "/api/sandbox/v1/sessions",
+        });
+        let api = crate::api_client::test_support::MockServer::json(403, &bound.to_string());
+        let client = crate::api_client::ApiClient::with_base_url(api.base_url())
+            .with_api_key("a4_sk_agent".into());
+        let error = client
+            .mint_target_session(&format!("{}/ws/sessions", api.base_url()), &json!({}))
+            .unwrap_err();
+        let refusal = read_required(&error).expect("the bound-key refusal");
+        assert_eq!(refusal.status, 403);
+        assert_eq!(
+            refusal.to_json()["sandboxes"][0]["sandboxId"],
+            "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10"
+        );
+        let hint = cli_hint(&refusal).unwrap();
+        assert!(
+            hint.contains("a4 sandbox use") && hint.contains("--sandbox"),
+            "{hint}"
+        );
+
+        // Any other refusal is left as it is.
+        let other = crate::api_client::test_support::MockServer::json(
+            403,
+            r#"{"error":"no","code":"forbidden"}"#,
+        );
+        let error = crate::api_client::ApiClient::with_base_url(other.base_url())
+            .with_api_key("a4_sk_agent".into())
+            .mint_target_session(&format!("{}/ws/sessions", other.base_url()), &json!({}))
+            .unwrap_err();
+        assert!(read_required(&error).is_none());
+    }
+
+    #[test]
+    fn read_refusals_point_to_the_cli_commands() {
+        let refusal = |code: &str, kind| SandboxRefusal {
+            status: 403,
+            body: json!({
+                "code": code,
+                "error": "Program KLend is not in the sandbox's read rules",
+                "programs": ["KLend"],
+            }),
+            kind,
+        };
+        let read = refusal(
+            "sandbox-program-not-allowlisted",
+            arete_mcp::sandbox::CallKind::Read,
+        );
+        let message = cli_message(&read);
+        assert!(
+            message.contains("`a4 sandbox reads` lists them"),
+            "{message}"
+        );
+        assert!(!message.contains("sandbox_rules"), "{message}");
+        assert!(!message.contains("sandbox_reads"), "{message}");
+        // The message names the program; it is not repeated.
+        assert!(!message.contains("not in the rules: KLend"), "{message}");
+        for code in [
+            "sandbox-read-programs-unknown",
+            "sandbox-read-target-unsupported",
+        ] {
+            let hint = cli_hint(&refusal(code, arete_mcp::sandbox::CallKind::Read)).unwrap();
+            assert!(hint.contains("a4 "), "{hint}");
+        }
+    }
     const MINT: &str = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
 
     fn fixture(name: &str) -> Value {
@@ -826,6 +1297,145 @@ mod tests {
             .join("tests/fixtures/sandbox")
             .join(name);
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    fn granted_listing(current: Value) -> Value {
+        json!({
+            "sandboxes": [
+                { "sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "name": "Bot",
+                  "walletAddress": "W1", "cluster": "mainnet-beta", "status": "active",
+                  "actions": ["invoke", "withdraw"], "grantExpiresAt": "2026-12-01T00:00:00Z",
+                  "current": current["sandboxId"] == "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10" },
+                { "sandboxId": "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20", "name": null,
+                  "walletAddress": null, "cluster": "devnet", "status": "paused",
+                  "actions": [], "grantExpiresAt": null, "current": false },
+            ],
+            "current": current,
+        })
+    }
+
+    #[test]
+    fn the_list_marks_the_sandbox_in_use_and_where_it_came_from() {
+        colored::control::set_override(false);
+        let body = granted_listing(json!({
+            "sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "source": "saved"
+        }));
+        assert_eq!(list_note(&body), None);
+        let text = render_list(&body);
+        assert!(text.contains(
+            "* 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10  Bot  active  mainnet-beta  actions: invoke, withdraw  wallet: W1"
+        ), "{text}");
+        assert!(
+            text.contains("    grant expires 2026-12-01T00:00:00Z"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20  paused  devnet  actions: none"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "In use: 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10 (saved for this directory)"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_list_says_what_to_do_in_cli_terms() {
+        let several = granted_listing(Value::Null);
+        let mut several_active = several.clone();
+        several_active["sandboxes"][1]["status"] = json!("active");
+        let note = list_note(&several_active).unwrap();
+        assert!(note.contains("a4 sandbox use"), "{note}");
+        assert!(!note.contains("sandbox_select"), "{note}");
+
+        let mut all_paused = several.clone();
+        all_paused["sandboxes"][0]["status"] = json!("paused");
+        assert!(list_note(&all_paused).unwrap().contains("paused"));
+        let none = json!({ "sandboxes": [], "current": null });
+        assert!(list_note(&none).unwrap().contains("dashboard"));
+        assert!(render_list(&none).contains("  none"));
+
+        let stale = granted_listing(json!({
+            "sandboxId": "9d4f6a1b-3c2e-4b8a-a1f0-5e6d7c8b9a01", "source": "env:ARETE_SANDBOX_ID"
+        }));
+        let note = list_note(&stale).unwrap();
+        assert!(
+            note.contains("not granted") && note.contains("ARETE_SANDBOX_ID"),
+            "{note}"
+        );
+    }
+
+    #[test]
+    fn selection_refusals_get_cli_hints() {
+        let cli_hint = |code: &str| {
+            cli_hint(&SandboxRefusal {
+                status: 403,
+                body: json!({ "code": code }),
+                kind: arete_mcp::sandbox::CallKind::Read,
+            })
+        };
+        for code in [
+            "sandbox-none-granted",
+            "sandbox-selection-required",
+            "sandbox-unknown",
+            "sandbox-not-configured",
+            "sandbox-grant-missing",
+        ] {
+            let hint = cli_hint(code).unwrap();
+            assert!(
+                hint.contains("a4 sandbox") || hint.contains("--sandbox"),
+                "{code}: {hint}"
+            );
+            assert!(!hint.contains("sandbox_"), "{code}: {hint}");
+        }
+        assert_eq!(cli_hint("sandbox-paused"), None);
+    }
+
+    #[test]
+    fn reads_render_the_programs_and_how_to_read_them() {
+        let body = json!({
+            "sandboxId": "s",
+            "rulesVersion": 7,
+            "programs": [
+                {"programId": "JUP6", "name": "Jupiter"},
+                {"programId": "KLend"},
+            ],
+        });
+        use arete_mcp::sandbox::selection::{Resolved, Source};
+        let resolved = |source| Resolved {
+            sandbox_id: "s".into(),
+            source,
+        };
+        let both = Implicit {
+            account: true,
+            stack: true,
+        };
+        let text = render_reads(&body, &resolved(Source::OnlyGrant), both);
+        assert!(text.contains("can read 2 programs (rules v7)"), "{text}");
+        assert!(text.contains("Jupiter"), "{text}");
+        assert!(text.contains("  KLend\n"), "{text}");
+        assert!(text.contains("decode <address> --sandbox s\n"), "{text}");
+        // The sandbox saved for this directory needs no --sandbox, for the
+        // commands that read through a sandbox by default.
+        for saved in [Source::Saved, Source::Selected] {
+            let text = render_reads(&body, &resolved(saved), both);
+            assert!(!text.contains("--sandbox"), "{text}");
+            assert!(text.contains("decode <address>\n"), "{text}");
+        }
+        // An account that reads stacks with its own key still needs it there.
+        let account_only = Implicit {
+            account: true,
+            stack: false,
+        };
+        let text = render_reads(&body, &resolved(Source::Saved), account_only);
+        assert!(text.contains("decode <address>\n"), "{text}");
+        assert!(text.contains("--stack <stack> --sandbox s\n"), "{text}");
+        let text = render_reads(&body, &resolved(Source::Saved), Implicit::default());
+        assert_eq!(text.matches("--sandbox s").count(), 2, "{text}");
+        let none = render_reads(&json!({"programs": []}), &resolved(Source::Env), both);
+        assert!(none.contains("can read no programs"), "{none}");
     }
 
     #[test]

@@ -46,12 +46,33 @@ pub struct ConnectionEntry {
     /// to wait for in-flight subscribes before sweeping. See module docs for
     /// the full race-safety argument.
     pub alive: Arc<RwLock<bool>>,
+    /// For a connection read through a sandbox: the sandbox's last refusal
+    /// of a session for it.
+    pub sandbox_refusal: Option<crate::sandbox::LastRefusal>,
 }
 
 impl ConnectionEntry {
     pub async fn state(&self) -> ConnectionState {
         self.manager.state().await
     }
+
+    /// The sandbox refusal that ended this connection's reads: one that
+    /// will not pass on a retry (its programs left the rules, the sandbox
+    /// was paused or revoked). The connection mints no more sessions.
+    pub fn ended_by_sandbox(&self) -> Option<crate::sandbox::SandboxRefusal> {
+        ended_by(self.sandbox_refusal.as_ref())
+    }
+}
+
+/// The permanent refusal `last` holds, if any.
+pub fn ended_by(
+    last: Option<&crate::sandbox::LastRefusal>,
+) -> Option<crate::sandbox::SandboxRefusal> {
+    last?
+        .lock()
+        .ok()?
+        .clone()
+        .filter(|refusal| !refusal.retryable())
 }
 
 /// Server-wide registry of open connections.
@@ -73,10 +94,27 @@ impl ConnectionRegistry {
         url: String,
         api_key: Option<String>,
     ) -> Result<ConnectionId, AreteError> {
-        let mut config = ConnectionConfig::default();
-        if let Some(key) = api_key {
-            config.auth = Some(AuthConfig::default().with_api_key(key));
-        }
+        self.connect_with(
+            url,
+            api_key.map(|key| AuthConfig::default().with_api_key(key)),
+            None,
+        )
+        .await
+    }
+
+    /// Open a new connection with `auth` (none: the stack must be public).
+    /// `sandbox_refusal` is where a sandbox's session refusals land, for a
+    /// connection read through one.
+    pub async fn connect_with(
+        &self,
+        url: String,
+        auth: Option<AuthConfig>,
+        sandbox_refusal: Option<crate::sandbox::LastRefusal>,
+    ) -> Result<ConnectionId, AreteError> {
+        let config = ConnectionConfig {
+            auth,
+            ..ConnectionConfig::default()
+        };
 
         // TODO(HYP-189): SDK's StoreConfig defaults to 10k entries/view.
         // Revisit per-subscription overrides once we have real agent usage data.
@@ -91,6 +129,7 @@ impl ConnectionRegistry {
             manager,
             store,
             alive: Arc::new(RwLock::new(true)),
+            sandbox_refusal,
         });
         self.inner.insert(id.clone(), entry);
         Ok(id)

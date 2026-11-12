@@ -396,25 +396,82 @@ installed.
 
 ### Sandbox tools
 
-Listed when `ARETE_SANDBOX_ID` names a [sandbox](/sandboxes/overview/)
-(alpha) whose owner granted this agent access. The agent's own API key mints
-a short-lived token for the sandbox; no key or RPC URL is ever returned.
+Listed when the server has an API key (or `ARETE_SANDBOX_ID` is set), for a
+[sandbox](/sandboxes/overview/) (alpha) whose owner granted this agent
+access. The agent's own API key lists the sandboxes it has been granted and
+mints a short-lived token for the one a call uses; no key or RPC URL is ever
+returned.
 
-| Tool               | Arguments                                                                    | Returns                                                                                     |
-| ------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `sandbox_status`   |                                                                              | the wallet, its balances and the actions this agent may run                                 |
-| `sandbox_rules`    |                                                                              | the allowed programs and instructions, and under Rules v3 the toggles, limits and allowlist |
-| `sandbox_derive`   | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`             | an address: a PDA computed locally, an ATA under the mint's token program                   |
-| `sandbox_preview`  | `action`, `args`                                                             | a dry run: `pass` and what the wallet would lose, or the refusal                            |
-| `sandbox_invoke`   | `action` (`invoke`, `withdraw`, `swap`), `args`, `idempotencyKey?`           | runs one action: the only tool that moves funds                                             |
-| `sandbox_action`   | `actionId` or `idempotencyKey`                                               | one action's status                                                                         |
-| `sandbox_history`  | `cursor?`, `limit?`, `status?`, `program?`, `mint?`, `since?`, `includeRaw?` | read-only: past actions, newest first, with decoded instructions and balance changes        |
-| `sandbox_holdings` | `includeRaw?`                                                                | read-only: SOL, tokens (with `acquiredBySandbox`) and program positions                     |
+| Tool               | Arguments                                                                    | Returns                                                                                        |
+| ------------------ | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `sandbox_list`     |                                                                              | the granted sandboxes (id, name, wallet, cluster, status, actions) and the one in use          |
+| `sandbox_select`   | `sandbox` (id or name) or `clear: true`                                      | chooses the sandbox calls use from now on, saved for this project                              |
+| `sandbox_status`   |                                                                              | the wallet, its balances, the actions this agent may run and which sandbox it is (`selection`) |
+| `sandbox_rules`    |                                                                              | the allowed programs and instructions, and under Rules v3 the toggles, limits and allowlist    |
+| `sandbox_derive`   | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`             | an address: a PDA computed locally, an ATA under the mint's token program                      |
+| `sandbox_preview`  | `action`, `args`                                                             | a dry run: `pass` and what the wallet would lose, or the refusal                               |
+| `sandbox_invoke`   | `action` (`invoke`, `withdraw`, `swap`), `args`, `idempotencyKey?`           | runs one action: the only tool that moves funds                                                |
+| `sandbox_action`   | `actionId` or `idempotencyKey`                                               | one action's status                                                                            |
+| `sandbox_history`  | `cursor?`, `limit?`, `status?`, `program?`, `mint?`, `since?`, `includeRaw?` | read-only: past actions, newest first, with decoded instructions and balance changes           |
+| `sandbox_holdings` | `includeRaw?`                                                                | read-only: SOL, tokens (with `acquiredBySandbox`) and program positions                        |
+| `sandbox_reads`    |                                                                              | read-only: the programs the sandbox can read, exactly the programs its rules enable            |
+
+Every tool from `sandbox_status` down also takes `sandbox?` (an id or a
+granted sandbox's name) for that call alone. Without it, a call uses the
+sandbox chosen with `sandbox_select` (saved per project, so it survives
+restarts), else `ARETE_SANDBOX_ID`, else the only active sandbox granted.
+When none of these gives one, the call fails with `sandbox-none-granted`
+(no grants yet), `sandbox-selection-required` (several, none chosen; the
+error lists them), `sandbox-unknown` (the `sandbox` argument matches no
+grant), `sandbox-paused` (every grant is paused) or
+`sandbox-not-configured` (an older API that cannot list grants), and its
+`hint` names the tool to call.
 
 Every `sandbox_*` error carries `code`, `retryable` and a `hint`, even when
 the API could not be reached. With `retryable: true`, retry a read or a
 `sandbox_preview` as is; after a `sandbox_invoke`, look the action up with
 `sandbox_action` and its `idempotencyKey` first.
+
+### Reading through a sandbox
+
+`sandbox_reads` lists the programs a sandbox can read: exactly the programs
+its owner-signed rules enable. The read tools take an optional `sandbox` (a
+`sandboxId` or name from `sandbox_list`) to read through it:
+
+| Tool                   | Arguments                                                     | Returns                                                                                               |
+| ---------------------- | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `program_read_account` | `address`, `program?`, `account?`, `sandbox?`                 | one account decoded by Program Read: `program`, `programId`, `account`, release, `value`, `selection` |
+| `read_view`            | as in [Reading a view once](#reading-a-view-once), `sandbox?` | a view's current entities                                                                             |
+| `connect`              | `url`, `sandbox?`                                             | a connection whose sessions are minted through the sandbox                                            |
+
+Through a sandbox, the read session is minted through it, not with the
+account's key: only programs in its rules can be read, and a stack opens only
+when every program it decodes is in them. A refusal is a tool result with
+`isError: true`, as the sandbox tools return theirs. Its JSON carries `code`
+(such as `sandbox-program-not-allowlisted`, with the `programs` the rules leave
+out), `retryable` and a `hint`. A followed view's session is re-minted about every
+minute through the same sandbox, so a rules change, pause or revoke reaches it
+within a minute. Once the sandbox refuses it for good, the connection's
+`subscribe` and cache reads return that refusal, and `list_connections` shows
+it as `sandbox_refusal`.
+
+An account whose groups grant only `sandboxes` among a read tool's groups
+reads through a sandbox without `sandbox`: the one the `sandbox_*` tools
+resolve to (chosen with `sandbox_select`, else `ARETE_SANDBOX_ID`, else the
+only active sandbox granted). When none resolves, the tool fails with the same
+code and hint as the sandbox tools (`sandbox-selection-required`,
+`sandbox-none-granted`, `sandbox-unknown`, `sandbox-paused`): call
+`sandbox_list`, then `sandbox_select`. It never falls back to the account's
+key.
+
+Any other account reads with its own key unless `sandbox` is given, except
+when its owner bound this API key to a sandbox grant. The API then refuses the
+key's own read with `sandbox-read-required` and names the sandboxes. The tool
+reads again through the sandbox chosen with `sandbox_select` (else
+`ARETE_SANDBOX_ID`, else the only sandbox the refusal names), and later reads
+in the session go through it directly. With several named and none chosen, it
+returns that refusal, listing them in `sandboxes`: call `sandbox_select`, or
+pass `sandbox`.
 
 ### Dev environment tools
 

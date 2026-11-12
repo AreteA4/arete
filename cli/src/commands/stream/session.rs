@@ -184,22 +184,35 @@ impl fmt::Display for Loss {
 }
 
 /// Why a stream ended in failure.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum StreamFailure {
     /// The server closed the socket on a policy, such as an expired or
     /// refused session. Reconnecting would be refused the same way.
     Refused(String),
     /// The connection dropped and every attempt to replace it failed.
     GaveUp { attempts: u32, reason: String },
+    /// The sandbox the stream reads through refused a new session for good
+    /// (its rules no longer allow the stack, or it was paused or revoked).
+    SandboxRefused(arete_mcp::sandbox::SandboxRefusal),
 }
 
 impl StreamFailure {
+    /// The error a command exits with: a sandbox refusal as itself, so the
+    /// command prints and exits as for any sandbox refusal; else the text.
+    pub fn into_error(self) -> anyhow::Error {
+        match self {
+            Self::SandboxRefused(refusal) => anyhow::Error::new(refusal),
+            other => anyhow::anyhow!("{other}"),
+        }
+    }
+
     /// What a status line shows.
     // Only the TUI has a status line.
     #[cfg_attr(not(feature = "tui"), allow(dead_code))]
     pub fn status(&self) -> String {
         match self {
             Self::Refused(reason) => reason.clone(),
+            Self::SandboxRefused(refusal) => crate::commands::sandbox::cli_message(refusal),
             Self::GaveUp { .. } => self.to_string(),
         }
     }
@@ -209,6 +222,11 @@ impl fmt::Display for StreamFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Refused(reason) => write!(f, "the server closed the stream: {reason}"),
+            Self::SandboxRefused(refusal) => write!(
+                f,
+                "the sandbox refused a new session: {}",
+                crate::commands::sandbox::cli_message(refusal)
+            ),
             Self::GaveUp { attempts, reason } => write!(
                 f,
                 "gave up after {attempts} reconnect attempt{}: {reason}",
@@ -419,14 +437,14 @@ impl StreamSession {
                 let read = self.read(socket, handler, stop.as_mut());
                 tokio::select! {
                     end = read => Step::Ended(end?),
-                    retarget = next_retarget(&mut follow) => Step::Retarget(retarget),
+                    retarget = next_retarget(&mut follow) => Step::Retarget(Box::new(retarget)),
                 }
             };
             // A redeploy drops the read, and the socket with it.
             let end = match step {
                 Step::Ended(end) => Some(end),
                 Step::Retarget(retarget) => {
-                    self.retarget(retarget, handler);
+                    self.retarget(*retarget, handler);
                     None
                 }
             };
@@ -448,6 +466,11 @@ impl StreamSession {
                             continue;
                         }
                         Err(error) => {
+                            if let Some(refusal) = token::fatal_refusal(&error) {
+                                return Ok(StreamEnd::Failed(StreamFailure::SandboxRefused(
+                                    refusal,
+                                )));
+                            }
                             reason = format!("{error:#}");
                             retry = true;
                         }
@@ -491,6 +514,9 @@ impl StreamSession {
                 match connected {
                     Ok(socket) => break socket,
                     Err(error) => {
+                        if let Some(refusal) = token::fatal_refusal(&error) {
+                            return Ok(StreamEnd::Failed(StreamFailure::SandboxRefused(refusal)));
+                        }
                         reason = format!("{error:#}");
                         retry = true;
                     }
@@ -541,7 +567,7 @@ impl StreamSession {
 /// What ended one connection's read.
 enum Step {
     Ended(StreamEnd),
-    Retarget(Retarget),
+    Retarget(Box<Retarget>),
 }
 
 /// The next redeploy to follow; never resolves without a watcher, or once
@@ -623,6 +649,10 @@ where
                 }
                 token::RefreshEvent::Failed(error) => {
                     handler.on_notice(Notice::RefreshFailed(&error));
+                }
+                token::RefreshEvent::Refused(refusal) => {
+                    let _ = sink.send(Message::Close(None)).await;
+                    return Ok(StreamEnd::Failed(StreamFailure::SandboxRefused(refusal)));
                 }
             },
         }

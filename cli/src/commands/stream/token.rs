@@ -85,6 +85,10 @@ pub struct SessionRefresh {
     /// Sent with each mint for a local stack (`a4 stream --dev`).
     protocol_deployment_id: Option<String>,
     expires_at: Option<u64>,
+    /// Mint through this sandbox (`POST /api/sandbox/v1/sessions`) instead
+    /// of with the API key: only stacks whose programs are all in its rules
+    /// open, and each refresh re-checks them.
+    sandbox: Option<arete_mcp::sandbox::SandboxClient>,
 }
 
 /// What the refresher hands the socket loop.
@@ -93,6 +97,9 @@ pub enum RefreshEvent {
     Token(String),
     /// Minting failed; it is tried again shortly.
     Failed(anyhow::Error),
+    /// The sandbox refused the next token for good (the stack's programs
+    /// left its rules, or it was paused or revoked): the stream ends.
+    Refused(arete_mcp::sandbox::SandboxRefusal),
 }
 
 /// Keeps a hosted stream's session token fresh while the socket is open.
@@ -127,9 +134,10 @@ fn spawn_refresh(mut refresh: SessionRefresh) -> mpsc::Receiver<RefreshEvent> {
     let (events, receiver) = mpsc::channel(1);
     tokio::spawn(async move {
         let mut retry = false;
+        let mut retry_delay: Option<Duration> = None;
         loop {
             let delay = match (retry, refresh.expires_at) {
-                (true, _) => REFRESH_RETRY,
+                (true, _) => retry_delay.take().unwrap_or(REFRESH_RETRY),
                 (false, Some(expires_at)) => refresh_delay(expires_at, unix_now()),
                 // The endpoint gave no expiry, so there is nothing to schedule.
                 (false, None) => return,
@@ -138,21 +146,23 @@ fn spawn_refresh(mut refresh: SessionRefresh) -> mpsc::Receiver<RefreshEvent> {
                 _ = tokio::time::sleep(delay) => {}
                 _ = events.closed() => return,
             }
-            let next = refresh.clone();
-            let minted = tokio::task::spawn_blocking(move || next.mint())
-                .await
-                .map_err(anyhow::Error::from)
-                .and_then(|minted| minted);
-            let event = match minted {
+            let event = match refresh.mint_async().await {
                 Ok(minted) => {
                     retry = false;
                     refresh.expires_at = minted.expires_at;
                     RefreshEvent::Token(minted.token)
                 }
-                Err(error) => {
-                    retry = true;
-                    RefreshEvent::Failed(error)
-                }
+                Err(error) => match fatal_refusal(&error) {
+                    Some(refusal) => {
+                        let _ = events.send(RefreshEvent::Refused(refusal)).await;
+                        return;
+                    }
+                    None => {
+                        retry = true;
+                        retry_delay = retry_after(&error);
+                        RefreshEvent::Failed(error)
+                    }
+                },
             };
             if events.send(event).await.is_err() {
                 return;
@@ -259,8 +269,55 @@ pub fn ensure_hosted_ws_token(url: String) -> Result<(String, Option<SessionRefr
         websocket_url: url,
         protocol_deployment_id: None,
         expires_at: minted.expires_at,
+        sandbox: None,
     };
     Ok((connect_url, Some(refresh)))
+}
+
+/// Mint the stream's session through `sandbox`: the URL to connect with and
+/// what the stream needs to re-mint through the sandbox before each token
+/// expires (about a minute). The sandbox is resolved once, so every re-mint
+/// names the same one. A refusal is final: the stream does not start.
+pub async fn sandbox_ws_token(
+    url: String,
+    sandbox: arete_mcp::sandbox::SandboxClient,
+) -> Result<(String, Option<SessionRefresh>)> {
+    if Url::parse(&url).is_ok_and(|u| u.query_pairs().any(|(k, _)| k == "hs_token")) {
+        bail!("--sandbox mints the stream's session; leave hs_token out of --url");
+    }
+    let (sandbox, resolved) = sandbox.pin().await.map_err(anyhow::Error::new)?;
+    eprintln!(
+        "Reading through sandbox {} ({})",
+        resolved.sandbox_id,
+        resolved.source.as_str()
+    );
+    let base = config::get_api_url(None);
+    let mut refresh = SessionRefresh {
+        endpoint: format!("{}/api/sandbox/v1/sessions", base.trim_end_matches('/')),
+        api_key: None,
+        websocket_url: url,
+        protocol_deployment_id: None,
+        expires_at: None,
+        sandbox: Some(sandbox),
+    };
+    let connect_url = refresh.renew().await?;
+    Ok((connect_url, Some(refresh)))
+}
+
+/// How long a rate-limited sandbox asked to wait (`retryAfterSeconds`). A
+/// wait past the token's expiry lets the host close the stream, which then
+/// reconnects with a fresh token.
+fn retry_after(error: &anyhow::Error) -> Option<Duration> {
+    let refusal = error.downcast_ref::<arete_mcp::sandbox::SandboxRefusal>()?;
+    let seconds = refusal.to_json()["retryAfterSeconds"].as_u64()?;
+    Some(Duration::from_secs(seconds.clamp(1, 60)))
+}
+
+/// The refusal to end a stream with for `error`: a sandbox refusal that
+/// will not pass on a retry. `None` for anything worth retrying.
+pub fn fatal_refusal(error: &anyhow::Error) -> Option<arete_mcp::sandbox::SandboxRefusal> {
+    let refusal = error.downcast_ref::<arete_mcp::sandbox::SandboxRefusal>()?;
+    (!refusal.retryable()).then(|| refusal.clone())
 }
 
 impl SessionRefresh {
@@ -279,7 +336,29 @@ impl SessionRefresh {
             websocket_url,
             protocol_deployment_id,
             expires_at: None,
+            sandbox: None,
         }
+    }
+
+    /// Mint the next token: through the sandbox, or with the key.
+    async fn mint_async(&self) -> Result<MintResponse> {
+        if let Some(sandbox) = &self.sandbox {
+            let target = arete_mcp::sandbox::ReadTarget::Stack {
+                websocket_url: self.websocket_url.clone(),
+            };
+            let session = sandbox
+                .read_session(&target)
+                .await
+                .map_err(anyhow::Error::new)?;
+            return Ok(MintResponse {
+                token: session.token,
+                expires_at: session.expires_at,
+            });
+        }
+        let this = self.clone();
+        tokio::task::spawn_blocking(move || this.mint())
+            .await
+            .context("token mint task failed")?
     }
 
     fn mint(&self) -> Result<MintResponse> {
@@ -294,10 +373,7 @@ impl SessionRefresh {
     /// Mint a token for a new connection, the way the first one was minted,
     /// and return the URL to connect with.
     pub async fn renew(&mut self) -> Result<String> {
-        let this = self.clone();
-        let minted = tokio::task::spawn_blocking(move || this.mint())
-            .await
-            .context("token mint task failed")??;
+        let minted = self.mint_async().await?;
         self.expires_at = minted.expires_at;
         url_with_token(&self.websocket_url, &minted.token)
     }
@@ -333,6 +409,14 @@ fn mint_session_token(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_default();
+        // A key a sandbox grant binds reads stacks only through a sandbox:
+        // kept whole, so the caller can open the stream through it.
+        let bound = serde_json::from_str(&body).ok().and_then(|body| {
+            arete_mcp::sandbox::SandboxRefusal::read_required(status.as_u16(), body)
+        });
+        if let Some(refusal) = bound {
+            return Err(anyhow::Error::new(refusal));
+        }
         bail!(mint_refusal(status, &body, api_key.is_some(), endpoint));
     }
 
@@ -426,6 +510,23 @@ impl SessionRefresh {
             websocket_url: websocket_url.to_string(),
             protocol_deployment_id: None,
             expires_at: Some(expires_at),
+            sandbox: None,
+        }
+    }
+
+    /// Tokens minted through `sandbox` for `websocket_url`.
+    pub(crate) fn sandbox_for_test(
+        sandbox: arete_mcp::sandbox::SandboxClient,
+        websocket_url: &str,
+        expires_at: u64,
+    ) -> Self {
+        Self {
+            endpoint: String::new(),
+            api_key: None,
+            websocket_url: websocket_url.to_string(),
+            protocol_deployment_id: None,
+            expires_at: Some(expires_at),
+            sandbox: Some(sandbox),
         }
     }
 }
@@ -566,6 +667,30 @@ mod tests {
         assert!(parse_refresh_response(r#"{"mode":"list","op":"upsert","key":"a"}"#).is_none());
     }
 
+    #[test]
+    fn a_stream_refused_for_a_bound_key_keeps_the_refusal() {
+        let bound = serde_json::json!({
+            "error": "This agent key is bound to a sandbox, so it reads programs and stacks only through it",
+            "code": "sandbox-read-required",
+            "retryable": false,
+            "sandboxes": [{"sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "name": "Trading"}],
+            "readRoute": "/api/sandbox/v1/sessions",
+        });
+        let mint = MockServer::json(403, &bound.to_string());
+        let endpoint = format!("{}/ws/sessions", mint.base_url());
+        let Err(error) = mint_session_token(
+            &endpoint,
+            Some("a4_sk_agent"),
+            "wss://ore.stack.arete.run",
+            None,
+        ) else {
+            panic!("a refused mint");
+        };
+        let refusal = crate::commands::sandbox::read_required(&error).expect("kept whole");
+        assert_eq!(refusal.code(), arete_mcp::sandbox::READ_REQUIRED);
+        assert_eq!(refusal.to_json()["sandboxes"][0]["name"], "Trading");
+    }
+
     #[tokio::test]
     async fn the_refresher_mints_a_replacement_before_expiry() {
         let expires_at = unix_now() + 3_600;
@@ -595,6 +720,124 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&request.body).unwrap(),
             serde_json::json!({"websocket_url": "wss://ore.stack.arete.run"})
         );
+    }
+
+    const SANDBOX: &str = "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10";
+
+    /// A sandbox at `mint`, whose first answer is its sandbox token.
+    fn sandbox_at(mint: &MockServer) -> arete_mcp::sandbox::SandboxClient {
+        arete_mcp::sandbox::SandboxClient::from_values(
+            Some(SANDBOX.into()),
+            Some("a4_ak_test".into()),
+            Some(mint.base_url().to_string()),
+        )
+    }
+
+    fn sandbox_token() -> (u16, String) {
+        let body = serde_json::json!({"token": "sbx", "expiresAt": unix_now() + 600, "scopes": []});
+        (200, body.to_string())
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_stream_re_mints_through_the_sandbox() {
+        let mint = MockServer::json_sequence(vec![
+            sandbox_token(),
+            (
+                200,
+                serde_json::json!({"token": "read-2", "expiresAt": unix_now() + 60}).to_string(),
+            ),
+        ]);
+        let mut refresher = SessionRefresher::start(Some(SessionRefresh::sandbox_for_test(
+            sandbox_at(&mint),
+            "wss://ore.stack.arete.run",
+            unix_now() + 2,
+        )));
+        let event = tokio::time::timeout(Duration::from_secs(10), refresher.next())
+            .await
+            .expect("a refresh within the timeout");
+        let RefreshEvent::Token(token) = event else {
+            panic!("the sandbox mint should succeed");
+        };
+        assert_eq!(token, "read-2");
+        let sandbox_mint = mint.request();
+        assert_eq!(sandbox_mint.request_line, "POST /ws/sessions HTTP/1.1");
+        let read_mint = mint.request();
+        assert_eq!(
+            read_mint.request_line,
+            "POST /api/sandbox/v1/sessions HTTP/1.1"
+        );
+        assert_eq!(read_mint.header("authorization"), Some("Bearer sbx"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&read_mint.body).unwrap(),
+            serde_json::json!({"websocketUrl": "wss://ore.stack.arete.run"})
+        );
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_refusal_ends_the_stream_instead_of_retrying() {
+        let refusal = serde_json::json!({
+            "code": "sandbox-program-not-allowlisted",
+            "error": "The stack decodes a program the sandbox's rules leave out",
+            "retryable": false,
+            "programs": ["KLend"],
+        });
+        let mint = MockServer::json_sequence(vec![sandbox_token(), (403, refusal.to_string())]);
+        let mut refresher = SessionRefresher::start(Some(SessionRefresh::sandbox_for_test(
+            sandbox_at(&mint),
+            "wss://klend.stack.arete.run",
+            unix_now() + 2,
+        )));
+        let event = tokio::time::timeout(Duration::from_secs(10), refresher.next())
+            .await
+            .expect("a refresh attempt within the timeout");
+        let RefreshEvent::Refused(refusal) = event else {
+            panic!("a rules refusal is final");
+        };
+        let reason = refusal.message();
+        assert!(
+            reason.contains("sandbox-program-not-allowlisted"),
+            "{reason}"
+        );
+        assert!(reason.contains("KLend"), "{reason}");
+        // Nothing more comes: the refresher stopped.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(200), refresher.next())
+                .await
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_rate_limited_sandbox_is_retried_when_it_asks() {
+        let refusal = arete_mcp::sandbox::SandboxRefusal {
+            status: 429,
+            body: serde_json::json!({"code": "sandbox-rate-limited", "retryAfterSeconds": 7}),
+            kind: arete_mcp::sandbox::CallKind::Read,
+        };
+        let error = anyhow::Error::new(refusal);
+        assert_eq!(retry_after(&error), Some(Duration::from_secs(7)));
+        assert!(fatal_refusal(&error).is_none(), "a rate limit is retried");
+        assert_eq!(retry_after(&anyhow::anyhow!("down")), None);
+    }
+
+    #[tokio::test]
+    async fn a_sandbox_outage_is_retried() {
+        let mint = MockServer::json_sequence(vec![
+            sandbox_token(),
+            (
+                503,
+                r#"{"code":"sandbox-api-unavailable","error":"down"}"#.to_string(),
+            ),
+        ]);
+        let mut refresher = SessionRefresher::start(Some(SessionRefresh::sandbox_for_test(
+            sandbox_at(&mint),
+            "wss://ore.stack.arete.run",
+            unix_now() + 2,
+        )));
+        let event = tokio::time::timeout(Duration::from_secs(10), refresher.next())
+            .await
+            .expect("a refresh attempt within the timeout");
+        assert!(matches!(event, RefreshEvent::Failed(_)));
     }
 
     #[tokio::test]

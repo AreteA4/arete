@@ -610,15 +610,47 @@ pub(crate) fn parse_jwt_expiry(token: &str) -> Option<u64> {
 }
 
 pub(crate) fn token_is_expiring(expires_at: Option<u64>, now_epoch_seconds: u64) -> bool {
+    token_is_expiring_since(expires_at, None, now_epoch_seconds)
+}
+
+/// How long before `expires_at` a token is replaced: the standard buffer,
+/// or half the token's lifetime when it was issued at `issued_at` to last no
+/// longer than the buffer. Such a token (a minute or less) is then used and
+/// refreshed halfway instead of counting as already expiring; a longer one
+/// keeps the standard buffer.
+pub(crate) fn refresh_buffer(expires_at: u64, issued_at: Option<u64>) -> u64 {
+    let lifetime = issued_at.map(|issued_at| expires_at.saturating_sub(issued_at));
+    match lifetime {
+        Some(lifetime) if lifetime <= TOKEN_REFRESH_BUFFER_SECONDS => lifetime / 2,
+        _ => TOKEN_REFRESH_BUFFER_SECONDS,
+    }
+}
+
+/// [`token_is_expiring`] for a token obtained at `issued_at`.
+pub(crate) fn token_is_expiring_since(
+    expires_at: Option<u64>,
+    issued_at: Option<u64>,
+    now_epoch_seconds: u64,
+) -> bool {
     match expires_at {
-        Some(exp) => now_epoch_seconds >= exp.saturating_sub(TOKEN_REFRESH_BUFFER_SECONDS),
+        Some(exp) => now_epoch_seconds >= exp.saturating_sub(refresh_buffer(exp, issued_at)),
         None => false,
     }
 }
 
+#[cfg(test)]
 pub(crate) fn token_refresh_delay(expires_at: Option<u64>, now_epoch_seconds: u64) -> Option<u64> {
+    token_refresh_delay_since(expires_at, None, now_epoch_seconds)
+}
+
+/// Seconds until a token obtained at `issued_at` should be refreshed.
+pub(crate) fn token_refresh_delay_since(
+    expires_at: Option<u64>,
+    issued_at: Option<u64>,
+    now_epoch_seconds: u64,
+) -> Option<u64> {
     let expires_at = expires_at?;
-    let refresh_at = expires_at.saturating_sub(TOKEN_REFRESH_BUFFER_SECONDS);
+    let refresh_at = expires_at.saturating_sub(refresh_buffer(expires_at, issued_at));
     Some(
         refresh_at
             .saturating_sub(now_epoch_seconds)
@@ -1419,5 +1451,30 @@ mod tests {
             token_refresh_delay(Some(now + 10), now),
             Some(MIN_REFRESH_DELAY_SECONDS)
         );
+    }
+
+    #[test]
+    fn a_short_lived_token_is_used_and_refreshed_halfway() {
+        let now = 1_000;
+        // A 60 s token is fresh when it arrives and is replaced after 30 s.
+        assert!(!token_is_expiring_since(Some(now + 60), Some(now), now));
+        assert_eq!(
+            token_refresh_delay_since(Some(now + 60), Some(now), now),
+            Some(30)
+        );
+        assert!(token_is_expiring_since(Some(now + 60), Some(now), now + 30));
+        // Without an issue time, or for a longer-lived token, the buffer
+        // stays.
+        assert!(token_is_expiring(Some(now + 60), now));
+        assert_eq!(
+            token_refresh_delay_since(Some(now + 75), Some(now), now),
+            Some(15)
+        );
+        assert_eq!(
+            token_refresh_delay_since(Some(now + 600), Some(now), now),
+            Some(600 - TOKEN_REFRESH_BUFFER_SECONDS)
+        );
+        // An expired token is still refused.
+        assert!(token_is_expiring_since(Some(now), Some(now), now));
     }
 }

@@ -46,6 +46,14 @@ pub struct StreamArgs {
     #[arg(short, long)]
     pub stack: Option<String>,
 
+    /// Stream through this sandbox (an id or name from `a4 sandbox list`):
+    /// the session is minted for the sandbox, so only stacks whose programs
+    /// are all in its rules open, and the stream ends within about a minute
+    /// of a program leaving them [default, when the account reads only
+    /// through a sandbox: the one `a4 sandbox` uses]
+    #[arg(long, value_name = "ID|NAME", conflicts_with_all = ["dev", "load"])]
+    pub sandbox: Option<String>,
+
     /// Stream from the running `a4 dev` session: finds it, lists its stacks,
     /// mints session tokens and follows redeploys
     #[arg(long, conflicts_with_all = ["url", "load"])]
@@ -121,8 +129,9 @@ pub struct StreamArgs {
     #[arg(long)]
     pub save: Option<String>,
 
-    /// Auto-stop the stream after N seconds
-    #[arg(long)]
+    /// Auto-stop the stream after this long: seconds (130), or with a unit
+    /// (130s, 2m, 1h)
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub duration: Option<u64>,
 
     /// Replay a previously saved snapshot file instead of connecting live
@@ -363,6 +372,66 @@ fn run_dev(args: StreamArgs, json: bool) -> Result<()> {
     })
 }
 
+/// `--duration` in seconds: a whole number of seconds, or one with an `s`,
+/// `m` or `h` unit.
+fn parse_duration(text: &str) -> std::result::Result<u64, String> {
+    let text = text.trim();
+    let (number, unit) = match text.find(|c: char| !c.is_ascii_digit()) {
+        Some(at) => text.split_at(at),
+        None => (text, ""),
+    };
+    let scale = match unit.trim() {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        _ => {
+            return Err(format!(
+                "`{text}` is not a duration: use seconds (130) or a unit (130s, 2m, 1h)"
+            ))
+        }
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(scale))
+        .ok_or_else(|| {
+            format!("`{text}` is not a duration: use seconds (130) or a unit (130s, 2m, 1h)")
+        })
+}
+
+/// The URL to connect to `url` with, and what keeps its session fresh:
+/// through `sandbox` when one was chosen, else minted with the account key.
+/// A key a sandbox grant binds (`sandbox-read-required`) opens it through
+/// the sandbox `a4 sandbox use` chose, else the only one the refusal lists.
+pub(crate) fn open_session(
+    rt: &tokio::runtime::Runtime,
+    url: String,
+    sandbox: Option<arete_mcp::sandbox::SandboxClient>,
+    json: bool,
+) -> Result<(String, Option<token::SessionRefresh>)> {
+    let sandbox = match sandbox {
+        Some(sandbox) => sandbox,
+        None => match token::ensure_hosted_ws_token(url.clone()) {
+            Err(error) => match crate::commands::sandbox::read_required(&error) {
+                Some(refusal) => crate::commands::sandbox::bound_reader(&refusal, json)?,
+                None => return Err(error),
+            },
+            opened => return opened,
+        },
+    };
+    rt.block_on(token::sandbox_ws_token(url, sandbox))
+        .map_err(|error| sandbox_refused(error, json))
+}
+
+/// A sandbox refusal of a stream's first session, printed as the sandbox
+/// commands print theirs; any other error as it is.
+fn sandbox_refused(error: anyhow::Error, json: bool) -> anyhow::Error {
+    match error.downcast::<arete_mcp::sandbox::SandboxRefusal>() {
+        Ok(refusal) => crate::commands::sandbox::read_refused(refusal, json),
+        Err(error) => error,
+    }
+}
+
 /// The feeds `target` streams from `stack`, labelled with its protocol.
 fn dev_feeds(stack: &dev::DevStack, target: &protocols::DevTarget) -> Result<Vec<client::Feed>> {
     use protocols::{DevTarget, ViewEntry};
@@ -407,6 +476,13 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
     // ARETE_ENVIRONMENT=dev streams from the `a4 dev` session, as --dev
     // does. A replay (--load) reads a file and goes nowhere.
     if !args.dev && args.load.is_none() && arete_mcp::dev::environment_is_dev()? {
+        if args.sandbox.is_some() {
+            bail!(
+                "ARETE_ENVIRONMENT=dev streams from the a4 dev session, but --sandbox reads \
+                 mainnet stacks through a sandbox. Unset ARETE_ENVIRONMENT (or set it to \
+                 production) to use --sandbox."
+            );
+        }
         if args.url.is_some() {
             bail!(
                 "ARETE_ENVIRONMENT=dev streams from the a4 dev session, but --url names another \
@@ -438,15 +514,22 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
     };
 
     let url = resolve_url(&args, config_path, view)?;
-    let (url, refresh) = token::ensure_hosted_ws_token(url)?;
+    let sandbox = crate::commands::sandbox::read_sandbox(
+        args.sandbox.as_deref(),
+        &[arete_mcp::entitlements::Group::Streams],
+        config_path,
+    );
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
+    let (url, refresh) = open_session(&rt, url, sandbox, json)?;
 
     if args.tui {
         check_tui_args(&args)?;
         #[cfg(feature = "tui")]
         {
-            return rt.block_on(tui::run_tui(url, refresh, view, &args));
+            return rt
+                .block_on(tui::run_tui(url, refresh, view, &args))
+                .map_err(|error| sandbox_refused(error, json));
         }
     }
 
@@ -456,6 +539,7 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
     );
 
     rt.block_on(client::stream(url, refresh, view, &args))
+        .map_err(|error| sandbox_refused(error, json))
 }
 
 /// The subscription for one feed: its own key, else `--key`.
@@ -571,6 +655,54 @@ fn find_serving_owned_deployment(
 mod tests {
     use super::*;
     use crate::api_client::test_support::MockServer;
+
+    #[test]
+    fn a_duration_takes_seconds_or_a_unit() {
+        for (text, seconds) in [
+            ("130", 130),
+            ("130s", 130),
+            ("2m", 120),
+            ("1h", 3600),
+            (" 5s ", 5),
+        ] {
+            assert_eq!(parse_duration(text), Ok(seconds), "{text}");
+        }
+        for text in ["", "s", "2d", "1.5m", "-3", "2m30s"] {
+            assert!(parse_duration(text).is_err(), "{text}");
+        }
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["a4", "stream", "Round/latest", "--duration", "2m"])
+            .expect("--duration 2m parses");
+        let Some(crate::Commands::Stream(args)) = cli.command else {
+            panic!("a stream command");
+        };
+        assert_eq!(args.duration, Some(120));
+    }
+
+    #[test]
+    fn the_dev_environment_does_not_drop_a_sandbox() {
+        use clap::Parser;
+        let _env = crate::api_client::test_support::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let cli = crate::Cli::try_parse_from([
+            "a4",
+            "stream",
+            "Reserve/list",
+            "--stack",
+            "klend",
+            "--sandbox",
+            "Bot",
+        ])
+        .expect("parses");
+        let Some(crate::Commands::Stream(args)) = cli.command else {
+            panic!("a stream command");
+        };
+        std::env::set_var("ARETE_ENVIRONMENT", "dev");
+        let error = run(args, "arete.toml", false).unwrap_err().to_string();
+        std::env::remove_var("ARETE_ENVIRONMENT");
+        assert!(error.contains("--sandbox"), "{error}");
+    }
 
     fn deployment_response(
         id: i32,
