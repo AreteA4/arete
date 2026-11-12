@@ -874,13 +874,23 @@ impl SandboxClient {
     /// call: it is shared with `a4 sandbox use` and with other servers in
     /// the project, so a change made there applies here at once instead of
     /// after a restart. A choice this session could not save holds until
-    /// the store changes from what it held when the save failed.
+    /// the store changes from what it held when the save failed, and a
+    /// store that cannot be read keeps the session's choice.
     fn chosen(&self) -> Option<(String, Source)> {
         let current = self.choice.lock().ok().and_then(|choice| choice.clone());
         let Some(store) = &self.store else {
             return current;
         };
-        let saved = store.load(&self.api_base);
+        // A file that exists but cannot be read says nothing about the
+        // choice: keep the one this session has rather than fall back to
+        // ARETE_SANDBOX_ID or the only grant, another wallet.
+        let saved = match store.try_load(&self.api_base) {
+            Ok(saved) => saved,
+            Err(error) => {
+                tracing::warn!("could not read the saved sandbox choice: {error}");
+                return current;
+            }
+        };
         let unsaved = self.unsaved.lock().ok().and_then(|unsaved| unsaved.clone());
         if let Some(held_then) = unsaved {
             if saved == held_then {
@@ -2977,6 +2987,40 @@ pub(crate) mod tests {
 
         // A choice saved afterwards, elsewhere, still applies.
         store().unwrap().save(&client.api_base, None).unwrap();
+        assert_eq!(client.chosen(), None);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_choices_file_keeps_the_sessions_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selections.json");
+        let (base, _) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "Treasury", "active"),
+        ])]);
+        // ARETE_SANDBOX_ID names the other sandbox: a lost choice would
+        // fall back to it.
+        let client = SandboxClient::from_values(
+            Some(SANDBOX.into()),
+            Some("a4_ak_test".into()),
+            Some(base.clone()),
+        )
+        .with_store(Some(SelectionStore::at(
+            path.clone(),
+            "/work/project".into(),
+        )));
+        client.select(Some(OTHER), false).await.unwrap();
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+
+        // Corrupted, then not a file at all: the choice holds.
+        std::fs::write(&path, "{ not json").unwrap();
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+
+        // No file at all is no choice: the fallback applies.
+        std::fs::remove_dir(&path).unwrap();
         assert_eq!(client.chosen(), None);
     }
 
