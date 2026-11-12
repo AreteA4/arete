@@ -14,9 +14,9 @@
     "verify:agent": "node scripts/verify-agent-readiness.mjs"
   },
   "dependencies": {
-    "@astrojs/starlight": "latest",
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "astro": "latest",
+    "@astrojs/starlight": "^0.37.7",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "astro": "^5.18.2",
     "starlight-llms-txt": "^0.7.0",
     "zod": "^3.25.76",
     "zod-to-json-schema": "^3.25.2"
