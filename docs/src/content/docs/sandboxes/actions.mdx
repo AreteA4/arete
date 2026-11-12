@@ -23,8 +23,12 @@ Pass u64 amounts as decimal strings.
 ## invoke
 
 Named instructions of the programs your rules enable, encoded from each
-program's IDL. One to eight instructions per action, named exactly as
-`sandbox_rules` lists them. The sandbox wallet is the only signer.
+program's IDL. One to 32 instructions per action, named exactly as
+`sandbox_rules` lists them, as long as they fit one transaction: 4096
+bytes and 64 accounts for v1 (the default), 1232 bytes for v0. A flow
+that needs its setup, refreshes and the action together, such as a
+first lending deposit, goes in one action. The sandbox wallet is the
+only signer.
 
 ```json
 {
