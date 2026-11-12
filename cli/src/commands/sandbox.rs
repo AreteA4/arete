@@ -125,7 +125,7 @@ pub enum RulesCommands {
     },
 }
 
-pub fn run(command: SandboxCommands, json: bool) -> Result<()> {
+pub fn run(command: SandboxCommands, config: &str, json: bool) -> Result<()> {
     match command {
         SandboxCommands::List => list(json),
         SandboxCommands::Use(args) => use_sandbox(args, json),
@@ -133,7 +133,7 @@ pub fn run(command: SandboxCommands, json: bool) -> Result<()> {
         SandboxCommands::Holdings(args) => holdings(args, json),
         SandboxCommands::Rules(RulesCommands::Show(target)) => rules_show(target, json),
         SandboxCommands::Rules(RulesCommands::Validate { file }) => rules_validate(&file, json),
-        SandboxCommands::Reads(target) => reads_show(target, json),
+        SandboxCommands::Reads(target) => reads_show(target, config, json),
     }
 }
 
@@ -151,17 +151,20 @@ pub fn read_sandbox(
     usual: &[arete_mcp::entitlements::Group],
     config: &str,
 ) -> Option<SandboxClient> {
-    use arete_mcp::entitlements::Group;
-    let requested = requested.map(str::trim).filter(|wanted| !wanted.is_empty());
-    if requested.is_none() {
-        let surface = crate::entitlements::account_surface(None, None, config);
-        let only_sandbox =
-            surface.allows(Group::Sandboxes) && !usual.iter().any(|group| surface.allows(*group));
-        if !only_sandbox {
-            return None;
-        }
+    let requested =requested.map(str::trim).filter(|wanted| !wanted.is_empty());
+    if requested.is_none() && !reads_through_sandbox(usual, config) {
+        return None;
     }
     Some(SandboxClient::from_env().targeting(requested))
+}
+
+/// Whether a read command whose own groups are `usual` goes through the
+/// sandbox without --sandbox: the account's groups grant `sandboxes` and
+/// none of them.
+fn reads_through_sandbox(usual: &[arete_mcp::entitlements::Group], config: &str) -> bool {
+    use arete_mcp::entitlements::Group;
+    let surface = crate::entitlements::account_surface(None, None, config);
+    surface.allows(Group::Sandboxes) && !usual.iter().any(|group| surface.allows(*group))
 }
 
 /// A sandbox refusal of a read, printed like the other sandbox refusals.
@@ -881,7 +884,8 @@ fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
 
 // ---- reads --------------------------------------------------------------------
 
-fn reads_show(target: SandboxTarget, json: bool) -> Result<()> {
+fn reads_show(target: SandboxTarget, config: &str, json: bool) -> Result<()> {
+    use arete_mcp::entitlements::Group;
     let runtime = runtime()?;
     let (client, resolved) = resolved_client(&runtime, &target, json)?;
     let body = runtime
@@ -890,15 +894,32 @@ fn reads_show(target: SandboxTarget, json: bool) -> Result<()> {
     if json {
         println!("{body}");
     } else {
-        print!("{}", render_reads(&body, &resolved));
+        let implicit = Implicit {
+            account: reads_through_sandbox(&[Group::Stacks, Group::Streams], config),
+            stack: reads_through_sandbox(&[Group::Streams], config),
+        };
+        print!("{}", render_reads(&body, &resolved, implicit));
     }
     Ok(())
 }
 
-/// The human rendering of the programs a sandbox can read. The commands it
-/// suggests name the sandbox with --sandbox unless it is the one chosen
-/// with `a4 sandbox use`, which they use without it.
-pub fn render_reads(body: &Value, resolved: &arete_mcp::sandbox::selection::Resolved) -> String {
+/// Which read commands go through the sandbox without --sandbox for this
+/// account: `a4 program account decode`, and `a4 get` / `a4 stream`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Implicit {
+    pub account: bool,
+    pub stack: bool,
+}
+
+/// The human rendering of the programs a sandbox can read. A suggested
+/// command leaves out --sandbox only when it would read through this
+/// sandbox without it: the account reads that way only through a sandbox
+/// (`implicit`) and this one is chosen with `a4 sandbox use`.
+pub fn render_reads(
+    body: &Value,
+    resolved: &arete_mcp::sandbox::selection::Resolved,
+    implicit: Implicit,
+) -> String {
     use arete_mcp::sandbox::selection::Source;
     let sandbox_id = resolved.sandbox_id.as_str();
     let programs = arete_mcp::program_read::readable_programs(body);
@@ -924,13 +945,15 @@ pub fn render_reads(body: &Value, resolved: &arete_mcp::sandbox::selection::Reso
             None => out.push_str(&format!("  {id}\n")),
         }
     }
-    let flag = match resolved.source {
-        Source::Saved | Source::Selected => String::new(),
-        _ => format!(" --sandbox {sandbox_id}"),
+    let saved = matches!(resolved.source, Source::Saved | Source::Selected);
+    let flag = |implicit: bool| match saved && implicit {
+        true => String::new(),
+        false => format!(" --sandbox {sandbox_id}"),
     };
+    let (account, stack) = (flag(implicit.account), flag(implicit.stack));
     out.push_str(&format!(
-        "\nRead an account:  a4 program account decode <address>{flag}\n\
-         Read a stack:     a4 get <View> --stack <stack>{flag}\n\
+        "\nRead an account:  a4 program account decode <address>{account}\n\
+         Read a stack:     a4 get <View> --stack <stack>{stack}\n\
          A stack opens only when every program it decodes is listed here.\n"
     ));
     out
@@ -1375,18 +1398,33 @@ mod tests {
             sandbox_id: "s".into(),
             source,
         };
-        let text = render_reads(&body, &resolved(Source::OnlyGrant));
+        let both = Implicit {
+            account: true,
+            stack: true,
+        };
+        let text = render_reads(&body, &resolved(Source::OnlyGrant), both);
         assert!(text.contains("can read 2 programs (rules v7)"), "{text}");
         assert!(text.contains("Jupiter"), "{text}");
         assert!(text.contains("  KLend\n"), "{text}");
         assert!(text.contains("decode <address> --sandbox s\n"), "{text}");
-        // The sandbox saved for this directory needs no --sandbox.
+        // The sandbox saved for this directory needs no --sandbox, for the
+        // commands that read through a sandbox by default.
         for saved in [Source::Saved, Source::Selected] {
-            let text = render_reads(&body, &resolved(saved));
+            let text = render_reads(&body, &resolved(saved), both);
             assert!(!text.contains("--sandbox"), "{text}");
             assert!(text.contains("decode <address>\n"), "{text}");
         }
-        let none = render_reads(&json!({"programs": []}), &resolved(Source::Env));
+        // An account that reads stacks with its own key still needs it there.
+        let account_only = Implicit {
+            account: true,
+            stack: false,
+        };
+        let text = render_reads(&body, &resolved(Source::Saved), account_only);
+        assert!(text.contains("decode <address>\n"), "{text}");
+        assert!(text.contains("--stack <stack> --sandbox s\n"), "{text}");
+        let text = render_reads(&body, &resolved(Source::Saved), Implicit::default());
+        assert_eq!(text.matches("--sandbox s").count(), 2, "{text}");
+        let none = render_reads(&json!({"programs": []}), &resolved(Source::Env), both);
         assert!(none.contains("can read no programs"), "{none}");
     }
 

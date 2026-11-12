@@ -1668,6 +1668,26 @@ impl AreteMcp {
         )>,
         McpError,
     > {
+        self.read_sandbox_with(requested, usual, refused, true)
+            .await
+    }
+
+    /// [`Self::read_sandbox`]; `bound` false ignores an earlier refusal of
+    /// the server's key (`sandbox-read-required`), for a call that brings
+    /// its own key.
+    async fn read_sandbox_with(
+        &self,
+        requested: Option<&str>,
+        usual: &[crate::entitlements::Group],
+        refused: &crate::sandbox::LastRefusal,
+        bound: bool,
+    ) -> Result<
+        Option<(
+            crate::sandbox::SandboxClient,
+            crate::sandbox::selection::Resolved,
+        )>,
+        McpError,
+    > {
         use crate::entitlements::Group;
         let requested = requested.map(str::trim).filter(|id| !id.is_empty());
         let only_sandbox = self.surface.allows(Group::Sandboxes)
@@ -1675,7 +1695,7 @@ impl AreteMcp {
         if requested.is_none() && !only_sandbox {
             // A key an earlier direct read found bound to a sandbox reads
             // through it.
-            let Some(bound) = self.sandbox.bound() else {
+            let Some(bound) = self.sandbox.bound().filter(|_| bound) else {
                 return Ok(None);
             };
             return match self.sandbox.read_through_bound(&bound) {
@@ -3959,10 +3979,15 @@ impl AreteMcp {
         &self,
         Parameters(args): Parameters<ConnectArgs>,
     ) -> Result<CallToolResult, McpError> {
-        self.sandbox_read(args.sandbox.as_deref(), |refused| {
-            self.connect_once(args.clone(), refused)
-        })
-        .await
+        // A key passed on the call is used as given: a refusal for it is not
+        // read again through a sandbox the server's own key mints for.
+        let own_key = args
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty());
+        let named = args.sandbox.as_deref().or(own_key.then_some("api_key"));
+        self.sandbox_read(named, |refused| self.connect_once(args.clone(), refused))
+            .await
     }
 
     async fn connect_once(
@@ -3971,8 +3996,19 @@ impl AreteMcp {
         refused: crate::sandbox::LastRefusal,
     ) -> Result<CallToolResult, McpError> {
         use crate::entitlements::Group;
+        // A key passed on the call is not bound by an earlier refusal of the
+        // server's own key.
+        let own_key = args
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.trim().is_empty());
         if let Some((sandbox, _)) = self
-            .read_sandbox(args.sandbox.as_deref(), &[Group::Streams], &refused)
+            .read_sandbox_with(
+                args.sandbox.as_deref(),
+                &[Group::Streams],
+                &refused,
+                !own_key,
+            )
             .await?
         {
             reject_url_token(&args.url)?;
@@ -7309,6 +7345,33 @@ mod describe_sdk_tests {
             result_json(result),
             json!({"sandboxId": crate::sandbox::tests::SANDBOX, "source": "bound-key"})
         );
+    }
+
+    #[tokio::test]
+    async fn a_key_passed_to_connect_is_not_bound_by_the_servers_key() {
+        use crate::entitlements::Group;
+        let (base, _) = crate::sandbox::tests::stub(Vec::new());
+        let server = key_reader(&base, &base);
+        let bound = crate::sandbox::SandboxRefusal::read_required(
+            403,
+            read_required(json!([{"sandboxId": crate::sandbox::tests::SANDBOX}])),
+        )
+        .unwrap();
+        server.sandbox.read_through_bound(&bound).unwrap();
+        let refused = crate::sandbox::LastRefusal::default();
+        // The server's own key reads through the sandbox it is bound to...
+        let (_, resolved) = server
+            .read_sandbox(None, &[Group::Streams], &refused)
+            .await
+            .unwrap()
+            .expect("the bound sandbox");
+        assert_eq!(resolved.source, crate::sandbox::selection::Source::BoundKey);
+        // ...a key the call brings is used as given.
+        assert!(server
+            .read_sandbox_with(None, &[Group::Streams], &refused, false)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

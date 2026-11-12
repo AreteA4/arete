@@ -2036,7 +2036,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         },
         Commands::Protocol(command) => commands::protocol::run(command, cli.json),
         Commands::Squads(command) => commands::squads::run(command, cli.json),
-        Commands::Sandbox(command) => commands::sandbox::run(command, cli.json),
+        Commands::Sandbox(command) => commands::sandbox::run(command, &cli.config, cli.json),
         Commands::Build(build_cmd) => match build_cmd {
             BuildCommands::List { limit, status } => {
                 commands::build::list(limit, status.as_deref(), cli.json)
