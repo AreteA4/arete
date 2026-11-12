@@ -159,5 +159,6 @@ without skills, put guidance like this in the agent's instructions:
 - Pass amounts as decimal strings in the smallest unit.
 - On a refusal, follow its `hint`. With `retryable: false`, change the request
   before trying again.
-- After a timeout on `sandbox_invoke`, look the action up with
-  `sandbox_action` and its `idempotencyKey` before retrying.
+- After a timeout on `sandbox_invoke`, never retry under a new key. Send the
+  same request with the same `idempotencyKey` (it returns the original
+  result, `replayed: true`), or look the action up with `sandbox_action`.

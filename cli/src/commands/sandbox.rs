@@ -678,6 +678,11 @@ fn history_row(item: &Value) -> String {
     if let Some(delta) = amount(&item["solDelta"]).filter(|delta| *delta != 0) {
         changes.push(format!("{} SOL", signed_units(delta, 9)));
     }
+    // The network fee is already in the SOL change (and in
+    // `outflowLamports`); older records carry no `feeLamports`.
+    if let Some(fee) = amount(&item["feeLamports"]).filter(|fee| *fee != 0) {
+        changes.push(format!("fee {} SOL", units(fee, 9)));
+    }
     for delta in item["tokenDeltas"].as_array().into_iter().flatten() {
         let Some(raw) = amount(&delta["delta"]).filter(|raw| *raw != 0) else {
             continue;
@@ -694,6 +699,10 @@ fn history_row(item: &Value) -> String {
     }
     if let Some(signature) = item["signature"].as_str() {
         line.push_str(&format!("  {}", short(signature).dimmed()));
+    }
+    // Null or absent for actions recorded before it was kept.
+    if let Some(pipeline) = item["guardPipeline"].as_str() {
+        line.push_str(&format!("  {}", format!("guard {pipeline}").dimmed()));
     }
     line.push('\n');
     if let Some(events) = event_labels(item) {
@@ -1581,6 +1590,37 @@ mod tests {
             ),
             "{text}"
         );
+    }
+
+    /// Newer records carry the network fee and the guard pipeline that
+    /// checked the action; older ones (the fixture above) carry neither and
+    /// render as before.
+    #[test]
+    fn history_shows_the_fee_and_guard_pipeline_when_recorded() {
+        colored::control::set_override(false);
+        let text = render_history(
+            &fixture("history-page-fees.json"),
+            &HistoryArgs::default(),
+            None,
+            "sbx",
+        );
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            lines[2],
+            "  2026-11-12 10:00:00  landed    Pump.fun.buy  -0.105005 SOL, fee 0.000005 SOL, +1234.5 7xKX…gAsU  5Kt3…6uHq  guard execute-v1",
+            "{text}"
+        );
+        let rejected = lines.iter().find(|line| line.contains("rejected")).unwrap();
+        assert!(!rejected.contains("guard"), "{text}");
+
+        let older = render_history(
+            &fixture("history-page.json"),
+            &HistoryArgs::default(),
+            None,
+            "sbx",
+        );
+        assert!(!older.contains("fee "), "{older}");
+        assert!(!older.contains("guard "), "{older}");
     }
 
     #[test]

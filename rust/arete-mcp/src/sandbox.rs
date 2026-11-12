@@ -202,6 +202,14 @@ impl SandboxRefusal {
             .or_else(|| hint_for(&code, retryable, self.kind))
             .or_else(|| out.get("hint").and_then(Value::as_str).map(str::to_string))
             .unwrap_or_else(|| generic_hint(retryable, self.kind).to_string());
+        // A same-key resubmit of the same request gets the original
+        // refusal back, marked `replayed: true`: say so, so the agent
+        // does not read it as a fresh refusal of a new attempt.
+        let hint = if out.get("replayed").and_then(Value::as_bool) == Some(true) {
+            format!("{REPLAYED_REFUSAL} {hint}")
+        } else {
+            hint
+        };
         out.insert("hint".into(), json!(hint));
         Value::Object(out)
     }
@@ -257,7 +265,11 @@ fn guard_infrastructure(code: &str) -> bool {
 
 const TOKEN_FUNDS_HINT: &str = "A token account this transaction spends from holds less than it moves; adding SOL does not help. Check the amounts against sandbox_holdings (the logs show which transfer failed), then hold more of that token or move less.";
 
-const LOOK_UP_THE_ACTION: &str = "The action may have run. Look it up with sandbox_action and the idempotencyKey before retrying: if it ran, do not repeat it; if it was refused, retry with a new key; if no action has the key, retry with the same key.";
+const LOOK_UP_THE_ACTION: &str = "The action may have run, so never retry it under a new idempotencyKey. Retrying with the same key is safe: a key never runs twice, and the same request under it returns the original result (`replayed: true`); older servers answer sandbox-duplicate-action instead, so look the action up with sandbox_action and the idempotencyKey. Use a new key only once the action is known to have been refused.";
+
+const REPLAYED_REFUSAL: &str = "This is the recorded refusal of the action this idempotencyKey already ran (`replayed: true`); the same key returns it again.";
+
+const KEY_ALREADY_USED: &str = "This idempotencyKey already belongs to an action (the error names its id). If this call was a different request, run it with a new idempotencyKey. Older servers answer this way to every repeat of a key, the same request included: look the action up with sandbox_action (by its id or this idempotencyKey) for its result instead of retrying.";
 
 /// The rule for a call with no more specific hint.
 fn generic_hint(retryable: bool, kind: CallKind) -> &'static str {
@@ -358,9 +370,7 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         "sandbox-swap-slippage-too-high" => {
             "Lower slippageBps to at most what sandbox_rules allows."
         }
-        "sandbox-duplicate-action" => {
-            "This idempotency key already ran: look it up with sandbox_action instead of retrying."
-        }
+        "sandbox-duplicate-action" | "sandbox-idempotency-key-reused" => KEY_ALREADY_USED,
         "sandbox-rate-limited" => "Too many requests: wait for retryAfterSeconds.",
         "sandbox-response-too-large" => match kind {
             CallKind::Action => {
@@ -1838,11 +1848,13 @@ pub enum SandboxActionName {
     Invoke,
     /// SOL to the owner's withdraw address, the only destination a withdraw
     /// can have. `args`: `{ lamports, transactionFormat?: "v1" | "v0" }`.
+    /// The result's `outflowLamports` is `lamports` plus the network fee.
     Withdraw,
     /// An exact-input token swap through the venues the owner allows.
     /// `args`: `{ inputMint, outputMint, amount, slippageBps?,
     /// computeUnitLimit?, computeUnitPriceMicroLamports? }`, `amount` in the
-    /// input mint's smallest unit.
+    /// input mint's smallest unit. The result's `outflowLamports` counts
+    /// the network fee as well as any SOL the swap spends.
     Swap,
 }
 
@@ -1920,9 +1932,12 @@ pub struct SandboxInvokeArgs {
     /// Pass u64/u128 amounts as decimal strings.
     #[serde(default)]
     pub args: Option<Value>,
-    /// Your key for this action (1-128 chars). The same key never runs twice;
-    /// after a timeout, look the action up with `sandbox_action` instead of
-    /// retrying. Generated when omitted and returned in the result.
+    /// Your key for this action (1-128 chars). The same key never runs twice:
+    /// the same request under it returns the original result (`replayed:
+    /// true`), so after a timeout retry with the same key, never a new one
+    /// (older servers refuse the repeat with `sandbox-duplicate-action`; look
+    /// the action up with `sandbox_action`). A different request under a used
+    /// key is refused. Generated when omitted and returned in the result.
     #[serde(default)]
     pub idempotency_key: Option<String>,
 }
@@ -3709,6 +3724,119 @@ pub(crate) mod tests {
             .as_str()
             .unwrap()
             .contains("fund the wallet"));
+    }
+
+    /// A repeated key, as a current server answers it (the original result,
+    /// marked `replayed: true`) and as an older one does
+    /// (`sandbox-duplicate-action` naming the action): either way the agent
+    /// sees the API's fields and a hint it can act on.
+    #[tokio::test]
+    async fn a_repeated_key_reaches_the_agent_as_a_replay_or_a_duplicate() {
+        // A landed action replayed: the body passes through untouched, with
+        // the fee-inclusive outflow, the fee and the guard pipeline.
+        let landed = json!({
+            "actionId": "a-1", "status": "landed", "signature": "sig-1",
+            "outflowLamports": "105005000", "feeLamports": "5000",
+            "guardPipeline": "execute-v1", "replayed": true,
+        });
+        let (base, _) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/actions/withdraw",
+            200,
+            landed.clone(),
+        )]);
+        let body = client(&base)
+            .invoke(
+                SandboxActionName::Withdraw,
+                json!({ "lamports": "105000000" }),
+                "k-1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(body, landed);
+
+        // A refusal replayed: its fields are kept and the hint says it is
+        // the recorded refusal, not a fresh one.
+        let (base, _) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/actions/invoke",
+            403,
+            json!({
+                "code": "sandbox-guard-trial-failed", "retryable": false,
+                "rule": "trial", "actionId": "a-2",
+                "guardPipeline": "execute-v1", "replayed": true,
+            }),
+        )]);
+        let shown = client(&base)
+            .invoke(SandboxActionName::Invoke, json!({}), "k-2")
+            .await
+            .unwrap_err()
+            .to_json();
+        assert_eq!(shown["code"], "sandbox-guard-trial-failed");
+        assert_eq!(shown["replayed"], true);
+        assert_eq!(shown["actionId"], "a-2");
+        assert_eq!(shown["guardPipeline"], "execute-v1");
+        let hint = shown["hint"].as_str().unwrap();
+        assert!(hint.starts_with(REPLAYED_REFUSAL), "{hint}");
+        assert!(hint.contains("fails when run"), "{hint}");
+
+        // The same refusal, not replayed, gets no replay wording.
+        let fresh = SandboxRefusal {
+            status: 403,
+            body: json!({ "code": "sandbox-guard-trial-failed", "retryable": false }),
+            kind: CallKind::Action,
+        }
+        .to_json();
+        assert!(!fresh["hint"].as_str().unwrap().contains("replayed"));
+
+        // An older server's duplicate, and a current server's refusal of a
+        // different request under a used key.
+        for code in ["sandbox-duplicate-action", "sandbox-idempotency-key-reused"] {
+            let (base, _) = stub(vec![(
+                "POST",
+                "/api/sandbox/v1/actions/invoke",
+                409,
+                json!({
+                    "code": code, "retryable": false,
+                    "error": "This idempotency key is already used",
+                    "actionId": "a-1",
+                }),
+            )]);
+            let shown = client(&base)
+                .invoke(SandboxActionName::Invoke, json!({}), "k-1")
+                .await
+                .unwrap_err()
+                .to_json();
+            assert_eq!(shown["status"], 409, "{code}");
+            assert_eq!(shown["code"], code);
+            assert_eq!(shown["retryable"], false, "{code}");
+            assert_eq!(shown["actionId"], "a-1", "{code}");
+            let hint = shown["hint"].as_str().unwrap();
+            assert!(hint.contains("sandbox_action"), "{code}: {hint}");
+            assert!(hint.contains("new idempotencyKey"), "{code}: {hint}");
+        }
+    }
+
+    /// A call that may have run is retried only under its own key, which is
+    /// safe whether the server replays or refuses the repeat.
+    #[test]
+    fn an_action_that_may_have_run_is_retried_only_under_its_key() {
+        let hint = SandboxRefusal {
+            status: 504,
+            body: Value::Null,
+            kind: CallKind::Action,
+        }
+        .to_json()["hint"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            hint.contains("never retry it under a new idempotencyKey"),
+            "{hint}"
+        );
+        assert!(hint.contains("replayed: true"), "{hint}");
+        assert!(hint.contains("sandbox-duplicate-action"), "{hint}");
+        assert!(hint.contains("sandbox_action"), "{hint}");
     }
 
     /// A guard that could not decide: retry the same dry run, or an action

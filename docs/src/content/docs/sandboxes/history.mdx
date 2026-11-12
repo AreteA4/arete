@@ -42,6 +42,10 @@ More: a4 sandbox history --cursor eyJpZCI6ImEyIn0
 | `--all`                | Read every page                                                                                                   |
 | `--raw`                | Keep each action's raw parsed transaction in `--json` output                                                      |
 
+On records that carry them, a row also shows the network fee (already part
+of the SOL change) and the guard pipeline:
+`-0.105005 SOL, fee 0.000005 SOL, +1234.5 7xKX…gAsU  5Kt3…6uHq  guard execute-v1`.
+
 The filters are applied by the client to the pages it reads. A filtered read
 keeps reading pages until enough actions match (up to 10 pages per call),
 then prints the cursor to carry on from.
@@ -58,7 +62,10 @@ then prints the cursor to carry on from.
 - the programs and decoded instructions;
 - the Anchor events the programs emitted, decoded against each program's IDL
   (an event that doesn't decode keeps its bytes and the reason);
-- the SOL and token changes;
+- the SOL and token changes, and `outflowLamports`: everything that left the
+  wallet, the network fee included (`feeLamports` alone, when recorded);
+- the guard pipeline that checked it (`guardPipeline`, such as `execute-v1`;
+  null or absent on older actions);
 - the accounts it touched; and
 - with `--raw` or `includeRaw`, the parsed transaction with balances before
   and after.

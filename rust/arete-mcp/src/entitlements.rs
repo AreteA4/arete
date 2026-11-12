@@ -237,6 +237,48 @@ mod tests {
         assert!(mcp_tool_visible(&Surface::Everything, "dev_status"));
     }
 
+    /// An account whose `GET /api/auth/me` reports only `account` and
+    /// `sandboxes` sees every live-view and program-read tool, which then
+    /// read through its sandbox, and none of the other groups' tools.
+    #[test]
+    fn a_sandbox_only_account_sees_the_read_tools() {
+        let surface = Surface::from_account(&json!({"commandGroups": ["account", "sandboxes"]}));
+        for read in [
+            "connect",
+            "disconnect",
+            "read_view",
+            "subscribe",
+            "unsubscribe",
+            "query_entities",
+            "get_entity",
+            "list_entities",
+            "get_recent",
+            "list_subscriptions",
+            "list_connections",
+            "program_read_account",
+        ] {
+            assert_eq!(
+                mcp_tool_groups(read).map(|groups| groups.contains(&Group::Sandboxes)),
+                Some(true),
+                "{read}"
+            );
+            assert!(mcp_tool_visible(&surface, read), "{read}");
+        }
+        for tool in crate::sandbox::TOOL_NAMES {
+            assert!(mcp_tool_visible(&surface, tool), "{tool}");
+        }
+        for hidden in [
+            "explore_stacks",
+            "search_catalog",
+            "describe_sdk",
+            "protocol_submit",
+            "squads_status",
+            "dev_status",
+        ] {
+            assert!(!mcp_tool_visible(&surface, hidden), "{hidden}");
+        }
+    }
+
     #[test]
     fn group_names_round_trip() {
         for group in Group::ALL {

@@ -57,8 +57,10 @@ list and select first.
 
 Loop: `sandbox_status` and `sandbox_rules` first, `sandbox_preview` every
 action, then `sandbox_invoke` (the only tool that moves funds). On a refusal,
-follow its `hint`; after a `sandbox_invoke` timeout, look the action up with
-`sandbox_action` and its `idempotencyKey` before retrying. Read through the
+follow its `hint`; after a `sandbox_invoke` timeout, never retry under a new
+key: resend the same request with the same `idempotencyKey` (it returns the
+original result, `replayed: true`) or look the action up with
+`sandbox_action`. Read through the
 sandbox: `sandbox_reads` lists the programs its rules let you read, and
 `program_read_account`, `read_view` and `connect` take the same `sandbox`.
 From the CLI: `a4 sandbox list`, `a4 sandbox use <id|name>`,
