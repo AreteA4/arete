@@ -162,19 +162,8 @@ pub fn read_sandbox(
 /// sandbox without --sandbox: the account's groups grant `sandboxes` and
 /// none of them.
 fn reads_through_sandbox(usual: &[arete_mcp::entitlements::Group], config: &str) -> bool {
-    let surface = selected_surface(config);
+    let surface = crate::entitlements::selected_account_surface(config);
     sandbox_only(&surface, usual)
-}
-
-/// The account's surface for the profile `main` already selected, which it
-/// passes on in `ARETE_PROFILE`. Resolving the profile again would let the
-/// project's default (`.arete/auth.toml`) override an explicit `--profile`,
-/// and send a human key's read through the agent's sandbox path.
-fn selected_surface(config: &str) -> arete_mcp::entitlements::Surface {
-    let profile = std::env::var(arete_mcp::credentials::ENV_VAR_PROFILE)
-        .ok()
-        .filter(|profile| !profile.trim().is_empty());
-    crate::entitlements::account_surface(None, profile.as_deref(), config)
 }
 
 /// Whether `surface` grants `sandboxes` and none of `usual`.
@@ -914,7 +903,7 @@ fn reads_show(target: SandboxTarget, config: &str, json: bool) -> Result<()> {
         println!("{body}");
     } else {
         // One lookup of the account's groups serves both commands.
-        let surface = selected_surface(config);
+        let surface = crate::entitlements::selected_account_surface(config);
         let implicit = Implicit {
             account: sandbox_only(&surface, &[Group::Stacks, Group::Streams]),
             stack: sandbox_only(&surface, &[Group::Streams]),
