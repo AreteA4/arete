@@ -38,8 +38,11 @@ pub fn skill_groups(name: &str) -> &'static [Group] {
     }
 }
 
-/// The skills for an account's surface, in `SKILL_NAMES` order: every skill
-/// when the API reports no groups (no key, offline, an older API).
+/// The skills for an account's surface, in `SKILL_NAMES` order. Every skill
+/// when the account's groups are unknown: no key, the API unreachable, or an
+/// API that does not report `commandGroups`. An explicit empty list is an
+/// account with no command groups: `a4` lists only its account commands, so
+/// no skill is installed either.
 pub fn skills_for(surface: &Surface) -> Vec<&'static str> {
     SKILL_NAMES
         .into_iter()
@@ -896,6 +899,12 @@ fi
         );
         let account_only = Surface::Groups([Group::Account].into_iter().collect());
         assert!(skills_for(&account_only).is_empty());
+        // As the API reports them: no `commandGroups` field is unknown (every
+        // skill); an explicit empty list grants none, as `a4` help shows.
+        let unreported = Surface::from_account(&serde_json::json!({"accountKind": "agent"}));
+        assert_eq!(skills_for(&unreported), SKILL_NAMES.to_vec());
+        let none = Surface::from_account(&serde_json::json!({"commandGroups": []}));
+        assert!(skills_for(&none).is_empty());
         let every_group = Surface::Groups(Group::ALL.into_iter().collect());
         assert_eq!(skills_for(&every_group), SKILL_NAMES.to_vec());
         for name in SKILL_NAMES {
