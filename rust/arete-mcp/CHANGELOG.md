@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.55.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.54.1...arete-mcp-v0.55.0) (2026-11-12)
+
+
+### Features
+
+* **cli,mcp:** read programs and live views through a sandbox ([3ce731f](https://github.com/AreteA4/arete/commit/3ce731fb1a35580b185ffb035758d39fe1b1e7cc))
+* **cli,mcp:** read programs and live views through a sandbox ([4a27d81](https://github.com/AreteA4/arete/commit/4a27d81911f40d636a30c7d9287298b53d969561))
+* **mcp:** choose a sandbox from the agent's grants ([10eb761](https://github.com/AreteA4/arete/commit/10eb761493c73c11cdbe010df7969f3492ee2528))
+
+
+### Bug Fixes
+
+* **cli,mcp:** follow a sandbox choice made elsewhere, and the selected profile ([43c89cb](https://github.com/AreteA4/arete/commit/43c89cbf3d29c30fc33f2dcbd97a305de3cde168))
+* **cli,mcp:** honour a connect key and keep --sandbox where it is needed ([005e933](https://github.com/AreteA4/arete/commit/005e933569cc46507742452c3ca82b5f4105cfda))
+* **cli,mcp:** keep sandbox read refusals and choices intact ([3840bd8](https://github.com/AreteA4/arete/commit/3840bd866068bc2130e0af6134e0312249ac3898))
+* **cli,mcp:** read through a sandbox when the API key is bound to one ([9e2dfe3](https://github.com/AreteA4/arete/commit/9e2dfe37f1bfab1a0e771b34c34059eaaacece35))
+* **cli,mcp:** report a sandbox's refusal wherever a stream ends ([9b3b1bf](https://github.com/AreteA4/arete/commit/9b3b1bf67e846ec38fa4f24604021d044e3bb78f))
+* **mcp:** keep a sandbox choice that could not be saved ([efdc951](https://github.com/AreteA4/arete/commit/efdc951d82902a6afcd0bc21f8b52003bc646c82))
+* **mcp:** keep the sandbox choice when the choices file cannot be read ([e5e2fa8](https://github.com/AreteA4/arete/commit/e5e2fa81cc72b98413894c637b487e9eb60d1079))
+
 ## [0.54.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.54.0...arete-mcp-v0.54.1) (2026-11-10)
 
 

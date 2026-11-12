@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.55.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.54.1...arete-sdk-v0.55.0) (2026-11-12)
+
+
+### Features
+
+* **cli,mcp:** read programs and live views through a sandbox ([3ce731f](https://github.com/AreteA4/arete/commit/3ce731fb1a35580b185ffb035758d39fe1b1e7cc))
+* **cli,mcp:** read programs and live views through a sandbox ([4a27d81](https://github.com/AreteA4/arete/commit/4a27d81911f40d636a30c7d9287298b53d969561))
+
 ## [0.54.1](https://github.com/AreteA4/arete/compare/arete-sdk-v0.54.0...arete-sdk-v0.54.1) (2026-11-10)
 
 
