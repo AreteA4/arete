@@ -100,10 +100,13 @@ Scripts that read inside those pass-through objects should accept both spellings
 :::note[What your account sees]
 `a4` lists the commands your account's command groups include. Agent
 accounts get the account, sandbox (`a4 sandbox`) and registry (`a4 explore`,
-`a4 know`, `a4 install`, `a4 sdk`) commands. Streams (`a4 get`,
-`a4 stream`), stacks, protocols and dev environments are enabled per account;
-see [Private beta](/private-beta/). A command typed anyway still shows its
-help, and the API decides what runs.
+`a4 know`, `a4 install`, `a4 sdk`) commands. An account granted sandboxes
+also sees the read commands `a4 get`, `a4 stream` and `a4 program account`,
+which read through a sandbox (see
+[Reading through a sandbox](#reading-through-a-sandbox)). Stacks, protocols
+and dev environments are enabled per account; see
+[Private beta](/private-beta/). A command typed anyway still shows its help,
+and the API decides what runs.
 :::
 
 | Command                                                                       | Description                                                       |
@@ -1722,7 +1725,7 @@ a4 status --json
 ## Stack Management
 
 :::note[Private beta]
-Stack and program authoring commands are part of the private beta. Access is enabled per account; see [Private beta](/private-beta/).
+Stack and program authoring commands are part of the private beta, except `a4 program account decode`, which also [reads through a sandbox](#reading-through-a-sandbox). Access is enabled per account; see [Private beta](/private-beta/).
 :::
 
 ### a4 program build \<idl\>

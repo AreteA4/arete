@@ -34,6 +34,22 @@ sent to a sandbox. The hint names the tools to call: `sandbox_list`, then
 | `sandbox-paused`             | Every granted sandbox is paused                                                           |
 | `sandbox-not-configured`     | The API can't list grants (an older server): pass a sandbox id, or set `ARETE_SANDBOX_ID` |
 
+## Reads
+
+Refusals of reads through a sandbox (`program_read_account`, `read_view`,
+`connect`, `a4 program account decode`, `a4 get`, `a4 stream`). From MCP they
+are tool errors with `isError: true`; the CLI prints the code and a hint
+naming the matching `a4` command.
+
+| Code                              | Meaning                                                                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-program-not-allowlisted` | The program is not in the rules; `programs` lists the ones left out. `sandbox_reads` (or `a4 sandbox reads`) lists what can be read |
+| `sandbox-read-required`           | This API key is bound to a sandbox grant and reads only through a sandbox; `sandboxes` names them. Choose one, or pass it           |
+| `sandbox-read-programs-unknown`   | Arete could not tell which programs the stack decodes, so a sandbox cannot read it. Read the programs' accounts directly            |
+| `sandbox-read-target-unsupported` | A sandbox reads only program accounts and stack views of the programs in its rules                                                  |
+| `sandbox-reads-mainnet-only`      | Sandbox reads cover mainnet only; this sandbox or stack runs on a dev environment                                                   |
+| `sandbox-inactive`                | The sandbox is not active. Only its owner can reactivate it                                                                         |
+
 ## Rules
 
 | Code                                                                                 | Meaning                                                                |

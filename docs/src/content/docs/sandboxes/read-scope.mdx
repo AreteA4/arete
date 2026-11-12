@@ -51,8 +51,11 @@ From the MCP server, `sandbox_reads` lists the programs, and
 - The read session is minted through the sandbox, not with the agent's API
   key. Only a program in the rules can be read, and a stack opens only when
   every program it decodes is in them.
-- A refusal is `sandbox-program-not-allowlisted`, naming the `programs` the
-  rules leave out.
+- A refusal is a tool error (`isError: true` from MCP) whose JSON carries
+  `code`, `retryable` and a `hint`. A program outside the rules is
+  `sandbox-program-not-allowlisted`, naming the `programs` the rules leave
+  out; its hint points to `sandbox_reads` (or `a4 sandbox reads`). See
+  [Errors](/sandboxes/errors/#reads).
 - A followed view's session is re-minted about every minute through the same
   sandbox, so a rules change, pause or revoke reaches an open stream within a
   minute.
@@ -70,7 +73,13 @@ sandbox tools (`sandbox-selection-required`, `sandbox-none-granted`,
 own key.
 
 An account with wider access reads with its own key unless it names a
-sandbox.
+sandbox, except when the owner bound its API key to a sandbox grant. The API
+then refuses the key's own read with `sandbox-read-required` and names the
+sandboxes. The read is retried through the sandbox chosen with
+`sandbox_select` or `a4 sandbox use` (else `ARETE_SANDBOX_ID`, else the only
+sandbox the refusal names), and later MCP reads in the session go through it
+directly. With several named and none chosen, the read fails with that code
+and lists them: choose one, or pass `sandbox` / `--sandbox`.
 
 ## What applies today
 
