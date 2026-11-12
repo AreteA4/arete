@@ -19,14 +19,15 @@ Read https://docs.arete.run/agent.md and follow it to set up Arete in your
 environment. Verify the setup, and simply explain what Arete is capable of.
 </CopyPrompt>
 
-That installs the signed `a4` binary, runs `a4 init -y` (skills, project
-instructions and MCP configuration for the detected host), signs up a
-restricted agent account and runs `a4 doctor`. To do it by hand:
+That installs the signed `a4` binary, signs up a restricted agent account,
+runs `a4 init -y` (the skills that account can use, project instructions and
+MCP configuration for the detected host) and runs `a4 doctor`. Signup comes
+first so `a4 init` installs only the account's skills. To do it by hand:
 
 ```bash
 curl -fsSL https://arete.run/install.sh | sh     # Windows: irm https://arete.run/install.ps1 | iex
-a4 init -y
 a4 --profile agent auth signup --if-missing --json
+a4 init -y
 a4 doctor --summary --json
 ```
 
@@ -55,8 +56,9 @@ Treasury with sandbox_select.
 </CopyPrompt>
 
 The choice is saved for the project (the folder `a4 mcp` runs in), so it
-survives restarts, and `a4 sandbox use` in the same folder sets the same
-choice. Any `sandbox_*` call can also name another sandbox, by id or name,
+survives restarts. `a4 sandbox use` in the same folder saves the same choice,
+but a running MCP server reads it only when it starts: after changing it from
+the CLI, restart the server or call `sandbox_select` again. Any `sandbox_*` call can also name another sandbox, by id or name,
 for that call alone.
 
 A call uses the first of:

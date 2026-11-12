@@ -42,6 +42,8 @@ allowed. This page sets out exactly where that line is.
   per token yet. Use per-program spend limits.
 - **Global caps.** Version 3 rules have no sandbox-wide per-action or
   per-window caps. The per-program spend limit replaces them.
+- **Outside network access.** Read scoping covers reads through Arete. An
+  agent that can run commands can still read public chain data elsewhere.
 - **Chain reads.** Program reads and live views read through a sandbox are
   scoped to its rules; general chain reads are not yet. See
   [Read scope](/sandboxes/read-scope/).

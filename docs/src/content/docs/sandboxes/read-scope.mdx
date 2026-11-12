@@ -5,15 +5,18 @@ description: A sandbox's rules decide what an agent can read as well as what it 
 
 A sandbox is a read sandbox as well as a write sandbox. The programs in its
 rules are the programs the agent can act on, and also the programs it can
-look at. An agent can't act on a program that isn't in the sandbox, and it
-can't read one either.
+look at. Through Arete, an agent can't act on a program that isn't in the
+sandbox, and it can't read one either.
 
 ## Why scope reads
 
 - **Focus.** An agent that can see only the venues you chose reasons about
   those venues, not everything on chain.
-- **No side channels.** The agent can't use reads to explore protocols you
-  never meant it to touch, or to plan around the rules.
+- **Scoped Arete reads.** Arete's read tools won't show the agent protocols
+  you never meant it to touch. A sandbox does not block the agent's own
+  network access: an agent that can run commands can still read public chain
+  data through other Solana RPC services. The boundary that protects funds is
+  the write side.
 - **One document.** You decide what the agent may touch once, in the rules
   you sign. You don't keep a separate read list in step with it.
 
