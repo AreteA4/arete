@@ -972,9 +972,9 @@ pub fn render_reads(
         ));
         return out;
     }
-    let version = body["rulesVersion"]
-        .as_u64()
-        .map(|version| format!(" (rules v{version})"))
+    let version = rules::revision(body)
+        .or_else(|| body["rulesVersion"].as_u64())
+        .map(|revision| format!(" (rules revision {revision})"))
         .unwrap_or_default();
     out.push_str(&format!(
         "Sandbox {sandbox_id} can read {} program{}{version}:\n",
@@ -1053,13 +1053,27 @@ pub fn validation_output(name: &str, text: &str, json: bool) -> (String, bool) {
 
 /// The human rendering of a validation report.
 pub fn render_report(name: &str, report: &rules::RulesReport) -> String {
+    let source = match &report.checked {
+        Some(member) => format!("the signed rules in the agent view (`{member}`); "),
+        None => String::new(),
+    };
     let mut out = if report.valid {
         let enabled = if report.enabled_programs.is_empty() {
             "no programs enabled".to_string()
         } else {
             format!("enabled: {}", report.enabled_programs.join(", "))
         };
-        format!("{name}: {} ({enabled})\n", "valid Rules v3".green())
+        format!("{name}: {} ({source}{enabled})\n", "valid Rules v3".green())
+    } else if report.checked.is_some() {
+        format!(
+            "{name}: {} in the signed rules of the agent view\n",
+            format!(
+                "{} error{}",
+                report.errors.len(),
+                if report.errors.len() == 1 { "" } else { "s" }
+            )
+            .red()
+        )
     } else {
         format!(
             "{name}: {}\n",
@@ -1089,13 +1103,22 @@ pub fn render_report(name: &str, report: &rules::RulesReport) -> String {
 
 /// The human rendering of the rules an agent sees: the programs with their
 /// allowed instructions, the Rules v3 toggles, limits and allowlist when the
-/// API gives them, and the baseline.
+/// API gives them, and the baseline. The header names the format and, for
+/// the agent's view, the revision (which signing is active): an agent
+/// view's numbers are never shown as a format they are not.
 pub fn render_rules(body: &Value) -> String {
     let rules = rules::find_document(body);
-    let mut out = match rules["version"].as_u64() {
-        Some(version) => format!("{} v{version}\n", "Rules".bold()),
-        None => format!("{}\n", "Rules".bold()),
-    };
+    let format = rules::format(rules).map(|format| format!(" v{format}"));
+    let mut out = format!("{}{}", "Rules".bold(), format.unwrap_or_default());
+    if rules::is_agent_view(body) {
+        match rules::revision(body) {
+            Some(revision) => {
+                out.push_str(&format!(" (revision {revision}, as this agent sees them)"))
+            }
+            None => out.push_str(" (as this agent sees them)"),
+        }
+    }
+    out.push('\n');
     if let Some(reason) = body["unavailable"]
         .get("message")
         .or_else(|| body["unavailable"].get("error"))
@@ -1443,7 +1466,7 @@ mod tests {
     fn reads_render_the_programs_and_how_to_read_them() {
         let body = json!({
             "sandboxId": "s",
-            "rulesVersion": 7,
+            "rulesRevision": 7,
             "programs": [
                 {"programId": "JUP6", "name": "Jupiter"},
                 {"programId": "KLend"},
@@ -1459,7 +1482,10 @@ mod tests {
             stack: true,
         };
         let text = render_reads(&body, &resolved(Source::OnlyGrant), both);
-        assert!(text.contains("can read 2 programs (rules v7)"), "{text}");
+        assert!(
+            text.contains("can read 2 programs (rules revision 7)"),
+            "{text}"
+        );
         assert!(text.contains("Jupiter"), "{text}");
         assert!(text.contains("  KLend\n"), "{text}");
         assert!(text.contains("decode <address> --sandbox s\n"), "{text}");
@@ -1621,7 +1647,9 @@ mod tests {
     fn the_agent_view_renders_instructions_and_the_baseline() {
         colored::control::set_override(false);
         let text = render_rules(&json!({
-            "version": 3,
+            "view": "agent",
+            "rulesFormat": 3,
+            "revision": 1,
             "programs": [
                 { "programId": PUMP, "name": "pump", "allowed": ["buy"],
                   "instructions": [{ "name": "buy", "args": [], "accounts": [] }] },
@@ -1629,7 +1657,10 @@ mod tests {
             ],
             "baseline": [{ "name": "System" }, { "name": "Associated Token" }]
         }));
-        assert!(text.starts_with("Rules v3\n"), "{text}");
+        assert!(
+            text.starts_with("Rules v3 (revision 1, as this agent sees them)\n"),
+            "{text}"
+        );
         assert!(text.contains("instructions: buy\n"), "{text}");
         assert!(text.contains("instructions: any\n"), "{text}");
         assert!(
@@ -1639,21 +1670,78 @@ mod tests {
         assert!(!text.contains("Transfers"), "{text}");
     }
 
-    const NO_LONGER: &str = "Rules version 2 is no longer supported. Build and sign v3 rules \
-                             in the dashboard (Sandboxes → Rules).";
-
-    #[test]
-    fn a_version_2_file_is_refused_with_one_line() {
-        colored::control::set_override(false);
-        // The version 2 shape: instruction objects, baseline, requestId.
-        let text = json!({
-            "version": 2,
+    /// What `rules show` printed before the API named its numbers: the
+    /// revision of version 3 rules as `version`.
+    fn old_agent_view() -> Value {
+        json!({
+            "version": 1,
             "requestId": "req-1",
             "baseline": [{ "name": "System" }],
             "programs": [{
                 "programId": PUMP, "name": "Pump.fun", "allowed": ["buy"],
                 "instructions": [{ "name": "buy", "args": [], "accounts": [] }]
             }]
+        })
+    }
+
+    #[test]
+    fn an_old_agent_view_shows_its_number_as_a_revision() {
+        colored::control::set_override(false);
+        let text = render_rules(&old_agent_view());
+        assert!(
+            text.starts_with("Rules (revision 1, as this agent sees them)\n"),
+            "{text}"
+        );
+        assert!(!text.contains("Rules v1"), "{text}");
+    }
+
+    #[test]
+    fn the_agent_view_is_not_validated_as_a_rules_file() {
+        colored::control::set_override(false);
+        let text = old_agent_view().to_string();
+        let (plain, valid) = validation_output("stdin", &text, false);
+        assert!(!valid, "still exits 1: it is not a rules document");
+        assert!(plain.contains("agent's view"), "{plain}");
+        assert!(plain.contains("signedRules"), "{plain}");
+        assert!(!plain.contains("turned off"), "{plain}");
+        assert!(!plain.contains("no longer supported"), "{plain}");
+        assert_eq!(plain.lines().count(), 2, "{plain}");
+
+        // With the signed document in it, that document is checked.
+        let mut view = json!({
+            "view": "agent",
+            "rulesFormat": 3,
+            "revision": 1,
+            "programs": [],
+            "baseline": [],
+        });
+        view["signedRules"] = fixture("rules-v3.json");
+        let (plain, valid) = validation_output("stdin", &view.to_string(), false);
+        assert!(valid, "{plain}");
+        assert_eq!(
+            plain,
+            "stdin: valid Rules v3 (the signed rules in the agent view (`signedRules`); enabled: Pump.fun)\n"
+        );
+        view["signedRules"]["programs"][0]["enabled"] = json!("yes");
+        let (plain, valid) = validation_output("stdin", &view.to_string(), false);
+        assert!(!valid);
+        assert!(
+            plain.starts_with("stdin: 1 error in the signed rules of the agent view\n"),
+            "{plain}"
+        );
+        assert!(plain.contains("signedRules.programs[0].enabled"), "{plain}");
+    }
+
+    const NO_LONGER: &str = "Rules version 2 is no longer supported. Build and sign v3 rules \
+                             in the dashboard (Sandboxes → Rules).";
+
+    #[test]
+    fn a_version_2_file_is_refused_with_one_line() {
+        colored::control::set_override(false);
+        // A version 2 document: programs keyed by id, instruction objects.
+        let text = json!({
+            "version": 2,
+            "programs": { PUMP: { "instructions": [{ "name": "buy" }] } }
         })
         .to_string();
 

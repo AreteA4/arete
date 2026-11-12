@@ -82,13 +82,15 @@ fn stub_api() -> (String, Arc<Mutex<Vec<String>>>) {
                     json!({ "token": "tok-1", "expiresAt": 99999999999u64, "scopes": ["sandbox:invoke"] }),
                 )
             } else if line.contains("/rules ") {
-                // A sandbox still on version 2 rules.
+                // A sandbox still on version 2 rules: the API cannot use
+                // them and says why.
                 (
                     200,
-                    json!({ "version": 2, "requestId": "r-2",
+                    json!({ "view": "agent", "rulesFormat": null, "revision": 2,
+                            "signedRules": null, "programs": [], "transferAllowlist": [],
                             "baseline": [{ "name": "System" }],
-                            "programs": [{ "programId": "P", "name": "pump", "allowed": ["buy"],
-                                           "instructions": [{ "name": "buy", "args": [], "accounts": [] }] }] }),
+                            "unavailable": { "code": "sandbox-rules-unsupported-version",
+                                             "message": "the sandbox's active rules use a format Arete no longer supports" } }),
                 )
             } else if line.contains("/holdings ") {
                 (
@@ -323,6 +325,7 @@ fn an_explicit_profile_decides_whether_a_read_goes_through_a_sandbox() {
 }
 
 const NO_LONGER: &str = "Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).";
+const OLD_FORMAT: &str = "The sandbox's active rules use a format before version 3, which is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).";
 
 #[test]
 fn version_2_rules_from_the_api_are_refused_with_one_line() {
@@ -334,7 +337,7 @@ fn version_2_rules_from_the_api_are_refused_with_one_line() {
     assert_eq!(plain.status.code(), Some(1), "{plain:?}");
     assert!(plain.stdout.is_empty(), "{plain:?}");
     let stderr = String::from_utf8_lossy(&plain.stderr);
-    assert_eq!(stderr.trim(), format!("Error: {NO_LONGER}"), "{stderr}");
+    assert_eq!(stderr.trim(), format!("Error: {OLD_FORMAT}"), "{stderr}");
 
     let shown = a4(
         home.path(),
@@ -345,7 +348,7 @@ fn version_2_rules_from_the_api_are_refused_with_one_line() {
     assert_eq!(shown.status.code(), Some(1), "{shown:?}");
     let shown = json_out(&shown);
     assert_eq!(shown["code"], "sandbox-rules-version-unsupported");
-    assert_eq!(shown["error"], NO_LONGER);
+    assert_eq!(shown["error"], OLD_FORMAT);
     assert_eq!(shown["retryable"], false);
 }
 
@@ -353,11 +356,7 @@ fn version_2_rules_from_the_api_are_refused_with_one_line() {
 fn a_version_2_file_is_refused_with_one_line() {
     let home = tempfile::tempdir().unwrap();
     let file = home.path().join("rules.json");
-    std::fs::write(
-        &file,
-        json!({ "version": 2, "requestId": "r-2", "baseline": [], "programs": [] }).to_string(),
-    )
-    .unwrap();
+    std::fs::write(&file, json!({ "version": 2, "programs": {} }).to_string()).unwrap();
     let path = file.to_str().unwrap();
 
     let plain = a4(

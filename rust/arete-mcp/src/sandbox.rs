@@ -313,8 +313,13 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         "sandbox-instruction-not-allowlisted" | "sandbox-guard-instruction-not-allowlisted" => {
             "That instruction is not allowed for this program. Use one sandbox_rules lists, or ask the owner to allow it."
         }
-        "sandbox-guard-outflow-exceeded" | "sandbox-limit-per-action" | "sandbox-limit-window" => {
-            "Over a cap: use a smaller amount (sandbox_status shows caps and what the window has spent)."
+        "sandbox-guard-outflow-exceeded"
+        | "sandbox-limit-per-action"
+        | "sandbox-limit-window"
+        | "sandbox-limit-program-window"
+        | "sandbox-program-spend-limit"
+        | "sandbox-guard-program-spend-limit" => {
+            "Over a spend limit: use a smaller amount, or wait for the window to pass. sandbox_rules shows each program's `spendLimit`; there are no sandbox-wide caps, and a withdraw is held to its own amount."
         }
         "sandbox-action-not-granted" => {
             "The owner has not granted this agent that action (sandbox_status lists the granted ones). Only the owner can grant it, in the dashboard."
@@ -1405,13 +1410,15 @@ impl SandboxClient {
         Ok(body)
     }
 
-    /// The rules as this agent sees them. Rules in a format before version
-    /// 3 are refused (`sandbox-rules-version-unsupported`) with one line.
+    /// The rules as this agent sees them (the agent's view, with the signed
+    /// document as `signedRules`). Active rules in a format before version
+    /// 3 are refused (`sandbox-rules-version-unsupported`) with one line;
+    /// the view's revision number never counts as a format.
     pub async fn rules(&self) -> Result<Value, SandboxRefusal> {
         let body = self
             .call(reqwest::Method::GET, "/rules", None, None)
             .await?;
-        match rules::unsupported_version(rules::find_document(&body)) {
+        match rules::unsupported_answer(&body) {
             Some(message) => Err(SandboxRefusal::local(
                 rules::UNSUPPORTED_VERSION_CODE,
                 message,
