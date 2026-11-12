@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## [0.55.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.54.1...a4-cli-v0.55.0) (2026-11-12)
+
+
+### Features
+
+* **cli,mcp:** read programs and live views through a sandbox ([3ce731f](https://github.com/AreteA4/arete/commit/3ce731fb1a35580b185ffb035758d39fe1b1e7cc))
+* **cli,mcp:** read programs and live views through a sandbox ([4a27d81](https://github.com/AreteA4/arete/commit/4a27d81911f40d636a30c7d9287298b53d969561))
+* **cli:** install the agent skills an account's command groups cover ([ffa44be](https://github.com/AreteA4/arete/commit/ffa44be64b8862ca1478e08bf61390786d5e3277))
+* **cli:** install the agent skills an account's command groups cover ([eb93efb](https://github.com/AreteA4/arete/commit/eb93efb8a26bbb02c2b39d0ddbf94f86321aaf00))
+* **mcp:** choose a sandbox from the agent's grants ([10eb761](https://github.com/AreteA4/arete/commit/10eb761493c73c11cdbe010df7969f3492ee2528))
+
+
+### Bug Fixes
+
+* **cli,mcp:** follow a sandbox choice made elsewhere, and the selected profile ([43c89cb](https://github.com/AreteA4/arete/commit/43c89cbf3d29c30fc33f2dcbd97a305de3cde168))
+* **cli,mcp:** honour a connect key and keep --sandbox where it is needed ([005e933](https://github.com/AreteA4/arete/commit/005e933569cc46507742452c3ca82b5f4105cfda))
+* **cli,mcp:** keep sandbox read refusals and choices intact ([3840bd8](https://github.com/AreteA4/arete/commit/3840bd866068bc2130e0af6134e0312249ac3898))
+* **cli,mcp:** read through a sandbox when the API key is bound to one ([9e2dfe3](https://github.com/AreteA4/arete/commit/9e2dfe37f1bfab1a0e771b34c34059eaaacece35))
+* **cli,mcp:** report a sandbox's refusal wherever a stream ends ([9b3b1bf](https://github.com/AreteA4/arete/commit/9b3b1bf67e846ec38fa4f24604021d044e3bb78f))
+* **cli:** look up the account's groups once for the sandbox reads footer ([2467ddc](https://github.com/AreteA4/arete/commit/2467ddc93d99ceb45965dbe84500e8f65e6bac62))
+* **cli:** pick skills for the profile --profile selects ([851e1a8](https://github.com/AreteA4/arete/commit/851e1a86bca065d21d86f2004a74792b23ebf7cd))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.54.1 to 0.55.0
+    * arete-mcp bumped from 0.54.1 to 0.55.0
+
 ## [0.54.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.54.0...a4-cli-v0.54.1) (2026-11-10)
 
 
