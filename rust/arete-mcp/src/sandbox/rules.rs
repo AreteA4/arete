@@ -21,6 +21,10 @@
 //! [`validate`] checks a document locally, before the owner signs it. The
 //! Arete API checks it again: passing here does not mean the API will accept
 //! every program (it must also be one the registry supports).
+//!
+//! Version 3 is the only format. An earlier document, from a file or from
+//! the API, is refused with one line ([`unsupported_version`]) rather than
+//! checked field by field.
 
 use std::collections::HashSet;
 
@@ -28,6 +32,22 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 
 pub const RULES_VERSION: u64 = 3;
+
+/// The refusal code for rules in a format before version 3.
+pub const UNSUPPORTED_VERSION_CODE: &str = "sandbox-rules-version-unsupported";
+
+/// The one-line refusal for a rules document in a format before version 3,
+/// or `None` for any other document (version 3, a version this check does
+/// not know, or none at all: [`validate`] reports those).
+pub fn unsupported_version(document: &Value) -> Option<String> {
+    let version = document.get("version")?.as_u64()?;
+    (version < RULES_VERSION).then(|| {
+        format!(
+            "Rules version {version} is no longer supported. Build and sign v3 rules in the \
+             dashboard (Sandboxes → Rules)."
+        )
+    })
+}
 
 const ROOT_KEYS: &[&str] = &["version", "programs", "transferAllowlist"];
 const PROGRAM_KEYS: &[&str] = &["programId", "name", "enabled", "instructions", "spendLimit"];
@@ -140,16 +160,13 @@ pub fn validate(document: &Value) -> RulesReport {
         check.error("", "the rules must be a JSON object");
         return finish(check, enabled_programs);
     };
+    if let Some(message) = unsupported_version(document) {
+        check.error("version", message);
+        return finish(check, enabled_programs);
+    }
 
     match root.get("version") {
         Some(version) if version.as_u64() == Some(RULES_VERSION) => {}
-        Some(version) if matches!(version.as_u64(), Some(1 | 2)) => check.error(
-            "version",
-            format!(
-                "version {version} is an earlier rules format; rebuild the rules as version 3 \
-                 (programs with toggles and optional spend limits, plus transferAllowlist)"
-            ),
-        ),
         Some(version) => check.error("version", format!("must be {RULES_VERSION}, not {version}")),
         None => check.error("version", format!("missing; must be {RULES_VERSION}")),
     }
@@ -388,15 +405,47 @@ mod tests {
         assert!(report.valid, "{report:?}");
     }
 
+    const NO_LONGER: &str = "Rules version 2 is no longer supported. Build and sign v3 rules \
+                             in the dashboard (Sandboxes → Rules).";
+
     #[test]
-    fn earlier_versions_are_named_as_such() {
-        let mut document = valid();
-        document["version"] = json!(2);
+    fn a_version_2_document_is_refused_with_one_line() {
+        // The shape version 2 used: instruction objects, baseline, requestId.
+        let document = json!({
+            "version": 2,
+            "requestId": "req-1",
+            "baseline": [{ "name": "System" }],
+            "programs": [{
+                "programId": PUMP, "name": "pump", "allowed": ["buy"],
+                "instructions": [{ "name": "buy", "args": [], "accounts": [] }]
+            }]
+        });
+        assert_eq!(unsupported_version(&document).as_deref(), Some(NO_LONGER));
         let report = validate(&document);
         assert!(!report.valid);
-        assert!(report.errors[0].message.contains("earlier rules format"));
-        document["version"] = json!("3");
+        assert!(report.warnings.is_empty(), "{report:?}");
+        assert_eq!(
+            report.errors,
+            vec![RulesIssue {
+                path: "version".into(),
+                message: NO_LONGER.into()
+            }]
+        );
+    }
+
+    #[test]
+    fn other_versions_are_checked_as_usual() {
+        assert_eq!(unsupported_version(&valid()), None);
+        assert_eq!(unsupported_version(&json!({ "programs": [] })), None);
+        let mut document = valid();
+        document["version"] = json!("2");
+        assert_eq!(unsupported_version(&document), None);
         assert_eq!(paths(&validate(&document).errors), vec!["version"]);
+        document["version"] = json!(4);
+        assert_eq!(
+            validate(&document).errors[0].message,
+            "must be 3, not 4".to_string()
+        );
     }
 
     #[test]

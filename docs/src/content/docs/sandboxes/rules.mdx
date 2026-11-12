@@ -17,9 +17,12 @@ extra destinations and sign once with your wallet.
 
 Change the rules the same way: edit, then sign again. An agent whose sandbox
 has no signed rules is refused with `sandbox-rules-missing` or
-`sandbox-rules-unsigned`.
+`sandbox-rules-unsigned`. The CLI and the MCP server only show and check
+rules; they never build or sign them.
 
 ## Rules v3
+
+Version 3 is the only rules format.
 
 ```json
 {
@@ -63,7 +66,7 @@ each window of `windowSeconds`. In the example, the agent may spend at most 1 SO
 through Pump.fun. An action over the limit is refused with what remains in
 the window, so the agent can retry with a smaller amount.
 
-Version 3 has no sandbox-wide per-action or per-window caps; set a spend limit
+There are no sandbox-wide per-action or per-window caps; set a spend limit
 on each program instead.
 
 ### Destinations
@@ -91,9 +94,16 @@ rules.json: valid Rules v3 (enabled: Pump.fun)
 
 Misspelt keys are errors (`spend_limit` would otherwise be signed and
 ignored), as are program ids and addresses that are not base58 Solana
-addresses and limits of zero. Version 1 and 2 documents are reported as the
-earlier format. Passing locally does not guarantee the API accepts every
-program: it must also be one the registry supports.
+addresses and limits of zero. Passing locally does not guarantee the API
+accepts every program: it must also be one the registry supports.
+
+A document in an earlier format is refused with one line, by
+`rules validate` and by `rules show` / `sandbox_rules`
+(`sandbox-rules-version-unsupported`):
+
+```text
+rules.json: Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).
+```
 
 ## How the agent sees the rules
 

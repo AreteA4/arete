@@ -1,5 +1,6 @@
 //! `a4 sandbox list` and `a4 sandbox use` against a stub Arete API: the
-//! listing, a choice saved for the directory, and the reads that follow it.
+//! listing, a choice saved for the directory, and the reads that follow it;
+//! and `a4 sandbox rules` refusing version 2 rules with one line.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -79,6 +80,15 @@ fn stub_api() -> (String, Arc<Mutex<Vec<String>>>) {
                 (
                     200,
                     json!({ "token": "tok-1", "expiresAt": 99999999999u64, "scopes": ["sandbox:invoke"] }),
+                )
+            } else if line.contains("/rules ") {
+                // A sandbox still on version 2 rules.
+                (
+                    200,
+                    json!({ "version": 2, "requestId": "r-2",
+                            "baseline": [{ "name": "System" }],
+                            "programs": [{ "programId": "P", "name": "pump", "allowed": ["buy"],
+                                           "instructions": [{ "name": "buy", "args": [], "accounts": [] }] }] }),
                 )
             } else if line.contains("/holdings ") {
                 (
@@ -310,4 +320,67 @@ fn an_explicit_profile_decides_whether_a_read_goes_through_a_sandbox() {
         "--json",
     ]);
     assert!(!through_sandbox(&requests), "{requests:?}");
+}
+
+const NO_LONGER: &str = "Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).";
+
+#[test]
+fn version_2_rules_from_the_api_are_refused_with_one_line() {
+    let home = tempfile::tempdir().unwrap();
+    let (api, _) = stub_api();
+    let args = ["sandbox", "rules", "show", "--sandbox", "bot"];
+
+    let plain = a4(home.path(), home.path(), &api, &args);
+    assert_eq!(plain.status.code(), Some(1), "{plain:?}");
+    assert!(plain.stdout.is_empty(), "{plain:?}");
+    let stderr = String::from_utf8_lossy(&plain.stderr);
+    assert_eq!(stderr.trim(), format!("Error: {NO_LONGER}"), "{stderr}");
+
+    let shown = a4(
+        home.path(),
+        home.path(),
+        &api,
+        &[&args[..], &["--json"]].concat(),
+    );
+    assert_eq!(shown.status.code(), Some(1), "{shown:?}");
+    let shown = json_out(&shown);
+    assert_eq!(shown["code"], "sandbox-rules-version-unsupported");
+    assert_eq!(shown["error"], NO_LONGER);
+    assert_eq!(shown["retryable"], false);
+}
+
+#[test]
+fn a_version_2_file_is_refused_with_one_line() {
+    let home = tempfile::tempdir().unwrap();
+    let file = home.path().join("rules.json");
+    std::fs::write(
+        &file,
+        json!({ "version": 2, "requestId": "r-2", "baseline": [], "programs": [] }).to_string(),
+    )
+    .unwrap();
+    let path = file.to_str().unwrap();
+
+    let plain = a4(
+        home.path(),
+        home.path(),
+        "http://127.0.0.1:9",
+        &["sandbox", "rules", "validate", path],
+    );
+    assert_eq!(plain.status.code(), Some(1), "{plain:?}");
+    let stdout = String::from_utf8_lossy(&plain.stdout);
+    assert_eq!(stdout, format!("{path}: {NO_LONGER}\n"));
+
+    let shown = a4(
+        home.path(),
+        home.path(),
+        "http://127.0.0.1:9",
+        &["sandbox", "rules", "validate", path, "--json"],
+    );
+    assert_eq!(shown.status.code(), Some(1), "{shown:?}");
+    let report = json_out(&shown);
+    assert_eq!(report["valid"], false);
+    assert_eq!(
+        report["errors"],
+        json!([{ "path": "version", "message": NO_LONGER }])
+    );
 }
