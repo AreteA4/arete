@@ -39,6 +39,10 @@ pub enum SandboxCommands {
     /// What the sandbox wallet holds now: SOL, tokens and program positions
     Holdings(HoldingsArgs),
     /// The sandbox's rules: show them, or check a Rules v3 file
+    ///
+    /// Rules are built and signed in the dashboard (Sandboxes → Rules,
+    /// https://app.arete.run/dashboard/sandboxes); the CLI only shows and
+    /// checks them.
     #[command(subcommand)]
     Rules(RulesCommands),
     /// The programs the sandbox can read: their accounts with `a4 program
@@ -119,6 +123,10 @@ pub enum RulesCommands {
     /// The rules the sandbox runs under, as this agent sees them
     Show(SandboxTarget),
     /// Check a Rules v3 JSON file (`-` for stdin) without sending it anywhere
+    ///
+    /// Rules are built and signed in the dashboard (Sandboxes → Rules,
+    /// https://app.arete.run/dashboard/sandboxes); the CLI only shows and
+    /// checks them. Only version 3 is supported.
     Validate {
         /// The rules file, or `-` for stdin
         file: PathBuf,
@@ -879,15 +887,39 @@ pub fn render_holdings(body: &Value, sandbox_id: &str) -> String {
 fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
     let runtime = runtime()?;
     let (client, _) = client(&runtime, &target, json)?;
-    let body = runtime
-        .block_on(client.rules())
-        .map_err(|refusal| refused(refusal, json))?;
+    let body = match runtime.block_on(client.rules()) {
+        Ok(body) => body,
+        Err(refusal) if refusal.code() == rules::UNSUPPORTED_VERSION_CODE => {
+            return Err(unsupported_rules(&refusal, json))
+        }
+        Err(refusal) => return Err(refused(refusal, json)),
+    };
     if json {
         println!("{body}");
     } else {
         print!("{}", render_rules(&body));
     }
     Ok(())
+}
+
+/// Rules in a format before version 3: the one-line refusal, as JSON on
+/// stdout with --json, else on stderr, and exit 1.
+fn unsupported_rules(refusal: &SandboxRefusal, json: bool) -> anyhow::Error {
+    if json {
+        println!("{}", refusal.to_json());
+    } else {
+        eprintln!("{}", unsupported_rules_line(refusal));
+    }
+    ExitCode(1).into()
+}
+
+pub fn unsupported_rules_line(refusal: &SandboxRefusal) -> String {
+    let shown = refusal.to_json();
+    format!(
+        "{} {}",
+        "Error:".red().bold(),
+        shown["error"].as_str().unwrap_or_default()
+    )
 }
 
 // ---- reads --------------------------------------------------------------------
@@ -983,8 +1015,22 @@ fn rules_validate(file: &std::path::Path, json: bool) -> Result<()> {
                 .with_context(|| format!("Failed to read {}", file.display()))?,
         )
     };
-    let report = match serde_json::from_str::<Value>(&text) {
-        Ok(document) => rules::validate(&document),
+    let (shown, valid) = validation_output(&name, &text, json);
+    print!("{shown}");
+    if valid {
+        Ok(())
+    } else {
+        Err(ExitCode(1).into())
+    }
+}
+
+/// What `rules validate` prints for the rules `text` read from `name`, and
+/// whether they are valid. A document in a format before version 3 gets one
+/// line (one error with --json) instead of a check of every field.
+pub fn validation_output(name: &str, text: &str, json: bool) -> (String, bool) {
+    let document = serde_json::from_str::<Value>(text);
+    let report = match &document {
+        Ok(document) => rules::validate(document),
         Err(error) => rules::RulesReport {
             valid: false,
             errors: vec![rules::RulesIssue {
@@ -994,16 +1040,15 @@ fn rules_validate(file: &std::path::Path, json: bool) -> Result<()> {
             ..Default::default()
         },
     };
-    if json {
-        println!("{}", serde_json::to_string(&report)?);
+    let shown = if json {
+        format!("{}\n", serde_json::to_string(&report).unwrap_or_default())
     } else {
-        print!("{}", render_report(&name, &report));
-    }
-    if report.valid {
-        Ok(())
-    } else {
-        Err(ExitCode(1).into())
-    }
+        match document.as_ref().ok().and_then(rules::unsupported_version) {
+            Some(message) => format!("{name}: {}\n", message.red()),
+            None => render_report(name, &report),
+        }
+    };
+    (shown, report.valid)
 }
 
 /// The human rendering of a validation report.
@@ -1042,8 +1087,9 @@ pub fn render_report(name: &str, report: &rules::RulesReport) -> String {
     out
 }
 
-/// The human rendering of the rules an agent sees: Rules v3 fields when the
-/// API gives them, and the allowed instructions either way.
+/// The human rendering of the rules an agent sees: the programs with their
+/// allowed instructions, the Rules v3 toggles, limits and allowlist when the
+/// API gives them, and the baseline.
 pub fn render_rules(body: &Value) -> String {
     let rules = rules::find_document(body);
     let mut out = match rules["version"].as_u64() {
@@ -1572,10 +1618,10 @@ mod tests {
     }
 
     #[test]
-    fn earlier_agent_rules_still_render() {
+    fn the_agent_view_renders_instructions_and_the_baseline() {
         colored::control::set_override(false);
         let text = render_rules(&json!({
-            "version": 2,
+            "version": 3,
             "programs": [
                 { "programId": PUMP, "name": "pump", "allowed": ["buy"],
                   "instructions": [{ "name": "buy", "args": [], "accounts": [] }] },
@@ -1583,6 +1629,7 @@ mod tests {
             ],
             "baseline": [{ "name": "System" }, { "name": "Associated Token" }]
         }));
+        assert!(text.starts_with("Rules v3\n"), "{text}");
         assert!(text.contains("instructions: buy\n"), "{text}");
         assert!(text.contains("instructions: any\n"), "{text}");
         assert!(
@@ -1590,6 +1637,58 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("Transfers"), "{text}");
+    }
+
+    const NO_LONGER: &str = "Rules version 2 is no longer supported. Build and sign v3 rules \
+                             in the dashboard (Sandboxes → Rules).";
+
+    #[test]
+    fn a_version_2_file_is_refused_with_one_line() {
+        colored::control::set_override(false);
+        // The version 2 shape: instruction objects, baseline, requestId.
+        let text = json!({
+            "version": 2,
+            "requestId": "req-1",
+            "baseline": [{ "name": "System" }],
+            "programs": [{
+                "programId": PUMP, "name": "Pump.fun", "allowed": ["buy"],
+                "instructions": [{ "name": "buy", "args": [], "accounts": [] }]
+            }]
+        })
+        .to_string();
+
+        let (plain, valid) = validation_output("rules.json", &text, false);
+        assert!(!valid);
+        assert_eq!(plain, format!("rules.json: {NO_LONGER}\n"));
+
+        let (shown, valid) = validation_output("rules.json", &text, true);
+        assert!(!valid);
+        assert_eq!(shown.lines().count(), 1, "{shown}");
+        let report: Value = serde_json::from_str(&shown).unwrap();
+        assert_eq!(report["valid"], false);
+        assert_eq!(
+            report["errors"],
+            json!([{ "path": "version", "message": NO_LONGER }])
+        );
+        assert_eq!(report["warnings"], json!([]));
+    }
+
+    #[test]
+    fn version_2_rules_from_the_api_are_refused_with_one_line() {
+        colored::control::set_override(false);
+        let refusal = SandboxRefusal {
+            status: 0,
+            body: json!({
+                "code": rules::UNSUPPORTED_VERSION_CODE,
+                "error": NO_LONGER,
+                "retryable": false,
+            }),
+            kind: arete_mcp::sandbox::CallKind::Read,
+        };
+        assert_eq!(
+            unsupported_rules_line(&refusal),
+            format!("Error: {NO_LONGER}")
+        );
     }
 
     #[test]

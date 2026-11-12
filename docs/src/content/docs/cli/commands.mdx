@@ -1461,6 +1461,10 @@ The filters are applied by `a4` to the pages it reads; a filtered read
 keeps reading (up to 10 pages) until enough actions match. `rules validate`
 exits 1 when the file has errors, and prints the errors and warnings with
 the JSON path of each (`--json`: `{ valid, errors, warnings, enabledPrograms }`).
+Version 3 is the only rules format: an earlier document, in a file or from
+the API (`rules show`), is refused with one line and exits 1. Rules are
+built and signed in the [dashboard](https://app.arete.run/dashboard/sandboxes)
+(Sandboxes → Rules); the CLI only shows and checks them.
 A refusal from the API exits 77 (not granted or not signed in), 75 (rate
 limited) or 1, and with `--json` prints its problem body.
 

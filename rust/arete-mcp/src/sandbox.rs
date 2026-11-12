@@ -335,6 +335,9 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         "sandbox-rules-missing" | "sandbox-rules-unsigned" => {
             "The owner must set or re-sign the sandbox's rules in the dashboard."
         }
+        rules::UNSUPPORTED_VERSION_CODE => {
+            "Only the sandbox's owner can replace the rules, in the dashboard (https://app.arete.run/dashboard/sandboxes, Sandboxes → Rules)."
+        }
         "sandbox-derive-invalid" => {
             "Fix programId or the seeds: each seed is {kind, value} (or {kind: \"bytes\", hex}), at most 15 seeds of at most 32 bytes each."
         }
@@ -1402,8 +1405,19 @@ impl SandboxClient {
         Ok(body)
     }
 
+    /// The rules as this agent sees them. Rules in a format before version
+    /// 3 are refused (`sandbox-rules-version-unsupported`) with one line.
     pub async fn rules(&self) -> Result<Value, SandboxRefusal> {
-        self.call(reqwest::Method::GET, "/rules", None, None).await
+        let body = self
+            .call(reqwest::Method::GET, "/rules", None, None)
+            .await?;
+        match rules::unsupported_version(rules::find_document(&body)) {
+            Some(message) => Err(SandboxRefusal::local(
+                rules::UNSUPPORTED_VERSION_CODE,
+                message,
+            )),
+            None => Ok(body),
+        }
     }
 
     /// This client pinned to the sandbox it resolves to now, and how it

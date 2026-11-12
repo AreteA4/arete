@@ -620,9 +620,7 @@ resolves, the call is refused before any token is minted, with
   choice is checked against the listing; an API without the listing takes
   an id on trust.
 - `sandbox_status()` — wallet address, SOL and token balances (raw
-  amounts), the actions this agent was granted, and, under version 2 rules,
-  caps (lamports and per mint, per action and per window) with what the
-  window has spent. `selection` is `{ sandboxId, source }`: the sandbox the
+  amounts) and the actions this agent was granted. `selection` is `{ sandboxId, source }`: the sandbox the
   call resolved to and why (`argument` when the call named it). Start
   here.
 - `sandbox_rules()` — the allowed programs and, for each, the allowed
@@ -630,7 +628,9 @@ resolves, the call is refused before any token is minted, with
   `fill` (`fixed`, `wallet` or `derived` from the program's spec) can be
   left out of an `invoke`: Arete fills it. `baseline` lists the plumbing
   programs with the instructions each allows at the top level and their
-  accounts (associated token `createIdempotent` needs only `mint`).
+  accounts (associated token `createIdempotent` needs only `mint`). Rules
+  in a format before version 3 are refused with
+  `sandbox-rules-version-unsupported` and one line.
 - `sandbox_derive({ kind: "ata" | "pda", ... })` — a program-derived
   address (`programId`, `seeds`), computed by this server with no network
   call, or an associated token account (`mint`, optional `owner`,
@@ -708,14 +708,14 @@ as well as what it does.
   else the only one named), and later reads go there directly. With several
   named and none chosen, the tool returns the refusal with its `sandboxes`.
 
-**Rules v3.** Under version 3 rules the owner turns each supported program
+**Rules v3.** Version 3 is the only rules format. The owner turns each supported program
 on or off, may narrow its instructions (else the registry's safe set) and
 may set a per-program spend limit (`lamports` over `windowSeconds`). Funds
 may leave the enabled programs only to the owner's wallet, the owner's
 `transferAllowlist` or the sandbox's own accounts, and tokens the sandbox
 bought may always be sold, at a loss too. There are no global per-action or
-per-window caps under version 3. `a4 sandbox rules validate <file>` checks a
-Rules v3 document locally.
+per-window caps. `a4 sandbox rules validate <file>` checks a Rules v3
+document locally.
 
 Actions (an action the owner did not grant is refused before anything is
 sent, with code `sandbox-action-not-granted` and rule `session-grant`):

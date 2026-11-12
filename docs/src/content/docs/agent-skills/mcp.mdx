@@ -407,7 +407,7 @@ returned.
 | `sandbox_list`     |                                                                              | the granted sandboxes (id, name, wallet, cluster, status, actions) and the one in use          |
 | `sandbox_select`   | `sandbox` (id or name) or `clear: true`                                      | chooses the sandbox calls use from now on, saved for this project                              |
 | `sandbox_status`   |                                                                              | the wallet, its balances, the actions this agent may run and which sandbox it is (`selection`) |
-| `sandbox_rules`    |                                                                              | the allowed programs and instructions, and under Rules v3 the toggles, limits and allowlist    |
+| `sandbox_rules`    |                                                                              | the allowed programs and instructions, with the Rules v3 toggles, limits and allowlist         |
 | `sandbox_derive`   | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`             | an address: a PDA computed locally, an ATA under the mint's token program                      |
 | `sandbox_preview`  | `action`, `args`                                                             | a dry run: `pass` and what the wallet would lose, or the refusal                               |
 | `sandbox_invoke`   | `action` (`invoke`, `withdraw`, `swap`), `args`, `idempotencyKey?`           | runs one action: the only tool that moves funds                                                |
