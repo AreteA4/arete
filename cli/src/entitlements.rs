@@ -177,6 +177,16 @@ pub fn account_surface(api_url: Option<&str>, profile: Option<&str>, config: &st
     }
 }
 
+/// The account's surface for the profile `main` already selected, which it
+/// passes on in `ARETE_PROFILE`. Resolving the profile again would let the
+/// project's default (`.arete/auth.toml`) override an explicit `--profile`.
+pub fn selected_account_surface(config: &str) -> Surface {
+    let profile = std::env::var(arete_mcp::credentials::ENV_VAR_PROFILE)
+        .ok()
+        .filter(|profile| !profile.trim().is_empty());
+    account_surface(None, profile.as_deref(), config)
+}
+
 /// The value of a global option in raw arguments (`--name value`,
 /// `--name=value`, `-s value`, `-svalue` or `-s=value`), before any `--`.
 pub fn global_option(args: &[OsString], long: &str, short: Option<&str>) -> Option<String> {

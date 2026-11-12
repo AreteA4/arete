@@ -186,7 +186,7 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     let env = Env::from_process(init::project_root(config_path));
     let config = Path::new(config_path);
     // The skills this account should have, as `a4 init` installs them.
-    let surface = crate::entitlements::account_surface(None, None, config_path);
+    let surface = crate::entitlements::selected_account_surface(config_path);
     let skill_names = skills::skills_for(&surface);
     let mut checks = run_checks(&env, config, &skill_names);
 

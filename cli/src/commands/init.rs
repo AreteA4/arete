@@ -163,7 +163,7 @@ pub fn run(args: InitArgs, config_path: &str, json: bool) -> Result<()> {
     let mut plan = InitPlan::from_args(&args)?;
     let env = Env::from_process(project_root(config_path));
     if plan.skills {
-        plan.surface = crate::entitlements::account_surface(None, None, config_path);
+        plan.surface = crate::entitlements::selected_account_surface(config_path);
     }
     if plan.selection == Selection::Detected && ui::interactive() {
         plan.selection = pick_agents(&detect(&env))?;

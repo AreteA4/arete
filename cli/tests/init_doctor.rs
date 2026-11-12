@@ -871,3 +871,94 @@ fn explicit_agent_list_and_config_path_root() {
     assert_eq!(c["agents.agents-md"]["status"], "ok");
     assert!(!c.contains_key("agents.claude-md"));
 }
+
+/// An API whose `GET /api/auth/me` reports sandbox-only groups for the agent
+/// key and every group for any other key; 200 `[]` for everything else.
+fn spawn_groups_server() -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut stream = stream;
+            let mut buffer = [0u8; 8192];
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buffer[..read]).to_string();
+            let body = if request.starts_with("GET /api/auth/me") {
+                if request.contains("Bearer a4_ak_agent") {
+                    r#"{"accountKind":"agent","commandGroups":["account","sandboxes","registry"]}"#
+                } else {
+                    r#"{"accountKind":"human","commandGroups":["account","sandboxes","streams","stacks","protocols","dev","registry"]}"#
+                }
+            } else {
+                "[]"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    format!("http://{address}")
+}
+
+#[cfg(unix)]
+#[test]
+fn init_installs_the_skills_of_the_selected_profile() {
+    let mut sb = sandbox("empty", true);
+    sb.server = spawn_groups_server();
+    fs::create_dir_all(sb.home.join(".arete")).unwrap();
+    fs::write(
+        sb.home.join(".arete/credentials.toml"),
+        format!(
+            "[profiles.agent.keys]\n\"{0}\" = \"a4_ak_agent\"\n\n[profiles.human.keys]\n\"{0}\" = \"a4_sk_human\"\n",
+            sb.server
+        ),
+    )
+    .unwrap();
+    fs::create_dir_all(sb.root.join(".arete")).unwrap();
+    fs::write(
+        sb.root.join(".arete/auth.toml"),
+        "default_profile = \"agent\"\n",
+    )
+    .unwrap();
+    let skills = |sb: &Sandbox| -> Vec<String> {
+        let args = read(sb, "npx-args.txt");
+        let lines: Vec<&str> = args.lines().collect();
+        let start = lines.iter().position(|line| *line == "--skill").unwrap() + 1;
+        let end = lines.iter().position(|line| *line == "--agent").unwrap();
+        lines[start..end]
+            .iter()
+            .map(|line| line.to_string())
+            .collect()
+    };
+
+    // The project's default profile: the agent's sandbox-only groups.
+    let output = a4(&sb, &["init", "-y", "--json", "--agents", "claude-code"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(skills(&sb), ["arete-sandbox", "arete", "arete-programs"]);
+
+    // An explicit --profile wins over the project's default.
+    let output = a4(
+        &sb,
+        &[
+            "--profile",
+            "human",
+            "init",
+            "-y",
+            "--json",
+            "--agents",
+            "claude-code",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(skills(&sb), ["*"]);
+}
