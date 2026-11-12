@@ -1,0 +1,96 @@
+---
+title: Errors and refusals
+description: The codes a sandbox returns, what each means, and whether the agent should retry.
+---
+
+Every `sandbox_*` error carries `code`, `retryable` and a `hint`, even when
+the API could not be reached (`status: 0`) or something in front of it
+answered with no readable body. A refusal also names the `rule` that refused
+and what triggered it (`program`, `instruction`, `mint`, `attempted`, `cap`,
+`remaining`), and for `sandbox_invoke` the `idempotencyKey`.
+
+## The retry rule
+
+- **`retryable: false`**: the same call fails again. The `hint` says what to
+  change.
+- **`retryable: true` on a read or a preview**: nothing changed. Retry the
+  same call, after `retryAfterSeconds` when present.
+- **`retryable: true` on `sandbox_invoke`**: the action may have run unless
+  the code says the guard refused it. Look it up with `sandbox_action` and the
+  `idempotencyKey` first: if it ran, don't repeat it; if it was refused, retry
+  with a new key; if no action has the key, retry with the same key.
+
+## Choosing a sandbox
+
+A call that can't tell which sandbox it is for is refused before anything is
+sent to a sandbox. The hint names the tools to call: `sandbox_list`, then
+`sandbox_select` (or `a4 sandbox list` and `a4 sandbox use`).
+
+| Code                         | Meaning                                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------------------------- |
+| `sandbox-selection-required` | Several sandboxes are granted and none is chosen; the error lists them                    |
+| `sandbox-none-granted`       | No sandbox has been granted to this agent yet                                             |
+| `sandbox-unknown`            | The `sandbox` argument matches no granted sandbox                                         |
+| `sandbox-paused`             | Every granted sandbox is paused                                                           |
+| `sandbox-not-configured`     | The API can't list grants (an older server): pass a sandbox id, or set `ARETE_SANDBOX_ID` |
+
+## Reads
+
+Refusals of reads through a sandbox (`program_read_account`, `read_view`,
+`connect`, `a4 program account decode`, `a4 get`, `a4 stream`). From MCP they
+are tool errors with `isError: true`; the CLI prints the code and a hint
+naming the matching `a4` command.
+
+| Code                              | Meaning                                                                                                                             |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-program-not-allowlisted` | The program is not in the rules; `programs` lists the ones left out. `sandbox_reads` (or `a4 sandbox reads`) lists what can be read |
+| `sandbox-read-required`           | This API key is bound to a sandbox grant and reads only through a sandbox; `sandboxes` names them. Choose one, or pass it           |
+| `sandbox-read-programs-unknown`   | Arete could not tell which programs the stack decodes, so a sandbox cannot read it. Read the programs' accounts directly            |
+| `sandbox-read-target-unsupported` | A sandbox reads only program accounts and stack views of the programs in its rules                                                  |
+| `sandbox-reads-mainnet-only`      | Sandbox reads cover mainnet only; this sandbox or stack runs on a dev environment                                                   |
+| `sandbox-inactive`                | The sandbox is not active. Only its owner can reactivate it                                                                         |
+
+## Rules
+
+| Code                                                                                 | Meaning                                                                |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
+| `sandbox-program-not-allowlisted`, `sandbox-guard-program-not-allowlisted`           | The program isn't in the rules. Only the owner can add it.             |
+| `sandbox-instruction-not-allowlisted`, `sandbox-guard-instruction-not-allowlisted`   | That instruction isn't allowed for the program.                        |
+| `sandbox-guard-outflow-exceeded`, `sandbox-limit-per-action`, `sandbox-limit-window` | Over a limit. Use a smaller amount; `remaining` says how much is left. |
+| `sandbox-swap-venue-not-allowed`, `sandbox-swap-no-venues`                           | No allowed venue can fill the swap                                     |
+| `sandbox-swap-slippage-too-high`                                                     | `slippageBps` is above what the rules allow                            |
+| `sandbox-rules-missing`, `sandbox-rules-unsigned`                                    | The owner must set or re-sign the rules                                |
+| `sandbox-paused`                                                                     | The sandbox is paused. Only the owner can resume it.                   |
+
+## The request
+
+| Code                                                      | Meaning                                                                                                                       |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-intent-invalid`, `sandbox-intent-foreign-signer` | Names, args or accounts don't match `sandbox_rules`, or a signer other than the wallet; `missingAccounts` lists what's needed |
+| `sandbox-guard-trial-failed`                              | The transaction fails when run. Check accounts and amounts; logs are in the details.                                          |
+| `sandbox-guard-insufficient-funds`                        | The wallet can't pay: `balanceLamports`, and `shortfallLamports` when known                                                   |
+| `sandbox-derive-invalid`                                  | Bad `programId` or seeds: at most 15 seeds of at most 32 bytes each                                                           |
+| `sandbox-duplicate-action`                                | The idempotency key already ran. Look it up with `sandbox_action`.                                                            |
+| `sandbox-request-invalid`                                 | The API rejected the request's shape                                                                                          |
+
+## Access
+
+| Code                                                                            | Meaning                                                                                 |
+| ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `sandbox-action-not-granted`                                                    | The owner hasn't granted this agent that action                                         |
+| `sandbox-grant-missing`, `sandbox-consent-unsigned`                             | The owner hasn't granted this agent access, or must grant it again                      |
+| `sandbox-agent-key-required`                                                    | Set `ARETE_API_KEY` to the agent account's secret key, or log in as the agent           |
+| `sandbox-session-invalid`, `sandbox-session-revoked`, `sandbox-session-expired` | The sandbox token stopped working and couldn't be renewed; access may have been revoked |
+| `sandbox-unauthorized`, `sandbox-forbidden`, `sandbox-not-found`                | Authentication failed, access is refused, or the sandbox doesn't exist                  |
+
+## Infrastructure
+
+These say nothing about the request itself.
+
+| Code                                                                                                                                 | Meaning                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| `sandbox-api-unreachable`, `sandbox-api-timeout`, `sandbox-api-unavailable`, `sandbox-internal-error`, `sandbox-response-unreadable` | The API, or the way to it, failed. Follow the retry rule.                                        |
+| `sandbox-guard-unavailable`, `sandbox-guard-timeout`, `sandbox-guard-incomplete`, and other `sandbox-guard-*` infrastructure codes   | The guard couldn't check the transaction, so nothing was signed. Retry an action with a new key. |
+| `sandbox-rate-limited`                                                                                                               | Too many requests: wait for `retryAfterSeconds`                                                  |
+| `sandbox-response-too-large`                                                                                                         | Ask for less (a smaller `limit`, no `includeRaw`), or look an action up by key                   |
+| `sandbox-conflict`                                                                                                                   | The request conflicts with the sandbox's current state                                           |

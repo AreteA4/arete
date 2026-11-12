@@ -584,7 +584,9 @@ Without it, a call uses the first of:
 
 1. the sandbox chosen with `sandbox_select` (or `a4 sandbox use`), saved per
    API and project (the server's working directory) in
-   `~/.arete/sandbox-selections.json`, so it survives restarts;
+   `~/.arete/sandbox-selections.json`, so it survives restarts. The file is
+   read on every call, so `a4 sandbox use` beside a running server applies
+   from its next call;
 2. `ARETE_SANDBOX_ID`;
 3. the only `active` sandbox the key has been granted. Paused sandboxes are
    listed but never picked on their own.

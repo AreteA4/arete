@@ -1,6 +1,6 @@
 ---
-title: Sandboxes (alpha)
-description: Give an agent a funded Solana wallet it can trade from, inside rules you sign. What a sandbox enforces, what it does not yet, and how an agent reads its history and holdings.
+title: What is a sandbox?
+description: A sandbox is a financial virtual machine for an AI agent. A funded Solana wallet, rules you sign, a scoped view of the chain and a record of everything the agent did.
 ---
 
 :::caution[Alpha]
@@ -10,192 +10,66 @@ and these docs to change.
 :::
 
 A sandbox is a hosted Solana wallet that an agent can use but never holds the
-key to. You, the owner, create it, fund it, choose which programs it may use
-and sign those rules once. The agent asks Arete to run actions; Arete builds
-each transaction, checks it against your rules, signs it and sends it. The
-agent never sees a private key, a transaction to sign or an RPC URL.
+key to. Think of it as a financial virtual machine: the agent runs inside it,
+can do anything the machine allows, and nothing it doesn't.
 
-**The boundary is the wallet.** Whatever you send into the sandbox is the
-agent's to use within the rules: it may trade it, and it may lose it. The
-rules make sure the agent uses the programs you turned on, in the ways they
-allow, and that funds cannot leave to somewhere you cannot recover them from.
+You, the owner, create the sandbox, fund it, decide which programs it may use
+and sign those rules once. The agent asks Arete to run actions. Arete builds
+each transaction, checks it against your rules, signs it and sends it.
 
-## Set one up
+## The four parts
 
-1. On the [Sandboxes page](https://app.arete.run/dashboard/sandboxes) of the
-   dashboard, create a sandbox and send SOL to its wallet address.
-2. Build its rules: turn on the supported programs the agent may use, set
-   options for each, add any addresses funds may go to, and sign once.
-3. Grant your agent access. The agent uses its own account's API key; it
-   never gets yours.
-4. Run the Arete MCP server with the agent's key:
+| Part        | What it is                                                                                                    |
+| ----------- | ------------------------------------------------------------------------------------------------------------- |
+| **Wallet**  | A Solana wallet Arete holds the key for. You fund it; the agent spends from it.                               |
+| **Rules**   | A document you sign: the programs the agent may use, their instructions, spend limits and where funds may go. |
+| **Reads**   | What the agent can see: the sandbox's state, plus program reads and live views for the programs in its rules. |
+| **History** | Every action the agent asked for, landed or refused, with decoded instructions, events and balance changes.   |
 
-```bash
-export ARETE_API_KEY=<the agent account's secret key>   # or `a4 login` as the agent
-a4 mcp
-```
+## The boundary is the wallet
 
-No sandbox id is needed. The server asks Arete which sandboxes the agent has
-been granted: with exactly one active sandbox, every tool uses it. With
-several, the agent lists them with `sandbox_list` and picks one with
-`sandbox_select`, and the choice is remembered for the project.
+Whatever you send into the sandbox is the agent's to use within the rules: it
+may trade it, and it may lose it. The rules make sure the agent uses only the
+programs you turned on, in the ways they allow, and that funds cannot leave to
+anywhere you cannot recover them from.
 
-The [MCP server](/agent-skills/mcp/) lists the `sandbox_*` tools:
-`sandbox_list` and `sandbox_select` to find and choose a sandbox,
-`sandbox_status`, `sandbox_rules` and `sandbox_derive` to look around,
-`sandbox_preview` for a dry run, `sandbox_invoke` to run an action (the only
-tool that moves funds), `sandbox_action` to look one up, and the read-only
-`sandbox_history` and `sandbox_holdings`.
+The rules do not judge whether a trade is a good one. Price, slippage within
+what you allowed and losses are the agent's to manage. See the
+[security model](/sandboxes/security/) for exactly what is and isn't enforced.
 
-### Which sandbox the agent uses
+## One set of rules for writes and reads
 
-Every `sandbox_*` tool takes an optional `sandbox` argument (a sandbox id,
-or a granted sandbox's name). Without it, a call uses the first of:
+Most agent wallets only guard what an agent can _send_. A sandbox's rules
+also decide what it can _see_. The programs in the rules are the programs the
+agent can call, and also the programs whose accounts it can read and whose
+live views it can follow through Arete. An agent can't act on a program that
+isn't in the sandbox, and it can't read one through Arete either.
 
-1. the sandbox chosen with `sandbox_select` (or `a4 sandbox use`), saved for
-   the project: the directory `a4 mcp` runs in;
-2. `ARETE_SANDBOX_ID`, if set;
-3. the only active sandbox the agent has been granted.
+That keeps an agent focused on the venues you chose, and stops it from
+wandering into protocols you never meant it to touch.
 
-Paused sandboxes are listed but never picked on their own; their actions are
-refused until you resume them. When no sandbox can be chosen, the tool says
-which to call:
+:::note[What applies today]
+Writes are scoped, and so are program reads and live views read through the
+sandbox. General chain reads are not scoped yet; see
+[Read scope](/sandboxes/read-scope/).
+:::
 
-| Code                         | Meaning                                                                            |
-| ---------------------------- | ---------------------------------------------------------------------------------- |
-| `sandbox-none-granted`       | No sandbox has been granted to this agent yet                                      |
-| `sandbox-selection-required` | Several sandboxes are granted and none is chosen; the error lists them             |
-| `sandbox-unknown`            | The `sandbox` argument matches no granted sandbox                                  |
-| `sandbox-paused`             | Every granted sandbox is paused                                                    |
-| `sandbox-not-configured`     | The API cannot list grants (an older server): set `ARETE_SANDBOX_ID` or pass an id |
+## Who does what
 
-## Rules (version 3)
+| You, the owner                                | Your agent                                           |
+| --------------------------------------------- | ---------------------------------------------------- |
+| Create and fund the sandbox                   | Reads its status, rules, holdings and history        |
+| Choose programs, limits and allowed addresses | Previews an action to see whether it passes          |
+| Sign the rules                                | Runs actions: program instructions, swaps, withdraws |
+| Grant agents access and choose their actions  | Corrects a refused request from its `code` and hint  |
+| Pause the sandbox or revoke an agent's access | Never sees a key, a transaction to sign or an RPC    |
 
-The rules builder generates this document for you to sign:
+Owner operations (rules, grants, pause, revoke) happen on the
+[Sandboxes page](https://app.arete.run/dashboard/sandboxes) of the dashboard.
+No agent tool can reach them.
 
-```json
-{
-  "version": 3,
-  "programs": [
-    {
-      "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
-      "name": "Pump.fun",
-      "enabled": true,
-      "instructions": ["buy", "sell"],
-      "spendLimit": { "lamports": "1000000000", "windowSeconds": 86400 }
-    }
-  ],
-  "transferAllowlist": ["<an address you control>"]
-}
-```
+## Next
 
-| Field               | Meaning                                                                                                |
-| ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `programs[]`        | The supported programs, each turned on or off with `enabled`                                           |
-| `instructions`      | Optional. The instructions allowed for that program; left out, the registry's safe set for it          |
-| `spendLimit`        | Optional. The most SOL, in lamports, the sandbox may spend through that program per `windowSeconds`    |
-| `transferAllowlist` | Addresses funds may be sent to besides your own wallet (always allowed) and the sandbox's own accounts |
-
-Check a rules file before you sign it. Nothing is sent anywhere:
-
-```bash
-a4 sandbox rules validate rules.json
-```
-
-```text
-rules.json: valid Rules v3 (enabled: Pump.fun)
-```
-
-Misspelt keys are errors (`spend_limit` would otherwise be signed and
-ignored), as are program ids and addresses that are not base58 Solana
-addresses and limits of zero. Version 1 and 2 documents are reported as the
-earlier format. Passing locally does not guarantee the API accepts every
-program: it must also be one the registry supports.
-
-## What is enforced
-
-- **Only enabled programs and their allowed instructions**, checked in every
-  instruction of the transaction and in the calls those programs make.
-- **Where funds may go.** SOL and tokens may leave the enabled programs only
-  to your wallet, an address on your `transferAllowlist`, or the sandbox's own
-  accounts. A transfer anywhere else is refused.
-- **Per-program spend limits**, when you set them.
-- **Exits are always allowed.** The agent may always sell or exit a token the
-  sandbox bought, at a loss too.
-- **No key handover.** Authority and delegate changes on the sandbox's
-  accounts are refused, and the agent never receives a key or a transaction
-  to sign.
-- **Grants.** Only agents you granted can mint a token for the sandbox, and
-  only for the actions you granted. Revoking a grant stops the agent at its
-  next call.
-- **Every action is recorded**, refusals included, and readable as history.
-
-A refusal names its `code`, the `rule` that refused and what triggered it, so
-an agent can correct the request instead of guessing. Every error also says
-whether the same request may succeed later (`retryable`) and what to do
-(`hint`): a wallet that cannot pay is refused with
-`sandbox-guard-insufficient-funds` and its balance, not as a failure to
-retry.
-
-## What is not enforced yet
-
-- **Trade quality.** The rules decide where funds may go, not whether a trade
-  is a good one. Price, slippage within what you allowed, and losses are the
-  agent's to manage.
-- **Per-token limits.** Purchases are tracked per mint, but there is no limit
-  per token yet. Use per-program spend limits.
-- **Global caps.** Version 3 rules have no sandbox-wide per-action or
-  per-window caps. The per-program spend limit replaces them.
-- **Decoded positions.** Lending and liquidity positions show as labeled raw
-  accounts, not as decoded balances.
-
-## History and holdings
-
-The agent, and you through the CLI, can read every action the sandbox ran and
-what it holds now. Both are read-only.
-
-```bash
-a4 sandbox list                            # the sandboxes granted, and the one in use
-a4 sandbox use <id or name>                # choose one for this directory
-a4 sandbox history                         # newest first, 20 per page
-a4 sandbox history --status landed --since 24h
-a4 sandbox history --program Pump.fun --all --json
-a4 sandbox holdings
-a4 sandbox rules show
-```
-
-```text
-Sandbox 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10  history, newest first
-
-  2026-11-12 10:00:00  landed    Pump.fun.buy  -0.105005 SOL, +1234.5 7xKX…gAsU  5Kt3…6uHq
-      events: TradeEvent ×2
-  2026-11-12 09:58:30  rejected  Pump.fun.sell
-      sandbox-guard-trial-failed
-
-More: a4 sandbox history --cursor eyJpZCI6ImEyIn0
-```
-
-Each action has its time, status, the programs and decoded instructions,
-the Anchor events the programs emitted (decoded against each program's IDL;
-an event that does not decode keeps its bytes and the reason), the SOL and
-token changes, the accounts it touched and, with `--raw` or the
-MCP tool's `includeRaw`, the parsed transaction with its balances before and
-after. Holdings list SOL, each token with `acquiredBySandbox` for tokens the
-sandbox bought, and program positions.
-
-The filters (`--status`, `--program`, `--mint`, `--since`) are applied by
-the client to the pages it reads. A filtered read keeps reading pages until
-enough actions match (up to 10 pages per call), then prints the cursor to
-carry on from.
-
-## Caveats
-
-- **Real funds.** Anything in the sandbox may be traded away. Withdraw what
-  you want to keep.
-- **The rules are yours to get right.** An address on the allowlist can
-  receive any amount. Allow only addresses you control.
-- **Alpha limits.** Few programs are supported at first, requests are rate
-  limited, and the API and rules format may change before general
-  availability.
-- **History detail.** Actions from early in the alpha may show fewer details
-  than newer ones.
+- [Quickstart: your first sandbox](/sandboxes/quickstart/)
+- [How a request flows](/sandboxes/how-it-works/)
+- [Use cases](/sandboxes/use-cases/)

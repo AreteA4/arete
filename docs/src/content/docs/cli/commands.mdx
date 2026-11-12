@@ -97,6 +97,18 @@ Scripts that read inside those pass-through objects should accept both spellings
 
 ## Quick Reference
 
+:::note[What your account sees]
+`a4` lists the commands your account's command groups include. Agent
+accounts get the account, sandbox (`a4 sandbox`) and registry (`a4 explore`,
+`a4 know`, `a4 install`, `a4 sdk`) commands. An account granted sandboxes
+also sees the read commands `a4 get`, `a4 stream` and `a4 program account`,
+which read through a sandbox (see
+[Reading through a sandbox](#reading-through-a-sandbox)). Stacks, protocols
+and dev environments are enabled per account; see
+[Private beta](/private-beta/). A command typed anyway still shows its help,
+and the API decides what runs.
+:::
+
 | Command                                                                       | Description                                                       |
 | ----------------------------------------------------------------------------- | ----------------------------------------------------------------- |
 | `a4 create [name]`                                                            | Scaffold a new app from a template                                |
@@ -158,6 +170,10 @@ Every install route (`install.sh`, `install.ps1`, `npx @usearete/a4 install`) pu
 
 ## Create a New App
 
+:::note[Private beta]
+App templates are part of the private beta. Access is enabled per account; see [Private beta](/private-beta/).
+:::
+
 ### a4 create [name]
 
 Scaffold a new Arete project from a template. This is the fastest way to get started.
@@ -217,15 +233,15 @@ a4 init -y --no-skills --no-mcp  # manifest and AGENTS.md only
 
 **What it writes** (every item is an upsert and reports `created | updated | unchanged | skipped(reason)`):
 
-| Item               | Path                                                 | Notes                                                                                                                                                  |
-| ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Manifest           | `arete.toml`                                         | Created if absent; left untouched if present unless `--force`, which rewrites only `[project]`. Name from `--name` or the directory basename           |
-| Auth profile       | `.arete/auth.toml`                                   | Project scope only. Non-secret default selecting only the restricted `agent` profile; a repository cannot select `human`                               |
-| Agent guidance     | `AGENTS.md`                                          | A managed block between `<!-- BEGIN:arete v2 -->` and `<!-- END:arete -->`; content outside the markers is never touched                               |
-| Claude Code bridge | `CLAUDE.md`                                          | Created as `@AGENTS.md`, or that line is inserted first if the file exists                                                                             |
-| Gemini context     | `.gemini/settings.json`                              | `context.fileName` gains `AGENTS.md` (Gemini CLI only)                                                                                                 |
-| Skills             | per agent, e.g. `.claude/skills/`, `.agents/skills/` | Runs `npx -y skills add AreteA4/skills --skill '*' --agent <ids> -y`. `skipped(npx not found)` without Node; the fix is printed                        |
-| MCP config         | per agent (table below)                              | Two servers: `arete` (stdio, `a4 mcp`) and `arete-docs` (`https://docs.arete.run/mcp`). Only these two keys are set; the rest of the file is preserved |
+| Item               | Path                                                 | Notes                                                                                                                                                                                                                                                        |
+| ------------------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Manifest           | `arete.toml`                                         | Created if absent; left untouched if present unless `--force`, which rewrites only `[project]`. Name from `--name` or the directory basename                                                                                                                 |
+| Auth profile       | `.arete/auth.toml`                                   | Project scope only. Non-secret default selecting only the restricted `agent` profile; a repository cannot select `human`                                                                                                                                     |
+| Agent guidance     | `AGENTS.md`                                          | A managed block between `<!-- BEGIN:arete v2 -->` and `<!-- END:arete -->`; content outside the markers is never touched                                                                                                                                     |
+| Claude Code bridge | `CLAUDE.md`                                          | Created as `@AGENTS.md`, or that line is inserted first if the file exists                                                                                                                                                                                   |
+| Gemini context     | `.gemini/settings.json`                              | `context.fileName` gains `AGENTS.md` (Gemini CLI only)                                                                                                                                                                                                       |
+| Skills             | per agent, e.g. `.claude/skills/`, `.agents/skills/` | Runs `npx -y skills add AreteA4/skills --skill <skills> --agent <ids> -y` with the skills the account's command groups cover (`'*'` when it has every group, no key, or the API can't be reached). `skipped(npx not found)` without Node; the fix is printed |
+| MCP config         | per agent (table below)                              | Two servers: `arete` (stdio, `a4 mcp`) and `arete-docs` (`https://docs.arete.run/mcp`). Only these two keys are set; the rest of the file is preserved                                                                                                       |
 
 **Options:**
 
@@ -1102,6 +1118,10 @@ a4 stream --dev --all --raw | jq -c '{protocol, stack, view, op}'
 
 ## Deployment
 
+:::note[Private beta]
+Deployment and protocol commands are part of the private beta. Access is enabled per account; see [Private beta](/private-beta/).
+:::
+
 ### a4 up \<manifest\>
 
 Deploy the exact composition described by a local StackManifest, an
@@ -1418,7 +1438,8 @@ a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: 
 The commands use, in order: `--sandbox`, the sandbox chosen with
 `a4 sandbox use` in this folder, `ARETE_SANDBOX_ID`, then the only active
 sandbox granted. The choice is saved in your Arete home directory, not in the
-project, and `a4 mcp` started in the same folder uses it too. With several
+project, and `a4 mcp` in the same folder uses it too, from its next call
+even while it is running. With several
 sandboxes and none chosen, a read fails with `sandbox-selection-required`
 and lists them; with none granted, `sandbox-none-granted`.
 
@@ -1642,6 +1663,10 @@ automations receive the environment's events as signed deliveries instead.
 
 ### a4 dev
 
+:::note[Private beta]
+Cloud dev environments are part of the private beta. Access is enabled per account; see [Private beta](/private-beta/).
+:::
+
 Develop against an Arete cloud dev environment: a persistent fork of mainnet
 Arete hosts for your account. `a4 dev up` creates or wakes the project's
 environment, serves it on `127.0.0.1` (RPC and WebSocket, no token needed),
@@ -1699,6 +1724,10 @@ a4 status --json
 ---
 
 ## Stack Management
+
+:::note[Private beta]
+Stack and program authoring commands are part of the private beta, except `a4 program account decode`, which also [reads through a sandbox](#reading-through-a-sandbox). Access is enabled per account; see [Private beta](/private-beta/).
+:::
 
 ### a4 program build \<idl\>
 

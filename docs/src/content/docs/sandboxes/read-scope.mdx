@@ -1,0 +1,97 @@
+---
+title: Read scope
+description: A sandbox's rules decide what an agent can read as well as what it can do. Program reads and live views are the sandbox's read side.
+---
+
+A sandbox is a read sandbox as well as a write sandbox. The programs in its
+rules are the programs the agent can act on, and also the programs it can
+look at. Through Arete, an agent can't act on a program that isn't in the
+sandbox, and it can't read one either.
+
+## Why scope reads
+
+- **Focus.** An agent that can see only the venues you chose reasons about
+  those venues, not everything on chain.
+- **Scoped Arete reads.** Arete's read tools won't show the agent protocols
+  you never meant it to touch. A sandbox does not block the agent's own
+  network access: an agent that can run commands can still read public chain
+  data through other Solana RPC services. The boundary that protects funds is
+  the write side.
+- **One document.** You decide what the agent may touch once, in the rules
+  you sign. You don't keep a separate read list in step with it.
+
+## The read surface
+
+| Read                                            | What it gives the agent                                                                         |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Sandbox reads                                   | The wallet's status, rules, holdings and history                                                |
+| [Program Reads](/using-programs/program-reads/) | Typed accounts of a program, decoded with the exact release of its schema                       |
+| [Live views](/using-stacks/connect/)            | Application-shaped data that stays current as chain activity arrives: prices, positions, rounds |
+| [Chain reads](/using-programs/chain-reads/)     | General Solana state: balances, token accounts, transactions                                    |
+
+Read through a sandbox, program reads and live views are limited to the
+programs its rules enable. Chain reads are not scoped yet.
+
+## Reading through a sandbox
+
+Find the sandbox, see what it can read, then read through it:
+
+```bash
+a4 sandbox list                                           # granted sandboxes; * marks the one in use
+a4 sandbox use Treasury                                   # choose one (id or name) for this folder
+a4 sandbox reads                                          # the programs it can read
+a4 program account decode <address> --sandbox Treasury    # an account of a program in its rules
+a4 get OreRound/latest --stack ore --sandbox Treasury     # a stack's view, once
+a4 stream OreRound/latest --stack ore --sandbox Treasury  # a stack's view, live
+```
+
+From the MCP server, `sandbox_reads` lists the programs, and
+`program_read_account`, `read_view` and `connect` take an optional `sandbox`
+(an id or a name from `sandbox_list`).
+
+- `sandbox_reads` and `a4 sandbox reads` list exactly the programs the
+  sandbox's owner-signed rules enable.
+- The read session is minted through the sandbox, not with the agent's API
+  key. Only a program in the rules can be read, and a stack opens only when
+  every program it decodes is in them.
+- A refusal is a tool error (`isError: true` from MCP) whose JSON carries
+  `code`, `retryable` and a `hint`. A program outside the rules is
+  `sandbox-program-not-allowlisted`, naming the `programs` the rules leave
+  out; its hint points to `sandbox_reads` (or `a4 sandbox reads`). See
+  [Errors](/sandboxes/errors/#reads).
+- A followed view's session is re-minted about every minute through the same
+  sandbox, so a rules change, pause or revoke reaches an open stream within a
+  minute.
+- Sandbox reads cover mainnet only.
+
+## Which sandbox a read uses
+
+An agent account whose access is sandboxes only always reads through a
+sandbox, even without `sandbox` or `--sandbox`: the one the `sandbox_*` tools
+resolve to (chosen with `sandbox_select` or `a4 sandbox use`, else
+`ARETE_SANDBOX_ID` as a legacy fallback, else the only active sandbox
+granted). When none resolves, the read is refused with the same codes as the
+sandbox tools (`sandbox-selection-required`, `sandbox-none-granted`,
+`sandbox-unknown`, `sandbox-paused`), and it never falls back to the account's
+own key.
+
+An account with wider access reads with its own key unless it names a
+sandbox, except when the owner bound its API key to a sandbox grant. The API
+then refuses the key's own read with `sandbox-read-required` and names the
+sandboxes. The read is retried through the sandbox chosen with
+`sandbox_select` or `a4 sandbox use` (else `ARETE_SANDBOX_ID`, else the only
+sandbox the refusal names), and later MCP reads in the session go through it
+directly. With several named and none chosen, the read fails with that code
+and lists them: choose one, or pass `sandbox` / `--sandbox`.
+
+## What applies today
+
+| Read                         | Through a sandbox                        | Not yet                          |
+| ---------------------------- | ---------------------------------------- | -------------------------------- |
+| Sandbox reads                | Scoped to the sandbox; need a grant      |                                  |
+| Program reads and live views | Limited to the programs the rules enable |                                  |
+| Chain reads                  | Through the agent account's own access   | Limited to what the rules enable |
+
+See [Connect your agent](/sandboxes/connect-agent/), the
+[MCP reference](/agent-skills/mcp/#reading-through-a-sandbox) and the
+[CLI reference](/cli/commands/#reading-through-a-sandbox).

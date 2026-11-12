@@ -1,0 +1,49 @@
+---
+title: Create, fund and withdraw
+description: Create a sandbox, put funds into its wallet, pause it, and get funds back out.
+---
+
+## Create
+
+Create a sandbox on the
+[Sandboxes page](https://app.arete.run/dashboard/sandboxes) of the
+dashboard. It gets a name, an id (a UUID) and a Solana wallet address. The
+address is where funds go. An agent you grant it to finds it by name or id
+with `sandbox_list`; you don't need to pass it the id.
+
+Sandboxes are available per account during the alpha.
+
+## Fund
+
+Send SOL, or tokens, to the sandbox's wallet address from any wallet. Fund
+only what the agent's job needs: the wallet is the boundary, and anything in
+it may be traded away.
+
+Your own wallet is always an allowed destination in the rules, so funds can
+always come back to you.
+
+The agent sees the balance with `sandbox_status`, and holdings in detail with
+`sandbox_holdings` or `a4 sandbox holdings`. A request the wallet cannot pay
+for is refused with `sandbox-guard-insufficient-funds`, the wallet's balance
+and, when known, the shortfall.
+
+## Pause
+
+Pausing a sandbox stops every action until you resume it. Agents see
+`sandbox-paused`; only the owner can resume.
+
+## Withdraw
+
+The `withdraw` action sends SOL to your wallet, the only destination a
+withdraw can have:
+
+```json
+{ "action": "withdraw", "args": { "lamports": "500000000" } }
+```
+
+An agent you granted `withdraw` can run it, and preview it first like any
+other action. Because the destination is fixed, granting `withdraw` lets an
+agent return funds to you but never send them anywhere else.
+
+Tokens the sandbox holds can be sold back to SOL by the agent at any time:
+exits are always allowed.

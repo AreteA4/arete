@@ -8,6 +8,10 @@ description: Per-editor file locations, agent flags, verification, and updating 
 import { Tabs, TabItem } from "@astrojs/starlight/components";
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
+:::note[Private beta]
+Most of these skills are for private beta features. For a sandbox, see [the sandbox skill](/sandboxes/skill/). Access is enabled per account; see [Private beta](/private-beta/).
+:::
+
 Reference for installing Arete agent skills manually. For an overview of how skills, the CLI, and agent.md fit together, see [Agent Skills](/agent-skills/overview/).
 
 The preferred route is `a4 init`, which installs the skills for the coding agent running it and any agent configured in the project folder (and writes `arete.toml`, `AGENTS.md`, and MCP config at the same time):
@@ -42,6 +46,7 @@ Files are created in `.agents/skills/`:
 
 ```
 .agents/skills/
+├── arete-sandbox/SKILL.md
 ├── arete/SKILL.md
 ├── arete-streams/SKILL.md
 ├── arete-programs/SKILL.md
@@ -65,6 +70,7 @@ Files are created in `.claude/skills/`:
 
 ```
 .claude/skills/
+├── arete-sandbox/SKILL.md
 ├── arete/SKILL.md
 ├── arete-streams/SKILL.md
 ├── arete-programs/SKILL.md
@@ -86,6 +92,7 @@ Files are created in `.windsurf/skills/`:
 
 ```
 .windsurf/skills/
+├── arete-sandbox/SKILL.md
 ├── arete/SKILL.md
 ├── arete-streams/SKILL.md
 ├── arete-programs/SKILL.md

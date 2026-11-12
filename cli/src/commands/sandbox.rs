@@ -162,7 +162,7 @@ pub fn read_sandbox(
 /// sandbox without --sandbox: the account's groups grant `sandboxes` and
 /// none of them.
 fn reads_through_sandbox(usual: &[arete_mcp::entitlements::Group], config: &str) -> bool {
-    let surface = crate::entitlements::account_surface(None, None, config);
+    let surface = crate::entitlements::selected_account_surface(config);
     sandbox_only(&surface, usual)
 }
 
@@ -903,7 +903,7 @@ fn reads_show(target: SandboxTarget, config: &str, json: bool) -> Result<()> {
         println!("{body}");
     } else {
         // One lookup of the account's groups serves both commands.
-        let surface = crate::entitlements::account_surface(None, None, config);
+        let surface = crate::entitlements::selected_account_surface(config);
         let implicit = Implicit {
             account: sandbox_only(&surface, &[Group::Stacks, Group::Streams]),
             stack: sandbox_only(&surface, &[Group::Streams]),

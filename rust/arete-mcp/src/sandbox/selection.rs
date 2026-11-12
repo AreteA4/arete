@@ -263,6 +263,32 @@ impl SelectionStore {
             .unwrap_or_default()
     }
 
+    /// The choices file as it is: an empty one when there is no file yet,
+    /// an error when it exists but cannot be read or parsed.
+    fn try_read(&self) -> Result<SavedFile, String> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => serde_json::from_str(&text)
+                .map_err(|error| format!("{} is not valid: {error}", self.path.display())),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SavedFile::default()),
+            Err(error) => Err(format!("cannot read {}: {error}", self.path.display())),
+        }
+    }
+
+    /// The sandbox chosen for this project and `api`; `Ok(None)` when none
+    /// is saved, and an error when the file cannot be read, so a caller can
+    /// tell "no choice" from "cannot tell".
+    pub fn try_load(&self, api: &str) -> Result<Option<String>, String> {
+        let project = self.project_key();
+        Ok(self
+            .try_read()?
+            .selections
+            .into_iter()
+            .rev()
+            .find(|choice| choice.api == api && choice.project == project)
+            .map(|choice| choice.sandbox_id)
+            .filter(|id| is_sandbox_id(id)))
+    }
+
     /// The sandbox chosen for this project and `api`.
     pub fn load(&self, api: &str) -> Option<String> {
         let project = self.project_key();

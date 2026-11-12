@@ -3,6 +3,12 @@ title: Program Read
 description: Fetch typed program accounts through an exact, release-pinned decoder.
 ---
 
+:::note[In a sandbox]
+Program reads are a sandbox's read side. Read through a sandbox
+(`--sandbox`, or the MCP `sandbox` argument), they are limited to the
+programs its rules enable; see [Read scope](/sandboxes/read-scope/).
+:::
+
 Program Read is how you look up a program's on-chain accounts and get them back
 as typed data instead of raw bytes. It is attached to one published program
 release. The generated SDK already knows the exact program identity, the account

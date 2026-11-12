@@ -5,11 +5,15 @@ description: How your agent, the a4 CLI, skills, the catalog, generated SDKs, an
 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
-Arete gives agents tools to author and exercise protocols, develop against
-cloud mainnet forks, and integrate generated clients. Programs and live views
-supply the instructions and data those workflows need. This page explains
-setup and the supporting skills; [Protocols for agents](/agent-skills/protocols/)
-covers wallet actions and execution.
+:::note[Private beta]
+This page covers the full set of Arete agent skills and workflows. For a sandbox, start with [Connect your agent](/sandboxes/connect-agent/) and [the sandbox skill](/sandboxes/skill/). Access is enabled per account; see [Private beta](/private-beta/).
+:::
+
+Arete gives agents a [sandbox](/sandboxes/overview/) to act from, and the
+tools to read the chain around it: program reads, live views and the catalog.
+This page explains setup and the supporting skills;
+[Connect your agent](/sandboxes/connect-agent/) covers pointing an agent at a
+sandbox.
 
 ## Start with one URL
 
@@ -28,18 +32,19 @@ CLI's current output guide the agent.
 
 ## The agent workflow
 
-For a new protocol: define the steps and lifecycle, run `a4 dev up`, test
-with dev wallets, and connect the app to its generated client. Production
-deployment is a separate authorized action. For an existing protocol: search
-listings, inspect the descriptor, install its client, and integrate its actions.
+In a sandbox: read `sandbox_status` and `sandbox_rules`, preview each action,
+run it, and follow refusals' hints. Around it: discover programs and live
+views from intent, and read them through MCP or the CLI.
 
-[Author a protocol](/using-stacks/quickstart/) ·
-[Integrate a protocol](/integrating-protocols/overview/) ·
-[Use MCP protocol tools](/agent-skills/protocols/)
+[Connect your agent](/sandboxes/connect-agent/) ·
+[Actions](/sandboxes/actions/) ·
+[Read scope](/sandboxes/read-scope/)
+
+In [private beta](/private-beta/), agents can also author and exercise
+protocols in cloud dev environments and integrate generated clients.
 
 You bring the goals and the authority to approve things. The agent handles
-discovery, exact schema lookup, dependency generation, and the repetitive
-integration work.
+discovery, exact schema lookup and the repetitive work.
 
 ## Manual setup
 
@@ -62,19 +67,20 @@ a4 doctor --json
 It is safe to run again. If doctor reports configuration that has drifted and
 can be repaired, run `a4 doctor --fix`.
 
-## The six skills
+## The skills
 
 A skill is a set of instructions your agent loads when a task calls for it.
-Arete installs six:
+`a4 init` installs the ones your account's command groups cover:
 
-| Skill                   | When the agent uses it                                                               |
-| ----------------------- | ------------------------------------------------------------------------------------ |
-| `arete`                 | Setup, capability discovery, exact descriptors, and project dependencies             |
-| `arete-streams`         | Live views, point-in-time view reads, filtering, subscriptions, and stream debugging |
-| `arete-programs`        | Program accounts, PDAs, instruction building, operations, transactions, and safety   |
-| `arete-protocols`       | Authoring protocols, developing them in `a4 dev`, deploying them, and calling them   |
-| `arete-stack-authoring` | Designing custom application read models and compiling portable artifacts            |
-| `arete-deploy`          | Publication and permission-aware hosted deployment operations                        |
+| Skill                   | Group             | When the agent uses it                                                               |
+| ----------------------- | ----------------- | ------------------------------------------------------------------------------------ |
+| `arete-sandbox`         | sandboxes         | Acting from a sandbox wallet: status, rules, preview, invoke, refusals and history   |
+| `arete`                 | registry          | Setup, capability discovery, exact descriptors, and project dependencies             |
+| `arete-programs`        | registry          | Program accounts, PDAs, instruction building, operations, transactions, and safety   |
+| `arete-streams`         | streams           | Live views, point-in-time view reads, filtering, subscriptions, and stream debugging |
+| `arete-protocols`       | protocols, dev    | Authoring protocols, developing them in `a4 dev`, deploying them, and calling them   |
+| `arete-stack-authoring` | stacks            | Designing custom application read models and compiling portable artifacts            |
+| `arete-deploy`          | stacks, protocols | Publication and permission-aware hosted deployment operations                        |
 
 Skills teach the agent how to work. They don't hard-code any program's schema,
 so the agent still has to inspect the current descriptor and the generated

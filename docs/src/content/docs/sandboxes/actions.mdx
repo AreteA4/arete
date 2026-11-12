@@ -1,0 +1,113 @@
+---
+title: Actions
+description: The three actions an agent can run in a sandbox (invoke, swap and withdraw), how to preview them, and how to run each exactly once.
+---
+
+An agent changes a sandbox's wallet through exactly one tool,
+`sandbox_invoke`, with one of three actions. Each needs a
+[grant](/sandboxes/agents/#grants), and each can be previewed first with
+`sandbox_preview`, which takes the same arguments.
+
+The loop is: **discover → preview → invoke.**
+
+1. `sandbox_status` and `sandbox_rules`: what the wallet holds, which actions
+   this agent holds, and which programs and instructions are allowed.
+2. `sandbox_derive`, when the action needs an address: a PDA (computed
+   locally, with no network call) or an associated token account.
+3. `sandbox_preview`: a dry run. Returns `pass` with what the wallet would
+   lose and the transaction it built, or the refusal.
+4. `sandbox_invoke`: runs it.
+
+Pass u64 amounts as decimal strings.
+
+## invoke
+
+Named instructions of the programs your rules enable, encoded from each
+program's IDL. One to eight instructions per action, named exactly as
+`sandbox_rules` lists them. The sandbox wallet is the only signer.
+
+```json
+{
+  "action": "invoke",
+  "args": {
+    "instructions": [
+      {
+        "program": "Pump.fun",
+        "instruction": "buy",
+        "args": { "...": "as sandbox_rules lists them" },
+        "accounts": { "...": "only those without a fill" }
+      }
+    ],
+    "computeUnitPriceMicroLamports": "1000"
+  }
+}
+```
+
+| Argument                        | Meaning                                                                        |
+| ------------------------------- | ------------------------------------------------------------------------------ |
+| `instructions[]`                | `{ program, instruction, args?, accounts?, remainingAccounts? }`               |
+| `remainingAccounts`             | `[{ address, writable? }]`, for instructions that take a variable account list |
+| `computeUnitLimit`              | Optional compute budget                                                        |
+| `computeUnitPriceMicroLamports` | Optional priority fee, per compute unit                                        |
+| `transactionFormat`             | `"v1"` (default) or `"v0"`                                                     |
+
+Accounts with a `fill` in `sandbox_rules` can be left out. A request still
+missing accounts is refused with `sandbox-intent-invalid` and a
+`missingAccounts` list.
+
+## swap
+
+An exact-input token swap through the venues your rules allow.
+
+```json
+{
+  "action": "swap",
+  "args": {
+    "inputMint": "So11111111111111111111111111111111111111112",
+    "outputMint": "<mint>",
+    "amount": "100000000",
+    "slippageBps": 50
+  }
+}
+```
+
+`amount` is in the input mint's smallest unit. Slippage above what the rules
+allow is refused with `sandbox-swap-slippage-too-high`; a swap no allowed
+venue can fill is refused with `sandbox-swap-venue-not-allowed` or
+`sandbox-swap-no-venues`.
+
+## withdraw
+
+SOL to your wallet, the only destination a withdraw can have.
+
+```json
+{ "action": "withdraw", "args": { "lamports": "500000000" } }
+```
+
+## Transaction format
+
+Actions build Solana v1 transactions (SIMD-0385) by default: up to 4096 bytes
+and 64 accounts, no address lookup tables, with the compute budget in the
+message itself. `transactionFormat: "v0"` builds the older format instead (up
+to 1232 bytes). A transaction too large for its format is refused with rule
+`transaction-size`.
+
+## Exactly once
+
+Every `sandbox_invoke` has an idempotency key: the agent's own
+(`idempotencyKey`, 1 to 128 characters) or a generated one, returned on
+success and on error. A key never runs twice.
+
+After a timeout, the action may have run. Look it up first:
+
+1. `sandbox_action` with the `idempotencyKey`.
+2. If it ran, don't repeat it. If it was refused, retry with a new key. If no
+   action has the key, retry with the same key.
+
+## Results
+
+A landed action returns its id, status and signature. Its full record
+(decoded instructions, events, balance changes) is in the
+[history](/sandboxes/history/). A refusal is a tool error with `code`,
+`rule`, what triggered it, `retryable` and a `hint`; see
+[Errors and refusals](/sandboxes/errors/).

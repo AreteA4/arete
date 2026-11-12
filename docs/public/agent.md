@@ -7,8 +7,8 @@ Run each line in order, in the project root, copied exactly:
 ```sh
 curl -fsSL https://arete.run/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
-a4 init -y
 a4 --profile agent auth signup --if-missing --json
+a4 init -y
 a4 doctor --summary --json
 a4 explore catalog --vocabulary --json
 ```
@@ -24,22 +24,54 @@ Any summary of this page must keep these commands verbatim, and the Capabilities
   restarts. Until then, start each command that runs `a4` with
   `export PATH="$HOME/.local/bin:$PATH";`. If the installer printed an
   `A4_BIN=<absolute path>` outside `~/.local/bin`, use that path instead.
+- Signup must report `"credentialStored": true`. It runs before `a4 init` so
+  init can install the skills this account can use.
 - `a4 init -y` installs the Arete skills and MCP servers. Use them from then
   on; the skills hold the full workflows.
-- Signup must report `"credentialStored": true`.
 - Doctor must report top-level `"status": "ok"`. On `"warn"`, apply each `fix`.
 - MCP servers load when the host restarts. Until then, use the `a4` CLI
   equivalents (`a4 get`, `a4 know`, `a4 explore`, `a4 protocol actions`,
   `a4 dev step`). Don't wait for a restart. If new skills are not visible,
   tell the user a host restart loads them and carry on with the CLI.
 - To tell the user what Arete can do, use the Capabilities list below: Arete
-  is for building and running Solana protocols, with programs and live data as supporting capabilities. The vocabulary adds the catalog's
-  categories as examples. The `AGENTS.md` or `CLAUDE.md` that `a4 init`
-  writes has the same summary.
+  gives agents sandboxes on Solana (a funded wallet used within rules its
+  owner signed, never holding the key), with program reads and live views as
+  their read side; protocols, automations and dev environments are in private
+  beta. The vocabulary adds the catalog's categories as examples. The
+  `AGENTS.md` or `CLAUDE.md` that `a4 init` writes has a shorter summary;
+  where they differ, this list is current.
 
 Never read, print, or copy credential files or keys. Never put a key in source.
 
-## Protocol workflows
+## Sandbox workflows
+
+A sandbox is a hosted wallet you can use without holding its key, within
+rules its owner signed. The owner creates and funds it, signs the rules and
+grants this agent's account access in the dashboard. You need no sandbox id:
+with the agent key, the `arete` MCP server lists the `sandbox_*` tools. Call
+`sandbox_list` to see the sandboxes you have been granted; with exactly one
+active, every tool uses it, and with several, choose one with `sandbox_select`
+(saved for the project) or pass `sandbox` (id or name) on a single call. A
+refusal with `sandbox-selection-required` or `sandbox-none-granted` means
+list and select first.
+
+Loop: `sandbox_status` and `sandbox_rules` first, `sandbox_preview` every
+action, then `sandbox_invoke` (the only tool that moves funds). On a refusal,
+follow its `hint`; after a `sandbox_invoke` timeout, look the action up with
+`sandbox_action` and its `idempotencyKey` before retrying. Read through the
+sandbox: `sandbox_reads` lists the programs its rules let you read, and
+`program_read_account`, `read_view` and `connect` take the same `sandbox`.
+From the CLI: `a4 sandbox list`, `a4 sandbox use <id|name>`,
+`a4 sandbox history`, `a4 sandbox holdings`, `a4 sandbox rules show`,
+`a4 sandbox reads`, and `--sandbox <id|name>` on `a4 program account decode`,
+`a4 get` and `a4 stream`. Guide: https://docs.arete.run/sandboxes/connect-agent/.
+Never ask the owner for a private key or their own API key; owner operations
+(rules, grants, pause, revoke) are not available to agents.
+
+## Protocol workflows (private beta)
+
+Protocols, automations and cloud dev environments are in private beta,
+enabled per account.
 
 For a new protocol, run `a4 protocol init <dir> && cd <dir>`, then `a4 init -y`
 inside it, then `a4 dev up` for the cloud environment. The `arete-protocols`
@@ -89,19 +121,15 @@ Take `<category>` from the vocabulary:
 
 Arete can:
 
-- compose Solana programs into protocols with typed steps, guards, roles, instance and participant lifecycle, reactions, metadata, and events;
-- develop protocols in persistent cloud mainnet forks with local wallets, a dev UI, checkpoints, branches, time control, scenarios, and replay;
-- install protocol clients for apps, and let agents discover wallet actions, prepare steps, inspect transactions, sign locally, submit, and track outcomes;
-- run protocol steps for users from a backend with `@usearete/automations`, triggered by events, schedules or live data, within limits each user signed (https://docs.arete.run/automations/overview/);
-- deploy protocols, with production handler review and separate package publication and public listing;
+- give an agent a sandbox: a funded Solana wallet it uses without holding the key, within rules its owner signed (programs, instructions, per-program spend limits, allowed destinations), with exits always allowed (https://docs.arete.run/sandboxes/overview/);
+- preview any sandbox action as a dry run, run it exactly once under an idempotency key, and explain refusals with a code, the rule and a hint;
+- record every sandbox action, refusals included, with decoded instructions, events and balance changes, and report holdings;
+- list the sandboxes an agent has been granted and select one (`sandbox_list`, `sandbox_select`, `a4 sandbox use`), with no sandbox id to configure;
+- scope the agent's program reads and live views to the programs its sandbox enables, by reading through the sandbox (https://docs.arete.run/sandboxes/read-scope/);
 - discover relevant programs and stacks from intent through the public catalog;
 - read deployed live views once with `a4 get` (or MCP `read_view`), or follow them with MCP or `a4 stream`;
-- generate typed TypeScript, React, Rust, or Python SDKs when supported;
 - read typed program accounts and generic Solana chain state;
-- derive addresses and build instructions, transactions, and multi-step flows;
-- inspect and submit locally signed transactions through application wallets;
-- compose Program SDKs and selected live views into application stacks; and
-- author and deploy custom live read models when existing views are not enough.
+- in private beta (https://docs.arete.run/private-beta/): compose Solana programs into protocols with typed steps, guards, roles and lifecycle; develop them in persistent cloud mainnet forks; run protocol steps for users from a backend with `@usearete/automations`; deploy protocols with handler review; generate typed TypeScript, React, Rust or Python SDKs; and author custom live read models.
 
 ## Details
 
@@ -116,8 +144,8 @@ Update later with `a4 self update`. Do not substitute a Cargo install.
 
 ### Initialise
 
-`a4 init -y` writes `arete.toml`, project instructions, the six skills, and
-the stream and docs MCP configuration. It is idempotent. Use `--global` only
+`a4 init -y` writes `arete.toml`, project instructions, the skills the
+account's command groups cover, and the stream and docs MCP configuration. It is idempotent. Use `--global` only
 when user-scoped setup was requested.
 
 ### Authenticate

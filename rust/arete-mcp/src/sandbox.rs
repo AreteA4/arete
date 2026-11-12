@@ -660,6 +660,11 @@ pub struct SandboxClient {
     choice: Arc<Mutex<Option<(String, Source)>>>,
     /// Where a choice is saved; `None` keeps it for the session only.
     store: Option<SelectionStore>,
+    /// Set when a choice (or clearing it) could not be saved: what the
+    /// store held then. The session's choice holds until the store holds
+    /// something else, so a failed save never falls back to an older saved
+    /// sandbox.
+    unsaved: Arc<Mutex<Option<Option<String>>>>,
     /// The last listing of granted sandboxes, reused while fresh.
     grants: Arc<Mutex<Option<CachedGrants>>>,
     /// The last `GET /reads` answer per sandbox id, and when it was read.
@@ -743,6 +748,7 @@ impl SandboxClient {
             tokens: Arc::new(Mutex::new(HashMap::new())),
             choice: Arc::new(Mutex::new(None)),
             store: None,
+            unsaved: Arc::new(Mutex::new(None)),
             grants: Arc::new(Mutex::new(None)),
             reads: Arc::new(Mutex::new(HashMap::new())),
             read_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -864,8 +870,51 @@ impl SandboxClient {
         }
     }
 
+    /// The chosen sandbox. With a store, the saved choice is read on every
+    /// call: it is shared with `a4 sandbox use` and with other servers in
+    /// the project, so a change made there applies here at once instead of
+    /// after a restart. A choice this session could not save holds until
+    /// the store changes from what it held when the save failed, and a
+    /// store that cannot be read keeps the session's choice.
     fn chosen(&self) -> Option<(String, Source)> {
-        self.choice.lock().ok().and_then(|choice| choice.clone())
+        let current = self.choice.lock().ok().and_then(|choice| choice.clone());
+        let Some(store) = &self.store else {
+            return current;
+        };
+        // A file that exists but cannot be read says nothing about the
+        // choice: keep the one this session has rather than fall back to
+        // ARETE_SANDBOX_ID or the only grant, another wallet.
+        let saved = match store.try_load(&self.api_base) {
+            Ok(saved) => saved,
+            Err(error) => {
+                tracing::warn!("could not read the saved sandbox choice: {error}");
+                return current;
+            }
+        };
+        let unsaved = self.unsaved.lock().ok().and_then(|unsaved| unsaved.clone());
+        if let Some(held_then) = unsaved {
+            if saved == held_then {
+                return current;
+            }
+            self.set_unsaved(None);
+        }
+        let chosen = match saved {
+            Some(saved) => match current.clone() {
+                Some((sandbox_id, source)) if sandbox_id == saved => Some((sandbox_id, source)),
+                _ => Some((saved, Source::Saved)),
+            },
+            None => None,
+        };
+        if chosen != current {
+            self.set_choice(chosen.clone());
+        }
+        chosen
+    }
+
+    fn set_unsaved(&self, held_then: Option<Option<String>>) {
+        if let Ok(mut unsaved) = self.unsaved.lock() {
+            *unsaved = held_then;
+        }
     }
 
     fn set_choice(&self, choice: Option<(String, Source)>) {
@@ -1093,8 +1142,12 @@ impl SandboxClient {
         match &self.store {
             None => out["saved"] = json!(false),
             Some(store) => match store.save(&self.api_base, sandbox_id) {
-                Ok(()) => out["saved"] = json!(true),
+                Ok(()) => {
+                    self.set_unsaved(None);
+                    out["saved"] = json!(true)
+                }
                 Err(error) => {
+                    self.set_unsaved(Some(store.load(&self.api_base)));
                     tracing::warn!("could not save the sandbox choice: {error}");
                     out["saved"] = json!(false);
                     out["savedError"] = json!(
@@ -2850,6 +2903,125 @@ pub(crate) mod tests {
                 .to_json()["code"],
             "sandbox-selection-required"
         );
+    }
+
+    #[tokio::test]
+    async fn a_running_server_follows_a_choice_saved_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = || {
+            Some(SelectionStore::at(
+                dir.path().join("selections.json"),
+                "/work/project".into(),
+            ))
+        };
+        let (base, _) = stub(vec![
+            listing(vec![
+                granted(SANDBOX, "Bot", "active"),
+                granted(OTHER, "Treasury", "active"),
+            ]),
+            ("GET", "/api/sandbox/v1/wallet", 200, json!({})),
+        ]);
+        let running = agent(&base).with_store(store());
+        running.select(Some(SANDBOX), false).await.unwrap();
+        assert_eq!(running.chosen(), Some((SANDBOX.into(), Source::Selected)));
+
+        // `a4 sandbox use Treasury` in the same project, while it runs.
+        store()
+            .unwrap()
+            .save(&running.api_base, Some(OTHER))
+            .unwrap();
+        assert_eq!(running.chosen(), Some((OTHER.into(), Source::Saved)));
+        let status = running.status().await.unwrap();
+        assert_eq!(status["selection"]["sandboxId"], OTHER);
+
+        // `a4 sandbox use --clear`: no choice here either.
+        store().unwrap().save(&running.api_base, None).unwrap();
+        assert_eq!(running.chosen(), None);
+    }
+
+    #[tokio::test]
+    async fn a_choice_that_could_not_be_saved_holds_for_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        // The store's directory is a file, so saving fails.
+        let blocked = dir.path().join("not-a-dir");
+        std::fs::write(&blocked, "").unwrap();
+        let (base, _) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "Treasury", "active"),
+        ])]);
+        let client = agent(&base).with_store(Some(SelectionStore::at(
+            blocked.join("selections.json"),
+            "/work/project".into(),
+        )));
+        let picked = client.select(Some(OTHER), false).await.unwrap();
+        assert_eq!(picked["saved"], false);
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_failed_save_never_falls_back_to_the_older_saved_sandbox() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selections.json");
+        let store = || Some(SelectionStore::at(path.clone(), "/work/project".into()));
+        let (base, _) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "Treasury", "active"),
+        ])]);
+        let client = agent(&base).with_store(store());
+        client.select(Some(SANDBOX), false).await.unwrap();
+
+        // The file still reads, but the directory can no longer be written.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+        let picked = client.select(Some(OTHER), false).await;
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        let picked = picked.unwrap();
+        assert_eq!(picked["saved"], false);
+        assert_eq!(
+            store().unwrap().load(&client.api_base).as_deref(),
+            Some(SANDBOX)
+        );
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+
+        // A choice saved afterwards, elsewhere, still applies.
+        store().unwrap().save(&client.api_base, None).unwrap();
+        assert_eq!(client.chosen(), None);
+    }
+
+    #[tokio::test]
+    async fn an_unreadable_choices_file_keeps_the_sessions_choice() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("selections.json");
+        let (base, _) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "Treasury", "active"),
+        ])]);
+        // ARETE_SANDBOX_ID names the other sandbox: a lost choice would
+        // fall back to it.
+        let client = SandboxClient::from_values(
+            Some(SANDBOX.into()),
+            Some("a4_ak_test".into()),
+            Some(base.clone()),
+        )
+        .with_store(Some(SelectionStore::at(
+            path.clone(),
+            "/work/project".into(),
+        )));
+        client.select(Some(OTHER), false).await.unwrap();
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+
+        // Corrupted, then not a file at all: the choice holds.
+        std::fs::write(&path, "{ not json").unwrap();
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
+
+        // No file at all is no choice: the fallback applies.
+        std::fs::remove_dir(&path).unwrap();
+        assert_eq!(client.chosen(), None);
     }
 
     #[tokio::test]

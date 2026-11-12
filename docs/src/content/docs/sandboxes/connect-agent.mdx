@@ -1,0 +1,163 @@
+---
+title: Connect your agent
+description: Set up an agent to use a sandbox through the Arete MCP server or the a4 CLI, in Claude Code, Cursor, Codex and other hosts.
+---
+
+import CopyPrompt from "../../../components/CopyPrompt.astro";
+
+An agent uses a sandbox through the Arete MCP server (`a4 mcp`), which lists
+the `sandbox_*` tools, or through `a4 sandbox` for reads. Both use the
+agent's own account; the agent finds the sandboxes it has been granted
+itself.
+
+## 1. Install and sign up
+
+Paste into your agent:
+
+<CopyPrompt>
+Read https://docs.arete.run/agent.md and follow it to set up Arete in your
+environment. Verify the setup, and simply explain what Arete is capable of.
+</CopyPrompt>
+
+That installs the signed `a4` binary, signs up a restricted agent account,
+runs `a4 init -y` (the skills that account can use, project instructions and
+MCP configuration for the detected host) and runs `a4 doctor`. Signup comes
+first so `a4 init` installs only the account's skills. To do it by hand:
+
+```bash
+curl -fsSL https://arete.run/install.sh | sh     # Windows: irm https://arete.run/install.ps1 | iex
+a4 --profile agent auth signup --if-missing --json
+a4 init -y
+a4 doctor --summary --json
+```
+
+## 2. Grant it a sandbox
+
+[Grant the agent's account](/sandboxes/agents/#grants) on the sandbox's page.
+That's all the setup the agent needs: no sandbox id goes into its
+configuration. The MCP server lists the `sandbox_*` tools whenever it has the
+agent's key, and asks Arete which sandboxes the agent has been granted.
+
+Restart the host if it was running before setup, so it starts the `arete` MCP
+server that `a4 init` configured. Where each host keeps its configuration
+(Claude Code, Cursor, VS Code, Codex, OpenCode, Gemini CLI) is in the
+[MCP reference](/agent-skills/mcp/#configure-your-agent-1). `ARETE_API_KEY`
+set to the agent account's secret key replaces the stored login, for hosts
+without one.
+
+## 3. Choose the sandbox
+
+With exactly one active sandbox granted, every tool uses it: there is nothing
+to choose. With several, the agent lists them and picks one:
+
+<CopyPrompt>
+List the sandboxes you have been granted with sandbox_list, and select
+Treasury with sandbox_select.
+</CopyPrompt>
+
+The choice is saved for the project (the folder `a4 mcp` runs in), so it
+survives restarts. `a4 sandbox use` in the same folder saves the same choice,
+and a running MCP server picks it up on its next call. Any `sandbox_*` call can also name another sandbox, by id or name,
+for that call alone.
+
+A call uses the first of:
+
+1. its own `sandbox` argument;
+2. the sandbox chosen with `sandbox_select` or `a4 sandbox use`;
+3. `ARETE_SANDBOX_ID`, a fallback kept for older setups;
+4. the only active sandbox the agent has been granted.
+
+When none of these picks one, the call is refused with
+`sandbox-selection-required` (several granted, none chosen; the error lists
+them) or `sandbox-none-granted` (no grant yet), and its hint says to call
+`sandbox_list` and `sandbox_select`. See [Errors](/sandboxes/errors/#choosing-a-sandbox).
+
+## 4. Check it
+
+Ask the agent:
+
+<CopyPrompt>
+Call sandbox_status and sandbox_rules, and tell me which sandbox you are
+using, the wallet's balance, the actions you are granted and the programs you
+may use.
+</CopyPrompt>
+
+`sandbox_status` reports which sandbox it used (`selection`). If the
+tools are missing, the server has no agent key: run
+`a4 --profile agent auth status`.
+
+## MCP tools
+
+| Tool               | What it does                                                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------- |
+| `sandbox_list`     | The sandboxes granted to this agent, and the one in use                                       |
+| `sandbox_select`   | Choose the sandbox calls use from now on (by id or name), saved for this project              |
+| `sandbox_status`   | The wallet, its balances, the actions this agent may run and which sandbox it is. Start here. |
+| `sandbox_rules`    | The allowed programs, instructions with their arguments and accounts, limits, allowlist       |
+| `sandbox_reads`    | Read-only: the programs the sandbox can read, exactly the programs its rules enable           |
+| `sandbox_derive`   | An address: a PDA (computed locally) or an associated token account                           |
+| `sandbox_preview`  | A dry run: `pass` and what the wallet would lose, or the refusal                              |
+| `sandbox_invoke`   | Runs one action: the only tool that moves funds                                               |
+| `sandbox_action`   | One action's status, by id or idempotency key                                                 |
+| `sandbox_history`  | Read-only: past actions, newest first, decoded                                                |
+| `sandbox_holdings` | Read-only: SOL, tokens and program positions                                                  |
+
+Every tool from `sandbox_status` down takes an optional `sandbox`. Arguments
+for each are in the [MCP reference](/agent-skills/mcp/#sandbox-tools). The
+read tools `program_read_account`, `read_view` and `connect` also take
+`sandbox` to read through it; see [Read scope](/sandboxes/read-scope/).
+
+## CLI
+
+| Command                            | What it does                                              |
+| ---------------------------------- | --------------------------------------------------------- |
+| `a4 sandbox list`                  | The sandboxes granted, and the one in use                 |
+| `a4 sandbox use <id\|name>`        | Choose the sandbox for this folder (`--clear` forgets it) |
+| `a4 sandbox history`               | The sandbox's actions, newest first                       |
+| `a4 sandbox holdings`              | What it holds now                                         |
+| `a4 sandbox rules show`            | The rules, as the agent sees them                         |
+| `a4 sandbox reads`                 | The programs the sandbox can read                         |
+| `a4 sandbox rules validate <file>` | Check a Rules v3 file locally                             |
+
+The reads take `--sandbox <id|name>` for one command and `--json`, and resolve
+the sandbox in the same order as the MCP tools. The CLI never runs an action:
+actions go through `sandbox_invoke`. See the
+[CLI reference](/cli/commands/#a4-sandbox).
+
+## Prompts
+
+<CopyPrompt>
+What does my sandbox hold, and what changed in the last 24 hours? Use
+sandbox_holdings and sandbox_history, and cite signatures.
+</CopyPrompt>
+
+<CopyPrompt>
+Which programs and instructions do my sandbox's rules allow, and how much of
+each spend limit is left?
+</CopyPrompt>
+
+<CopyPrompt>
+Your last sandbox action was refused. Explain the refusal from its code, rule
+and hint, and tell me whether you can fix it or I need to change the rules.
+</CopyPrompt>
+
+<CopyPrompt>
+Sell everything the sandbox bought back to SOL. Preview each sale first and
+show me the totals before running them.
+</CopyPrompt>
+
+## Good instructions for a sandboxed agent
+
+The [sandbox skill](/sandboxes/skill/) teaches this already. For hosts
+without skills, put guidance like this in the agent's instructions:
+
+- With several sandboxes granted, check `sandbox_list` and select the one
+  the task is for before acting.
+- Read `sandbox_status` and `sandbox_rules` before acting; use only programs
+  and instructions they list.
+- Preview every action with `sandbox_preview` before `sandbox_invoke`.
+- Pass amounts as decimal strings in the smallest unit.
+- On a refusal, follow its `hint`. With `retryable: false`, change the request
+  before trying again.
+- After a timeout on `sandbox_invoke`, look the action up with
+  `sandbox_action` and its `idempotencyKey` before retrying.

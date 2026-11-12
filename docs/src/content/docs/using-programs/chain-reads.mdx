@@ -3,6 +3,12 @@ title: Solana Chain Reads
 description: Read generic Solana state through the managed gateway or an explicit custom transport.
 ---
 
+:::note[In a sandbox]
+Chain reads are not yet scoped by a sandbox's rules: they use the agent
+account's own access. Program reads and live views are; see
+[Read scope](/sandboxes/read-scope/).
+:::
+
 Some data belongs to Solana itself and not to any one program: a wallet's SOL
 balance, the current clock, a token mint, the raw bytes of an account. The chain
 surface, `session.chain`, is where you read those. It is shared across the whole
