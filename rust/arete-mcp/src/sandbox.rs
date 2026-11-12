@@ -1833,7 +1833,8 @@ pub enum SandboxActionName {
     /// `{ instructions: [{ program, instruction, args?, accounts?,
     /// remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?,
     /// computeUnitPriceMicroLamports?, transactionFormat?: "v1" | "v0" }`,
-    /// 1 to 8 instructions named exactly as `sandbox_rules` lists them.
+    /// 1 to 32 instructions named exactly as `sandbox_rules` lists them,
+    /// as long as the built transaction fits its format.
     Invoke,
     /// SOL to the owner's withdraw address, the only destination a withdraw
     /// can have. `args`: `{ lamports, transactionFormat?: "v1" | "v0" }`.

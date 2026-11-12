@@ -722,7 +722,7 @@ sent, with code `sandbox-action-not-granted` and rule `session-grant`):
 
 | `action`   | `args` |
 | ---------- | ------ |
-| `invoke`   | `{ instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` — 1 to 8 named instructions, exactly as `sandbox_rules` lists them; the wallet is the only signer |
+| `invoke`   | `{ instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` — 1 to 32 named instructions, exactly as `sandbox_rules` lists them, that fit one transaction (v1: 4096 bytes, 64 accounts); the wallet is the only signer |
 | `withdraw` | `{ lamports, transactionFormat? }` — SOL to the owner's withdraw address, the only destination a withdraw can have |
 | `swap`     | `{ inputMint, outputMint, amount, slippageBps?, computeUnitLimit?, computeUnitPriceMicroLamports? }` — exact input, in the input mint's smallest unit, through the venues the owner allows |
 
