@@ -57,8 +57,7 @@ Treasury with sandbox_select.
 
 The choice is saved for the project (the folder `a4 mcp` runs in), so it
 survives restarts. `a4 sandbox use` in the same folder saves the same choice,
-but a running MCP server reads it only when it starts: after changing it from
-the CLI, restart the server or call `sandbox_select` again. Any `sandbox_*` call can also name another sandbox, by id or name,
+and a running MCP server picks it up on its next call. Any `sandbox_*` call can also name another sandbox, by id or name,
 for that call alone.
 
 A call uses the first of:

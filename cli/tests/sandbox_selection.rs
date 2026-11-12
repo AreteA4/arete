@@ -61,6 +61,20 @@ fn stub_api() -> (String, Arc<Mutex<Vec<String>>>) {
                           "grantExpiresAt": "2026-12-01T00:00:00Z" },
                     ], "requestId": "r-1" }),
                 )
+            } else if line.starts_with("GET /api/auth/me ")
+                && text.contains("Bearer a4_ak_profile_agent")
+            {
+                (
+                    200,
+                    json!({ "accountKind": "agent", "commandGroups": ["account", "sandboxes", "registry"] }),
+                )
+            } else if line.starts_with("GET /api/auth/me ")
+                && text.contains("Bearer a4_sk_profile_human")
+            {
+                (
+                    200,
+                    json!({ "accountKind": "human", "commandGroups": ["account", "sandboxes", "streams", "stacks", "registry"] }),
+                )
             } else if line.starts_with("POST /ws/sessions ") {
                 (
                     200,
@@ -232,4 +246,68 @@ fn use_needs_a_sandbox_or_clear() {
         &["sandbox", "use", BOT, "--clear"],
     );
     assert!(!output.status.success());
+}
+
+/// `--profile human` in a project whose default profile is the sandbox-only
+/// agent: the read is the human account's own, not the agent's sandbox path.
+#[test]
+fn an_explicit_profile_decides_whether_a_read_goes_through_a_sandbox() {
+    let home = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    let (api, seen) = stub_api();
+    let credentials = home.path().join("credentials.toml");
+    std::fs::write(
+        &credentials,
+        format!(
+            "[profiles.agent.keys]\n\"{api}\" = \"a4_ak_profile_agent\"\n\n[profiles.human.keys]\n\"{api}\" = \"a4_sk_profile_human\"\n"
+        ),
+    )
+    .unwrap();
+    std::fs::create_dir_all(project.path().join(".arete")).unwrap();
+    std::fs::write(
+        project.path().join(".arete/auth.toml"),
+        "default_profile = \"agent\"\n",
+    )
+    .unwrap();
+    let run = |args: &[&str]| {
+        seen.lock().unwrap().clear();
+        Command::new(env!("CARGO_BIN_EXE_a4"))
+            .args(args)
+            .current_dir(project.path())
+            .env("HOME", home.path())
+            .env("ARETE_HOME", home.path().join(".arete"))
+            .env("ARETE_API_URL", &api)
+            .env("ARETE_CREDENTIALS_PATH", &credentials)
+            .env_remove("ARETE_API_KEY")
+            .env_remove("ARETE_SANDBOX_ID")
+            .env_remove("ARETE_PROFILE")
+            .env("CI", "1")
+            .env("DO_NOT_TRACK", "1")
+            .env("A4_NO_UPDATE_CHECK", "1")
+            .output()
+            .expect("run a4");
+        seen.lock().unwrap().clone()
+    };
+    let through_sandbox = |requests: &[String]| {
+        requests
+            .iter()
+            .any(|r| r.starts_with("GET /api/agent/sandboxes "))
+    };
+
+    // The project's agent profile reads only through a sandbox.
+    let address = "11111111111111111111111111111111";
+    let requests = run(&["program", "account", "decode", address, "--json"]);
+    assert!(through_sandbox(&requests), "{requests:?}");
+
+    // An explicit --profile human reads with the human key, as asked.
+    let requests = run(&[
+        "--profile",
+        "human",
+        "program",
+        "account",
+        "decode",
+        address,
+        "--json",
+    ]);
+    assert!(!through_sandbox(&requests), "{requests:?}");
 }

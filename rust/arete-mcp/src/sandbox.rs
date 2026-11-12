@@ -660,6 +660,9 @@ pub struct SandboxClient {
     choice: Arc<Mutex<Option<(String, Source)>>>,
     /// Where a choice is saved; `None` keeps it for the session only.
     store: Option<SelectionStore>,
+    /// The choice in `choice` could not be saved, so it holds for this
+    /// session whatever the store says.
+    unsaved: Arc<Mutex<bool>>,
     /// The last listing of granted sandboxes, reused while fresh.
     grants: Arc<Mutex<Option<CachedGrants>>>,
     /// The last `GET /reads` answer per sandbox id, and when it was read.
@@ -743,6 +746,7 @@ impl SandboxClient {
             tokens: Arc::new(Mutex::new(HashMap::new())),
             choice: Arc::new(Mutex::new(None)),
             store: None,
+            unsaved: Arc::new(Mutex::new(false)),
             grants: Arc::new(Mutex::new(None)),
             reads: Arc::new(Mutex::new(HashMap::new())),
             read_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -864,8 +868,36 @@ impl SandboxClient {
         }
     }
 
+    /// The chosen sandbox. With a store, the saved choice is read on every
+    /// call: it is shared with `a4 sandbox use` and with other servers in
+    /// the project, so a change made there applies here at once instead of
+    /// after a restart. A choice this session could not save holds until
+    /// the store has one again.
     fn chosen(&self) -> Option<(String, Source)> {
-        self.choice.lock().ok().and_then(|choice| choice.clone())
+        let current = self.choice.lock().ok().and_then(|choice| choice.clone());
+        let Some(store) = &self.store else {
+            return current;
+        };
+        let unsaved = self.unsaved.lock().map(|flag| *flag).unwrap_or(false);
+        let chosen = match store.load(&self.api_base) {
+            Some(saved) => match current.clone() {
+                Some((sandbox_id, source)) if sandbox_id == saved => Some((sandbox_id, source)),
+                _ => Some((saved, Source::Saved)),
+            },
+            None if unsaved => current.clone(),
+            None => None,
+        };
+        if chosen.as_ref().map(|(id, _)| id) != current.as_ref().map(|(id, _)| id) {
+            self.set_choice(chosen.clone());
+            self.set_unsaved(false);
+        }
+        chosen
+    }
+
+    fn set_unsaved(&self, unsaved: bool) {
+        if let Ok(mut flag) = self.unsaved.lock() {
+            *flag = unsaved;
+        }
     }
 
     fn set_choice(&self, choice: Option<(String, Source)>) {
@@ -1093,8 +1125,12 @@ impl SandboxClient {
         match &self.store {
             None => out["saved"] = json!(false),
             Some(store) => match store.save(&self.api_base, sandbox_id) {
-                Ok(()) => out["saved"] = json!(true),
+                Ok(()) => {
+                    self.set_unsaved(false);
+                    out["saved"] = json!(true)
+                }
                 Err(error) => {
+                    self.set_unsaved(sandbox_id.is_some());
                     tracing::warn!("could not save the sandbox choice: {error}");
                     out["saved"] = json!(false);
                     out["savedError"] = json!(
@@ -2850,6 +2886,59 @@ pub(crate) mod tests {
                 .to_json()["code"],
             "sandbox-selection-required"
         );
+    }
+
+    #[tokio::test]
+    async fn a_running_server_follows_a_choice_saved_elsewhere() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = || {
+            Some(SelectionStore::at(
+                dir.path().join("selections.json"),
+                "/work/project".into(),
+            ))
+        };
+        let (base, _) = stub(vec![
+            listing(vec![
+                granted(SANDBOX, "Bot", "active"),
+                granted(OTHER, "Treasury", "active"),
+            ]),
+            ("GET", "/api/sandbox/v1/wallet", 200, json!({})),
+        ]);
+        let running = agent(&base).with_store(store());
+        running.select(Some(SANDBOX), false).await.unwrap();
+        assert_eq!(running.chosen(), Some((SANDBOX.into(), Source::Selected)));
+
+        // `a4 sandbox use Treasury` in the same project, while it runs.
+        store()
+            .unwrap()
+            .save(&running.api_base, Some(OTHER))
+            .unwrap();
+        assert_eq!(running.chosen(), Some((OTHER.into(), Source::Saved)));
+        let status = running.status().await.unwrap();
+        assert_eq!(status["selection"]["sandboxId"], OTHER);
+
+        // `a4 sandbox use --clear`: no choice here either.
+        store().unwrap().save(&running.api_base, None).unwrap();
+        assert_eq!(running.chosen(), None);
+    }
+
+    #[tokio::test]
+    async fn a_choice_that_could_not_be_saved_holds_for_the_session() {
+        let dir = tempfile::tempdir().unwrap();
+        // The store's directory is a file, so saving fails.
+        let blocked = dir.path().join("not-a-dir");
+        std::fs::write(&blocked, "").unwrap();
+        let (base, _) = stub(vec![listing(vec![
+            granted(SANDBOX, "Bot", "active"),
+            granted(OTHER, "Treasury", "active"),
+        ])]);
+        let client = agent(&base).with_store(Some(SelectionStore::at(
+            blocked.join("selections.json"),
+            "/work/project".into(),
+        )));
+        let picked = client.select(Some(OTHER), false).await.unwrap();
+        assert_eq!(picked["saved"], false);
+        assert_eq!(client.chosen(), Some((OTHER.into(), Source::Selected)));
     }
 
     #[tokio::test]

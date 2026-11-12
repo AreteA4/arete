@@ -1438,7 +1438,8 @@ a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: 
 The commands use, in order: `--sandbox`, the sandbox chosen with
 `a4 sandbox use` in this folder, `ARETE_SANDBOX_ID`, then the only active
 sandbox granted. The choice is saved in your Arete home directory, not in the
-project, and `a4 mcp` started in the same folder uses it too. With several
+project, and `a4 mcp` in the same folder uses it too, from its next call
+even while it is running. With several
 sandboxes and none chosen, a read fails with `sandbox-selection-required`
 and lists them; with none granted, `sandbox-none-granted`.
 
