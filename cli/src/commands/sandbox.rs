@@ -151,7 +151,7 @@ pub fn read_sandbox(
     usual: &[arete_mcp::entitlements::Group],
     config: &str,
 ) -> Option<SandboxClient> {
-    let requested =requested.map(str::trim).filter(|wanted| !wanted.is_empty());
+    let requested = requested.map(str::trim).filter(|wanted| !wanted.is_empty());
     if requested.is_none() && !reads_through_sandbox(usual, config) {
         return None;
     }
