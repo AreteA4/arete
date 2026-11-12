@@ -169,6 +169,36 @@ pub fn read_refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
     refused(refusal, json)
 }
 
+/// One line for a terminal, with the hint in CLI terms.
+pub fn cli_message(refusal: &SandboxRefusal) -> String {
+    refusal.message_with_hint(cli_hint(refusal))
+}
+
+/// For a key a sandbox grant binds, refused a direct read with `refusal`
+/// (`sandbox-read-required`): a client pinned to the sandbox to read
+/// through, the one chosen with `a4 sandbox use` (else `ARETE_SANDBOX_ID`,
+/// else the only one the refusal lists). Else the refusal, printed with the
+/// sandboxes it lists.
+pub fn bound_reader(refusal: &SandboxRefusal, json: bool) -> Result<SandboxClient> {
+    let (client, _) = SandboxClient::from_env()
+        .read_through_bound(refusal)
+        .map_err(|refusal| refused(refusal, json))?;
+    Ok(client)
+}
+
+/// The refusal in `error` of a direct read by a key a sandbox grant binds
+/// (`sandbox-read-required`), from the API client or a stream's mint.
+pub fn read_required(error: &anyhow::Error) -> Option<SandboxRefusal> {
+    if let Some(refusal) = error.downcast_ref::<SandboxRefusal>() {
+        return (refusal.code() == arete_mcp::sandbox::READ_REQUIRED).then(|| refusal.clone());
+    }
+    let api = error.downcast_ref::<crate::api_client::ApiClientError>()?;
+    SandboxRefusal::read_required(
+        api.status.as_u16(),
+        serde_json::to_value(&api.problem).ok()?,
+    )
+}
+
 fn runtime() -> Result<tokio::runtime::Runtime> {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -182,18 +212,40 @@ fn client(
     target: &SandboxTarget,
     json: bool,
 ) -> Result<(SandboxClient, String)> {
+    resolved_client(runtime, target, json).map(|(client, resolved)| (client, resolved.sandbox_id))
+}
+
+/// A client for the sandbox `target` resolves to, and how it resolved.
+fn resolved_client(
+    runtime: &tokio::runtime::Runtime,
+    target: &SandboxTarget,
+    json: bool,
+) -> Result<(SandboxClient, arete_mcp::sandbox::selection::Resolved)> {
     let client = SandboxClient::from_env().targeting(target.sandbox.as_deref());
     let resolved = runtime
         .block_on(client.resolve())
         .map_err(|refusal| refused(refusal, json))?;
     // Resolved once: the calls below name the id, with no second listing.
     let client = client.targeting(Some(&resolved.sandbox_id));
-    Ok((client, resolved.sandbox_id))
+    Ok((client, resolved))
 }
 
-/// The hint for `code` in CLI terms, where the MCP hint names MCP tools.
-fn cli_hint(code: &str) -> Option<&'static str> {
-    Some(match code {
+/// The hint for `refusal` in CLI terms, where the MCP hint names MCP tools.
+pub fn cli_hint(refusal: &SandboxRefusal) -> Option<&'static str> {
+    let read = refusal.kind == arete_mcp::sandbox::CallKind::Read;
+    Some(match refusal.code().as_str() {
+        "sandbox-program-not-allowlisted" if read => {
+            "The sandbox can read only the programs in its rules: `a4 sandbox reads` lists them. Only the owner can add one, in the dashboard."
+        }
+        "sandbox-read-programs-unknown" => {
+            "Arete could not tell which programs this stack decodes, so a sandbox cannot read it. Read the programs the sandbox allows (`a4 sandbox reads` lists them) with `a4 program account decode`."
+        }
+        "sandbox-read-target-unsupported" => {
+            "A sandbox reads only program accounts (`a4 program account decode`) and stack views (`a4 get`, `a4 stream`) of the programs `a4 sandbox reads` lists."
+        }
+        arete_mcp::sandbox::READ_REQUIRED => {
+            "This API key reads programs and stacks only through a sandbox. Choose one with `a4 sandbox use <id|name>` (remembered for this directory), or pass --sandbox <id>."
+        }
         "sandbox-none-granted" => {
             "No sandbox owner has granted this agent access yet. Ask the owner to grant it access in the dashboard, then run `a4 sandbox list`."
         }
@@ -216,7 +268,7 @@ fn cli_hint(code: &str) -> Option<&'static str> {
 /// with 77 for auth refusals, 75 when rate limited, else 1.
 fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
     let mut shown = refusal.to_json();
-    if let Some(hint) = shown["code"].as_str().and_then(cli_hint) {
+    if let Some(hint) = cli_hint(&refusal) {
         shown["hint"] = json!(hint);
     }
     if json {
@@ -359,6 +411,7 @@ fn source_label(source: &str) -> &'static str {
         "saved" => "saved for this directory",
         "env:ARETE_SANDBOX_ID" => "ARETE_SANDBOX_ID",
         "only-grant" => "the only sandbox granted",
+        "bound-key" => "the only sandbox this API key reads through",
         _ => "unknown",
     }
 }
@@ -830,20 +883,24 @@ fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
 
 fn reads_show(target: SandboxTarget, json: bool) -> Result<()> {
     let runtime = runtime()?;
-    let (client, sandbox_id) = client(&runtime, &target, json)?;
+    let (client, resolved) = resolved_client(&runtime, &target, json)?;
     let body = runtime
         .block_on(client.reads())
         .map_err(|refusal| refused(refusal, json))?;
     if json {
         println!("{body}");
     } else {
-        print!("{}", render_reads(&body, &sandbox_id));
+        print!("{}", render_reads(&body, &resolved));
     }
     Ok(())
 }
 
-/// The human rendering of the programs a sandbox can read.
-pub fn render_reads(body: &Value, sandbox_id: &str) -> String {
+/// The human rendering of the programs a sandbox can read. The commands it
+/// suggests name the sandbox with --sandbox unless it is the one chosen
+/// with `a4 sandbox use`, which they use without it.
+pub fn render_reads(body: &Value, resolved: &arete_mcp::sandbox::selection::Resolved) -> String {
+    use arete_mcp::sandbox::selection::Source;
+    let sandbox_id = resolved.sandbox_id.as_str();
     let programs = arete_mcp::program_read::readable_programs(body);
     let mut out = String::new();
     if programs.is_empty() {
@@ -867,9 +924,13 @@ pub fn render_reads(body: &Value, sandbox_id: &str) -> String {
             None => out.push_str(&format!("  {id}\n")),
         }
     }
+    let flag = match resolved.source {
+        Source::Saved | Source::Selected => String::new(),
+        _ => format!(" --sandbox {sandbox_id}"),
+    };
     out.push_str(&format!(
-        "\nRead an account:  a4 program account decode <address> --sandbox {sandbox_id}\n\
-         Read a stack:     a4 get <View> --stack <stack> --sandbox {sandbox_id}\n\
+        "\nRead an account:  a4 program account decode <address>{flag}\n\
+         Read a stack:     a4 get <View> --stack <stack>{flag}\n\
          A stack opens only when every program it decodes is listed here.\n"
     ));
     out
@@ -1124,6 +1185,78 @@ mod tests {
     use super::*;
 
     const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+    #[test]
+    fn a_direct_read_refused_for_a_bound_key_is_recognised() {
+        let bound = serde_json::json!({
+            "error": "This agent key is bound to a sandbox, so it reads programs and stacks only through it",
+            "code": "sandbox-read-required",
+            "retryable": false,
+            "sandboxes": [{"sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "name": "Trading"}],
+            "readRoute": "/api/sandbox/v1/sessions",
+        });
+        let api = crate::api_client::test_support::MockServer::json(403, &bound.to_string());
+        let client = crate::api_client::ApiClient::with_base_url(api.base_url())
+            .with_api_key("a4_sk_agent".into());
+        let error = client
+            .mint_target_session(&format!("{}/ws/sessions", api.base_url()), &json!({}))
+            .unwrap_err();
+        let refusal = read_required(&error).expect("the bound-key refusal");
+        assert_eq!(refusal.status, 403);
+        assert_eq!(
+            refusal.to_json()["sandboxes"][0]["sandboxId"],
+            "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10"
+        );
+        let hint = cli_hint(&refusal).unwrap();
+        assert!(
+            hint.contains("a4 sandbox use") && hint.contains("--sandbox"),
+            "{hint}"
+        );
+
+        // Any other refusal is left as it is.
+        let other = crate::api_client::test_support::MockServer::json(
+            403,
+            r#"{"error":"no","code":"forbidden"}"#,
+        );
+        let error = crate::api_client::ApiClient::with_base_url(other.base_url())
+            .with_api_key("a4_sk_agent".into())
+            .mint_target_session(&format!("{}/ws/sessions", other.base_url()), &json!({}))
+            .unwrap_err();
+        assert!(read_required(&error).is_none());
+    }
+
+    #[test]
+    fn read_refusals_point_to_the_cli_commands() {
+        let refusal = |code: &str, kind| SandboxRefusal {
+            status: 403,
+            body: json!({
+                "code": code,
+                "error": "Program KLend is not in the sandbox's read rules",
+                "programs": ["KLend"],
+            }),
+            kind,
+        };
+        let read = refusal(
+            "sandbox-program-not-allowlisted",
+            arete_mcp::sandbox::CallKind::Read,
+        );
+        let message = cli_message(&read);
+        assert!(
+            message.contains("`a4 sandbox reads` lists them"),
+            "{message}"
+        );
+        assert!(!message.contains("sandbox_rules"), "{message}");
+        assert!(!message.contains("sandbox_reads"), "{message}");
+        // The message names the program; it is not repeated.
+        assert!(!message.contains("not in the rules: KLend"), "{message}");
+        for code in [
+            "sandbox-read-programs-unknown",
+            "sandbox-read-target-unsupported",
+        ] {
+            let hint = cli_hint(&refusal(code, arete_mcp::sandbox::CallKind::Read)).unwrap();
+            assert!(hint.contains("a4 "), "{hint}");
+        }
+    }
     const MINT: &str = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
 
     fn fixture(name: &str) -> Value {
@@ -1203,6 +1336,13 @@ mod tests {
 
     #[test]
     fn selection_refusals_get_cli_hints() {
+        let cli_hint = |code: &str| {
+            cli_hint(&SandboxRefusal {
+                status: 403,
+                body: json!({ "code": code }),
+                kind: arete_mcp::sandbox::CallKind::Read,
+            })
+        };
         for code in [
             "sandbox-none-granted",
             "sandbox-selection-required",
@@ -1230,12 +1370,23 @@ mod tests {
                 {"programId": "KLend"},
             ],
         });
-        let text = render_reads(&body, "s");
+        use arete_mcp::sandbox::selection::{Resolved, Source};
+        let resolved = |source| Resolved {
+            sandbox_id: "s".into(),
+            source,
+        };
+        let text = render_reads(&body, &resolved(Source::OnlyGrant));
         assert!(text.contains("can read 2 programs (rules v7)"), "{text}");
         assert!(text.contains("Jupiter"), "{text}");
         assert!(text.contains("  KLend\n"), "{text}");
-        assert!(text.contains("--sandbox s"), "{text}");
-        let none = render_reads(&json!({"programs": []}), "s");
+        assert!(text.contains("decode <address> --sandbox s\n"), "{text}");
+        // The sandbox saved for this directory needs no --sandbox.
+        for saved in [Source::Saved, Source::Selected] {
+            let text = render_reads(&body, &resolved(saved));
+            assert!(!text.contains("--sandbox"), "{text}");
+            assert!(text.contains("decode <address>\n"), "{text}");
+        }
+        let none = render_reads(&json!({"programs": []}), &resolved(Source::Env));
         assert!(none.contains("can read no programs"), "{none}");
     }
 

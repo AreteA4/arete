@@ -287,13 +287,15 @@ impl AccountKey {
     }
 
     /// Mint a session at `session_endpoint`, which must be on this key's
-    /// API origin: the key goes nowhere else.
+    /// API origin: the key goes nowhere else. A key a sandbox grant binds is
+    /// refused with [`crate::sandbox::READ_REQUIRED`], kept as a
+    /// [`ReadError::Sandbox`] so the caller can read through the sandbox.
     pub async fn mint(
         &self,
         http: &reqwest::Client,
         session_endpoint: &str,
         body: &Value,
-    ) -> Result<String, String> {
+    ) -> Result<String, ReadError> {
         let origin = |url: &str| {
             reqwest::Url::parse(url.trim())
                 .ok()
@@ -302,24 +304,30 @@ impl AccountKey {
         };
         if origin(session_endpoint).is_none() || origin(session_endpoint) != origin(&self.api_base)
         {
-            return Err(format!(
+            return Err(ReadError::Failed(format!(
                 "Refusing to send the API key to the session endpoint {session_endpoint}: it is not on {}. Nothing was sent.",
                 self.api_base
-            ));
+            )));
         }
-        let minted = send(
+        let minted = send_request(
             http.post(session_endpoint)
                 .bearer_auth(&self.key)
                 .json(body),
             "session token",
         )
-        .await?;
+        .await
+        .map_err(|refused| {
+            match SandboxRefusal::read_required(refused.status, refused.body) {
+                Some(refusal) => ReadError::Sandbox(refusal),
+                None => ReadError::Failed(refused.message),
+            }
+        })?;
         minted["token"]
             .as_str()
             .map(str::trim)
             .filter(|token| !token.is_empty())
             .map(str::to_string)
-            .ok_or_else(|| "The session endpoint returned no token".to_string())
+            .ok_or_else(|| ReadError::Failed("The session endpoint returned no token".to_string()))
     }
 }
 
@@ -350,7 +358,8 @@ pub async fn read_raw(
                 "targetId": chain.target_id,
             }),
         )
-        .await?;
+        .await
+        .map_err(|error| error.to_string())?;
     let url = format!("{}/chain/v1/account", chain.endpoint.trim_end_matches('/'));
     let body = send(
         http.post(&url)
@@ -383,12 +392,42 @@ pub async fn read_session(
             )
             .await?),
         ReadAuth::Sandbox(sandbox) => Ok(sandbox
-            .read_session(&ReadTarget::ProgramRead {
-                binding_id: binding.binding_id.clone(),
-                program_release_hash: install.release.clone(),
-            })
+            .read_session_cached(&program_target(install)?)
             .await?
             .token),
+    }
+}
+
+/// The sandbox read target for `install`'s Program Read binding.
+fn program_target(install: &Install) -> Result<ReadTarget, String> {
+    Ok(ReadTarget::ProgramRead {
+        binding_id: install.read_binding()?.binding_id.clone(),
+        program_release_hash: install.release.clone(),
+    })
+}
+
+/// The decoded `account` at `address`: a read session from `auth`, then the
+/// read. Through a sandbox the session is reused while it is fresh; when
+/// Program Read refuses it as expired or invalid, it is minted again once.
+pub async fn read_account(
+    http: &reqwest::Client,
+    auth: &ReadAuth,
+    install: &Install,
+    account: &str,
+    address: &str,
+) -> Result<Value, ReadError> {
+    let token = read_session(http, auth, install).await?;
+    match fetch_decoded(http, install, &token, account, address).await {
+        Err(refused) if refused.token_rejected() => match auth {
+            ReadAuth::Sandbox(sandbox) => {
+                sandbox.forget_read_session(&program_target(install)?).await;
+                let token = read_session(http, auth, install).await?;
+                Ok(read_decoded(http, install, &token, account, address).await?)
+            }
+            ReadAuth::Key(_) => Err(ReadError::Failed(refused.message)),
+        },
+        Err(refused) => Err(ReadError::Failed(refused.message)),
+        Ok(value) => Ok(value),
     }
 }
 
@@ -400,11 +439,26 @@ pub async fn read_decoded(
     account: &str,
     address: &str,
 ) -> Result<Value, String> {
-    let binding = install.read_binding()?;
-    let url = decode_url(&binding.endpoint, &install.release, account, address)?;
-    let value = send(http.get(url).bearer_auth(token), "Program Read").await?;
+    fetch_decoded(http, install, token, account, address)
+        .await
+        .map_err(|refused| refused.message)
+}
+
+async fn fetch_decoded(
+    http: &reqwest::Client,
+    install: &Install,
+    token: &str,
+    account: &str,
+    address: &str,
+) -> Result<Value, Refused> {
+    let binding = install.read_binding().map_err(Refused::local)?;
+    let url = decode_url(&binding.endpoint, &install.release, account, address)
+        .map_err(Refused::local)?;
+    let value = send_request(http.get(url).bearer_auth(token), "Program Read").await?;
     if value.is_null() {
-        return Err(format!("Program Read found no {account} at {address}"));
+        return Err(Refused::local(format!(
+            "Program Read found no {account} at {address}"
+        )));
     }
     Ok(value)
 }
@@ -420,17 +474,58 @@ pub fn http() -> reqwest::Client {
 
 /// Send `request`; an error status keeps the server's code and message.
 async fn send(request: reqwest::RequestBuilder, what: &str) -> Result<Value, String> {
-    let response = request
-        .send()
+    send_request(request, what)
         .await
-        .map_err(|error| format!("The {what} request failed: {}", error.without_url()))?;
+        .map_err(|refused| refused.message)
+}
+
+/// A request that failed: the status and body when the server answered
+/// (0 and null when it did not), and a message for the agent.
+struct Refused {
+    status: u16,
+    body: Value,
+    message: String,
+}
+
+impl Refused {
+    fn local(message: String) -> Self {
+        Self {
+            status: 0,
+            body: Value::Null,
+            message,
+        }
+    }
+
+    /// Whether the server refused the token itself (expired or invalid), so
+    /// a newly minted one may pass.
+    fn token_rejected(&self) -> bool {
+        let code = self
+            .body
+            .pointer("/error/code")
+            .or_else(|| self.body.get("code"))
+            .and_then(Value::as_str);
+        self.status == 401 || code == Some("token-expired")
+    }
+}
+
+async fn send_request(request: reqwest::RequestBuilder, what: &str) -> Result<Value, Refused> {
+    let response = request.send().await.map_err(|error| {
+        Refused::local(format!(
+            "The {what} request failed: {}",
+            error.without_url()
+        ))
+    })?;
     let status = response.status();
     let text = response.text().await.unwrap_or_default();
     let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
     if status.is_success() {
         return Ok(body);
     }
-    Err(refusal_message(what, status.as_u16(), &body, &text))
+    Err(Refused {
+        status: status.as_u16(),
+        message: refusal_message(what, status.as_u16(), &body, &text),
+        body,
+    })
 }
 
 /// `<what> → HTTP <status> <code>: <message>` from an error body.
@@ -580,7 +675,8 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().unwrap();
         let error = runtime
             .block_on(key.mint(&http(), "https://evil.example/ws/sessions", &json!({})))
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("Nothing was sent"), "{error}");
         assert!(!error.contains("a4_sk_secret"), "{error}");
     }

@@ -446,9 +446,10 @@ its owner-signed rules enable. The read tools take an optional `sandbox` (a
 
 Through a sandbox, the read session is minted through it, not with the
 account's key: only programs in its rules can be read, and a stack opens only
-when every program it decodes is in them. A refusal carries `code` (such as
-`sandbox-program-not-allowlisted`, with the `programs` the rules leave out),
-`retryable` and a `hint`. A followed view's session is re-minted about every
+when every program it decodes is in them. A refusal is a tool result with
+`isError: true`, as the sandbox tools return theirs. Its JSON carries `code`
+(such as `sandbox-program-not-allowlisted`, with the `programs` the rules leave
+out), `retryable` and a `hint`. A followed view's session is re-minted about every
 minute through the same sandbox, so a rules change, pause or revoke reaches it
 within a minute. Once the sandbox refuses it for good, the connection's
 `subscribe` and cache reads return that refusal, and `list_connections` shows
@@ -461,7 +462,16 @@ only active sandbox granted). When none resolves, the tool fails with the same
 code and hint as the sandbox tools (`sandbox-selection-required`,
 `sandbox-none-granted`, `sandbox-unknown`, `sandbox-paused`): call
 `sandbox_list`, then `sandbox_select`. It never falls back to the account's
-key. Any other account reads with its own key unless `sandbox` is given.
+key.
+
+Any other account reads with its own key unless `sandbox` is given, except
+when its owner bound this API key to a sandbox grant. The API then refuses the
+key's own read with `sandbox-read-required` and names the sandboxes. The tool
+reads again through the sandbox chosen with `sandbox_select` (else
+`ARETE_SANDBOX_ID`, else the only sandbox the refusal names), and later reads
+in the session go through it directly. With several named and none chosen, it
+returns that refusal, listing them in `sandboxes`: call `sandbox_select`, or
+pass `sandbox`.
 
 ### Dev environment tools
 

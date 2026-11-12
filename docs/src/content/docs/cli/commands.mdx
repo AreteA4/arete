@@ -1478,8 +1478,15 @@ folder, else `ARETE_SANDBOX_ID`, else the only active sandbox granted). When
 none of these picks one, the command fails with the same code and hint as
 `a4 sandbox` (`sandbox-selection-required`: run `a4 sandbox use`;
 `sandbox-none-granted`; `sandbox-unknown`; `sandbox-paused`) and never falls
-back to the account's key. An account with the read command's own group reads
-with its own key unless `--sandbox` is given.
+back to the account's key.
+
+An account with the read command's own group reads with its own key unless
+`--sandbox` is given, except when its owner bound this API key to a sandbox
+grant. The API then refuses the key's own read with `sandbox-read-required`
+and names the sandboxes. The command reads through the sandbox chosen with
+`a4 sandbox use` (else `ARETE_SANDBOX_ID`, else the only sandbox the refusal
+names). With several named and none chosen, it fails with that code and lists
+them: run `a4 sandbox use`, or pass `--sandbox`.
 
 ### a4 protocol squads
 

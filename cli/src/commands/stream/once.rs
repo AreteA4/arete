@@ -113,12 +113,7 @@ pub fn run(args: GetArgs, config_path: &str, json: bool) -> Result<()> {
     );
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-    let (url, refresh) = match sandbox {
-        Some(sandbox) => rt
-            .block_on(token::sandbox_ws_token(url, sandbox))
-            .map_err(|error| super::sandbox_refused(error, json))?,
-        None => token::ensure_hosted_ws_token(url)?,
-    };
+    let (url, refresh) = super::open_session(&rt, url, sandbox, json)?;
     let timeout = Duration::from_secs(args.timeout);
     // Without filters the server can cut the snapshot to --limit; with them
     // the whole snapshot is needed to find the matches.

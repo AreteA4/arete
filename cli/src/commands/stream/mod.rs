@@ -129,8 +129,9 @@ pub struct StreamArgs {
     #[arg(long)]
     pub save: Option<String>,
 
-    /// Auto-stop the stream after N seconds
-    #[arg(long)]
+    /// Auto-stop the stream after this long: seconds (130), or with a unit
+    /// (130s, 2m, 1h)
+    #[arg(long, value_name = "DURATION", value_parser = parse_duration)]
     pub duration: Option<u64>,
 
     /// Replay a previously saved snapshot file instead of connecting live
@@ -371,6 +372,57 @@ fn run_dev(args: StreamArgs, json: bool) -> Result<()> {
     })
 }
 
+/// `--duration` in seconds: a whole number of seconds, or one with an `s`,
+/// `m` or `h` unit.
+fn parse_duration(text: &str) -> std::result::Result<u64, String> {
+    let text = text.trim();
+    let (number, unit) = match text.find(|c: char| !c.is_ascii_digit()) {
+        Some(at) => text.split_at(at),
+        None => (text, ""),
+    };
+    let scale = match unit.trim() {
+        "" | "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        _ => {
+            return Err(format!(
+                "`{text}` is not a duration: use seconds (130) or a unit (130s, 2m, 1h)"
+            ))
+        }
+    };
+    number
+        .parse::<u64>()
+        .ok()
+        .and_then(|number| number.checked_mul(scale))
+        .ok_or_else(|| {
+            format!("`{text}` is not a duration: use seconds (130) or a unit (130s, 2m, 1h)")
+        })
+}
+
+/// The URL to connect to `url` with, and what keeps its session fresh:
+/// through `sandbox` when one was chosen, else minted with the account key.
+/// A key a sandbox grant binds (`sandbox-read-required`) opens it through
+/// the sandbox `a4 sandbox use` chose, else the only one the refusal lists.
+pub(crate) fn open_session(
+    rt: &tokio::runtime::Runtime,
+    url: String,
+    sandbox: Option<arete_mcp::sandbox::SandboxClient>,
+    json: bool,
+) -> Result<(String, Option<token::SessionRefresh>)> {
+    let sandbox = match sandbox {
+        Some(sandbox) => sandbox,
+        None => match token::ensure_hosted_ws_token(url.clone()) {
+            Err(error) => match crate::commands::sandbox::read_required(&error) {
+                Some(refusal) => crate::commands::sandbox::bound_reader(&refusal, json)?,
+                None => return Err(error),
+            },
+            opened => return opened,
+        },
+    };
+    rt.block_on(token::sandbox_ws_token(url, sandbox))
+        .map_err(|error| sandbox_refused(error, json))
+}
+
 /// A sandbox refusal of a stream's first session, printed as the sandbox
 /// commands print theirs; any other error as it is.
 fn sandbox_refused(error: anyhow::Error, json: bool) -> anyhow::Error {
@@ -469,12 +521,7 @@ pub fn run(mut args: StreamArgs, config_path: &str, json: bool) -> Result<()> {
     );
 
     let rt = tokio::runtime::Runtime::new().context("Failed to create async runtime")?;
-    let (url, refresh) = match sandbox {
-        Some(sandbox) => rt
-            .block_on(token::sandbox_ws_token(url, sandbox))
-            .map_err(|error| sandbox_refused(error, json))?,
-        None => token::ensure_hosted_ws_token(url)?,
-    };
+    let (url, refresh) = open_session(&rt, url, sandbox, json)?;
 
     if args.tui {
         check_tui_args(&args)?;
@@ -608,6 +655,29 @@ fn find_serving_owned_deployment(
 mod tests {
     use super::*;
     use crate::api_client::test_support::MockServer;
+
+    #[test]
+    fn a_duration_takes_seconds_or_a_unit() {
+        for (text, seconds) in [
+            ("130", 130),
+            ("130s", 130),
+            ("2m", 120),
+            ("1h", 3600),
+            (" 5s ", 5),
+        ] {
+            assert_eq!(parse_duration(text), Ok(seconds), "{text}");
+        }
+        for text in ["", "s", "2d", "1.5m", "-3", "2m30s"] {
+            assert!(parse_duration(text).is_err(), "{text}");
+        }
+        use clap::Parser;
+        let cli = crate::Cli::try_parse_from(["a4", "stream", "Round/latest", "--duration", "2m"])
+            .expect("--duration 2m parses");
+        let Some(crate::Commands::Stream(args)) = cli.command else {
+            panic!("a stream command");
+        };
+        assert_eq!(args.duration, Some(120));
+    }
 
     #[test]
     fn the_dev_environment_does_not_drop_a_sandbox() {

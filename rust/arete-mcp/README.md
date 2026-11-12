@@ -690,12 +690,21 @@ as well as what it does.
   `subscribe` and cache reads return the refusal, and `list_connections`
   shows it as `sandbox_refusal`. Pass the
   stack's URL without `hs_token`: through a sandbox, one carrying its own
-  token is refused.
+  token is refused. A sandbox refusal of a read is a tool result with
+  `isError: true` whose JSON carries `code`, `retryable` and `hint`, like the
+  sandbox tools' refusals. A Program Read session is reused until half its
+  life (about a minute) is gone, and minted again when Program Read refuses
+  it as expired.
 - An account whose groups grant `sandboxes` but none of a read tool's own
   groups reads through a sandbox without `sandbox`: the one the `sandbox_*`
   tools resolve to. When none resolves, the tool fails with the same code
   and hint (`sandbox-selection-required`, `sandbox-none-granted`, ...) and
   never falls back to the account key.
+- An API key the owner bound to a sandbox grant is refused its own reads
+  (`sandbox-read-required`, naming the sandboxes). The read tools then read
+  through the sandbox chosen with `sandbox_select` (else `ARETE_SANDBOX_ID`,
+  else the only one named), and later reads go there directly. With several
+  named and none chosen, the tool returns the refusal with its `sandboxes`.
 
 **Rules v3.** Under version 3 rules the owner turns each supported program
 on or off, may narrow its instructions (else the registry's safe set) and

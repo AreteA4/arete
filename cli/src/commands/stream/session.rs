@@ -212,7 +212,7 @@ impl StreamFailure {
     pub fn status(&self) -> String {
         match self {
             Self::Refused(reason) => reason.clone(),
-            Self::SandboxRefused(refusal) => refusal.message(),
+            Self::SandboxRefused(refusal) => crate::commands::sandbox::cli_message(refusal),
             Self::GaveUp { .. } => self.to_string(),
         }
     }
@@ -225,7 +225,7 @@ impl fmt::Display for StreamFailure {
             Self::SandboxRefused(refusal) => write!(
                 f,
                 "the sandbox refused a new session: {}",
-                refusal.message()
+                crate::commands::sandbox::cli_message(refusal)
             ),
             Self::GaveUp { attempts, reason } => write!(
                 f,

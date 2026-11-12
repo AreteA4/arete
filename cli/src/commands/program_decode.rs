@@ -168,7 +168,18 @@ pub fn run(config_path: &str, args: DecodeArgs, json_output: bool) -> Result<()>
                 let sandbox = SandboxRead::open(sandbox, json_output)?;
                 decode_production(&client, config_path, &args, Some(&sandbox))?
             }
-            None => decode_production(&client, config_path, &args, None)?,
+            None => match decode_production(&client, config_path, &args, None) {
+                Ok(decoded) => decoded,
+                // A key a sandbox grant binds reads through that sandbox.
+                Err(error) => match crate::commands::sandbox::read_required(&error) {
+                    Some(refusal) => {
+                        let reader = crate::commands::sandbox::bound_reader(&refusal, json_output)?;
+                        let sandbox = SandboxRead::open(reader, json_output)?;
+                        decode_production(&client, config_path, &args, Some(&sandbox))?
+                    }
+                    None => return Err(error),
+                },
+            },
         },
         ReadTarget::Dev(env) => decode_dev(&client, config_path, &args, env)?,
     };

@@ -37,6 +37,9 @@ pub enum Source {
     Env,
     /// The only active sandbox the account has been granted.
     OnlyGrant,
+    /// The only sandbox the API named when it refused a direct read by a
+    /// key a sandbox grant binds (`sandbox-read-required`).
+    BoundKey,
 }
 
 impl Source {
@@ -47,6 +50,7 @@ impl Source {
             Self::Saved => "saved",
             Self::Env => "env:ARETE_SANDBOX_ID",
             Self::OnlyGrant => "only-grant",
+            Self::BoundKey => "bound-key",
         }
     }
 }

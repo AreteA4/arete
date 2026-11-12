@@ -62,6 +62,12 @@ const READ_MINT_MARGIN_SECS: u64 = 120;
 /// again. A rules change applies at once, so this stays short.
 const READS_CACHE_TTL: Duration = Duration::from_secs(60);
 
+/// The code of a direct read session (`POST /ws/sessions` with the API key)
+/// the API refused because a sandbox grant binds the key: it reads programs
+/// and stacks only through a sandbox. The refusal lists the sandboxes
+/// (`sandboxes: [{sandboxId, name}]`).
+pub const READ_REQUIRED: &str = "sandbox-read-required";
+
 /// The tools this module backs, hidden when there is neither an API key to
 /// list grants with nor a sandbox id.
 pub const TOOL_NAMES: [&str; 11] = [
@@ -295,8 +301,14 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         "sandbox-guard-insufficient-funds" => {
             "The sandbox wallet cannot pay for this: balanceLamports is what it holds and shortfallLamports, when present, how much more it needs. Ask the owner to fund the wallet, or spend less; the same call is refused until then. When `remaining` is set and your amount is over it, funding is not enough: use a smaller amount."
         }
+        "sandbox-program-not-allowlisted" if kind == CallKind::Read => {
+            "The sandbox can read only the programs in its rules (sandbox_reads lists them). Only the owner can add one, in the dashboard."
+        }
         "sandbox-program-not-allowlisted" | "sandbox-guard-program-not-allowlisted" => {
             "The program is not in the sandbox's rules (sandbox_rules lists them). Only the owner can add it, in the dashboard."
+        }
+        READ_REQUIRED => {
+            "This API key reads programs and stacks only through a sandbox (`sandboxes` lists them). Choose one with sandbox_select (it is remembered for this project), or pass `sandbox` on the call."
         }
         "sandbox-instruction-not-allowlisted" | "sandbox-guard-instruction-not-allowlisted" => {
             "That instruction is not allowed for this program. Use one sandbox_rules lists, or ask the owner to allow it."
@@ -377,7 +389,7 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
 }
 
 /// What a sandbox read session is for.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ReadTarget {
     /// One program's Program Read binding, at one release.
     ProgramRead {
@@ -444,6 +456,12 @@ impl SandboxRefusal {
 
     /// One line for a terminal: the API's message, its code, and the hint.
     pub fn message(&self) -> String {
+        self.message_with_hint(None)
+    }
+
+    /// [`Self::message`] with `hint` in place of this server's, for a
+    /// surface whose hints name other commands (the CLI's).
+    pub fn message_with_hint(&self, hint: Option<&str>) -> String {
         let shown = self.to_json();
         let error = shown
             .get("error")
@@ -451,17 +469,46 @@ impl SandboxRefusal {
             .or_else(|| shown.get("message").and_then(Value::as_str))
             .unwrap_or("The sandbox refused the request");
         let mut text = format!("{error} ({})", self.code());
+        // The programs the rules leave out, unless the message names them.
         if let Some(programs) = shown.get("programs").and_then(Value::as_array) {
-            let programs: Vec<&str> = programs.iter().filter_map(Value::as_str).collect();
-            if !programs.is_empty() {
-                text.push_str(&format!("; not in the rules: {}", programs.join(", ")));
+            let unnamed: Vec<&str> = programs
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|program| !error.contains(program))
+                .collect();
+            if !unnamed.is_empty() {
+                text.push_str(&format!("; not in the rules: {}", unnamed.join(", ")));
             }
         }
-        if let Some(hint) = shown.get("hint").and_then(Value::as_str) {
+        if let Some(hint) = hint.or_else(|| shown.get("hint").and_then(Value::as_str)) {
             text.push_str(". ");
             text.push_str(hint);
         }
         text
+    }
+
+    /// The refusal of a direct read by a key a sandbox grant binds: `body`
+    /// (a problem body) when its code is [`READ_REQUIRED`].
+    pub fn read_required(status: u16, body: Value) -> Option<Self> {
+        (body.get("code").and_then(Value::as_str) == Some(READ_REQUIRED)).then_some(Self {
+            status,
+            body,
+            kind: CallKind::Read,
+        })
+    }
+
+    /// The sandbox ids a [`READ_REQUIRED`] refusal lists, in its order.
+    fn listed_sandboxes(&self) -> Vec<String> {
+        self.body
+            .get("sandboxes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|sandbox| sandbox.get("sandboxId").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|id| selection::is_sandbox_id(id))
+            .map(str::to_string)
+            .collect()
     }
 }
 
@@ -601,6 +648,9 @@ pub struct SandboxClient {
     /// The sandbox this handle's calls name (a call's `sandbox` argument):
     /// an id, or a granted sandbox's name.
     explicit: Option<String>,
+    /// Where `explicit` came from: the call, unless this handle was pinned
+    /// to a sandbox resolved another way.
+    explicit_source: Source,
     /// The agent's account API key, used only to list grants and mint
     /// sandbox tokens.
     api_key: Option<String>,
@@ -614,6 +664,12 @@ pub struct SandboxClient {
     grants: Arc<Mutex<Option<CachedGrants>>>,
     /// The last `GET /reads` answer per sandbox id, and when it was read.
     reads: Arc<Mutex<HashMap<String, (Instant, Value)>>>,
+    /// Read sessions minted for one-off reads, per sandbox id and target,
+    /// with when each was minted here (unix seconds).
+    read_sessions: Arc<Mutex<HashMap<(String, ReadTarget), CachedRead>>>,
+    /// The API's refusal of a direct read because a sandbox grant binds
+    /// this key ([`READ_REQUIRED`]): later reads go through a sandbox.
+    bound: Arc<Mutex<Option<SandboxRefusal>>>,
 }
 
 impl std::fmt::Debug for SandboxClient {
@@ -629,6 +685,9 @@ impl std::fmt::Debug for SandboxClient {
 
 /// A listing of granted sandboxes and when it was made.
 type CachedGrants = (Instant, Vec<GrantedSandbox>);
+
+/// A read session and when it was minted here (unix seconds).
+type CachedRead = (ReadSession, u64);
 
 impl SandboxClient {
     /// From `ARETE_SANDBOX_ID`, `ARETE_API_URL`, the account key the rest
@@ -677,6 +736,7 @@ impl SandboxClient {
             api_base: api_base.trim_end_matches('/').to_string(),
             default_sandbox: sandbox_id,
             explicit: None,
+            explicit_source: Source::Argument,
             api_key: api_key
                 .map(|key| key.trim().to_string())
                 .filter(|key| !key.is_empty()),
@@ -685,6 +745,8 @@ impl SandboxClient {
             store: None,
             grants: Arc::new(Mutex::new(None)),
             reads: Arc::new(Mutex::new(HashMap::new())),
+            read_sessions: Arc::new(Mutex::new(HashMap::new())),
+            bound: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -708,7 +770,56 @@ impl SandboxClient {
             .map(str::trim)
             .filter(|sandbox| !sandbox.is_empty())
             .map(str::to_string);
+        client.explicit_source = Source::Argument;
         client
+    }
+
+    /// This client pinned to `resolved`, which its calls report as resolved
+    /// the way it was.
+    fn pinned(&self, resolved: &Resolved) -> Self {
+        let mut client = self.targeting(Some(&resolved.sandbox_id));
+        client.explicit_source = resolved.source;
+        client
+    }
+
+    /// The earlier refusal of a direct read because a sandbox grant binds
+    /// this key, if a read on this client met one.
+    pub fn bound(&self) -> Option<SandboxRefusal> {
+        self.bound.lock().ok().and_then(|bound| bound.clone())
+    }
+
+    /// For a key a sandbox grant binds, refused a direct read with
+    /// `refused` ([`READ_REQUIRED`]): this client pinned to the sandbox to
+    /// read through. That is the chosen one (`sandbox_select` or
+    /// `a4 sandbox use`, saved for the project), else `ARETE_SANDBOX_ID`,
+    /// else the only sandbox `refused` lists. With several listed and none
+    /// chosen, `refused` itself: it lists them, and its hint says how to
+    /// choose. The refusal is remembered, so later reads on this client go
+    /// through a sandbox without asking again.
+    pub fn read_through_bound(
+        &self,
+        refused: &SandboxRefusal,
+    ) -> Result<(Self, Resolved), SandboxRefusal> {
+        if let Ok(mut bound) = self.bound.lock() {
+            *bound = Some(refused.clone());
+        }
+        let resolved = if let Some((sandbox_id, source)) = self.chosen() {
+            Resolved { sandbox_id, source }
+        } else if let Some(sandbox_id) = &self.default_sandbox {
+            Resolved {
+                sandbox_id: sandbox_id.clone(),
+                source: Source::Env,
+            }
+        } else {
+            match refused.listed_sandboxes().as_slice() {
+                [only] => Resolved {
+                    sandbox_id: only.clone(),
+                    source: Source::BoundKey,
+                },
+                _ => return Err(refused.clone()),
+            }
+        };
+        Ok((self.pinned(&resolved), resolved))
     }
 
     /// Whether the sandbox tools can work at all: an API key to list the
@@ -817,7 +928,7 @@ impl SandboxClient {
             if selection::is_sandbox_id(wanted) {
                 return Ok(Resolved {
                     sandbox_id: wanted.clone(),
-                    source: Source::Argument,
+                    source: self.explicit_source,
                 });
             }
             let grants = self.granted(false).await?;
@@ -1114,7 +1225,7 @@ impl SandboxClient {
         let stale = matches!(&first, Err(refusal) if refusal.status == 401
         && matches!(
             refusal.body.get("code").and_then(Value::as_str),
-            Some("sandbox-session-expired" | "sandbox-session-invalid")
+            Some("sandbox-session-expired" | "sandbox-session-invalid" | "token-expired")
         ));
         if !stale {
             return first;
@@ -1334,6 +1445,50 @@ impl SandboxClient {
             token: token.to_string(),
             expires_at: body.get("expiresAt").and_then(Value::as_u64),
         })
+    }
+
+    /// [`Self::read_session`] for a one-off read (Program Read), reusing a
+    /// session minted for the same sandbox and target until half its life
+    /// is gone. A session the API gave no expiry is not reused. Streams
+    /// mint with [`Self::read_session`]: each refresh must re-check the
+    /// rules.
+    pub async fn read_session_cached(
+        &self,
+        target: &ReadTarget,
+    ) -> Result<ReadSession, SandboxRefusal> {
+        let key = (self.resolve().await?.sandbox_id, target.clone());
+        let now = unix_now();
+        let cached = self.read_sessions.lock().ok().and_then(|sessions| {
+            sessions
+                .get(&key)
+                .filter(|(session, minted_at)| {
+                    session.expires_at.is_some_and(|expires_at| {
+                        now < minted_at + expires_at.saturating_sub(*minted_at) / 2
+                    })
+                })
+                .map(|(session, _)| session.clone())
+        });
+        if let Some(session) = cached {
+            return Ok(session);
+        }
+        let session = self.read_session(target).await?;
+        if session.expires_at.is_some() {
+            if let Ok(mut sessions) = self.read_sessions.lock() {
+                sessions.insert(key, (session.clone(), now));
+            }
+        }
+        Ok(session)
+    }
+
+    /// Forget the cached read session for `target`, after the read it was
+    /// used for was refused as expired or invalid.
+    pub async fn forget_read_session(&self, target: &ReadTarget) {
+        let Ok(resolved) = self.resolve().await else {
+            return;
+        };
+        if let Ok(mut sessions) = self.read_sessions.lock() {
+            sessions.remove(&(resolved.sandbox_id, target.clone()));
+        }
     }
 
     /// An address for `args`. A PDA is derived here, without the API or
@@ -2070,6 +2225,10 @@ pub(crate) mod tests {
         seen.lock().unwrap().clone()
     }
 
+    pub(crate) fn now() -> u64 {
+        unix_now()
+    }
+
     pub(crate) fn body_of(request: &str) -> Value {
         serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap()
     }
@@ -2239,6 +2398,130 @@ pub(crate) mod tests {
         assert_eq!(requests(&seen).len(), 3);
     }
 
+    fn bound_refusal(sandboxes: Value) -> SandboxRefusal {
+        SandboxRefusal::read_required(
+            403,
+            json!({
+                "code": READ_REQUIRED,
+                "error": "This agent key is bound to a sandbox",
+                "sandboxes": sandboxes,
+                "readRoute": "/api/sandbox/v1/sessions",
+            }),
+        )
+        .expect("a read-required refusal")
+    }
+
+    #[test]
+    fn a_bound_key_reads_through_the_chosen_sandbox_else_the_only_one_listed() {
+        let other = "0b5a3e8e-2f7d-4c1a-8e2b-7f3c9d1e4a20";
+        let one = bound_refusal(json!([{"sandboxId": SANDBOX, "name": "Trading"}]));
+        let two = bound_refusal(json!([{"sandboxId": SANDBOX}, {"sandboxId": other}]));
+        assert!(SandboxRefusal::read_required(403, json!({"code": "sandbox-paused"})).is_none());
+
+        // Nothing chosen: the only sandbox listed.
+        let fresh = SandboxClient::from_values(None, Some("k".into()), None);
+        assert!(fresh.bound().is_none());
+        let (pinned, resolved) = fresh.read_through_bound(&one).unwrap();
+        assert_eq!(resolved.sandbox_id, SANDBOX);
+        assert_eq!(resolved.source, Source::BoundKey);
+        assert_eq!(fresh.bound().unwrap().code(), READ_REQUIRED);
+        let pinned_to = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(pinned.resolve())
+            .unwrap();
+        assert_eq!(pinned_to.source, Source::BoundKey);
+
+        // Several listed, none chosen: the refusal itself, listing them.
+        let refused = fresh.read_through_bound(&two).unwrap_err();
+        assert_eq!(refused.code(), READ_REQUIRED);
+        assert_eq!(refused.to_json()["sandboxes"].as_array().unwrap().len(), 2);
+        assert!(refused.to_json()["hint"]
+            .as_str()
+            .unwrap()
+            .contains("sandbox_select"));
+
+        // A chosen sandbox, then ARETE_SANDBOX_ID, win over the listing.
+        fresh.set_choice(Some((other.into(), Source::Selected)));
+        let (_, resolved) = fresh.read_through_bound(&two).unwrap();
+        assert_eq!(
+            (resolved.sandbox_id.as_str(), resolved.source),
+            (other, Source::Selected)
+        );
+        let env = SandboxClient::from_values(Some(other.into()), Some("k".into()), None);
+        let (_, resolved) = env.read_through_bound(&one).unwrap();
+        assert_eq!(
+            (resolved.sandbox_id.as_str(), resolved.source),
+            (other, Source::Env)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_read_session_is_reused_until_half_its_life_is_gone() {
+        let target = ReadTarget::ProgramRead {
+            binding_id: "prb_1".into(),
+            program_release_hash: "rel".into(),
+        };
+        for (lifetime, mints) in [(60, 1), (1, 2)] {
+            let (base, seen) = stub(vec![(
+                "POST",
+                "/api/sandbox/v1/sessions",
+                200,
+                json!({"token": "read-tok", "expiresAt": unix_now() + lifetime}),
+            )]);
+            let client = client(&base);
+            for _ in 0..2 {
+                let session = client.read_session_cached(&target).await.unwrap();
+                assert_eq!(session.token, "read-tok");
+            }
+            let minted = requests(&seen)
+                .iter()
+                .filter(|request| request.starts_with("POST /api/sandbox/v1/sessions"))
+                .count();
+            assert_eq!(minted, mints, "a session that lasts {lifetime} s");
+            // Forgotten, it is minted again.
+            client.forget_read_session(&target).await;
+            client.read_session_cached(&target).await.unwrap();
+            let minted_after = requests(&seen)
+                .iter()
+                .filter(|request| request.starts_with("POST /api/sandbox/v1/sessions"))
+                .count();
+            assert_eq!(minted_after, mints + 1);
+            // The sandbox token lasts its life: minted once for all of them.
+            let tokens = requests(&seen)
+                .iter()
+                .filter(|request| request.starts_with("POST /ws/sessions"))
+                .count();
+            assert_eq!(tokens, 1);
+        }
+    }
+
+    #[test]
+    fn a_refusal_names_each_program_once() {
+        let refusal = |error: &str| SandboxRefusal {
+            status: 403,
+            body: json!({
+                "code": "sandbox-program-not-allowlisted",
+                "error": error,
+                "programs": ["KLend", "JUP6"],
+            }),
+            kind: CallKind::Read,
+        };
+        let named = refusal("Program KLend is not in the sandbox's read rules").message();
+        assert!(named.contains("not in the rules: JUP6."), "{named}");
+        assert!(!named.contains("KLend, "), "{named}");
+        let both = refusal("KLend and JUP6 are not in the rules").message();
+        assert!(!both.contains("; not in the rules"), "{both}");
+        let neither = refusal("The stack decodes programs the rules leave out").message();
+        assert!(
+            neither.contains("not in the rules: KLend, JUP6"),
+            "{neither}"
+        );
+        // A surface with its own commands passes its hint instead.
+        let cli = refusal("x").message_with_hint(Some("`a4 sandbox reads` lists them."));
+        assert!(cli.ends_with("`a4 sandbox reads` lists them."), "{cli}");
+        assert!(!cli.contains("sandbox_reads"), "{cli}");
+    }
+
     #[tokio::test]
     async fn a_read_outside_the_rules_is_refused_for_good() {
         let (base, _) = stub(vec![(
@@ -2262,7 +2545,9 @@ pub(crate) mod tests {
         assert_eq!(refusal.code(), "sandbox-program-not-allowlisted");
         let message = refusal.message();
         assert!(message.contains("not in the rules: KLend"), "{message}");
-        assert!(message.contains("Only the owner can add it"), "{message}");
+        // A read refusal points to the programs the sandbox can read.
+        assert!(message.contains("sandbox_reads lists them"), "{message}");
+        assert!(!message.contains("sandbox_rules"), "{message}");
         // A read mint is a read: rate limits and outages are retried.
         assert_eq!(
             CallKind::of(&reqwest::Method::POST, "/sessions"),

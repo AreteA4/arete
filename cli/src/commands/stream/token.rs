@@ -409,6 +409,14 @@ fn mint_session_token(
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().unwrap_or_default();
+        // A key a sandbox grant binds reads stacks only through a sandbox:
+        // kept whole, so the caller can open the stream through it.
+        let bound = serde_json::from_str(&body).ok().and_then(|body| {
+            arete_mcp::sandbox::SandboxRefusal::read_required(status.as_u16(), body)
+        });
+        if let Some(refusal) = bound {
+            return Err(anyhow::Error::new(refusal));
+        }
         bail!(mint_refusal(status, &body, api_key.is_some(), endpoint));
     }
 
@@ -657,6 +665,30 @@ mod tests {
         )
         .is_none());
         assert!(parse_refresh_response(r#"{"mode":"list","op":"upsert","key":"a"}"#).is_none());
+    }
+
+    #[test]
+    fn a_stream_refused_for_a_bound_key_keeps_the_refusal() {
+        let bound = serde_json::json!({
+            "error": "This agent key is bound to a sandbox, so it reads programs and stacks only through it",
+            "code": "sandbox-read-required",
+            "retryable": false,
+            "sandboxes": [{"sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "name": "Trading"}],
+            "readRoute": "/api/sandbox/v1/sessions",
+        });
+        let mint = MockServer::json(403, &bound.to_string());
+        let endpoint = format!("{}/ws/sessions", mint.base_url());
+        let Err(error) = mint_session_token(
+            &endpoint,
+            Some("a4_sk_agent"),
+            "wss://ore.stack.arete.run",
+            None,
+        ) else {
+            panic!("a refused mint");
+        };
+        let refusal = crate::commands::sandbox::read_required(&error).expect("kept whole");
+        assert_eq!(refusal.code(), arete_mcp::sandbox::READ_REQUIRED);
+        assert_eq!(refusal.to_json()["sandboxes"][0]["name"], "Trading");
     }
 
     #[tokio::test]
