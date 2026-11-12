@@ -1,24 +1,34 @@
 <!-- BEGIN:arete v2 -->
 ## Arete
 
-This project uses Arete for Solana protocols, typed views and program
-operations. The `a4` CLI is the interface; the six installed skills hold the
-detailed workflows: `arete` (discovery and dependencies), `arete-streams`
-(live views), `arete-programs` (accounts and transactions),
-`arete-protocols` (authoring, running and calling protocols),
-`arete-stack-authoring` (custom read models) and `arete-deploy` (publication
-and deployment).
+This project uses Arete: sandboxes for agents on Solana, with program reads
+and live views as their read side. The `a4` CLI is the interface; the
+installed skills hold the detailed workflows. `a4 init` installs the ones this
+account's command groups cover, from: `arete-sandbox` (acting from a sandbox
+wallet), `arete` (discovery and dependencies), `arete-streams` (live views),
+`arete-programs` (accounts and transactions), `arete-protocols` (authoring,
+running and calling protocols), `arete-stack-authoring` (custom read models)
+and `arete-deploy` (publication and deployment).
 
-What Arete can do, for Solana programs and data: compose existing programs
-into protocols with typed steps, guards and roles, develop them in cloud
-mainnet forks (`a4 dev`), and call them from apps and agents; find programs
-and live-data stacks from intent in a public catalog; read live views once
-(`a4 get`, MCP `read_view`) or stream them; generate typed TypeScript/React,
-Rust and Python SDKs; read program accounts and chain state; derive PDAs and
-build instructions, transactions and multi-step flows, signed and submitted
+What Arete can do: give an agent a sandbox, a funded Solana wallet it uses
+without holding the key, inside rules its owner signed; find programs and
+live-data stacks from intent in a public catalog; read live views once
+(`a4 get`, MCP `read_view`) or stream them; and read program accounts and
+chain state. In private beta: compose programs into protocols with typed
+steps, guards and roles, develop them in cloud mainnet forks (`a4 dev`) and
+call them from apps and agents; generate typed TypeScript/React, Rust and
+Python SDKs; build instructions, transactions and multi-step flows signed
 through application wallets; and author and deploy custom live read models
 (stacks).
 
+- Sandbox: with the agent's API key set (or `ARETE_SANDBOX_ID`), the `arete`
+  MCP server lists the `sandbox_*` tools. `sandbox_list` shows the sandboxes
+  the owner granted; with more than one, choose with `sandbox_select`
+  (remembered for this project; `a4 sandbox use` in the CLI). Read
+  `sandbox_status` and `sandbox_rules` first, preview every action with
+  `sandbox_preview`, then run it with `sandbox_invoke`; `sandbox_reads` lists
+  the programs it can read. The `arete-sandbox` skill has the loop. Never ask
+  for a private key or the owner's API key.
 - Health check first: `a4 doctor --summary --json` (ready when top-level
   `status` is `"ok"`; exit 0 can include warnings; `checks` lists only what
   needs attention, and an `info` check there is optional unless you need

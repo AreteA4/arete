@@ -25,6 +25,7 @@ use crate::agents::{
 };
 use crate::telemetry;
 use crate::ui;
+use arete_mcp::entitlements::Surface;
 
 #[derive(Args, Debug, Clone)]
 pub struct InitArgs {
@@ -127,6 +128,8 @@ pub struct InitPlan {
     pub agents_md: bool,
     pub skills: bool,
     pub mcp: bool,
+    /// The account's command groups, which pick the skills to install.
+    pub surface: Surface,
 }
 
 impl InitPlan {
@@ -142,6 +145,7 @@ impl InitPlan {
             agents_md: !args.no_agents_md,
             skills: !args.no_skills,
             mcp: !args.no_mcp,
+            surface: Surface::Everything,
         })
     }
 }
@@ -158,6 +162,9 @@ pub fn project_root(config_path: &str) -> PathBuf {
 pub fn run(args: InitArgs, config_path: &str, json: bool) -> Result<()> {
     let mut plan = InitPlan::from_args(&args)?;
     let env = Env::from_process(project_root(config_path));
+    if plan.skills {
+        plan.surface = crate::entitlements::selected_account_surface(config_path);
+    }
     if plan.selection == Selection::Detected && ui::interactive() {
         plan.selection = pick_agents(&detect(&env))?;
     }
@@ -292,6 +299,7 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
     if plan.skills && (fallback || !selected.is_empty()) {
         let options = SkillsOptions {
             agent_ids: agent_ids.clone(),
+            skills: skills::skills_for(&plan.surface),
             skills_ref: plan.skills_ref.clone(),
             global: plan.global,
             timeout: skills::SKILLS_TIMEOUT,
@@ -502,6 +510,7 @@ mod tests {
             agents_md: true,
             skills: false,
             mcp: true,
+            surface: Surface::Everything,
         }
     }
 
