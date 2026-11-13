@@ -398,7 +398,12 @@ installed.
 
 Listed when the server has an API key (or `ARETE_SANDBOX_ID` is set), for a
 [sandbox](/sandboxes/overview/) (alpha) whose owner granted this agent
-access. The agent's own API key lists the sandboxes it has been granted and
+access. When the account's command groups (`commandGroups` on
+`GET /api/auth/me`) include `sandboxes`, `a4 mcp` also lists the live-view
+and program-read tools (`connect`, `read_view`, `subscribe`, the cache tools
+such as `get_entity` and `query_entities`, and `program_read_account`), even
+without `streams`: a sandbox reads the programs in its rules through them
+(see [Reading through a sandbox](#reading-through-a-sandbox)). The agent's own API key lists the sandboxes it has been granted and
 mints a short-lived token for the one a call uses; no key or RPC URL is ever
 returned.
 
@@ -410,8 +415,8 @@ returned.
 | `sandbox_rules`    |                                                                              | the allowed programs and instructions, with the Rules v3 toggles, limits and allowlist         |
 | `sandbox_derive`   | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`             | an address: a PDA computed locally, an ATA under the mint's token program                      |
 | `sandbox_preview`  | `action`, `args`                                                             | a dry run: `pass` and what the wallet would lose, or the refusal                               |
-| `sandbox_invoke`   | `action` (`invoke`, `withdraw`, `swap`), `args`, `idempotencyKey?`           | runs one action: the only tool that moves funds                                                |
-| `sandbox_action`   | `actionId` or `idempotencyKey`                                               | one action's status                                                                            |
+| `sandbox_invoke`   | `action` (`invoke`, `withdraw`, `swap`), `args`, `idempotencyKey?`           | runs one action: the only tool that moves funds; the same key returns the original result      |
+| `sandbox_action`   | `actionId` or `idempotencyKey`                                               | one action's status, `outflowLamports` (fee included) and `guardPipeline`                      |
 | `sandbox_history`  | `cursor?`, `limit?`, `status?`, `program?`, `mint?`, `since?`, `includeRaw?` | read-only: past actions, newest first, with decoded instructions and balance changes           |
 | `sandbox_holdings` | `includeRaw?`                                                                | read-only: SOL, tokens (with `acquiredBySandbox`) and program positions                        |
 | `sandbox_reads`    |                                                                              | read-only: the programs the sandbox can read, exactly the programs its rules enable            |
@@ -429,8 +434,26 @@ grant), `sandbox-paused` (every grant is paused) or
 
 Every `sandbox_*` error carries `code`, `retryable` and a `hint`, even when
 the API could not be reached. With `retryable: true`, retry a read or a
-`sandbox_preview` as is; after a `sandbox_invoke`, look the action up with
-`sandbox_action` and its `idempotencyKey` first.
+`sandbox_preview` as is; after a `sandbox_invoke`, retry only with the same
+`idempotencyKey`, or look the action up with `sandbox_action` first.
+
+A key never runs twice. Sending the same request with the same key returns
+the original result, success or refusal, plus `replayed: true` (an action
+still in flight returns its current status); a different request under a used
+key is refused with the existing action's id. A replayed refusal also carries
+`rejectCode`, the code on the stored action record, which can differ from its
+`code`. Go by the replayed `code` and `retryable`, not the record's: a
+replayed upstream outage is `retryable: true`, not a permanent refusal, so
+retry it with a new key (the same key replays it). Older servers answer every
+repeat with `sandbox-duplicate-action` and the action's id: look it up with
+`sandbox_action`. `outflowLamports` on a preview, a result, a lookup or a
+history item is everything that left the wallet, the network fee included.
+Results, lookups and history items give the network fee alone as
+`networkFeeLamports`, null until the landed transaction is read.
+`feeLamports`, when a result carries it, is a different amount: the
+protocol's own fees (history items don't carry it). `guardPipeline` (such as `execute-v1`) names the guard
+pipeline that checked the action, null or absent on older actions and on
+actions that never reached the guard (a rejected one, for example).
 
 ### Reading through a sandbox
 

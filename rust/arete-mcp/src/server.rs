@@ -2022,7 +2022,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Dry-run one sandbox action: the same `action` and `args` as `sandbox_invoke`. Arete builds the transaction and runs every check (rules at every CPI depth, account owners, no authority or delegate changes, caps) without signing or recording anything. Returns `pass` with what the wallet would lose and the transaction it built, or the refusal with its code, the `rule` that refused and details (program, instruction, mint, attempted, cap). Every action has a dry run, `withdraw` included. An `invoke` result lists the accounts Arete filled for each instruction (`filled`). A refusal's `path` is the index in your `instructions` (`transactionPath` adds the transaction's own index when they differ, `addedBy` when Arete added the instruction, such as a v0 compute budget). Iterate here until it passes, then `sandbox_invoke`."
+        description = "Dry-run one sandbox action: the same `action` and `args` as `sandbox_invoke`. Arete builds the transaction and runs every check (rules at every CPI depth, account owners, no authority or delegate changes, caps) without signing or recording anything. Returns `pass` with what the wallet would lose (`outflowLamports`, the network fee included; `feeLamports`, the protocol's own fees, when given), the `guardPipeline` that checked it and the transaction it built, or the refusal with its code, the `rule` that refused and details (program, instruction, mint, attempted, cap). Every action has a dry run, `withdraw` included. An `invoke` result lists the accounts Arete filled for each instruction (`filled`). A refusal's `path` is the index in your `instructions` (`transactionPath` adds the transaction's own index when they differ, `addedBy` when Arete added the instruction, such as a v0 compute budget). Iterate here until it passes, then `sandbox_invoke`."
     )]
     async fn sandbox_preview(
         &self,
@@ -2040,7 +2040,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Run one action from the sandbox wallet. Name the `action` and pass its `args`; Arete builds the transaction, checks it like `sandbox_preview`, signs, sends and waits for confirmation. Actions (only those the owner granted; `sandbox_status` lists them): `invoke` — named program instructions, `args: { instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat?: \"v1\" | \"v0\" }`, 1 to 32 that fit one transaction, named exactly as `sandbox_rules` lists them, the wallet the only signer, accounts with a `fill` optional; `withdraw` — SOL to the owner's withdraw address (the only destination), `args: { lamports, transactionFormat? }`; `swap` — exact-input swap through the venues the owner allows, `args: { inputMint, outputMint, amount, slippageBps?, computeUnitLimit?, computeUnitPriceMicroLamports? }`. Pass u64 amounts as decimal strings. Returns the action id, status (`landed`, `failed`, `sent`), signature and what left the wallet. Transactions are Solana v1 by default (up to 4096 bytes and 64 accounts); `transactionFormat: \"v0\"` builds the 1232-byte v0 format. A refusal names the `code` and the `rule` that refused. Each call has an idempotency key (yours, or generated), returned on success and on error: never retry a timed-out call with a new key; look it up with `sandbox_action`."
+        description = "Run one action from the sandbox wallet. Name the `action` and pass its `args`; Arete builds the transaction, checks it like `sandbox_preview`, signs, sends and waits for confirmation. Actions (only those the owner granted; `sandbox_status` lists them): `invoke` — named program instructions, `args: { instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat?: \"v1\" | \"v0\" }`, 1 to 32 that fit one transaction, named exactly as `sandbox_rules` lists them, the wallet the only signer, accounts with a `fill` optional; `withdraw` — SOL to the owner's withdraw address (the only destination), `args: { lamports, transactionFormat? }` (its `outflowLamports` is `lamports` plus the network fee); `swap` — exact-input swap through the venues the owner allows, `args: { inputMint, outputMint, amount, slippageBps?, computeUnitLimit?, computeUnitPriceMicroLamports? }`. Pass u64 amounts as decimal strings. Returns the action id, status (`landed`, `failed`, `sent`), signature, `outflowLamports` (everything that left the wallet, the network fee included), `networkFeeLamports` (the network fee alone; null until the landed transaction is read), `feeLamports` (the protocol's own fees, when given) and `guardPipeline`. Transactions are Solana v1 by default (up to 4096 bytes and 64 accounts); `transactionFormat: \"v0\"` builds the 1232-byte v0 format. A refusal names the `code` and the `rule` that refused. Each call has an idempotency key (yours, or generated), returned on success and on error. A key never runs twice: retrying the same request with the same key is safe and returns the original result, success or refusal, with `replayed: true` (an action still in flight returns its current status). A replayed refusal also carries the record's `rejectCode`, which can differ: go by the replayed `code` and `retryable`, so a replayed outage (`retryable: true`) is not a permanent refusal; retry it with a new key, since the same key replays it. A different request under a used key is refused with the existing action's id. Older servers answer every repeat with `sandbox-duplicate-action`: then look the action up with `sandbox_action`. Never retry a timed-out call with a new key."
     )]
     async fn sandbox_invoke(
         &self,
@@ -2061,7 +2061,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Look up one sandbox action by `actionId` or by the `idempotencyKey` it ran under: status (`reserved`, `rejected`, `sent`, `landed`, `failed`, `unknown`), reject code, signature and outflow. Use it after a timeout instead of retrying."
+        description = "Look up one sandbox action by `actionId` or by the `idempotencyKey` it ran under: status (`reserved`, `rejected`, `sent`, `landed`, `failed`, `unknown`), reject code, signature, `outflowLamports` (everything that left the wallet, the network fee included), `networkFeeLamports` (the network fee alone; null until the landed transaction is read) and `guardPipeline` (the guard pipeline that checked it, such as `execute-v1`; null or absent for older actions and for actions that never reached the guard). Use it after a timeout, or a `sandbox-duplicate-action` refusal, instead of retrying with a new key. When a replayed `sandbox_invoke` answer and the record disagree, the replayed `code` and `retryable` win: a record's `rejectCode` can read as final for an outage the replay marks retryable."
     )]
     async fn sandbox_action(
         &self,
@@ -2082,7 +2082,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Read-only. The sandbox's action history, newest first: every action the wallet ran, with `id`, `createdAt`, `status` (`landed`, `failed`, `rejected`, ...), `signature`, `slot`, the `programs` and decoded `instructions` (name and args), the Anchor `events` it emitted (`program`, `name`, instruction `path`, `source` `emit` or `emit_cpi`, decoded `fields`, base64 `data`; `fields.__parse_error` says why when an event did not decode, and `name` is null when no IDL event matched), `solDelta` (lamports, signed), `tokenDeltas` (`mint`, raw `delta`, `decimals`) and the `accounts` touched. Page with `cursor` (the previous answer's `nextCursor`, null on the last page) and `limit` (1 to 100, default 20). Filter by `status`, `program` (id or name), `mint` or `since` (RFC 3339): filtered reads scan further pages until `limit` match, and `nextCursor` carries on after the last page scanned. `raw` (the parsed transaction with pre and post balances) is left out unless `includeRaw` is true."
+        description = "Read-only. The sandbox's action history, newest first: every action the wallet ran, with `id`, `createdAt`, `status` (`landed`, `failed`, `rejected`, ...), `signature`, `slot`, the `programs` and decoded `instructions` (name and args), the Anchor `events` it emitted (`program`, `name`, instruction `path`, `source` `emit` or `emit_cpi`, decoded `fields`, base64 `data`; `fields.__parse_error` says why when an event did not decode, and `name` is null when no IDL event matched), `solDelta` (lamports, signed), `tokenDeltas` (`mint`, raw `delta`, `decimals`), the `accounts` touched and, when recorded, `outflowLamports` (everything that left the wallet, the network fee included), `networkFeeLamports` (the network fee alone; null until the landed transaction is read) and `guardPipeline` (null or absent for older actions and for actions that never reached the guard). Page with `cursor` (the previous answer's `nextCursor`, null on the last page) and `limit` (1 to 100, default 20). Filter by `status`, `program` (id or name), `mint` or `since` (RFC 3339): filtered reads scan further pages until `limit` match, and `nextCursor` carries on after the last page scanned. `raw` (the parsed transaction with pre and post balances) is left out unless `includeRaw` is true."
     )]
     async fn sandbox_history(
         &self,
@@ -8005,5 +8005,81 @@ mod describe_sdk_tests {
         assert_eq!(targets.len(), 2, "{targets:?}");
         assert!(targets[0].contains(OTHER), "{targets:?}");
         assert!(targets[1].contains(TEST_SANDBOX_ID), "{targets:?}");
+    }
+}
+
+#[cfg(test)]
+mod sandbox_result_tests {
+    use serde_json::{json, Value};
+
+    use super::sandbox_result;
+    use crate::sandbox::{CallKind, SandboxRefusal};
+
+    fn shown(result: rmcp::model::CallToolResult) -> (bool, Value) {
+        let failed = result.is_error == Some(true);
+        let text = serde_json::to_value(&result).unwrap()["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        (failed, serde_json::from_str(&text).unwrap())
+    }
+
+    /// An action result reaches the agent with every field the API sent,
+    /// whichever shape: `replayed`, `networkFeeLamports`, `feeLamports` and
+    /// `guardPipeline` from a
+    /// current server, or none of them from an older one. The key is added
+    /// only when the API left it out.
+    #[test]
+    fn action_results_pass_through_in_either_shape() {
+        let current = json!({
+            "actionId": "a-1", "status": "landed", "signature": "sig",
+            "outflowLamports": "105005000", "networkFeeLamports": "5000",
+            "feeLamports": "1000000", "guardPipeline": "execute-v1",
+            "replayed": true, "idempotencyKey": "k-1",
+        });
+        let (failed, body) = shown(sandbox_result(Ok(current.clone()), Some("k-1")));
+        assert!(!failed);
+        assert_eq!(body, current);
+
+        let older = json!({
+            "actionId": "a-1", "status": "landed", "signature": "sig",
+            "outflowLamports": "105000000",
+        });
+        let (failed, body) = shown(sandbox_result(Ok(older), Some("k-1")));
+        assert!(!failed);
+        assert_eq!(body["idempotencyKey"], "k-1");
+        assert_eq!(body["outflowLamports"], "105000000");
+        assert!(body.get("replayed").is_none());
+        assert!(body.get("guardPipeline").is_none());
+
+        // An action lookup carries `networkFeeLamports` (null until the
+        // landing is read) and `guardPipeline` (null for older actions and
+        // ones that never reached the guard).
+        let looked_up = json!({
+            "actionId": "a-0", "status": "sent",
+            "networkFeeLamports": null, "guardPipeline": null,
+        });
+        let (_, body) = shown(sandbox_result(Ok(looked_up.clone()), None));
+        assert_eq!(body, looked_up);
+    }
+
+    /// An older server's refusal of a repeated key is a tool error with the
+    /// action id, the key and a hint naming `sandbox_action`.
+    #[test]
+    fn a_duplicate_key_refusal_keeps_the_action_id_and_key() {
+        let refusal = SandboxRefusal {
+            status: 409,
+            body: json!({
+                "code": "sandbox-duplicate-action", "retryable": false,
+                "error": "This idempotency key is already used", "actionId": "a-1",
+            }),
+            kind: CallKind::Action,
+        };
+        let (failed, body) = shown(sandbox_result(Err(refusal), Some("k-1")));
+        assert!(failed);
+        assert_eq!(body["code"], "sandbox-duplicate-action");
+        assert_eq!(body["actionId"], "a-1");
+        assert_eq!(body["idempotencyKey"], "k-1");
+        assert!(body["hint"].as_str().unwrap().contains("sandbox_action"));
     }
 }

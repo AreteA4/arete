@@ -120,9 +120,11 @@ owner signed. Two numbers in it are easy to mix up:
 - `revision`: which signing of the sandbox's rules is active (`1` after the
   first signing, `2` after the owner changes them once, and so on).
 
-The guard pipeline a preview or action names (`guardPipeline`, for example
-`execute-v1`) is neither: it is how Arete simulates and checks the
-transaction. The view carries the signed document as `signedRules`, so
+The guard pipeline a preview, an action result, a `sandbox_action` lookup or
+a history item names (`guardPipeline`, for example `execute-v1`; null or
+absent on older actions and on actions that never reached the guard) is
+neither: it is how Arete simulates and checks
+the transaction. The view carries the signed document as `signedRules`, so
 `a4 sandbox rules show --json | a4 sandbox rules validate -` checks the
 signed rules. A view without `signedRules` is refused rather than checked as
 a document. The only spend limits are the per-program `spendLimit`s: a

@@ -16,9 +16,26 @@ and what triggered it (`program`, `instruction`, `mint`, `attempted`, `cap`,
 - **`retryable: true` on a read or a preview**: nothing changed. Retry the
   same call, after `retryAfterSeconds` when present.
 - **`retryable: true` on `sandbox_invoke`**: the action may have run unless
-  the code says the guard refused it. Look it up with `sandbox_action` and the
-  `idempotencyKey` first: if it ran, don't repeat it; if it was refused, retry
-  with a new key; if no action has the key, retry with the same key.
+  the code says the guard refused it. Never retry it under a new key. Retrying
+  with the same `idempotencyKey` is safe: the key never runs twice, and the
+  same request returns the original result with `replayed: true`. Older
+  servers answer the repeat with `sandbox-duplicate-action` instead, so look
+  the action up with `sandbox_action` and the `idempotencyKey`: if it ran,
+  don't repeat it; if it was refused, retry with a new key; if no action has
+  the key, retry with the same key. A replayed answer (`replayed: true`) is
+  the exception: it already says what happened, as below.
+
+A refusal with `replayed: true` is the recorded refusal of the action the key
+already ran, not a new one. Its `hint` says so; to try again, fix the request
+and use a new key.
+
+A replayed refusal also carries `rejectCode`, the code on the stored action
+record. It can differ from the replayed `code`. Go by the replayed body's
+`code` and `retryable`, not the record's: a replayed upstream outage comes
+back with `retryable: true` and is not a permanent refusal, even when the
+record (here or in `sandbox_action`) reads as final. Retry it with a new key,
+after `retryAfterSeconds` when present; the same key only replays the
+outage.
 
 ## Choosing a sandbox
 
@@ -64,14 +81,14 @@ naming the matching `a4` command.
 
 ## The request
 
-| Code                                                      | Meaning                                                                                                                       |
-| --------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox-intent-invalid`, `sandbox-intent-foreign-signer` | Names, args or accounts don't match `sandbox_rules`, or a signer other than the wallet; `missingAccounts` lists what's needed |
-| `sandbox-guard-trial-failed`                              | The transaction fails when run. Check accounts and amounts; logs are in the details.                                          |
-| `sandbox-guard-insufficient-funds`                        | The wallet can't pay: `balanceLamports`, and `shortfallLamports` when known                                                   |
-| `sandbox-derive-invalid`                                  | Bad `programId` or seeds: at most 15 seeds of at most 32 bytes each                                                           |
-| `sandbox-duplicate-action`                                | The idempotency key already ran. Look it up with `sandbox_action`.                                                            |
-| `sandbox-request-invalid`                                 | The API rejected the request's shape                                                                                          |
+| Code                                                         | Meaning                                                                                                                                                                                                                           |
+| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-intent-invalid`, `sandbox-intent-foreign-signer`    | Names, args or accounts don't match `sandbox_rules`, or a signer other than the wallet; `missingAccounts` lists what's needed                                                                                                     |
+| `sandbox-guard-trial-failed`                                 | The transaction fails when run. Check accounts and amounts; logs are in the details.                                                                                                                                              |
+| `sandbox-guard-insufficient-funds`                           | The wallet can't pay: `balanceLamports`, and `shortfallLamports` when known                                                                                                                                                       |
+| `sandbox-derive-invalid`                                     | Bad `programId` or seeds: at most 15 seeds of at most 32 bytes each                                                                                                                                                               |
+| `sandbox-duplicate-action`, `sandbox-idempotency-key-reused` | The key already belongs to an action, named by its id. Current servers send this only when a different request reuses the key: use a new key. Older servers send it for every repeat, so look the action up with `sandbox_action` |
+| `sandbox-request-invalid`                                    | The API rejected the request's shape                                                                                                                                                                                              |
 
 ## Access
 

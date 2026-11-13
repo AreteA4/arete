@@ -98,7 +98,8 @@ The deployment returns operational bindings for the exact StackManifest.
 When you are logged in, `a4 --help`, completions (`a4 --completions <shell>`)
 and "did you mean" suggestions list only the command groups the Arete API
 reports for your account (`commandGroups` on `GET /api/auth/me`):
-`streams` (`stream`, `get`), `stacks` (`create`, `up`, `status`, `stack`,
+`sandboxes` (`sandbox`, plus `stream`, `get` and `program account`, which
+then read through a sandbox), `streams` (`stream`, `get`), `stacks` (`create`, `up`, `status`, `stack`,
 `program`, `idl`), `registry` (`explore`, `know`, `install`, `update`,
 `remove`, `sdk`), `protocols` (`protocol`, `squads`, and `create`) and `dev`
 (`dev`). Account commands (`init`, `doctor`, `auth`, `login`, `mcp`, `self`,

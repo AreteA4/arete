@@ -154,7 +154,7 @@ always listed.
 
 | Group | Tools |
 |-------|-------|
-| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`), and the read tools below, which then read through a sandbox |
+| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`), and the `streams` read tools and `program_read_account`, which then read through a sandbox: an account reporting only `account` and `sandboxes` still sees `connect`, `read_view`, `get_entity`, `query_entities` and the rest |
 | `streams` | connection, subscription and cache tools, `read_view` and `program_read_account` |
 | `stacks` | `program_read_account` |
 | `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
@@ -642,21 +642,31 @@ resolves, the call is refused before any token is minted, with
 - `sandbox_preview({ action, args })` — a dry run of the same action
   `sandbox_invoke` takes: builds the transaction and runs every check
   without signing or recording anything. Returns `pass` with what the wallet
-  would lose and the transaction it built, or the refusal. Every action has
+  would lose (`outflowLamports`, the network fee included; `feeLamports`,
+  the protocol's own fees, when given), the `guardPipeline` that checked it and the transaction it
+  built, or the refusal. Every action has
   a dry run, `withdraw` included. A refusal's `path` is the index in the
   request's `instructions`; `transactionPath` gives the transaction's own
   index when it differs (a v0 compute budget or a fee leg comes first).
 - `sandbox_invoke({ action, args, idempotencyKey? })` — runs one action.
   This is the only tool that moves funds; there are no per-action tools.
+  Returns the action id, status, signature, `outflowLamports` (everything
+  that left the wallet, the network fee included), `networkFeeLamports`
+  (the network fee alone; null until the landed transaction is read),
+  `feeLamports` (the protocol's own fees, when given) and `guardPipeline`.
 - `sandbox_action({ actionId | idempotencyKey })` — one action's status,
-  for looking up a timed-out call instead of retrying it.
+  `outflowLamports`, `networkFeeLamports` and `guardPipeline` (null or
+  absent for older actions and for actions that never reached the guard),
+  for looking up a timed-out call instead of retrying it under a new key.
 - `sandbox_history({ cursor?, limit?, status?, program?, mint?, since?, includeRaw? })`
   — read-only. Every action the wallet ran, newest first: `id`, `createdAt`,
   `status`, `signature`, `slot`, the `programs` and decoded `instructions`,
   the Anchor `events` it emitted (`program`, `name`, `path`, `source`,
   decoded `fields`, base64 `data`; `fields.__parse_error` when one did
-  not decode, with `name: null` if no IDL event matched), `solDelta`, `tokenDeltas` (`mint`, raw `delta`, `decimals`) and the
-  `accounts` touched. Page with `cursor` (the previous `nextCursor`) and
+  not decode, with `name: null` if no IDL event matched), `solDelta`, `tokenDeltas` (`mint`, raw `delta`, `decimals`), the
+  `accounts` touched and, when recorded, `outflowLamports` (network fee
+  included), `networkFeeLamports` (null until the landing is read) and
+  `guardPipeline`. Page with `cursor` (the previous `nextCursor`) and
   `limit` (1 to 100, default 20). The filters are applied by this MCP
   server to the pages it reads: a filtered read scans up to 10
   pages until `limit` items match, and `nextCursor` carries on after the
@@ -728,8 +738,20 @@ sent, with code `sandbox-action-not-granted` and rule `session-grant`):
 
 Pass u64 amounts as decimal strings. Every `sandbox_invoke` has an
 idempotency key (yours, or generated); it is returned on success and on
-error, and a key never runs twice. After a timeout, look the action up with
-`sandbox_action` and retry only with the same key.
+error, and a key never runs twice. Sending the same request with the same
+key returns the original result, success or refusal, plus `replayed: true`
+(an action still in flight returns its current status), and this server
+passes it through as it came; a replayed refusal's `hint` says it is the
+recorded one. A replayed refusal also carries `rejectCode`, the code on
+the stored action record, which can differ from its `code`: the replayed
+`code` and `retryable` decide. A replayed upstream outage is `retryable:
+true`, not a permanent refusal, and its `hint` says to retry with a new
+key (the same key replays it), whatever the record's `rejectCode` says. A
+different request under a used key is refused with the existing action's
+id (`sandbox-duplicate-action`, or `sandbox-idempotency-key-reused`).
+Older servers answer every repeat of a key with
+`sandbox-duplicate-action`: look the action up with `sandbox_action`.
+After a timeout, retry only with the same key.
 
 Actions build Solana v1 transactions (SIMD-0385) by default: up to 4096
 bytes and 64 accounts, no address lookup tables, with the compute budget in
@@ -757,8 +779,9 @@ with no readable body. The retry rule:
   `sandbox_holdings`) or a `sandbox_preview`: nothing was changed; retry
   the same call after `retryAfterSeconds` when present.
 - `retryable: true` on `sandbox_invoke`: the action may have run unless the
-  code says the guard refused it. Look it up with `sandbox_action` and the
-  `idempotencyKey` before retrying.
+  code says the guard refused it. Never retry it under a new key: resend
+  the same request with the same `idempotencyKey` (the original result
+  comes back, `replayed: true`), or look it up with `sandbox_action` first.
 
 Transport codes: `sandbox-api-unreachable` (no connection),
 `sandbox-api-timeout` (no answer in time, from this server or the API),

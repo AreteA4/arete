@@ -102,16 +102,41 @@ Every `sandbox_invoke` has an idempotency key: the agent's own
 (`idempotencyKey`, 1 to 128 characters) or a generated one, returned on
 success and on error. A key never runs twice.
 
-After a timeout, the action may have run. Look it up first:
+- **The same request, the same key**: safe to send again. It returns the
+  original result, success or refusal, in the same shape plus
+  `replayed: true`. An action still in flight returns its current status. A
+  replayed refusal also carries the record's `rejectCode`, which can differ
+  from its `code`: go by the replayed `code` and `retryable`. A replayed
+  outage is `retryable: true`, not a permanent refusal; retry it with a new
+  key. See [Errors and refusals](/sandboxes/errors/).
+- **A different request, a used key**: refused, not retryable, with the id of
+  the action that has the key (`sandbox-duplicate-action`, or
+  `sandbox-idempotency-key-reused`). Use a new key.
+
+After a timeout, the action may have run, so never retry it under a new key.
+Retry with the same key, or look it up first:
 
 1. `sandbox_action` with the `idempotencyKey`.
 2. If it ran, don't repeat it. If it was refused, retry with a new key. If no
    action has the key, retry with the same key.
 
+Older servers answer every repeat of a key, the same request included, with
+`sandbox-duplicate-action` and the action's id; look it up with
+`sandbox_action` for its result.
+
 ## Results
 
-A landed action returns its id, status and signature. Its full record
-(decoded instructions, events, balance changes) is in the
+A landed action returns its id, status, signature and `outflowLamports`:
+everything that left the wallet, the network fee included.
+`networkFeeLamports` is the network fee alone, null until the landed
+transaction is read. `feeLamports`, when present, is something else: the
+protocol's own fees. It also names the `guardPipeline` that checked it, such
+as `execute-v1`. `sandbox_action` lookups and history items carry
+`outflowLamports`, `networkFeeLamports` and `guardPipeline` too (not
+`feeLamports`), and previews carry `outflowLamports` and `guardPipeline`.
+`guardPipeline` is null or absent on actions recorded before it was kept and
+on actions that never reached the guard, such as a rejected one. The full record (decoded
+instructions, events, balance changes) is in the
 [history](/sandboxes/history/). A refusal is a tool error with `code`,
 `rule`, what triggered it, `retryable` and a `hint`; see
 [Errors and refusals](/sandboxes/errors/).

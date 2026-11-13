@@ -44,8 +44,9 @@ result.
 ## Preview and invoke run the same checks
 
 `sandbox_preview` runs steps 1 to 4 and stops: nothing is signed, sent or
-recorded. It returns `pass` with what the wallet would lose and the
-transaction it built, or the refusal. `sandbox_invoke` runs every step.
+recorded. It returns `pass` with what the wallet would lose
+(`outflowLamports`, the network fee included) and the transaction it built,
+or the refusal. `sandbox_invoke` runs every step.
 
 Because both run the same checks, an agent can find out whether an action
 passes, and what it costs, before committing to it.
@@ -53,9 +54,10 @@ passes, and what it costs, before committing to it.
 ## Exactly once
 
 Every `sandbox_invoke` carries an idempotency key, the agent's own or a
-generated one. A key never runs twice. If a call times out, the agent looks
-the action up with `sandbox_action` before retrying, so a slow network never
-turns into a double trade.
+generated one. A key never runs twice. If a call times out, the agent sends
+the same request with the same key, which returns the original result
+(`replayed: true`), or looks the action up with `sandbox_action`. A slow
+network never turns into a double trade.
 
 ## Refusals
 
