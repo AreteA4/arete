@@ -6,6 +6,21 @@
 
 * **cli,mcp:** sandbox Rules v2 is no longer supported. `a4 sandbox rules validate`, `a4 sandbox rules show` and the MCP `sandbox_rules` tool refuse a version 2 document (from a file or from the API) with one line, `Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).`, and exit 1 (`sandbox-rules-version-unsupported` with `--json` / in MCP). Rules v3 is the only format.
 
+## [0.55.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.55.1...a4-cli-v0.55.2) (2026-11-13)
+
+
+### Miscellaneous Chores
+
+* **a4-cli:** Synchronize arete versions
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.55.1 to 0.55.2
+    * arete-mcp bumped from 0.55.1 to 0.55.2
+
 ## [0.55.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.55.0...a4-cli-v0.55.1) (2026-11-13)
 
 
