@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.55.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.55.1...arete-mcp-v0.55.2) (2026-11-13)
+
+
+### Bug Fixes
+
+* **mcp,docs:** sandbox actions are invoke and withdraw; swaps are invoke ([c265f04](https://github.com/AreteA4/arete/commit/c265f04576661cf89c55c94c8e306e6d8eb273a4))
+* **mcp,docs:** sandbox actions are invoke and withdraw; swaps are invoke ([ceffa4d](https://github.com/AreteA4/arete/commit/ceffa4d75a21592882ba2f85a22b8025de0532cf))
+
 ## [0.55.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.55.0...arete-mcp-v0.55.1) (2026-11-13)
 
 
