@@ -415,7 +415,7 @@ returned.
 | `sandbox_rules`    |                                                                              | the allowed programs and instructions, with the Rules v3 toggles, limits and allowlist         |
 | `sandbox_derive`   | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`             | an address: a PDA computed locally, an ATA under the mint's token program                      |
 | `sandbox_preview`  | `action`, `args`                                                             | a dry run: `pass` and what the wallet would lose, or the refusal                               |
-| `sandbox_invoke`   | `action` (`invoke`, `withdraw`, `swap`), `args`, `idempotencyKey?`           | runs one action: the only tool that moves funds; the same key returns the original result      |
+| `sandbox_invoke`   | `action` (`invoke`, `withdraw`), `args`, `idempotencyKey?`                   | runs one action: the only tool that moves funds; the same key returns the original result      |
 | `sandbox_action`   | `actionId` or `idempotencyKey`                                               | one action's status, `outflowLamports` (fee included) and `guardPipeline`                      |
 | `sandbox_history`  | `cursor?`, `limit?`, `status?`, `program?`, `mint?`, `since?`, `includeRaw?` | read-only: past actions, newest first, with decoded instructions and balance changes           |
 | `sandbox_holdings` | `includeRaw?`                                                                | read-only: SOL, tokens (with `acquiredBySandbox`) and program positions                        |

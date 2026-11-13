@@ -369,12 +369,6 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         "sandbox-guard-trial-failed" => {
             "The transaction fails when run. Check accounts and amounts; the guard's logs are in the details when present."
         }
-        "sandbox-swap-venue-not-allowed" | "sandbox-swap-no-venues" => {
-            "No allowed venue can fill this swap. sandbox_rules lists the venues the owner allows."
-        }
-        "sandbox-swap-slippage-too-high" => {
-            "Lower slippageBps to at most what sandbox_rules allows."
-        }
         "sandbox-duplicate-action" | "sandbox-idempotency-key-reused" => KEY_ALREADY_USED,
         "sandbox-rate-limited" => "Too many requests: wait for retryAfterSeconds.",
         "sandbox-response-too-large" => match kind {
@@ -1840,7 +1834,9 @@ pub fn new_idempotency_key() -> String {
 
 // ---- Tool arguments ----------------------------------------------------------
 
-/// An Action API action an agent may run, when the owner grants it.
+/// An Action API action an agent may run, when the owner grants it. There
+/// is no swap action: a swap is an `invoke` of the instructions the route
+/// needs, from Jupiter's `/swap-instructions` or the venue's own program.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SandboxActionName {
@@ -1855,12 +1851,6 @@ pub enum SandboxActionName {
     /// can have. `args`: `{ lamports, transactionFormat?: "v1" | "v0" }`.
     /// The result's `outflowLamports` is `lamports` plus the network fee.
     Withdraw,
-    /// An exact-input token swap through the venues the owner allows.
-    /// `args`: `{ inputMint, outputMint, amount, slippageBps?,
-    /// computeUnitLimit?, computeUnitPriceMicroLamports? }`, `amount` in the
-    /// input mint's smallest unit. The result's `outflowLamports` counts
-    /// the network fee as well as any SOL the swap spends.
-    Swap,
 }
 
 impl SandboxActionName {
@@ -1868,7 +1858,6 @@ impl SandboxActionName {
         match self {
             Self::Invoke => "invoke",
             Self::Withdraw => "withdraw",
-            Self::Swap => "swap",
         }
     }
 
@@ -1876,7 +1865,6 @@ impl SandboxActionName {
         match self {
             Self::Invoke => "/actions/invoke",
             Self::Withdraw => "/actions/withdraw",
-            Self::Swap => "/actions/swap",
         }
     }
 
@@ -1884,7 +1872,6 @@ impl SandboxActionName {
         match self {
             Self::Invoke => "/actions/preview",
             Self::Withdraw => "/actions/withdraw/preview",
-            Self::Swap => "/actions/swap/preview",
         }
     }
 }
@@ -1930,8 +1917,9 @@ pub struct SandboxInvokeArgs {
     /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
     #[serde(default)]
     pub sandbox: Option<String>,
-    /// The action: `invoke` (named program instructions), `withdraw` (SOL
-    /// to the owner) or `swap`. `sandbox_status` lists the ones granted.
+    /// The action: `invoke` (named program instructions, swaps included) or
+    /// `withdraw` (SOL to the owner). `sandbox_status` lists the ones
+    /// granted.
     pub action: SandboxActionName,
     /// The action's arguments, as the action's description gives them.
     /// Pass u64/u128 amounts as decimal strings.
@@ -2302,10 +2290,7 @@ pub(crate) mod tests {
     pub(crate) fn stub(
         routes: Vec<(&'static str, &'static str, u16, Value)>,
     ) -> (String, Arc<Mutex<Vec<String>>>) {
-        stub_with(
-            routes,
-            json!(["sandbox:invoke", "sandbox:withdraw", "sandbox:swap"]),
-        )
+        stub_with(routes, json!(["sandbox:invoke", "sandbox:withdraw"]))
     }
 
     fn client(base: &str) -> SandboxClient {
@@ -3311,12 +3296,6 @@ pub(crate) mod tests {
                 200,
                 json!({ "status": "landed" }),
             ),
-            (
-                "POST",
-                "/api/sandbox/v1/actions/swap",
-                200,
-                json!({ "status": "landed" }),
-            ),
         ]);
         let client = client(&base);
         let invoke = json!({
@@ -3329,22 +3308,18 @@ pub(crate) mod tests {
             "transactionFormat": "v0"
         });
         let withdraw = json!({ "lamports": "1000" });
-        let swap =
-            json!({ "inputMint": "So1", "outputMint": "M", "amount": "10", "slippageBps": 50 });
         for (action, args, key) in [
             (SandboxActionName::Invoke, &invoke, "k-1"),
             (SandboxActionName::Withdraw, &withdraw, "k-2"),
-            (SandboxActionName::Swap, &swap, "k-3"),
         ] {
             let body = client.invoke(action, args.clone(), key).await.unwrap();
             assert_eq!(body["status"], "landed");
         }
         let seen = requests(&seen);
-        assert_eq!(seen.len(), 4);
+        assert_eq!(seen.len(), 3);
         for (request, (path, args, key)) in seen[1..].iter().zip([
             ("/api/sandbox/v1/actions/invoke", &invoke, "k-1"),
             ("/api/sandbox/v1/actions/withdraw", &withdraw, "k-2"),
-            ("/api/sandbox/v1/actions/swap", &swap, "k-3"),
         ]) {
             assert!(request.starts_with(&format!("POST {path} ")), "{request}");
             assert!(request
@@ -3365,12 +3340,6 @@ pub(crate) mod tests {
             ),
             (
                 "POST",
-                "/api/sandbox/v1/actions/swap/preview",
-                200,
-                json!({ "pass": true }),
-            ),
-            (
-                "POST",
                 "/api/sandbox/v1/actions/withdraw/preview",
                 200,
                 json!({ "pass": true }),
@@ -3380,23 +3349,21 @@ pub(crate) mod tests {
         let withdraw = json!({ "lamports": "1" });
         for (action, args) in [
             (SandboxActionName::Invoke, json!({ "instructions": [] })),
-            (SandboxActionName::Swap, json!({ "amount": "1" })),
             (SandboxActionName::Withdraw, withdraw.clone()),
         ] {
             let body = client.preview(action, args).await.unwrap();
             assert_eq!(body["pass"], true);
         }
         let seen = requests(&seen);
-        assert_eq!(seen.len(), 4, "{seen:?}");
+        assert_eq!(seen.len(), 3, "{seen:?}");
         for (request, path) in seen[1..].iter().zip([
             "/api/sandbox/v1/actions/preview",
-            "/api/sandbox/v1/actions/swap/preview",
             "/api/sandbox/v1/actions/withdraw/preview",
         ]) {
             assert!(request.starts_with(&format!("POST {path} ")), "{request}");
             assert!(!request.to_ascii_lowercase().contains("idempotency-key"));
         }
-        assert_eq!(body_of(&seen[3]), withdraw);
+        assert_eq!(body_of(&seen[2]), withdraw);
     }
 
     #[tokio::test]
@@ -3404,7 +3371,7 @@ pub(crate) mod tests {
         let (base, seen) = stub_with(vec![], json!(["sandbox:withdraw"]));
         let client = client(&base);
         let refusal = client
-            .invoke(SandboxActionName::Swap, json!({}), "k-1")
+            .invoke(SandboxActionName::Invoke, json!({}), "k-1")
             .await
             .unwrap_err();
         let shown = refusal.to_json();
@@ -3618,6 +3585,62 @@ pub(crate) mod tests {
         assert_eq!(shown["retryable"], true);
     }
 
+    /// Every enum value anywhere in a JSON schema.
+    fn enum_values(schema: &Value, out: &mut Vec<String>) {
+        match schema {
+            Value::Object(object) => {
+                if let Some(Value::Array(values)) = object.get("enum") {
+                    out.extend(values.iter().filter_map(Value::as_str).map(str::to_string));
+                }
+                if let Some(Value::String(value)) = object.get("const") {
+                    out.push(value.clone());
+                }
+                object.values().for_each(|value| enum_values(value, out));
+            }
+            Value::Array(values) => values.iter().for_each(|value| enum_values(value, out)),
+            _ => {}
+        }
+    }
+
+    /// Agents swap with `invoke`: `sandbox_invoke` and `sandbox_preview`
+    /// offer only `invoke` and `withdraw`, and refuse `swap` before anything
+    /// is sent.
+    #[test]
+    fn swap_is_not_an_action() {
+        for schema in [
+            serde_json::to_value(schemars::schema_for!(SandboxInvokeArgs)).unwrap(),
+            serde_json::to_value(schemars::schema_for!(SandboxPreviewArgs)).unwrap(),
+        ] {
+            let mut offered = Vec::new();
+            enum_values(&schema, &mut offered);
+            offered.sort();
+            assert_eq!(offered, ["invoke", "withdraw"], "{schema}");
+        }
+        let invoke = serde_json::from_value::<SandboxInvokeArgs>(json!({
+            "action": "swap",
+            "args": { "inputMint": "So1", "outputMint": "M", "amount": "10" }
+        }))
+        .unwrap_err();
+        assert!(
+            invoke.to_string().contains("unknown variant `swap`"),
+            "{invoke}"
+        );
+        let preview = serde_json::from_value::<SandboxPreviewArgs>(json!({
+            "action": "swap",
+            "args": { "amount": "1" }
+        }))
+        .unwrap_err();
+        assert!(
+            preview.to_string().contains("unknown variant `swap`"),
+            "{preview}"
+        );
+        for action in ["invoke", "withdraw"] {
+            let args: SandboxPreviewArgs =
+                serde_json::from_value(json!({ "action": action })).unwrap();
+            assert_eq!(args.action.as_str(), action);
+        }
+    }
+
     #[test]
     fn calls_are_read_preview_or_action() {
         use reqwest::Method;
@@ -3627,11 +3650,9 @@ pub(crate) mod tests {
             (Method::GET, "/actions?idempotencyKey=k", CallKind::Read),
             (Method::POST, "/derive", CallKind::Read),
             (Method::POST, "/actions/preview", CallKind::Preview),
-            (Method::POST, "/actions/swap/preview", CallKind::Preview),
             (Method::POST, "/actions/call/preview", CallKind::Preview),
             (Method::POST, "/actions/invoke", CallKind::Action),
             (Method::POST, "/actions/withdraw", CallKind::Action),
-            (Method::POST, "/actions/swap", CallKind::Action),
         ] {
             assert_eq!(CallKind::of(&method, path), kind, "{method} {path}");
         }
