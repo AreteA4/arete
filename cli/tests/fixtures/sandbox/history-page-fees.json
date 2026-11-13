@@ -83,7 +83,40 @@
         "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
       ],
       "outflowLamports": "105005000",
-      "feeLamports": "5000",
+      "networkFeeLamports": "5000",
+      "guardPipeline": "execute-v1"
+    },
+    {
+      "id": "0193a1f1-8000-7b10-9d3e-2a7b106f1c2c",
+      "createdAt": "2026-11-12T09:59:00Z",
+      "status": "sent",
+      "signature": "5Kt3uYbV9m1vQ8pW2xJcRZ7HnLd4eFgTqA6sB3yCkN8oMiPr1jUwXhEvGzDa9fQ2bL7cYt4nRsK5mWpJ3xVe6uHq",
+      "slot": null,
+      "programs": [
+        {
+          "programId": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "name": "Pump.fun"
+        }
+      ],
+      "instructions": [
+        {
+          "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "programName": "Pump.fun",
+          "name": "buy",
+          "args": {
+            "amount": "1234500000",
+            "maxSolCost": "110000000"
+          }
+        }
+      ],
+      "events": [],
+      "solDelta": "0",
+      "tokenDeltas": [],
+      "accounts": [
+        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+      ],
+      "outflowLamports": "105000000",
+      "networkFeeLamports": null,
       "guardPipeline": "execute-v1"
     },
     {

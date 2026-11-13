@@ -443,10 +443,13 @@ still in flight returns its current status); a different request under a used
 key is refused with the existing action's id. Older servers answer every
 repeat with `sandbox-duplicate-action` and the action's id: look it up with
 `sandbox_action`. `outflowLamports` on a preview, a result, a lookup or a
-history item is everything that left the wallet, the network fee included;
-`feeLamports` gives the fee alone when present. `guardPipeline` (such as
-`execute-v1`) names the guard pipeline that checked the action, null or
-absent on older actions.
+history item is everything that left the wallet, the network fee included.
+Results, lookups and history items give the network fee alone as
+`networkFeeLamports`, null until the landed transaction is read.
+`feeLamports`, when a result carries it, is a different amount: the
+protocol's own fees (history items don't carry it). `guardPipeline` (such as `execute-v1`) names the guard
+pipeline that checked the action, null or absent on older actions and on
+actions that never reached the guard (a rejected one, for example).
 
 ### Reading through a sandbox
 

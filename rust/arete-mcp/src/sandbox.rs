@@ -3733,10 +3733,10 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_repeated_key_reaches_the_agent_as_a_replay_or_a_duplicate() {
         // A landed action replayed: the body passes through untouched, with
-        // the fee-inclusive outflow, the fee and the guard pipeline.
+        // the fee-inclusive outflow, the network fee and the guard pipeline.
         let landed = json!({
             "actionId": "a-1", "status": "landed", "signature": "sig-1",
-            "outflowLamports": "105005000", "feeLamports": "5000",
+            "outflowLamports": "105005000", "networkFeeLamports": "5000",
             "guardPipeline": "execute-v1", "replayed": true,
         });
         let (base, _) = stub(vec![(

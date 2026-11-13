@@ -123,11 +123,15 @@ Older servers answer every repeat of a key, the same request included, with
 ## Results
 
 A landed action returns its id, status, signature and `outflowLamports`:
-everything that left the wallet, the network fee included (`feeLamports`
-gives the fee alone when present). It also names the `guardPipeline` that
-checked it, such as `execute-v1`. Previews, `sandbox_action` lookups and
-history items carry the same fields; on actions recorded before they were
-kept, `guardPipeline` is null or absent. The full record (decoded
+everything that left the wallet, the network fee included.
+`networkFeeLamports` is the network fee alone, null until the landed
+transaction is read. `feeLamports`, when present, is something else: the
+protocol's own fees. It also names the `guardPipeline` that checked it, such
+as `execute-v1`. `sandbox_action` lookups and history items carry
+`outflowLamports`, `networkFeeLamports` and `guardPipeline` too (not
+`feeLamports`), and previews carry `outflowLamports` and `guardPipeline`.
+`guardPipeline` is null or absent on actions recorded before it was kept and
+on actions that never reached the guard, such as a rejected one. The full record (decoded
 instructions, events, balance changes) is in the
 [history](/sandboxes/history/). A refusal is a tool error with `code`,
 `rule`, what triggered it, `retryable` and a `hint`; see

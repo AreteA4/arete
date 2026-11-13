@@ -642,8 +642,8 @@ resolves, the call is refused before any token is minted, with
 - `sandbox_preview({ action, args })` — a dry run of the same action
   `sandbox_invoke` takes: builds the transaction and runs every check
   without signing or recording anything. Returns `pass` with what the wallet
-  would lose (`outflowLamports`, the network fee included; `feeLamports`
-  when given), the `guardPipeline` that checked it and the transaction it
+  would lose (`outflowLamports`, the network fee included; `feeLamports`,
+  the protocol's own fees, when given), the `guardPipeline` that checked it and the transaction it
   built, or the refusal. Every action has
   a dry run, `withdraw` included. A refusal's `path` is the index in the
   request's `instructions`; `transactionPath` gives the transaction's own
@@ -651,10 +651,12 @@ resolves, the call is refused before any token is minted, with
 - `sandbox_invoke({ action, args, idempotencyKey? })` — runs one action.
   This is the only tool that moves funds; there are no per-action tools.
   Returns the action id, status, signature, `outflowLamports` (everything
-  that left the wallet, the network fee included; `feeLamports` when given)
-  and `guardPipeline`.
+  that left the wallet, the network fee included), `networkFeeLamports`
+  (the network fee alone; null until the landed transaction is read),
+  `feeLamports` (the protocol's own fees, when given) and `guardPipeline`.
 - `sandbox_action({ actionId | idempotencyKey })` — one action's status,
-  `outflowLamports` and `guardPipeline` (null or absent for older actions),
+  `outflowLamports`, `networkFeeLamports` and `guardPipeline` (null or
+  absent for older actions and for actions that never reached the guard),
   for looking up a timed-out call instead of retrying it under a new key.
 - `sandbox_history({ cursor?, limit?, status?, program?, mint?, since?, includeRaw? })`
   — read-only. Every action the wallet ran, newest first: `id`, `createdAt`,
@@ -662,8 +664,9 @@ resolves, the call is refused before any token is minted, with
   the Anchor `events` it emitted (`program`, `name`, `path`, `source`,
   decoded `fields`, base64 `data`; `fields.__parse_error` when one did
   not decode, with `name: null` if no IDL event matched), `solDelta`, `tokenDeltas` (`mint`, raw `delta`, `decimals`), the
-  `accounts` touched and, when recorded, `outflowLamports` (fee included),
-  `feeLamports` and `guardPipeline`. Page with `cursor` (the previous `nextCursor`) and
+  `accounts` touched and, when recorded, `outflowLamports` (network fee
+  included), `networkFeeLamports` (null until the landing is read) and
+  `guardPipeline`. Page with `cursor` (the previous `nextCursor`) and
   `limit` (1 to 100, default 20). The filters are applied by this MCP
   server to the pages it reads: a filtered read scans up to 10
   pages until `limit` items match, and `nextCursor` carries on after the
