@@ -734,7 +734,13 @@ sent, with code `sandbox-action-not-granted` and rule `session-grant`):
 | ---------- | ------ |
 | `invoke`   | `{ instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` — 1 to 32 named instructions, exactly as `sandbox_rules` lists them, that fit one transaction (v1: 4096 bytes, 64 accounts); the wallet is the only signer |
 | `withdraw` | `{ lamports, transactionFormat? }` — SOL to the owner's withdraw address, the only destination a withdraw can have |
-| `swap`     | `{ inputMint, outputMint, amount, slippageBps?, computeUnitLimit?, computeUnitPriceMicroLamports? }` — exact input, in the input mint's smallest unit, through the venues the owner allows |
+
+There is no swap action. A swap is an `invoke` of the instructions that
+make it: a venue's own (for example PumpSwap `buy`/`sell` for a coin that
+has left its Pump.fun bonding curve), or a Jupiter route's, from Jupiter's
+Swap API `/swap-instructions`, named and decoded as `sandbox_rules` lists
+them, with the route's extra accounts in `remainingAccounts`. Preview it
+with `sandbox_preview` first.
 
 Pass u64 amounts as decimal strings. Every `sandbox_invoke` has an
 idempotency key (yours, or generated); it is returned on success and on
@@ -763,7 +769,7 @@ A transaction too large for its format is refused with rule
 
 A refusal is a tool error whose JSON carries the API's `code`, the `rule`
 that refused (`program-allowlist`, `instruction-allowlist`, `outflow-cap`,
-`window-cap`, `no-authority-change`, `session-grant`, `swap-venues`, ...),
+`window-cap`, `no-authority-change`, `session-grant`, ...),
 what triggered it (`program`, `instruction`, `mint`, `attempted`, `cap`,
 `remaining`), a `hint`, and for `sandbox_invoke` the `idempotencyKey`.
 

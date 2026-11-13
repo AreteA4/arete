@@ -1,10 +1,10 @@
 ---
 title: Actions
-description: The three actions an agent can run in a sandbox (invoke, swap and withdraw), how to preview them, and how to run each exactly once.
+description: The actions an agent can run in a sandbox (invoke and withdraw), how to swap with invoke, how to preview them, and how to run each exactly once.
 ---
 
 An agent changes a sandbox's wallet through exactly one tool,
-`sandbox_invoke`, with one of three actions. Each needs a
+`sandbox_invoke`, with one of two actions: `invoke` or `withdraw`. Each needs a
 [grant](/sandboxes/agents/#grants), and each can be previewed first with
 `sandbox_preview`, which takes the same arguments.
 
@@ -59,26 +59,52 @@ Accounts with a `fill` in `sandbox_rules` can be left out. A request still
 missing accounts is refused with `sandbox-intent-invalid` and a
 `missingAccounts` list.
 
-## swap
+## Swaps
 
-An exact-input token swap through the venues your rules allow.
+There is no separate swap action. A swap is an `invoke` of the instructions
+that make it, so it passes the same rules, limits and checks as any other
+instruction:
+
+1. **Resolve the venue.**
+   - **A venue's own instructions**, when you know the pool: for example
+     PumpSwap (pump-amm) `buy` and `sell` for a coin that has left its
+     Pump.fun bonding curve, Pump.fun `buy` and `sell` on the curve, or a
+     DEX's own swap instruction (Orca Whirlpool, Raydium, Meteora). This is
+     the simplest path.
+   - **A Jupiter route**, when you want the best route across venues: quote
+     with Jupiter's Swap API, then ask it for `/swap-instructions` with the
+     sandbox wallet as the user. Ask the quote for about 50 `maxAccounts`, so
+     the route fits a v1 transaction (64 accounts, no lookup tables). The
+     route only fills through venues whose programs your rules enable.
+2. **Write the `invoke`.** Name each instruction as `sandbox_rules` lists it
+   (Jupiter's swap is one of the Jupiter instructions there, such as
+   `route_v2` or `shared_accounts_route_v2`), with its `args` decoded from
+   the instruction data by the IDL types `sandbox_rules` gives, its named
+   accounts, and any further accounts the route passes in
+   `remainingAccounts`. Setup Jupiter returns, such as creating a token
+   account or wrapping SOL, is baseline plumbing: put it in the same action,
+   in order.
+3. **`sandbox_preview`** with `action: "invoke"` until it passes, then
+   **`sandbox_invoke`** with the same arguments.
 
 ```json
 {
-  "action": "swap",
+  "action": "invoke",
   "args": {
-    "inputMint": "So11111111111111111111111111111111111111112",
-    "outputMint": "<mint>",
-    "amount": "100000000",
-    "slippageBps": 50
+    "instructions": [
+      {
+        "program": "PumpSwap",
+        "instruction": "sell",
+        "args": { "...": "as sandbox_rules lists them" },
+        "accounts": { "...": "only those without a fill" }
+      }
+    ]
   }
 }
 ```
 
-`amount` is in the input mint's smallest unit. Slippage above what the rules
-allow is refused with `sandbox-swap-slippage-too-high`; a swap no allowed
-venue can fill is refused with `sandbox-swap-venue-not-allowed` or
-`sandbox-swap-no-venues`.
+Tokens the sandbox bought may always be sold, through any route the rules
+allow.
 
 ## withdraw
 

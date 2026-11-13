@@ -56,13 +56,13 @@ sandbox. General chain reads are not scoped yet; see
 
 ## Who does what
 
-| You, the owner                                | Your agent                                           |
-| --------------------------------------------- | ---------------------------------------------------- |
-| Create and fund the sandbox                   | Reads its status, rules, holdings and history        |
-| Choose programs, limits and allowed addresses | Previews an action to see whether it passes          |
-| Sign the rules                                | Runs actions: program instructions, swaps, withdraws |
-| Grant agents access and choose their actions  | Corrects a refused request from its `code` and hint  |
-| Pause the sandbox or revoke an agent's access | Never sees a key, a transaction to sign or an RPC    |
+| You, the owner                                | Your agent                                          |
+| --------------------------------------------- | --------------------------------------------------- |
+| Create and fund the sandbox                   | Reads its status, rules, holdings and history       |
+| Choose programs, limits and allowed addresses | Previews an action to see whether it passes         |
+| Sign the rules                                | Runs actions: program instructions, withdraws       |
+| Grant agents access and choose their actions  | Corrects a refused request from its `code` and hint |
+| Pause the sandbox or revoke an agent's access | Never sees a key, a transaction to sign or an RPC   |
 
 Owner operations (rules, grants, pause, revoke) happen on the
 [Sandboxes page](https://app.arete.run/dashboard/sandboxes) of the dashboard.

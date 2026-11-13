@@ -20,7 +20,8 @@ An agent that trades tokens on one venue from a research loop.
 - **Spend limit:** a daily limit on that program, so a bad loop can only
   spend so much before you notice.
 - **Allowlist:** empty. Proceeds stay in the sandbox or come back to you.
-- **Grant:** `invoke`, and `swap` if the rules allow a swap venue.
+- **Grant:** `invoke`. Swaps are `invoke` too: the venue's own instructions,
+  or a Jupiter route's (see [Swaps](/sandboxes/actions/#swaps)).
 
 Exits stay allowed whatever the limits: the agent can always sell what it
 bought.
@@ -32,7 +33,7 @@ An agent that buys a fixed amount of a token on a schedule.
 - **Programs:** one swap venue.
 - **Spend limit:** the size of one buy per window, so a scheduler bug can't
   buy twice in the same window.
-- **Grant:** `swap` only.
+- **Grant:** `invoke` only.
 
 ## Research and monitoring
 
