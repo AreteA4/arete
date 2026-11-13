@@ -270,7 +270,7 @@ Things to know before running it:
   leaves the display name to the agent, so the accounts can't be tagged as
   benchmark accounts either; use the slugs recorded in the reports to find
   them.
-- The weekly matrix doesn't include fresh runs. Run the config by hand, or
+- The default matrix doesn't include fresh runs. Run the config by hand, or
   through the workflow's `config` input.
 
 ## Sandbox environment
@@ -301,7 +301,8 @@ npm run review && npm run review -- --aggregate
 
 ## CI
 
-`.github/workflows/benchmarks.yml` runs a config weekly or on demand, and
+`.github/workflows/benchmarks.yml` runs a config on demand (there is no
+schedule), and
 commits the run directories to the private results repository. It never runs
 on pull requests, because every run bills the sandbox and the models.
 
@@ -309,8 +310,7 @@ The repository is public, so its workflow logs, step summaries and artifacts
 are public too. The workflow is built around that:
 
 - Nothing runs until the `BENCH_RESULTS_REPO` variable names the results
-  repository. Scheduled runs skip quietly until then; a manual run fails and
-  says what is missing. Results are never uploaded as workflow artifacts.
+  repository. Until then a manual run fails and says what is missing. Results are never uploaded as workflow artifacts.
 - It needs these secrets: `AI_GATEWAY_API_KEY`, `VERCEL_TOKEN`,
   `VERCEL_TEAM_ID`, `VERCEL_PROJECT_ID`, `ARETE_AGENT_KEYS` and
   `BENCH_RESULTS_TOKEN` (write access to the results repository). The first

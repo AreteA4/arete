@@ -1,9 +1,7 @@
 name: Benchmarks
 
+# Manual only. The weekly schedule is off: runs bill the sandbox and models.
 on:
-  schedule:
-    # Weekly (Sun 03:00 UTC). Kept off the PR path: runs bill the sandbox and models.
-    - cron: '0 3 * * 0'
   workflow_dispatch:
     inputs:
       config:
@@ -18,8 +16,7 @@ concurrency:
 
 # This repository is public, and so are its logs, summaries and artifacts.
 # Transcripts only ever go to the private results repository, so nothing
-# runs until BENCH_RESULTS_REPO is set: scheduled runs skip quietly, and a
-# manual run says what is missing.
+# runs until BENCH_RESULTS_REPO is set: a manual run says what is missing.
 jobs:
   not-configured:
     name: Benchmarks are not configured
