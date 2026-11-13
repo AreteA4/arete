@@ -104,7 +104,11 @@ success and on error. A key never runs twice.
 
 - **The same request, the same key**: safe to send again. It returns the
   original result, success or refusal, in the same shape plus
-  `replayed: true`. An action still in flight returns its current status.
+  `replayed: true`. An action still in flight returns its current status. A
+  replayed refusal also carries the record's `rejectCode`, which can differ
+  from its `code`: go by the replayed `code` and `retryable`. A replayed
+  outage is `retryable: true`, not a permanent refusal; retry it with a new
+  key. See [Errors and refusals](/sandboxes/errors/).
 - **A different request, a used key**: refused, not retryable, with the id of
   the action that has the key (`sandbox-duplicate-action`, or
   `sandbox-idempotency-key-reused`). Use a new key.

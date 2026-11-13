@@ -204,11 +204,14 @@ impl SandboxRefusal {
             .unwrap_or_else(|| generic_hint(retryable, self.kind).to_string());
         // A same-key resubmit of the same request gets the original
         // refusal back, marked `replayed: true`: say so, so the agent
-        // does not read it as a fresh refusal of a new attempt.
-        let hint = if out.get("replayed").and_then(Value::as_bool) == Some(true) {
-            format!("{REPLAYED_REFUSAL} {hint}")
-        } else {
-            hint
+        // does not read it as a fresh refusal of a new attempt. A replayed
+        // outage is retryable even when the action record's `rejectCode`
+        // reads as final; the replayed `code` and `retryable` decide.
+        let replayed = out.get("replayed").and_then(Value::as_bool) == Some(true);
+        let hint = match (replayed, retryable) {
+            (true, true) => REPLAYED_OUTAGE.to_string(),
+            (true, false) => format!("{REPLAYED_REFUSAL} {hint}"),
+            (false, _) => hint,
         };
         out.insert("hint".into(), json!(hint));
         Value::Object(out)
@@ -267,7 +270,9 @@ const TOKEN_FUNDS_HINT: &str = "A token account this transaction spends from hol
 
 const LOOK_UP_THE_ACTION: &str = "The action may have run, so never retry it under a new idempotencyKey. Retrying with the same key is safe: a key never runs twice, and the same request under it returns the original result (`replayed: true`); older servers answer sandbox-duplicate-action instead, so look the action up with sandbox_action and the idempotencyKey. Use a new key only once the action is known to have been refused.";
 
-const REPLAYED_REFUSAL: &str = "This is the recorded refusal of the action this idempotencyKey already ran (`replayed: true`); the same key returns it again.";
+const REPLAYED_REFUSAL: &str = "This is the recorded refusal of the action this idempotencyKey already ran (`replayed: true`); the same key returns it again. Go by this answer's `code` and `retryable`, not the action record's `rejectCode` (here or in sandbox_action), which can differ.";
+
+const REPLAYED_OUTAGE: &str = "This replays an outage that stopped the action this idempotencyKey already ran (`replayed: true`). It is not a permanent refusal: go by this answer's `retryable` and `code`, not the action record's `rejectCode` (here or in sandbox_action), which can differ and read as final. The same key returns this answer again, so retry with a new idempotencyKey, after retryAfterSeconds when present.";
 
 const KEY_ALREADY_USED: &str = "This idempotencyKey already belongs to an action (the error names its id). If this call was a different request, run it with a new idempotencyKey. Older servers answer this way to every repeat of a key, the same request included: look the action up with sandbox_action (by its id or this idempotencyKey) for its result instead of retrying.";
 
@@ -3779,6 +3784,35 @@ pub(crate) mod tests {
         let hint = shown["hint"].as_str().unwrap();
         assert!(hint.starts_with(REPLAYED_REFUSAL), "{hint}");
         assert!(hint.contains("fails when run"), "{hint}");
+
+        // A replayed outage is retryable whatever the record's
+        // `rejectCode` says: the hint follows the replayed `code` and
+        // `retryable` and points at a new key, since this one replays.
+        for code in ["sandbox-guard-unavailable", "sandbox-api-unavailable"] {
+            let (base, _) = stub(vec![(
+                "POST",
+                "/api/sandbox/v1/actions/invoke",
+                503,
+                json!({
+                    "code": code, "retryable": true, "retryAfterSeconds": 5,
+                    "rejectCode": "sandbox-guard-trial-failed",
+                    "actionId": "a-3", "replayed": true,
+                }),
+            )]);
+            let shown = client(&base)
+                .invoke(SandboxActionName::Invoke, json!({}), "k-3")
+                .await
+                .unwrap_err()
+                .to_json();
+            assert_eq!(shown["code"], code);
+            assert_eq!(shown["retryable"], true, "{code}");
+            assert_eq!(shown["rejectCode"], "sandbox-guard-trial-failed", "{code}");
+            assert_eq!(shown["replayed"], true, "{code}");
+            let hint = shown["hint"].as_str().unwrap();
+            assert_eq!(hint, REPLAYED_OUTAGE, "{code}");
+            assert!(hint.contains("not a permanent refusal"), "{code}: {hint}");
+            assert!(hint.contains("new idempotencyKey"), "{code}: {hint}");
+        }
 
         // The same refusal, not replayed, gets no replay wording.
         let fresh = SandboxRefusal {

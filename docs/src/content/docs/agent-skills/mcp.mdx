@@ -440,7 +440,11 @@ the API could not be reached. With `retryable: true`, retry a read or a
 A key never runs twice. Sending the same request with the same key returns
 the original result, success or refusal, plus `replayed: true` (an action
 still in flight returns its current status); a different request under a used
-key is refused with the existing action's id. Older servers answer every
+key is refused with the existing action's id. A replayed refusal also carries
+`rejectCode`, the code on the stored action record, which can differ from its
+`code`. Go by the replayed `code` and `retryable`, not the record's: a
+replayed upstream outage is `retryable: true`, not a permanent refusal, so
+retry it with a new key (the same key replays it). Older servers answer every
 repeat with `sandbox-duplicate-action` and the action's id: look it up with
 `sandbox_action`. `outflowLamports` on a preview, a result, a lookup or a
 history item is everything that left the wallet, the network fee included.

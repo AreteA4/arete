@@ -742,11 +742,16 @@ error, and a key never runs twice. Sending the same request with the same
 key returns the original result, success or refusal, plus `replayed: true`
 (an action still in flight returns its current status), and this server
 passes it through as it came; a replayed refusal's `hint` says it is the
-recorded one. A different request under a used key is refused with the
-existing action's id (`sandbox-duplicate-action`, or
-`sandbox-idempotency-key-reused`). Older servers answer every repeat of a
-key with `sandbox-duplicate-action`: look the action up with
-`sandbox_action`. After a timeout, retry only with the same key.
+recorded one. A replayed refusal also carries `rejectCode`, the code on
+the stored action record, which can differ from its `code`: the replayed
+`code` and `retryable` decide. A replayed upstream outage is `retryable:
+true`, not a permanent refusal, and its `hint` says to retry with a new
+key (the same key replays it), whatever the record's `rejectCode` says. A
+different request under a used key is refused with the existing action's
+id (`sandbox-duplicate-action`, or `sandbox-idempotency-key-reused`).
+Older servers answer every repeat of a key with
+`sandbox-duplicate-action`: look the action up with `sandbox_action`.
+After a timeout, retry only with the same key.
 
 Actions build Solana v1 transactions (SIMD-0385) by default: up to 4096
 bytes and 64 accounts, no address lookup tables, with the compute budget in
