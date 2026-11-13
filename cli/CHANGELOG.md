@@ -6,6 +6,26 @@
 
 * **cli,mcp:** sandbox Rules v2 is no longer supported. `a4 sandbox rules validate`, `a4 sandbox rules show` and the MCP `sandbox_rules` tool refuse a version 2 document (from a file or from the API) with one line, `Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).`, and exit 1 (`sandbox-rules-version-unsupported` with `--json` / in MCP). Rules v3 is the only format.
 
+## [0.55.1](https://github.com/AreteA4/arete/compare/a4-cli-v0.55.0...a4-cli-v0.55.1) (2026-11-13)
+
+
+### Bug Fixes
+
+* **cli,mcp,docs:** the network fee is networkFeeLamports; feeLamports is the protocol's fees ([687f9f3](https://github.com/AreteA4/arete/commit/687f9f39d0efb59f70a647bbbb62c7e66a2f2443))
+* **cli,mcp:** read the agent rules view's revision as a revision, not a format ([cbdca9f](https://github.com/AreteA4/arete/commit/cbdca9fd91ff20c87fd821b12741c59d577b5eb8))
+* **cli,mcp:** read the agent rules view's revision as a revision, not a format ([80b020d](https://github.com/AreteA4/arete/commit/80b020de450586caacf5398beeaf692e02194025))
+* **cli,mcp:** refuse sandbox Rules v2 with one line; v3 only ([ec47eb9](https://github.com/AreteA4/arete/commit/ec47eb9b1d8ee9c68e84700cb32da4a000d98e7e))
+* **mcp,docs:** describe same-key replay, fee-inclusive outflow and guardPipeline on action records ([e29d033](https://github.com/AreteA4/arete/commit/e29d033c00691e6a5029b426516d060d9b55b13d))
+* **mcp,docs:** describe same-key replay, fee-inclusive outflow and guardPipeline on action records ([0125476](https://github.com/AreteA4/arete/commit/01254766d24f763368bffbefb3005d45c4e35c7c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.55.0 to 0.55.1
+    * arete-mcp bumped from 0.55.0 to 0.55.1
+
 ## [0.55.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.54.1...a4-cli-v0.55.0) (2026-11-12)
 
 
