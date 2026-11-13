@@ -47,3 +47,9 @@ agent return funds to you but never send them anywhere else.
 
 Tokens the sandbox holds can be sold back to SOL by the agent at any time:
 exits are always allowed.
+
+A position in a protocol, such as a Kamino Lending deposit, is not a token to
+sell: it is unwound with that program's own exit instruction, which the rules
+must allow. Unwinding returns some of the rent the position locked up, but not
+all of it: Kamino Lending's user-metadata rent can never be reclaimed. See
+[Exits and rent](/sandboxes/rules/#exits-and-rent).
