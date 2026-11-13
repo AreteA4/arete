@@ -78,6 +78,42 @@ else is refused.
 An address on the allowlist can receive any amount. Allow only addresses you
 control.
 
+## Exits and rent
+
+Opening a position can create accounts that the sandbox's wallet pays rent
+for. Some of that rent comes back when the agent exits the position. Some of
+it never does.
+
+| Program        | Account                                    | Rent                                   | Comes back?                                                                                                                                                        |
+| -------------- | ------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Kamino Lending | Obligation (`initObligation`)              | About 0.0176 SOL (17,637,760 lamports) | Yes. A withdraw that leaves the obligation with no deposits and no borrows closes it, and the rent goes back to the wallet. There is no separate close instruction |
+| Kamino Lending | User metadata (`initUserMetadata`)         | About 0.0059 SOL (5,892,800 lamports)  | **No.** Kamino Lending has no instruction that closes user metadata                                                                                                |
+| Pump.fun       | Volume tracker (`user_volume_accumulator`) | Set by the account's size              | Yes. `close_user_volume_accumulator` closes it and sends the rent back to the wallet                                                                               |
+
+Rent is the network's rent-exempt minimum for the account's size. The
+amounts above are for the obligation's 3,344 bytes and user metadata's 1,032
+bytes and can change if the network's rent rate changes.
+
+Treat Kamino's user-metadata rent as a one-time cost of using Kamino Lending
+from the sandbox. A wallet has one user-metadata account, made by its first
+deposit. Later deposits reuse it, including after the obligation has closed.
+An agent should not plan to get that rent back.
+
+### Allow the way out
+
+Exiting a position takes the program's own exit instruction:
+
+| Program        | Way in                                                                     | Way out                                                                                                                          |
+| -------------- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Kamino Lending | Deposit (the first one also needs `initUserMetadata` and `initObligation`) | Withdraw: `withdrawObligationCollateralAndRedeemReserveCollateral` or `withdrawObligationCollateralAndRedeemReserveCollateralV2` |
+| Pump.fun       | `buy` (the first one opens the volume tracker)                             | `sell` for the tokens, then `close_user_volume_accumulator` for the tracker's rent                                               |
+
+The rules builder turns each program's way out on with its way in. If you list
+a program's `instructions` yourself, list the way out as well. An instruction
+left off the list is refused with `sandbox-instruction-not-allowlisted`, so the
+agent cannot unwind the position or get its rent back until you sign new
+rules.
+
 ## Validate before you sign
 
 `a4 sandbox rules validate` checks a rules file locally. Nothing is sent
