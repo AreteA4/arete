@@ -105,13 +105,17 @@ then read through a sandbox), `streams` (`stream`, `get`), `stacks` (`create`, `
 `protocols` (`protocol`, `squads`, and `create`) and `dev` (`dev`). Account commands (`init`, `doctor`, `auth`, `login`, `mcp`, `self`,
 `upgrade`, `config`, `telemetry`) are always listed. With no login, when the
 API can't be reached, or when it reports no groups, every command is listed.
-Hiding is never the gate: a command typed anyway runs, and the API refuses
-what the account may not use. The project install commands (`install`,
-`update`, `remove`, `sdk`) also stop on the client, with an error naming the
-`install` group, when the API reports the account without it; the registry's
-resolver refuses them either way. Without `install`, `a4 init` still sets up
-skills and MCP config but leaves `arete.toml` alone. Hiding trims only the listing: when commands
-are left out, `a4 --help` says so, and a command named on the command line
+A command left out also refuses to run: typed anyway, it stops before doing
+anything, local or remote, with an error naming the group it needs. The API
+refuses the same things on its side (the registry's resolver refuses installs
+without `install`, for example), so the client refusal is only the first
+thing you see. Protocol projects are project installs: `protocol init`,
+`protocol deploy`, `dev up`, `dev sdk` and the protocol templates of `create`
+need `install` as well as `protocols` or `dev`, and `stack compose` needs
+`install` unless it composes local files to a file (`-o`). Without
+`install`, `a4 init` still sets up skills and MCP config but leaves
+`arete.toml` alone. When commands are left out, `a4 --help` says so, and a
+command named on the command line
 (`a4 help explore`, `a4 explore --help`, `a4 get` with a missing argument)
 shows its own help and errors for every account.
 

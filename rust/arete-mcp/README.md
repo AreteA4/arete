@@ -168,11 +168,15 @@ calls the account may not make, whether the tool is listed or not.
 
 ### Discovery
 
-Read-only lookups against the public `/api/registry/*` endpoints. No signup
-required: public stacks and programs are visible to unauthenticated callers. When
-a key happens to resolve (see [Authentication](#authentication)), it is attached
-so `explore_stacks` also returns global stacks — but a missing key is never an
-error here.
+Read-only lookups against the `/api/registry/*` endpoints. The listings
+(`explore_stacks`, `explore_programs`, `explore_protocols`, the catalog search)
+need no signup: public stacks and programs are visible to unauthenticated
+callers. Install descriptors, view lists, schemas and artifacts
+(`explore_stack`, `explore_program`, `explore_protocol`, `explore_stack_views`,
+`explore_stack_schema`, `resolve_artifact`) need an API key. When a key
+resolves (see [Authentication](#authentication)), it is attached to every
+lookup, so `explore_stacks` also returns global stacks; without one, the
+descriptor tools return the registry's sign-in error.
 
 - `explore_stacks({ fields?, full? })` — stacks in the registry. The
   `websocket_url` in each entry is what `connect` takes; `entities` tells you
