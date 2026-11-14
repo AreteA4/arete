@@ -6,6 +6,29 @@
 
 * **cli,mcp:** sandbox Rules v2 is no longer supported. `a4 sandbox rules validate`, `a4 sandbox rules show` and the MCP `sandbox_rules` tool refuse a version 2 document (from a file or from the API) with one line, `Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).`, and exit 1 (`sandbox-rules-version-unsupported` with `--json` / in MCP). Rules v3 is the only format.
 
+## [0.56.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.55.2...a4-cli-v0.56.0) (2026-11-14)
+
+
+### Features
+
+* **cli,mcp:** gate project installs behind the install command group ([76b19cc](https://github.com/AreteA4/arete/commit/76b19cc6f97487a58d884a6afff0ac05f6d8ba73))
+* **cli,mcp:** gate project installs behind the install command group ([8f2a36f](https://github.com/AreteA4/arete/commit/8f2a36fc3693275bf0f1b639847060fd87095506))
+* **cli:** rename an agent and show its id ([968c08e](https://github.com/AreteA4/arete/commit/968c08e50d8542af4c0c5880aae39a80355075e4))
+* **cli:** rename an agent and show its id ([7dc547b](https://github.com/AreteA4/arete/commit/7dc547bcf3f4ba93268c0ea63e5ad8b0d4f3bc84))
+
+
+### Bug Fixes
+
+* **cli:** doctor accepts a project with no arete.toml without install; full explore output omits blocked installs ([66c86f0](https://github.com/AreteA4/arete/commit/66c86f0fbb180895eac25669d03f8b7ab56d704c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.55.2 to 0.56.0
+    * arete-mcp bumped from 0.55.2 to 0.56.0
+
 ## [0.55.2](https://github.com/AreteA4/arete/compare/a4-cli-v0.55.1...a4-cli-v0.55.2) (2026-11-13)
 
 
