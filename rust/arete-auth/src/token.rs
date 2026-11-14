@@ -669,7 +669,9 @@ mod tests {
         let mut clear = payload.as_object().unwrap().clone();
         clear.remove(crate::sealed::SEALED_CLAIM);
         let text = serde_json::to_string(&clear).unwrap();
-        for secret in ["account:42", "user:7", "pro", "500"] {
+        // Match whole JSON tokens: a bare "500" can occur inside the
+        // current-time iat/exp/nbf digits and fail spuriously.
+        for secret in ["\"account:42\"", "\"user:7\"", "\"pro\"", ":500,", ":500}"] {
             assert!(!text.contains(secret), "{secret} visible in {text}");
         }
         assert_eq!(payload["sub"], "anon:visitor");
