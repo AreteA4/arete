@@ -55,9 +55,12 @@ only signer.
 | `computeUnitPriceMicroLamports` | Optional priority fee, per compute unit                                        |
 | `transactionFormat`             | `"v1"` (default) or `"v0"`                                                     |
 
-Accounts with a `fill` in `sandbox_rules` can be left out. A request still
-missing accounts is refused with `sandbox-intent-invalid` and a
-`missingAccounts` list.
+Accounts with a `fill` in `sandbox_rules` can be left out: Arete fills
+fixed addresses, the wallet, PDAs, token programs, your associated token
+accounts and fields it reads from the accounts you give (a pool's mints and
+vaults). A request still missing accounts is refused with
+`sandbox-intent-invalid`, `missingAccounts`, and `accountGuidance` that
+says how to find each one. See [Finding accounts](/sandboxes/accounts/).
 
 ## Swaps
 

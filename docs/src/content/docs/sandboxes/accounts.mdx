@@ -1,0 +1,178 @@
+---
+title: Finding accounts
+description: Which instruction accounts Arete fills for a sandbox agent, how to find the ones it cannot, and worked examples for PumpSwap, Meteora DLMM and Kamino Lend with Kamino Farms.
+---
+
+An `invoke` names each instruction's accounts. You rarely need all of them:
+Arete fills every account it can work out, and tells you how to find the
+rest. You need no SDK or typed client for this. `sandbox_rules` and the
+preview's refusals tell you everything below.
+
+## What Arete fills
+
+Every account in `sandbox_rules` may carry a `fill`. Leave those accounts
+out and Arete fills them when it builds the transaction:
+
+| `fill`    | Arete fills it with                                                                                                                                                                                                                                                                                                    |
+| --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fixed`   | A fixed address: the IDL's own, a sysvar (`rent`, `clock`, the instructions sysvar), a native program (`system_program`, `associated_token_program`, `memo_program`), or the program itself                                                                                                                            |
+| `wallet`  | The sandbox wallet, the only signer                                                                                                                                                                                                                                                                                    |
+| `derived` | A PDA or known address from the program's spec; Anchor's event authority; a token program, as the owner of the mint it goes with (`base_token_program` with `base_mint`); or a token account of yours, as the wallet's associated token account for the mint it goes with (`user_base_token_account` with `base_mint`) |
+| `read`    | A field of another account the instruction names, read from the chain when the transaction is built: `pool.base_mint`                                                                                                                                                                                                  |
+
+A filled account that the IDL doesn't explain also has a `source`, such as
+`pool.base_mint` or `the token program that owns base_mint`.
+
+Fills depend on each other. `base_mint` is read from the `pool`, then
+`user_base_token_account` and `base_token_program` follow from `base_mint`.
+Give the accounts a chain starts from and Arete fills the rest in one go.
+
+An account you give is never replaced. The preview lists every account
+Arete filled (`instructions[].filled`), so you can check them. Fills are
+worked out from account names and the program's spec, so read the preview
+before you invoke.
+
+## The accounts you give
+
+An account with no `fill` is yours to give. In `sandbox_rules` it has a
+`lookup` with what Arete knows about it:
+
+| Field             | Meaning                                                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `how`             | One sentence on how to find it                                                                                                |
+| `docs`            | What the program's IDL says about it, such as a PDA's seeds the spec can't express                                            |
+| `accountType`     | The program account type its name points to (`Pool`, `LbPair`, `Reserve`)                                                     |
+| `discriminator`   | That type's discriminator (base58), for a `getProgramAccounts` `memcmp` at offset 0                                           |
+| `findBy`          | Fields of that type at fixed byte offsets, to search by: `[{ "field": "base_mint", "offset": 43 }]`                           |
+| `heldBy`          | Account types of the program with a field naming it (`GlobalConfig.protocol_fee_recipients`): read one and take it from there |
+| `tokenAccountFor` | For a token account of yours: the mints it may be for                                                                         |
+| `unlocks`         | The accounts Arete fills once you give this one                                                                               |
+
+Usually you give only the account an action starts from: a pool, a pair or
+a reserve. Ways to find it:
+
+- **From what you already know.** You found the pool in a quote, an API
+  response, an earlier transaction or an account you read. Read accounts
+  with `program_read_account` to follow their fields.
+- **From a stack.** A stack that lists the program's pools or markets gives
+  their addresses. You can read it through the sandbox when the sandbox's
+  rules allow every program it decodes. See
+  [Reading in a sandbox](/sandboxes/read-scope/).
+- **By searching the program.** With your own RPC, run `getProgramAccounts`
+  on the program with a `memcmp` filter for the `discriminator` at offset 0
+  and one for each `findBy` field you know, such as the coin's mint.
+- **From the protocol.** Use its app, API, SDK or docs.
+
+Token accounts of yours that Arete can't pair with a mint (`user_token_in`
+on a two-sided pool) are usually your associated token accounts. Derive
+them with `sandbox_derive` (`kind: "ata"`), and create them with the
+baseline `createIdempotent` in the same action if they don't exist.
+
+## Refusals
+
+A preview or invoke that is missing accounts is refused with
+`sandbox-intent-invalid`. The message lists the accounts you must find
+first, each with its `how`, then the accounts Arete fills once those are
+given, then anything it couldn't derive and why. The refusal also carries:
+
+- `missingAccounts`: every missing account.
+- `filledAccounts`: what Arete already filled.
+- `accountGuidance`: one entry per missing account. For an account you
+  must find, the entry is its `lookup`. For an account Arete will fill, it
+  has `waitingOn`, which says what it is waiting for (`Arete reads it from
+pool.base_mint once pool is given`).
+
+Give the first group, preview again, and repeat until it passes.
+
+## Worked examples
+
+The exact accounts come from `sandbox_rules` for your sandbox. These show
+the shape.
+
+### PumpSwap buy
+
+PumpSwap (`pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA`) `buy` takes 23
+accounts plus the remaining accounts PumpSwap reads after them. You give
+two:
+
+- `pool`: a `Pool` account. Its `findBy` includes `base_mint` at offset 43
+  and `quote_mint` at offset 75, so a coin's pool is a `getProgramAccounts`
+  search for the Pool discriminator and the coin's mint at offset 43.
+- `global_config`: PumpSwap's `GlobalConfig` account.
+
+From the pool Arete reads `base_mint`, `quote_mint` and the pool's two token
+accounts. It picks a protocol fee recipient from
+`global_config.protocol_fee_recipients` and derives your two token
+accounts, both token programs and the program's PDAs. It also appends the
+remaining accounts PumpSwap needs, such as `pool_v2` and the buyback fee
+accounts.
+
+```json
+{
+  "action": "invoke",
+  "args": {
+    "instructions": [
+      {
+        "program": "PumpSwap",
+        "instruction": "buy",
+        "args": { "base_amount_out": "1000000", "max_quote_amount_in": "10000000" },
+        "accounts": { "pool": "<pool>", "global_config": "<global config>" }
+      }
+    ]
+  }
+}
+```
+
+Your quote token account must hold the SOL you spend, as wrapped SOL.
+Create and fund it in the same action with the baseline `createIdempotent`,
+a System `transfer` and `syncNative`.
+
+### Meteora DLMM swap
+
+Meteora DLMM (`LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo`) `swap2`: you
+give `lb_pair`, an `LbPair` account, and your two token accounts,
+`user_token_in` and `user_token_out`. Their `tokenAccountFor` is
+`token_x_mint` or `token_y_mint`, depending on which way you swap. Arete
+reads both reserves, both mints and the oracle from the pair, derives both
+token programs, and chooses the bin arrays the swap crosses from the pair's
+current active bin when the transaction is built. Bin arrays from an
+earlier quote go stale, so leave them out.
+
+### Kamino Lend deposit, with Kamino Farms
+
+A Kamino Lend deposit runs several instructions in one action: refresh the
+reserve, refresh the obligation, then deposit. Its first deposit also
+creates the user metadata, the obligation, and the obligation's farm state.
+Enable Kamino Farms in your rules too, because a deposit into a reserve
+with a farm calls it.
+
+For `depositReserveLiquidityAndObligationCollateral` you give:
+
+- `reserve`: the `Reserve` for the token you deposit. Its `findBy` includes
+  `liquidity.mintPubkey`, the token's mint.
+- `obligation`: your obligation in that market. Kamino derives it from your
+  wallet and the market. Its address is in Kamino's SDK and docs, and in
+  your earlier transactions.
+- `reserveDestinationDepositCollateral`: the reserve's collateral supply
+  vault. Read the reserve with `program_read_account` and take
+  `collateral.supplyVault`.
+
+Arete reads `lendingMarket`, `reserveLiquidityMint`,
+`reserveCollateralMint` and `reserveLiquiditySupply` from the reserve, and
+derives `lendingMarketAuthority`, your source token account for the
+reserve's mint, both token programs and the instructions sysvar.
+
+The farm instructions need the reserve's farm. That is `farmCollateral` on
+the reserve you read, plus your obligation's user state in that farm and
+the Kamino Farms program. `sandbox_rules` lists them under each
+instruction with a `lookup`. If the deposit's farm accounts are missing,
+the refusal names them.
+
+## When an account can't be found this way
+
+Some accounts depend on live state or on the way you trade: the tick
+arrays near a pool's current price, or which vault is the input. Names
+can't say which, so these stay yours. Take them from the protocol's quote,
+SDK or API, close to when you send the action. For a Jupiter-routed swap,
+Jupiter's `/swap-instructions` gives every account of the route. See
+[Actions](/sandboxes/actions/#swaps).
