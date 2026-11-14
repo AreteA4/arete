@@ -136,7 +136,7 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 
 | Group | Tools | Auth |
 |-------|-------|------|
-| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_views`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
+| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_views`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | Listings (`explore_stacks`, `explore_programs`) need none, and a resolved key widens `explore_stacks`; descriptors, views, schemas and artifacts need an API key |
 | One-shot read | `read_view`, `program_read_account` | Key resolved automatically; required for hosted stacks. With `sandbox`, minted through the sandbox |
 | Knowledge | `search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts` | **API key required** — fails up front without one |
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
@@ -856,8 +856,9 @@ names an Arete origin over HTTPS** — `https://arete.run` or any
 `https://*.arete.run` subdomain. Plain HTTP is permitted only for loopback
 (`localhost`, `127.0.0.1`, `[::1]`), where the request never leaves the machine.
 Anything else — including `http://api.arete.run`, which would put the key on the
-wire in cleartext — gets an unauthenticated request instead. Every endpoint the
-discovery tools touch is public, so you still get the public result set.
+wire in cleartext — gets an unauthenticated request instead. The listings still
+return the public result set; the descriptor, view, schema and artifact tools
+return the registry's sign-in error.
 
 ## Status
 
