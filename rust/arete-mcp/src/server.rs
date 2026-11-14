@@ -5566,8 +5566,13 @@ mod explore_args_tests {
                 );
             }
         });
+        // An account with every group (so install hints show); tests of
+        // narrower accounts set their own surface.
         AreteMcp {
             registry: RegistryClient::with_base_url(&format!("http://{address}")),
+            surface: crate::entitlements::Surface::Groups(
+                crate::entitlements::Group::ALL.into_iter().collect(),
+            ),
             ..AreteMcp::new()
         }
     }
@@ -7782,13 +7787,18 @@ mod describe_sdk_tests {
     fn tools_are_listed_per_entitlement_group() {
         use crate::entitlements::{Group, Surface};
         let everything = server_with_sandbox_key().tool_names();
-        assert_eq!(
-            server_with_sandbox_key()
-                .with_surface(&Surface::Everything)
-                .tool_names(),
-            everything,
-            "no groups to go by (offline, no key, older API): today's listing"
-        );
+        // No groups to go by (offline, no key, older API): every tool but
+        // the `install` group's.
+        let unknown = server_with_sandbox_key()
+            .with_surface(&Surface::Everything)
+            .tool_names();
+        let without_install: Vec<String> = everything
+            .iter()
+            .filter(|name| *name != "describe_sdk")
+            .cloned()
+            .collect();
+        assert_eq!(unknown, without_install);
+        assert!(everything.iter().any(|name| name == "describe_sdk"));
 
         let sandboxes = server_with_sandbox_key()
             .with_surface(&Surface::Groups(
@@ -7802,6 +7812,23 @@ mod describe_sdk_tests {
             "create_claim_link",
         ];
         expected.extend(crate::sandbox::TOOL_NAMES);
+        // Discovery: how an agent works out what to read or do.
+        expected.extend(
+            everything
+                .iter()
+                .map(String::as_str)
+                .filter(|name| name.starts_with("explore_")),
+        );
+        expected.extend([
+            "search_catalog",
+            "get_catalog_entry",
+            "list_catalog_vocabulary",
+            "search_knowledge",
+            "get_protocol",
+            "get_program_knowledge",
+            "get_recipe",
+            "list_concepts",
+        ]);
         // A sandbox reads its own programs and their stacks' live views.
         expected.extend([
             "program_read_account",
@@ -7821,6 +7848,9 @@ mod describe_sdk_tests {
         listed.sort_unstable();
         expected.sort_unstable();
         assert_eq!(listed, expected);
+        // Never SDK generation or raw SDK inputs.
+        assert!(!listed.contains(&"describe_sdk"));
+        assert!(!listed.contains(&"resolve_artifact"));
 
         let dev_and_streams = server_with_sandbox_key()
             .with_surface(&Surface::Groups(

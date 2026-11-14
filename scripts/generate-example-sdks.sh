@@ -16,6 +16,8 @@ if [[ -n "$EXTENSIONS_PATH" && "$EXTENSIONS_PATH" != /* ]]; then
 fi
 
 A4_CMD=(cargo run --quiet --manifest-path "$ROOT_DIR/cli/Cargo.toml" --)
+# CI-only hook: these build SDKs from local files with no account.
+export ARETE_INSTALL_WITHOUT_ACCOUNT=1 CI="${CI:-true}"
 if [[ -n "$CONFIG_PATH" ]]; then
     A4_CMD+=(--config "$CONFIG_PATH")
 fi

@@ -72,12 +72,22 @@ cargo install a4-cli
 | `--completions <SHELL>` | Generate shell completions (bash, zsh, fish, powershell, elvish)              |
 
 `a4 --help` lists the command groups your account is entitled to; when it
-leaves commands out, it says so at the bottom. Most commands still run when
-typed, and the API decides; the project install commands (`a4 install`,
-`a4 update`, `a4 remove`, `a4 sdk`) stop with an error naming the `install`
-command group when your account doesn't have it. `a4 help <command>` or
-`a4 <command> --help` shows a command's help whether or not the list
-includes it. A name that is not an a4 command but has a known
+leaves commands out, it says so at the bottom. A command left out also
+refuses to run: typed anyway, it stops before doing anything with an error
+naming the command group it needs. Without a key, when the API can't be
+reached, or when it reports no groups, every command is listed and runs, and
+the API decides, except the project installs: `a4 install`, `a4 update`,
+`a4 remove`, `a4 sdk`, the protocol project commands below, `a4 stack
+compose` into a project and `arete.toml` in `a4 init` are hidden and refused
+until the API reports the `install` command group (admins have every group).
+`a4 help <command>` or `a4 <command> --help` shows a command's help
+whether or not the list includes it.
+
+Protocol projects are project installs, so `a4 protocol init`,
+`a4 protocol deploy`, `a4 dev up`, `a4 dev sdk` and the `protocol` and
+`protocol-app` templates of `a4 create` need the `install` command group as
+well as `protocols` or `dev`. `a4 stack compose` needs `install` too, unless
+it composes local files to a file (`-o`). A name that is not an a4 command but has a known
 replacement gets a pointer instead of a bare error: `a4 read`, `a4 query` and
 `a4 view` point to `a4 get`, `a4 stream`, `a4 mcp` and the SDK.
 
@@ -105,13 +115,14 @@ Scripts that read inside those pass-through objects should accept both spellings
 gets the account and sandbox (`a4 sandbox`) commands, and with sandboxes the
 read commands `a4 get`, `a4 stream` and `a4 program account`, which read
 through a sandbox (see
-[Reading through a sandbox](#reading-through-a-sandbox)). Discovery
-(`registry`: `a4 explore`, `a4 know`), project installs (`install`:
+[Reading through a sandbox](#reading-through-a-sandbox)), and discovery
+(`a4 explore`, `a4 know`; descriptors need an API key). Project installs (`install`:
 `a4 install`, `a4 update`, `a4 remove`, `a4 sdk`, and the `arete.toml` that
 `a4 init` writes), stacks, protocols and dev environments are enabled per
 account; see [Private beta](/private-beta/). A command typed anyway still
-shows its help. The API decides what runs, and refuses registry installs
-(`403 command-group-required`) to an account without `install`.
+shows its help, but refuses to run. The API refuses the same things on its
+side: registry installs (`403 command-group-required`) to an account without
+`install`, for example.
 :::
 
 | Command                                                                       | Description                                                       |
@@ -463,9 +474,11 @@ a4 config validate
 
 ## Authentication
 
-Without an API key, `a4 explore` lists only public entries and you can install
-only public SDKs. Most of the catalog, the hosted stacks and the knowledge layer
-need a key. Keys are free (`a4 auth signup` for an agent, or a human key from
+Without an API key, `a4 explore` lists only public entries. Install
+descriptors, view lists, schemas and artifacts (`a4 explore stack <ref>`,
+`a4 explore program <ref>`, `a4 explore protocol <ref>`, `a4 get --stack`) need
+a key, and so do installs, most of the catalog, the hosted stacks and the
+knowledge layer. Keys are free (`a4 auth signup` for an agent, or a human key from
 [arete.run/keys](https://arete.run/keys) saved with `a4 auth login`), and any key lists them. Signed out, explore
 says so under every listing (and in `access` in its JSON) rather than printing
 an empty result as if the catalog were empty. Agents create or verify their restricted credential with
@@ -765,8 +778,10 @@ descriptor.
 ### a4 explore
 
 Discover installable resources through the same deployment-pinned descriptors
-used by `a4 install`. Public resources work without authentication; logging in
-also exposes global resources. Signed out, `a4 explore`, `a4 explore stacks` and
+used by `a4 install`. The listings of public resources work without
+authentication; a descriptor (`a4 explore stack <ref>`, `program <ref>`,
+`protocol <ref>`) needs a key, and logging in also exposes global resources.
+Signed out, `a4 explore`, `a4 explore stacks` and
 `a4 explore programs` print a note naming the free sign-in under the listing,
 and their `--json` carries `access: {"scope": "public", "signedIn": false,
 "hint": …}`. An empty signed-out list reads "No public stacks found", never
@@ -1236,7 +1251,8 @@ existing file and names it (`.gitignore` only gains missing lines). An
 `arete.toml` that holds only what `a4 init` writes (`manifest_version` and
 `[project]`) gains the protocol's sections, so `a4 init -y && a4 protocol init .`
 and `a4 protocol init <dir> && cd <dir> && a4 init -y` build the same project;
-an `arete.toml` with dependencies, `[dev]` or other tables still refuses. `--name <name>` sets
+an `arete.toml` with dependencies, `[dev]` or other tables still refuses. It
+needs the `install` command group as well as `protocols`. `--name <name>` sets
 the spec name (`^[a-z][A-Za-z0-9]*$`, default: the directory name in
 camelCase); `--no-install` skips the program install.
 

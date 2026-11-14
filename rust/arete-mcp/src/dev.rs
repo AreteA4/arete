@@ -82,7 +82,7 @@ pub fn environment_value_is_dev(value: Option<&str>) -> Result<bool> {
     }
 }
 
-pub const DEV_UP_HINT: &str = "Run `a4 dev up` in the project (in a terminal: it keeps running) to create or wake its Arete cloud dev environment.";
+pub const DEV_UP_HINT: &str = "Run `a4 dev up` in the project (in a terminal: it keeps running) to create or wake its Arete cloud dev environment. `a4 dev up` installs the project's protocol client, so it needs the `install` command group as well as `dev`.";
 
 /// Lamports a new (or empty) dev wallet is funded with (100 SOL; the
 /// environment's SOL is worthless).

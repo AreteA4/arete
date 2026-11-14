@@ -85,6 +85,8 @@ done
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/arete-generated-crates.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+# CI-only hook: these build SDKs from local files with no account.
+export ARETE_INSTALL_WITHOUT_ACCOUNT=1 CI="${CI:-true}"
 if [[ -n "${A4_BIN:-}" ]]; then
     A4_CMD=("$A4_BIN")
 else

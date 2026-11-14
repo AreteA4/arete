@@ -760,6 +760,21 @@ pub fn compose(args: ComposeArgs<'_>) -> Result<()> {
         || programs
             .iter()
             .any(|program| matches!(program, ProgramArg::Registry { .. }));
+    // Registry parts go through the registry's resolver, and composing into
+    // the project writes arete.toml: both are project installs. Files
+    // composed to `-o` need no group.
+    if registry || args.output.is_none() {
+        crate::entitlements::require_every(
+            &crate::entitlements::current_surface(),
+            "a4 stack compose",
+            &[arete_mcp::entitlements::Group::Install],
+        )
+        .map_err(|error| {
+            anyhow::anyhow!(
+                "{error} Composing local files to a file (`-o <path>` with only file parts) needs no group."
+            )
+        })?;
+    }
     match args.output {
         Some(_) if args.install => {
             bail!("--install declares the composed stack in arete.toml; omit -o to use it")

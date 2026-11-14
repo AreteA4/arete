@@ -446,11 +446,12 @@ impl RegistryClient {
         // point anywhere, and `ARETE_API_KEY` (unlike the credentials file, which
         // is keyed by API URL) is not scoped to a destination — so attaching it
         // unconditionally would ship the user's key to whatever host that variable
-        // names. Every endpoint reached here is public, so the key only ever buys
-        // the global-stack widening on `GET /api/registry`. That is not worth
-        // leaking a credential for: when the destination is not recognised, send
-        // the request unauthenticated rather than failing, and the public subset
-        // still comes back.
+        // names. The lists and catalog answer anonymously, where the key only
+        // widens the listing; install descriptors, views, schemas and artifacts
+        // need a key, and an unauthenticated request gets the registry's own
+        // sign-in error. Neither is worth leaking a credential for: when the
+        // destination is not recognised, send the request unauthenticated
+        // rather than failing.
         //
         // The empty target passed to `resolve` keeps a missing key non-fatal — it
         // is a hosted *stack* URL that makes absence an error, which is a `connect`

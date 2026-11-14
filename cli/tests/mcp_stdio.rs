@@ -175,6 +175,9 @@ fn a4_mcp_describes_an_installed_sdk_of_the_project_it_runs_in() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_a4"))
         .arg("mcp")
         .current_dir(project.path().join("src"))
+        // No key, so no command groups: `describe_sdk` is an `install`
+        // tool, listed here only through this repository's CI hook.
+        .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
         .env("CI", "1")
         .env("DO_NOT_TRACK", "1")
         .env("A4_NO_UPDATE_CHECK", "1")
@@ -269,7 +272,10 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
         .env_remove("ARETE_API_KEY")
         .env_remove("ARETE_PROFILE")
         .env_remove("ARETE_CREDENTIALS_PATH")
-        .env("CI", "1")
+        // The CI hook's variable alone, outside CI, lists nothing more.
+        .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
+        .env_remove("CI")
+        .env_remove("GITHUB_ACTIONS")
         .env("DO_NOT_TRACK", "1")
         .env("A4_NO_UPDATE_CHECK", "1")
         .stdin(Stdio::piped())
@@ -335,8 +341,13 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
         "sandbox_status",
         "sandbox_action",
         "sandbox_list",
+        // No key, so no command groups: the `install` group's tools are
+        // hidden until the API reports `install`.
+        "describe_sdk",
     ] {
         assert!(!names.contains(&removed), "{removed} listed: {names:?}");
     }
+    // Discovery stays listed.
+    assert!(names.contains(&"explore_stack"), "{names:?}");
     assert!(called.get("error").is_some(), "{called}");
 }

@@ -117,7 +117,9 @@ printf '[keys]\n' >"$ARETE_CREDENTIALS_PATH"
 new_project "$WORK_DIR/anonymous"
 anonymous_message="$( (cd "$WORK_DIR/anonymous" && "${A4[@]}" install program "$ARETE_E2E_PRIVATE_PROGRAM" 2>&1) || true)"
 case "$anonymous_message" in
-    *"requires a login"*) ;;
+    # Without a key the CLI can't see the account's command groups and
+    # refuses the install itself, before asking the registry.
+    *"requires a login"* | *"a4 login"*) ;;
     *) echo "unexpected anonymous response: $anonymous_message" >&2; exit 1 ;;
 esac
 

@@ -123,7 +123,10 @@ git init -q && git config user.email e2e@arete.run && git config user.name e2e
 # agent; a bare container has none, so seed the claude-code home signal.
 [[ "$pass" == node ]] && mkdir -p "$HOME/.claude"
 a4 init -y --json > init.json || fail "a4 init exited $?"
-for f in arete.toml AGENTS.md CLAUDE.md .mcp.json; do [[ -f $f ]] || fail "init did not create $f"; done
+for f in AGENTS.md CLAUDE.md .mcp.json; do [[ -f $f ]] || fail "init did not create $f"; done
+# Signed out, a4 can't see the account's command groups, and arete.toml is
+# a project install: init skips it.
+[[ ! -f arete.toml ]] || fail "init wrote arete.toml without an account that has the install group"
 if [[ "$pass" == node ]]; then
   # a4 init installs skills per detected agent (npx skills add --agent ...),
   # which targets the agent's own directory; the universal .agents/skills

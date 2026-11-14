@@ -59,12 +59,23 @@ pub fn create(
             .context("Failed to read project name")?,
     };
 
+    // The protocol templates scaffold a protocol project, which installs
+    // from the registry: they need `protocols` and `install`.
+    let surface = crate::entitlements::current_surface();
+    let protocols_allowed = crate::entitlements::PROTOCOL_TEMPLATE_GROUPS
+        .iter()
+        .all(|group| surface.allows(*group));
     let selected_template = match template {
         Some(t) => Template::from_str(&t).ok_or_else(|| {
             anyhow::anyhow!("Unknown template: {}. Available: {}", t, TEMPLATE_CHOICES)
         })?,
         None => {
-            let items: Vec<String> = Template::ALL
+            let offered: Vec<Template> = Template::ALL
+                .iter()
+                .copied()
+                .filter(|template| protocols_allowed || !template.is_protocol())
+                .collect();
+            let items: Vec<String> = offered
                 .iter()
                 .map(|t| format!("{} - {}", t.display_name(), t.description()))
                 .collect();
@@ -76,9 +87,16 @@ pub fn create(
                 .interact()
                 .context("Failed to select template")?;
 
-            Template::ALL[selection]
+            offered[selection]
         }
     };
+    if selected_template.is_protocol() {
+        crate::entitlements::require_every(
+            &surface,
+            &format!("a4 create --template {}", selected_template.display_name()),
+            &crate::entitlements::PROTOCOL_TEMPLATE_GROUPS,
+        )?;
+    }
 
     telemetry::record_template_selected(selected_template.display_name());
 

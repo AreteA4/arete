@@ -136,7 +136,7 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 
 | Group | Tools | Auth |
 |-------|-------|------|
-| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_views`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | None required; a resolved key widens `explore_stacks` |
+| Discovery | `explore_stacks`, `explore_stack`, `explore_stack_views`, `explore_stack_schema`, `explore_programs`, `explore_program`, `explore_protocol`, `resolve_artifact` | Listings (`explore_stacks`, `explore_programs`) need none, and a resolved key widens `explore_stacks`; descriptors, views, schemas and artifacts need an API key |
 | One-shot read | `read_view`, `program_read_account` | Key resolved automatically; required for hosted stacks. With `sandbox`, minted through the sandbox |
 | Knowledge | `search_knowledge`, `get_protocol`, `get_program_knowledge`, `get_recipe`, `list_concepts` | **API key required** — fails up front without one |
 | Connection | `connect`, `disconnect`, `list_connections` | Key resolved automatically; required for hosted stacks |
@@ -155,24 +155,30 @@ only their tools. `ping`, `account_status`, `rename_agent` and
 
 | Group | Tools |
 |-------|-------|
-| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`), and the `streams` read tools and `program_read_account`, which then read through a sandbox: an account reporting only `account` and `sandboxes` still sees `connect`, `read_view`, `get_entity`, `query_entities` and the rest |
+| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`), the `streams` read tools and `program_read_account`, which then read through a sandbox, and discovery: `explore_*`, the catalog and the knowledge tools. An account reporting only `account` and `sandboxes` sees all of these, but not `describe_sdk` or `resolve_artifact` |
 | `streams` | connection, subscription and cache tools, `read_view` and `program_read_account` |
 | `stacks` | `program_read_account` |
-| `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
+| `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools |
+| `install` | `describe_sdk` (the SDKs a project install generated), `resolve_artifact` |
 | `protocols` | `protocol_*`, `squads_*` |
 | `dev` | `dev_*` |
 
 With no key, when the API can't be reached, or when it reports no groups,
-every tool is listed as before. Hiding is never the gate: the API refuses
+every tool is listed except the `install` group's (`describe_sdk`), which
+needs the API to report `install`. Hiding is never the gate: the API refuses
 calls the account may not make, whether the tool is listed or not.
 
 ### Discovery
 
-Read-only lookups against the public `/api/registry/*` endpoints. No signup
-required: public stacks and programs are visible to unauthenticated callers. When
-a key happens to resolve (see [Authentication](#authentication)), it is attached
-so `explore_stacks` also returns global stacks — but a missing key is never an
-error here.
+Read-only lookups against the `/api/registry/*` endpoints. The listings
+(`explore_stacks`, `explore_programs`, `explore_protocols`, the catalog search)
+need no signup: public stacks and programs are visible to unauthenticated
+callers. Install descriptors, view lists, schemas and artifacts
+(`explore_stack`, `explore_program`, `explore_protocol`, `explore_stack_views`,
+`explore_stack_schema`, `resolve_artifact`) need an API key. When a key
+resolves (see [Authentication](#authentication)), it is attached to every
+lookup, so `explore_stacks` also returns global stacks; without one, the
+descriptor tools return the registry's sign-in error.
 
 - `explore_stacks({ fields?, full? })` — stacks in the registry. The
   `websocket_url` in each entry is what `connect` takes; `entities` tells you
@@ -852,8 +858,9 @@ names an Arete origin over HTTPS** — `https://arete.run` or any
 `https://*.arete.run` subdomain. Plain HTTP is permitted only for loopback
 (`localhost`, `127.0.0.1`, `[::1]`), where the request never leaves the machine.
 Anything else — including `http://api.arete.run`, which would put the key on the
-wire in cleartext — gets an unauthenticated request instead. Every endpoint the
-discovery tools touch is public, so you still get the public result set.
+wire in cleartext — gets an unauthenticated request instead. The listings still
+return the public result set; the descriptor, view, schema and artifact tools
+return the registry's sign-in error.
 
 ## Status
 

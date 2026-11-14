@@ -1303,6 +1303,16 @@ fn restore_default_sigpipe() {
 #[cfg(not(unix))]
 fn restore_default_sigpipe() {}
 
+/// The subcommand this process was asked to run (`init` for
+/// `a4 protocol init ...`), from its arguments.
+fn typed_subcommand() -> Option<String> {
+    let matches = Cli::command()
+        .try_get_matches_from(std::env::args_os())
+        .ok()?;
+    let (_, command) = matches.subcommand()?;
+    command.subcommand_name().map(str::to_string)
+}
+
 fn command_name(cmd: &Commands) -> &'static str {
     match cmd {
         Commands::Create { .. } => "create",
@@ -1392,11 +1402,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     entitlements::remember_config_path(&cli.config);
-    // Project installs need the `install` command group: an account the API
-    // reports without it is stopped here, before anything local or remote.
+    // A command the account's command groups hide refuses to run, before
+    // anything local or remote: one the API reports the account without, or,
+    // with no groups to go by, a project install. Account commands (sign-in,
+    // doctor, mcp) never look.
     let name = command_name(&command);
-    if entitlements::INSTALL_COMMANDS.contains(&name) {
-        entitlements::require_install(&entitlements::selected_account_surface(&cli.config), name)?;
+    if entitlements::command_groups(name) != Some(&[arete_mcp::entitlements::Group::Account][..]) {
+        let surface = entitlements::running_surface(&cli.config);
+        entitlements::require_command(&surface, name, typed_subcommand().as_deref())?;
     }
 
     match command {
@@ -2622,16 +2635,12 @@ mod tests {
 
     #[test]
     fn granting_every_group_renders_todays_help() {
-        use arete_mcp::entitlements::{Group, Surface};
+        use arete_mcp::entitlements::Group;
         // Help shows `ARETE_API_URL`'s value, which other tests set.
         let _env = crate::api_client::test_support::ENV_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let today = rendered_help(Cli::command());
-        assert_eq!(
-            rendered_help(entitlements::visible(Cli::command(), &Surface::Everything)),
-            today
-        );
         let all = entitlements::visible(Cli::command(), &surface(&Group::ALL));
         all.clone().debug_assert();
         assert_eq!(rendered_help(all.clone()), today);
@@ -2662,10 +2671,19 @@ mod tests {
                 "{core} missing:\n{help}"
             );
         }
-        for hidden in ["install", "dev", "protocol", "explore", "sdk", "up"] {
+        for hidden in [
+            "install", "update", "remove", "sdk", "dev", "protocol", "up",
+        ] {
             assert!(
                 !help.contains(&format!("  {hidden} ")),
                 "{hidden} listed:\n{help}"
+            );
+        }
+        // Discovery is how an agent works out what to read or do.
+        for discovery in ["explore", "know"] {
+            assert!(
+                help.contains(&format!("  {discovery} ")),
+                "{discovery} missing:\n{help}"
             );
         }
         // A sandbox reads its programs and their stacks: the read commands
@@ -2696,7 +2714,8 @@ mod tests {
         let completions = fish_completions(sandboxes.clone());
         assert!(completes_top_level(&completions, "doctor"));
         assert!(completes_top_level(&completions, "stream"));
-        for hidden in ["install", "protocol", "dev"] {
+        assert!(completes_top_level(&completions, "explore"));
+        for hidden in ["install", "sdk", "protocol", "dev"] {
             assert!(
                 !completes_top_level(&completions, hidden),
                 "{hidden} completes"
@@ -2730,9 +2749,50 @@ mod tests {
             Some(Commands::Auth(AuthCommands::Whoami))
         ));
 
-        // The full parser still accepts a hidden command: it runs and the
-        // API refuses it when the account may not use it.
+        // The full parser still accepts a hidden command; `run` then
+        // refuses it before it does anything.
         assert!(Cli::try_parse_from(["a4", "install", "ore"]).is_ok());
+    }
+
+    /// With no groups to go by (no key, the API unreachable, or no groups
+    /// reported), every command is listed except the project installs.
+    #[test]
+    fn unknown_groups_hide_the_install_commands() {
+        use arete_mcp::entitlements::Surface;
+        let unknown = entitlements::visible(Cli::command(), &Surface::Everything);
+        unknown.clone().debug_assert();
+        let (help, _) = rendered_help(unknown.clone());
+        for hidden in ["install", "update", "remove", "sdk"] {
+            assert!(
+                !help.contains(&format!("  {hidden} ")),
+                "{hidden} listed:\n{help}"
+            );
+        }
+        for listed in [
+            "explore", "know", "get", "protocol", "dev", "stack", "create", "init",
+        ] {
+            assert!(
+                help.contains(&format!("  {listed} ")),
+                "{listed} missing:\n{help}"
+            );
+        }
+        assert!(help.contains("a4 login"), "{help}");
+        let (protocol, _) = rendered_help(unknown.find_subcommand("protocol").unwrap().clone());
+        assert!(!protocol.contains("  init "), "{protocol}");
+        assert!(!protocol.contains("  deploy "), "{protocol}");
+        assert!(protocol.contains("  actions "), "{protocol}");
+        let (dev, _) = rendered_help(unknown.find_subcommand("dev").unwrap().clone());
+        assert!(!dev.contains("  up "), "{dev}");
+        assert!(!dev.contains("  sdk "), "{dev}");
+        assert!(dev.contains("  status "), "{dev}");
+        let completions = fish_completions(unknown);
+        assert!(completes_top_level(&completions, "explore"));
+        for hidden in ["install", "sdk"] {
+            assert!(
+                !completes_top_level(&completions, hidden),
+                "{hidden} completes"
+            );
+        }
     }
 
     fn parse_failure_of(args: &[&str]) -> ParseFailure {
@@ -2881,9 +2941,14 @@ mod tests {
             &surface(&[Group::Account, Group::Sandboxes, Group::Install]),
         );
         let (help, _) = rendered_help(install.clone());
-        for listed in ["install", "update", "remove", "sdk"] {
+        for listed in ["install", "update", "remove", "sdk", "explore"] {
             assert!(help.contains(&format!("  {listed} ")), "{listed} missing");
         }
+        // `install` alone doesn't bring discovery.
+        let (help, _) = rendered_help(entitlements::visible(
+            Cli::command(),
+            &surface(&[Group::Install]),
+        ));
         assert!(!help.contains("  explore "));
         let error = install.try_get_matches_from(["a4", "instal"]).unwrap_err();
         assert!(error.to_string().contains("install"), "{error}");

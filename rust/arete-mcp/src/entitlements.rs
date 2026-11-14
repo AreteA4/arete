@@ -6,8 +6,11 @@
 //! calls the account may not make.
 //!
 //! The groups always come from the API. When there is no account key, the
-//! API can't be reached, or it does not report groups, everything is listed
-//! as before and the API decides.
+//! API can't be reached, or it does not report groups, the groups are
+//! unknown ([`Surface::Everything`]): everything is listed and the API
+//! decides, except the `install` group. Project installs generate SDKs on
+//! this machine, so they are listed and run only when the API positively
+//! reports `install` (admins have every group).
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -81,8 +84,8 @@ impl Group {
 /// What the account sees.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Surface {
-    /// Every command and tool: no groups to go by (no key, API unreachable,
-    /// or an API that does not report groups).
+    /// No groups to go by (no key, API unreachable, or an API that does not
+    /// report groups): every command and tool except the `install` group's.
     Everything,
     /// Only the always-listed account commands and these groups.
     Groups(BTreeSet<Group>),
@@ -107,9 +110,11 @@ impl Surface {
         )
     }
 
+    /// Whether `group` is granted. With no groups to go by, every group but
+    /// `install` is: project installs need the API to report it.
     pub fn allows(&self, group: Group) -> bool {
         match self {
-            Surface::Everything => true,
+            Surface::Everything => group != Group::Install,
             Surface::Groups(groups) => groups.contains(&group),
         }
     }
@@ -118,6 +123,40 @@ impl Surface {
     /// are, anything else when one of its groups is granted.
     pub fn allows_any(&self, groups: &[Group]) -> bool {
         groups.contains(&Group::Account) || groups.iter().any(|group| self.allows(*group))
+    }
+}
+
+/// Internal hook for this repository's CI, which builds example SDKs and
+/// runs integration tests from local files with no account. Not a product
+/// setting. See [`ci_install_hook`].
+const CI_INSTALL_HOOK_ENV: &str = "ARETE_INSTALL_WITHOUT_ACCOUNT";
+
+/// Whether the CI hook is on, reading variables through `var`: the hook
+/// variable is `1` and the process runs under CI (`CI` is `true` or `1`, or
+/// `GITHUB_ACTIONS` is `true`). The hook variable alone does nothing.
+#[doc(hidden)]
+pub fn ci_install_hook(var: impl Fn(&str) -> Option<String>) -> bool {
+    let is = |name: &str, accepted: &[&str]| {
+        var(name)
+            .is_some_and(|value| accepted.contains(&value.trim().to_ascii_lowercase().as_str()))
+    };
+    is(CI_INSTALL_HOOK_ENV, &["1"]) && (is("CI", &["true", "1"]) || is("GITHUB_ACTIONS", &["true"]))
+}
+
+/// `surface`, widened to every group when it is unknown and the CI hook
+/// ([`ci_install_hook`]) is on. Groups the API reports are never widened.
+#[doc(hidden)]
+pub fn with_install_opt_in(surface: Surface) -> Surface {
+    widen_unknown(surface, ci_install_hook(|name| std::env::var(name).ok()))
+}
+
+/// `surface`, widened to every group when it is unknown and `opted_in`.
+#[doc(hidden)]
+pub fn widen_unknown(surface: Surface, opted_in: bool) -> Surface {
+    if opted_in && surface == Surface::Everything {
+        Surface::Groups(Group::ALL.into_iter().collect())
+    } else {
+        surface
     }
 }
 
@@ -140,7 +179,9 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
     const SANDBOXES: &[Group] = &[Group::Sandboxes];
     const STREAM_READS: &[Group] = &[Group::Streams, Group::Sandboxes];
     const PROGRAM_READS: &[Group] = &[Group::Stacks, Group::Streams, Group::Sandboxes];
-    const REGISTRY: &[Group] = &[Group::Registry];
+    // Discovery is how an agent works out what to do, so every account with
+    // sandboxes (the default) has it too.
+    const DISCOVERY: &[Group] = &[Group::Registry, Group::Sandboxes];
     const INSTALL: &[Group] = &[Group::Install];
     // Raw artifacts are SDK inputs, and discovery reads them too.
     const ARTIFACTS: &[Group] = &[Group::Install, Group::Registry];
@@ -158,7 +199,7 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
         | "get_protocol"
         | "get_program_knowledge"
         | "get_recipe"
-        | "list_concepts" => REGISTRY,
+        | "list_concepts" => DISCOVERY,
         // Live views and program reads: a sandbox reads its own programs
         // through them when it is the only one of their groups granted.
         "connect" | "disconnect" | "read_view" | "subscribe" | "unsubscribe" | "query_entities"
@@ -166,7 +207,7 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
         | "list_connections" => STREAM_READS,
         "program_read_account" => PROGRAM_READS,
         _ if tool.starts_with("sandbox_") => SANDBOXES,
-        _ if tool.starts_with("explore_") => REGISTRY,
+        _ if tool.starts_with("explore_") => DISCOVERY,
         _ if tool.starts_with("dev_") => DEV,
         _ if tool.starts_with("protocol_") || tool.starts_with("squads_") => PROTOCOLS,
         _ => return None,
@@ -182,6 +223,11 @@ pub fn mcp_tool_visible(surface: &Surface, tool: &str) -> bool {
 /// or `ARETE_API_KEY` key for that API. Everything when there is no key, the
 /// key may not go to `api_url`, or the call fails in any way.
 pub async fn fetch_surface(api_url: &str) -> Surface {
+    with_install_opt_in(fetch_reported_surface(api_url).await)
+}
+
+/// The surface `GET /api/auth/me` reports, before any opt-in.
+async fn fetch_reported_surface(api_url: &str) -> Surface {
     let api_url = api_url.trim().trim_end_matches('/');
     let key = match crate::credentials::resolve_key_for_api(api_url) {
         Ok(Some(key)) => key,
@@ -254,7 +300,8 @@ mod tests {
         let stacks = Surface::Groups([Group::Stacks].into_iter().collect());
         assert!(mcp_tool_visible(&stacks, "program_read_account"));
         assert!(!mcp_tool_visible(&stacks, "read_view"));
-        assert!(!mcp_tool_visible(&sandboxes, "explore_stacks"));
+        // Discovery is open to sandboxes (the default); SDK generation isn't.
+        assert!(mcp_tool_visible(&sandboxes, "explore_stacks"));
         assert!(!mcp_tool_visible(&sandboxes, "describe_sdk"));
         assert!(mcp_tool_visible(&Surface::Everything, "dev_status"));
     }
@@ -308,9 +355,29 @@ mod tests {
         for tool in crate::sandbox::TOOL_NAMES {
             assert!(mcp_tool_visible(&surface, tool), "{tool}");
         }
-        for hidden in [
+        // Discovery: explore, the catalog and knowledge.
+        for discovery in [
             "explore_stacks",
+            "explore_stack",
+            "explore_stack_views",
+            "explore_stack_schema",
+            "explore_programs",
+            "explore_program",
+            "explore_protocols",
+            "explore_protocol",
             "search_catalog",
+            "get_catalog_entry",
+            "list_catalog_vocabulary",
+            "search_knowledge",
+            "get_protocol",
+            "get_program_knowledge",
+            "get_recipe",
+            "list_concepts",
+        ] {
+            assert!(mcp_tool_visible(&surface, discovery), "{discovery}");
+        }
+        // Not SDK generation or raw SDK inputs, nor other groups' tools.
+        for hidden in [
             "describe_sdk",
             "resolve_artifact",
             "protocol_submit",
@@ -319,6 +386,62 @@ mod tests {
         ] {
             assert!(!mcp_tool_visible(&surface, hidden), "{hidden}");
         }
+    }
+
+    /// With no groups to go by, everything is listed except the `install`
+    /// group's tools: generating SDKs needs the API to report `install`.
+    #[test]
+    fn unknown_groups_hide_the_install_tools() {
+        assert!(!Surface::Everything.allows(Group::Install));
+        assert!(!Surface::Everything.can_install());
+        assert!(!mcp_tool_visible(&Surface::Everything, "describe_sdk"));
+        for listed in [
+            "explore_stack",
+            "resolve_artifact",
+            "dev_status",
+            "protocol_submit",
+            "connect",
+        ] {
+            assert!(mcp_tool_visible(&Surface::Everything, listed), "{listed}");
+        }
+        let admin = Surface::Groups(Group::ALL.into_iter().collect());
+        assert!(admin.can_install());
+        assert!(mcp_tool_visible(&admin, "describe_sdk"));
+    }
+
+    /// The CI hook needs both its variable and a CI environment; the
+    /// variable alone does nothing, and it never widens reported groups.
+    #[test]
+    fn the_ci_hook_needs_a_ci_environment() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        const HOOK: &str = "ARETE_INSTALL_WITHOUT_ACCOUNT";
+        assert!(!ci_install_hook(env(&[])));
+        assert!(!ci_install_hook(env(&[(HOOK, "1")])));
+        assert!(!ci_install_hook(env(&[(HOOK, "1"), ("CI", "false")])));
+        assert!(!ci_install_hook(env(&[(HOOK, "1"), ("CI", "")])));
+        assert!(!ci_install_hook(env(&[(HOOK, "true"), ("CI", "true")])));
+        assert!(!ci_install_hook(env(&[("CI", "true")])));
+        assert!(ci_install_hook(env(&[(HOOK, "1"), ("CI", "true")])));
+        assert!(ci_install_hook(env(&[(HOOK, "1"), ("CI", "1")])));
+        assert!(ci_install_hook(env(&[
+            (HOOK, "1"),
+            ("GITHUB_ACTIONS", "true")
+        ])));
+
+        let admin = Surface::Groups(Group::ALL.into_iter().collect());
+        assert_eq!(widen_unknown(Surface::Everything, true), admin);
+        assert_eq!(
+            widen_unknown(Surface::Everything, false),
+            Surface::Everything
+        );
+        let default = Surface::Groups([Group::Account, Group::Sandboxes].into_iter().collect());
+        assert_eq!(widen_unknown(default.clone(), true), default);
     }
 
     #[test]

@@ -523,7 +523,8 @@ mod tests {
             agents_md: true,
             skills: false,
             mcp: true,
-            surface: Surface::Everything,
+            // An account with every group; tests narrow it.
+            surface: Surface::Groups(arete_mcp::entitlements::Group::ALL.into_iter().collect()),
         }
     }
 
