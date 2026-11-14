@@ -29,6 +29,11 @@ a4 auth claim-link
 The MCP server's `create_claim_link` tool does the same. The agent hands the
 link to you and must not open it itself.
 
+The agent shows in your dashboard under its display name. It can change that
+name itself with `a4 auth rename <name>` or the MCP server's `rename_agent`
+tool. `a4 auth whoami` and `account_status` report the agent's `id`, a number
+that never changes.
+
 ## Grants
 
 A grant gives one agent access to one sandbox, for a set of actions:

@@ -658,8 +658,21 @@ Do not pass `api_key` in tool calls. The server resolves credentials in this ord
 3. Without a selected profile, `ARETE_API_KEY`, then an unambiguous profile or
    legacy entry of the `a4` login
 
-`account_status` reports the resolved account: its plan, claim state and,
-when the account reports it, the plan's `usage`. `usage.onExhausted` says what
+`account_status` reports the resolved account: its `id`, slug, display name,
+plan, claim state and, when the account reports it, the plan's `usage`. The
+`id` is a stable number that never changes, so use it to refer to the agent in
+reports and support requests. An API that does not report it yet returns
+`null`.
+
+`rename_agent({ display_name })` changes the display name of the agent the
+resolved key belongs to, the name its owner sees. It can only rename that
+agent; the `id` and `slug` stay the same. Names are trimmed, up to 64
+characters, with no control or invisible formatting characters, and renames are
+rate-limited per agent. It returns `{ id, slug, displayName }`. An API that
+does not support renaming yet answers with the code `agent-rename-unsupported`
+and changes nothing.
+
+`account_status` also reports the plan's usage. `usage.onExhausted` says what
 happens once the allowance is used: `block` (requests are refused) or
 `metered` (usage continues and is billed, with
 `overage: "metered beyond allowance"`).

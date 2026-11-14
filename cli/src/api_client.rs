@@ -3057,6 +3057,10 @@ pub struct AgentSignupResponse {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentMeResponse {
+    /// The agent's stable numeric id. It never changes, including on rename.
+    /// `None` from an API that does not report it yet.
+    #[serde(default)]
+    pub id: Option<i64>,
     pub slug: String,
     #[serde(alias = "displayName")]
     pub display_name: String,
@@ -3078,6 +3082,15 @@ pub struct AgentMeResponse {
     pub starter_guidance: Option<String>,
     #[serde(default)]
     pub usage: Option<AgentUsageSummary>,
+}
+
+/// `PATCH /api/agents/me`: the agent as renamed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentRenameResponse {
+    pub id: i64,
+    pub slug: String,
+    pub display_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3391,6 +3404,33 @@ impl ApiClient {
             .bearer_auth(api_key)
             .send_api("agent identity")?;
         Self::handle_response(response)
+    }
+
+    /// `PATCH /api/agents/me`: rename the agent the stored key belongs to.
+    /// An agent can only rename itself; the server picks the agent from the
+    /// key, never from the request.
+    pub fn agent_rename(&self, display_name: &str) -> Result<AgentRenameResponse> {
+        let api_key = self.require_api_key()?;
+        let response = self
+            .client
+            .patch(format!("{}/api/agents/me", self.base_url))
+            .timeout(Duration::from_secs(30))
+            .bearer_auth(api_key)
+            .json(&serde_json::json!({ "displayName": display_name }))
+            .send_api("agent rename")?;
+        if response.status().is_success() {
+            return Self::handle_response(response);
+        }
+        let error = Self::response_error(response);
+        // An API without the rename route answers 404 or 405 with no problem
+        // code. Say so rather than showing a bare status.
+        if matches!(error.status.as_u16(), 404 | 405) && error.problem.code.is_none() {
+            anyhow::bail!(
+                "This Arete API ({}) does not support renaming agents yet. Nothing was changed; try again after the API is updated.",
+                self.base_url
+            );
+        }
+        Err(error.into())
     }
 
     /// `GET /api/auth/me`: the caller's account kind, plan and capabilities,
@@ -4113,6 +4153,62 @@ mod agent_tests {
         assert_eq!(req.header("authorization"), Some("Bearer a4_ak_me"));
     }
 
+    #[test]
+    fn agent_me_reports_the_agent_id_when_the_api_does() {
+        let server = MockServer::json(
+            200,
+            r#"{"id":42,"slug":"agent-1","displayName":"Agent One","status":"active","createdAt":"2026-09-22T00:00:00Z","claimState":"unclaimed"}"#,
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".to_string());
+        assert_eq!(client.agent_me().expect("me succeeds").id, Some(42));
+    }
+
+    #[test]
+    fn agent_rename_explains_an_api_without_the_route() {
+        for status in [404, 405] {
+            let server = MockServer::json(status, "");
+            let client =
+                ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".to_string());
+            let error = client
+                .agent_rename("Dogfood")
+                .expect_err("missing route")
+                .to_string();
+            assert!(
+                error.contains("does not support renaming agents yet"),
+                "{status}: {error}"
+            );
+            assert!(!error.contains("a4_ak_me"), "{error}");
+        }
+    }
+
+    #[test]
+    fn agent_rename_keeps_api_problems() {
+        let server = MockServer::json(
+            429,
+            r#"{"schemaVersion":1,"error":"Agent rename limit exceeded","code":"agent-rename-rate-limit","retryable":true,"retryAfterSeconds":3600}"#,
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".to_string());
+        let error = client.agent_rename("Dogfood").expect_err("rate limited");
+        assert_eq!(
+            api_error_details(&error).and_then(|details| details.code),
+            Some("agent-rename-rate-limit")
+        );
+
+        let server = MockServer::json(
+            400,
+            r#"{"error":"displayName must not be empty","code":"invalid-display-name"}"#,
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".to_string());
+        let error = client.agent_rename("x").expect_err("invalid");
+        assert_eq!(
+            api_error_details(&error).and_then(|details| details.code),
+            Some("invalid-display-name")
+        );
+    }
+
     fn protocol_descriptor() -> serde_json::Value {
         serde_json::json!({
             "kind": "protocol",
@@ -4789,7 +4885,7 @@ mod tests {
         let camel_only = json!({
             "entitlementExpiresAt": "2027-11-01T00:00:00Z", "trialAccessEnabled": true,
             "starterGuidance": "start here", "plan": "starter", "slug": "agent",
-            "status": "active",
+            "status": "active", "id": 42,
             "usage": {
                 "window": "month", "windowStart": "2026-11-01T00:00:00Z",
                 "windowEnd": "2026-12-01T00:00:00Z", "exhausted": false,
@@ -4816,6 +4912,7 @@ mod tests {
                 }),
             ),
         );
+        assert_eq!(me.id, Some(42));
         assert_eq!(me.display_name, "Agent");
         assert_eq!(me.claim_state, "claimed");
     }

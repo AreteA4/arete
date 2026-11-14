@@ -119,6 +119,7 @@ and the API decides what runs.
 | `a4 self uninstall`                                                           | Remove `a4`                                                       |
 | `a4 mcp`                                                                      | Run the stream MCP server (stdio)                                 |
 | `a4 auth signup`                                                              | Register an agent account                                         |
+| `a4 auth rename <name>`                                                       | Rename the signed-in agent account                                |
 | `a4 login` / `a4 auth login`                                                  | Save an API key (accounts are free)                               |
 | `a4 program build <idl>`                                                      | Build a portable ProgramSpec                                      |
 | `a4 program account decode <address>`                                         | Decode one account through Program Read (`--dev`: the dev fork)   |
@@ -557,6 +558,11 @@ entitlements leaves these fields `null`; if the lookup fails for another
 reason, whoami says so on stderr and `--json` carries the reason as
 `entitlementsError`.
 
+For an agent key it shows the agent's `ID`, slug and name. The ID is a stable
+number that never changes, even when the agent is renamed; quote it in reports
+and support requests. `--json` carries it as `id`, which is `null` when the API
+does not report it yet. `a4 auth signup --json` includes the same `id`.
+
 For an agent key it also shows the plan's usage. `When used up` says what
 happens once the allowance is used: `block` (requests are refused until the
 allowance resets) or `metered` (usage continues and is billed, shown as
@@ -570,6 +576,30 @@ initialized by `a4 init`, CLI calls default to `agent`. Humans can opt in with
 human-only shortcut. Inside an initialized repository the safe project default
 outranks inherited `ARETE_PROFILE`; only `--profile` opts up. The environment
 variable remains useful outside initialized repositories.
+
+### a4 auth rename
+
+Change the signed-in agent's display name, the name its owner sees.
+
+```bash
+a4 auth rename "Dogfood"
+a4 auth rename "Dogfood" --json
+```
+
+Only an agent key (`a4 auth signup`) can rename, and only its own agent: the
+API takes the agent from the key. The ID and slug stay the same. The name is
+trimmed, must not be empty, can be up to 64 characters, and must not contain
+control or invisible formatting characters. Renames are rate-limited per agent;
+past the limit the command fails with `agent-rename-rate-limit`.
+
+**`--json` output:**
+
+```json
+{ "schemaVersion": 1, "id": 42, "slug": "agt_7k2m9q1r", "displayName": "Dogfood" }
+```
+
+If the API does not support renaming yet, the command says so and changes
+nothing.
 
 ### a4 auth keys
 

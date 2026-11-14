@@ -19,6 +19,9 @@ const MAX_RECOVERY_BODY_BYTES: usize = 64 * 1024;
 pub struct AccountStatus {
     #[serde(rename = "schemaVersion")]
     pub schema_version: u8,
+    /// The agent's stable numeric id; it never changes, including on rename.
+    /// `null` from an API that does not report it yet.
+    pub id: Option<i64>,
     pub slug: String,
     pub display_name: String,
     pub status: String,
@@ -49,6 +52,8 @@ pub const METERED_OVERAGE: &str = "metered beyond allowance";
 
 #[derive(Deserialize)]
 struct AccountStatusWire {
+    #[serde(default)]
+    id: Option<i64>,
     slug: String,
     #[serde(alias = "displayName")]
     display_name: String,
@@ -75,6 +80,7 @@ impl From<AccountStatusWire> for AccountStatus {
     fn from(value: AccountStatusWire) -> Self {
         Self {
             schema_version: 1,
+            id: value.id,
             slug: value.slug,
             display_name: value.display_name,
             status: value.status,
@@ -94,6 +100,18 @@ impl From<AccountStatusWire> for AccountStatus {
         }
     }
 }
+
+/// The agent as renamed by `rename_agent`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RenamedAgent {
+    pub id: i64,
+    pub slug: String,
+    pub display_name: String,
+}
+
+/// The problem code `rename_agent` reports when the API has no rename route.
+pub const RENAME_UNSUPPORTED: &str = "agent-rename-unsupported";
 
 #[derive(Debug)]
 pub struct RecoveryApiError {
@@ -143,6 +161,23 @@ impl RecoveryClient {
         Ok(status.into())
     }
 
+    /// Rename the agent the resolved key belongs to. The API takes the agent
+    /// from the key, so this can never rename another agent.
+    pub async fn rename_agent(&self, display_name: &str) -> Result<RenamedAgent> {
+        let display_name = display_name.trim();
+        if display_name.is_empty() {
+            return Err(anyhow!("display_name must not be empty"));
+        }
+        let body = serde_json::json!({ "displayName": display_name });
+        match self
+            .request_json_with_body(Method::PATCH, "/api/agents/me", Some(&body))
+            .await
+        {
+            Err(error) => Err(rename_unsupported(error)),
+            ok => ok,
+        }
+    }
+
     pub async fn create_claim_link(&self) -> Result<ReadyRecoveryActionV1> {
         let ready: ReadyRecoveryActionV1 = self
             .request_json(Method::POST, "/api/agents/me/claim-links")
@@ -154,17 +189,27 @@ impl RecoveryClient {
     }
 
     async fn request_json<T: DeserializeOwned>(&self, method: Method, path: &str) -> Result<T> {
+        self.request_json_with_body(method, path, None).await
+    }
+
+    async fn request_json_with_body<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: Option<&serde_json::Value>,
+    ) -> Result<T> {
         validate_api_origin(&self.base_url)?;
         let key = credentials::resolve(None, "")?
             .key
             .ok_or_else(|| anyhow!("no Arete API key is configured"))?;
-        let response = self
+        let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
-            .bearer_auth(key)
-            .send()
-            .await
-            .context("account request failed")?;
+            .bearer_auth(key);
+        if let Some(body) = body {
+            request = request.json(body);
+        }
+        let response = request.send().await.context("account request failed")?;
         let status = response.status();
         if response.content_length().is_some_and(|length| {
             length > u64::try_from(MAX_RECOVERY_BODY_BYTES).unwrap_or(u64::MAX)
@@ -198,6 +243,37 @@ impl RecoveryClient {
         }
         serde_json::from_slice(&body).context("account endpoint returned invalid JSON")
     }
+}
+
+/// An API without the rename route answers 404 or 405 with no problem code.
+/// Turn that into a problem that says so, so the caller sees why instead of a
+/// bare status. Other errors pass through unchanged.
+fn rename_unsupported(error: anyhow::Error) -> anyhow::Error {
+    let Some(api_error) = error.downcast_ref::<RecoveryApiError>() else {
+        return error;
+    };
+    let missing_route = matches!(
+        api_error.status,
+        StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+    ) && api_error.problem.code.is_none();
+    if !missing_route {
+        return error;
+    }
+    RecoveryApiError {
+        status: api_error.status,
+        problem: ApiProblemV1 {
+            schema_version: None,
+            error: "This Arete API does not support renaming agents yet. Nothing was changed; try again after the API is updated.".to_string(),
+            code: Some(RENAME_UNSUPPORTED.to_string()),
+            retryable: Some(false),
+            request_id: None,
+            retry_after_seconds: None,
+            usage: None,
+            action: None,
+            extra: Default::default(),
+        },
+    }
+    .into()
 }
 
 fn default_app_origin(base_url: &str) -> Url {
@@ -321,6 +397,78 @@ mod tests {
         assert_eq!(old.starter_guidance, None);
         assert_eq!(old.usage, None);
         assert!(serde_json::to_value(&old).unwrap().get("overage").is_none());
+    }
+
+    #[test]
+    fn account_status_reports_the_agent_id_and_null_from_older_apis() {
+        let parse = |body: &str| -> serde_json::Value {
+            let status: AccountStatus = serde_json::from_str::<AccountStatusWire>(body)
+                .unwrap()
+                .into();
+            serde_json::to_value(&status).unwrap()
+        };
+        let current = parse(
+            r#"{"id":42,"slug":"agent-1","displayName":"Agent One","status":"active","createdAt":"2026-09-29T00:00:00Z","claimState":"claimed"}"#,
+        );
+        assert_eq!(current["id"], 42);
+        let older = parse(
+            r#"{"slug":"agent-1","display_name":"Agent One","status":"active","created_at":"2026-09-29T00:00:00Z","claimState":"claimed"}"#,
+        );
+        assert!(older["id"].is_null());
+    }
+
+    fn api_error(status: StatusCode, code: Option<&str>) -> anyhow::Error {
+        RecoveryApiError {
+            status,
+            problem: ApiProblemV1 {
+                schema_version: None,
+                error: "upstream".to_string(),
+                code: code.map(str::to_string),
+                retryable: None,
+                request_id: None,
+                retry_after_seconds: None,
+                usage: None,
+                action: None,
+                extra: Default::default(),
+            },
+        }
+        .into()
+    }
+
+    #[test]
+    fn rename_explains_an_api_without_the_route_and_keeps_other_problems() {
+        for status in [StatusCode::NOT_FOUND, StatusCode::METHOD_NOT_ALLOWED] {
+            let mapped = rename_unsupported(api_error(status, None));
+            let problem = &mapped.downcast_ref::<RecoveryApiError>().unwrap().problem;
+            assert_eq!(problem.code.as_deref(), Some(RENAME_UNSUPPORTED));
+            assert!(problem.error.contains("does not support renaming"));
+            assert_eq!(problem.retryable, Some(false));
+        }
+        for (status, code) in [
+            (
+                StatusCode::TOO_MANY_REQUESTS,
+                Some("agent-rename-rate-limit"),
+            ),
+            (StatusCode::BAD_REQUEST, Some("invalid-display-name")),
+            (StatusCode::NOT_FOUND, Some("agent-profile-missing")),
+        ] {
+            let mapped = rename_unsupported(api_error(status, code));
+            let problem = &mapped.downcast_ref::<RecoveryApiError>().unwrap().problem;
+            assert_eq!(problem.code.as_deref(), code);
+            assert_eq!(problem.error, "upstream");
+        }
+        let other = rename_unsupported(anyhow!("offline"));
+        assert_eq!(other.to_string(), "offline");
+    }
+
+    #[test]
+    fn renamed_agent_is_camel_case() {
+        let renamed: RenamedAgent =
+            serde_json::from_str(r#"{"id":42,"slug":"agt_7f3a","displayName":"Dogfood"}"#).unwrap();
+        assert_eq!(
+            serde_json::to_value(&renamed).unwrap(),
+            serde_json::json!({"id":42,"slug":"agt_7f3a","displayName":"Dogfood"})
+        );
     }
 
     #[test]

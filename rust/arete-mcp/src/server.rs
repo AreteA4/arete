@@ -1337,6 +1337,13 @@ pub struct GetProgramKnowledgeArgs {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct RenameAgentArgs {
+    /// The new display name: up to 64 characters, with no control or
+    /// invisible formatting characters. Surrounding whitespace is trimmed.
+    pub display_name: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct GetRecipeArgs {
     /// Bare recipe slug (e.g. `execute-presale-purchase-via-squads`). Not a
     /// URL and not a path.
@@ -3944,12 +3951,33 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Show the authenticated agent account, including slug, status, plan, entitlement expiry, claim state, whether trial access is enabled, starter-stack guidance, and the plan's `usage` when the account reports it. `usage.onExhausted` says what happens once the allowance is used: `block` (requests are refused) or `metered` (usage continues and is billed; `overage` then reads \"metered beyond allowance\"). The API key is resolved from ARETE_API_KEY or the a4 login and is never returned."
+        description = "Show the authenticated agent account, including its stable numeric `id`, slug, display name, status, plan, entitlement expiry, claim state, whether trial access is enabled, starter-stack guidance, and the plan's `usage` when the account reports it. `usage.onExhausted` says what happens once the allowance is used: `block` (requests are refused) or `metered` (usage continues and is billed; `overage` then reads \"metered beyond allowance\"). The API key is resolved from ARETE_API_KEY or the a4 login and is never returned."
     )]
     async fn account_status(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.account_status().await {
             Ok(status) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&status).unwrap_or_default(),
+            )])),
+            Err(error) => Err(self.recovery_error(error).await),
+        }
+    }
+
+    #[tool(
+        description = "Rename the authenticated agent account: set the display name its owner sees. Only the agent the resolved API key belongs to is renamed; its `id` and `slug` never change. Returns `{id, slug, displayName}`. Renames are rate-limited per agent. An API that does not support renaming yet returns the code `agent-rename-unsupported` and changes nothing. The API key is resolved from ARETE_API_KEY or the a4 login and is never returned."
+    )]
+    async fn rename_agent(
+        &self,
+        Parameters(args): Parameters<RenameAgentArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.display_name.trim().is_empty() {
+            return Err(McpError::invalid_params(
+                "display_name must not be empty",
+                None,
+            ));
+        }
+        match self.recovery.rename_agent(&args.display_name).await {
+            Ok(renamed) => Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::to_string(&renamed).unwrap_or_default(),
             )])),
             Err(error) => Err(self.recovery_error(error).await),
         }
@@ -7755,7 +7783,12 @@ mod describe_sdk_tests {
                 [Group::Account, Group::Sandboxes].into_iter().collect(),
             ))
             .tool_names();
-        let mut expected: Vec<&str> = vec!["ping", "account_status", "create_claim_link"];
+        let mut expected: Vec<&str> = vec![
+            "ping",
+            "account_status",
+            "rename_agent",
+            "create_claim_link",
+        ];
         expected.extend(crate::sandbox::TOOL_NAMES);
         // A sandbox reads its own programs and their stacks' live views.
         expected.extend([

@@ -126,7 +126,7 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
     const PROTOCOLS: &[Group] = &[Group::Protocols];
     const DEV: &[Group] = &[Group::Dev];
     Some(match tool {
-        "ping" | "account_status" | "create_claim_link" => ACCOUNT,
+        "ping" | "account_status" | "rename_agent" | "create_claim_link" => ACCOUNT,
         "describe_sdk"
         | "resolve_artifact"
         | "search_catalog"
