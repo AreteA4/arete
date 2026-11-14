@@ -72,9 +72,12 @@ cargo install a4-cli
 | `--completions <SHELL>` | Generate shell completions (bash, zsh, fish, powershell, elvish)              |
 
 `a4 --help` lists the command groups your account is entitled to; when it
-leaves commands out, it says so at the bottom. Any command still runs, and
-`a4 help <command>` or `a4 <command> --help` shows its help whether or not
-the list includes it. A name that is not an a4 command but has a known
+leaves commands out, it says so at the bottom. Most commands still run when
+typed, and the API decides; the project install commands (`a4 install`,
+`a4 update`, `a4 remove`, `a4 sdk`) stop with an error naming the `install`
+command group when your account doesn't have it. `a4 help <command>` or
+`a4 <command> --help` shows a command's help whether or not the list
+includes it. A name that is not an a4 command but has a known
 replacement gets a pointer instead of a bare error: `a4 read`, `a4 query` and
 `a4 view` point to `a4 get`, `a4 stream`, `a4 mcp` and the SDK.
 
@@ -98,15 +101,17 @@ Scripts that read inside those pass-through objects should accept both spellings
 ## Quick Reference
 
 :::note[What your account sees]
-`a4` lists the commands your account's command groups include. Agent
-accounts get the account, sandbox (`a4 sandbox`) and registry (`a4 explore`,
-`a4 know`, `a4 install`, `a4 sdk`) commands. An account granted sandboxes
-also sees the read commands `a4 get`, `a4 stream` and `a4 program account`,
-which read through a sandbox (see
-[Reading through a sandbox](#reading-through-a-sandbox)). Stacks, protocols
-and dev environments are enabled per account; see
-[Private beta](/private-beta/). A command typed anyway still shows its help,
-and the API decides what runs.
+`a4` lists the commands your account's command groups include. Every account
+gets the account and sandbox (`a4 sandbox`) commands, and with sandboxes the
+read commands `a4 get`, `a4 stream` and `a4 program account`, which read
+through a sandbox (see
+[Reading through a sandbox](#reading-through-a-sandbox)). Discovery
+(`registry`: `a4 explore`, `a4 know`), project installs (`install`:
+`a4 install`, `a4 update`, `a4 remove`, `a4 sdk`, and the `arete.toml` that
+`a4 init` writes), stacks, protocols and dev environments are enabled per
+account; see [Private beta](/private-beta/). A command typed anyway still
+shows its help. The API decides what runs, and refuses registry installs
+(`403 command-group-required`) to an account without `install`.
 :::
 
 | Command                                                                       | Description                                                       |

@@ -3163,7 +3163,8 @@ impl AreteMcp {
     #[tool(
         description = "Find callable Arete protocol packages hosted on Arete: protocols \
                           their publishers listed in the public registry, which an app or \
-                          agent installs (`a4 install protocol`) and calls through its \
+                          agent installs (`a4 install protocol`, with the `install` \
+                          command group) and calls through its \
                           hosted deployment. These are not the curated knowledge protocols \
                           of `search_knowledge`/`get_protocol` (which describe on-chain \
                           protocols such as DEXes); use this tool to find something you can \
@@ -3192,7 +3193,10 @@ impl AreteMcp {
             )
             .await?;
         let page = parse_descriptor(Ok(body))?;
-        shaped_result(&crate::protocol_listing::listings_view(&page))
+        shaped_result(&crate::protocol_listing::listings_view(
+            &page,
+            self.surface.can_install(),
+        ))
     }
 
     #[tool(
@@ -3232,9 +3236,16 @@ impl AreteMcp {
             )
         })?;
         let mut summary = crate::protocol::protocol_install_summary(&install);
-        summary["next"] = serde_json::json!(
-            "Install the typed client with `a4 install protocol <ref> --ts`; pass `full: true` for the whole descriptor."
-        );
+        summary["next"] = if self.surface.can_install() {
+            serde_json::json!(
+                "Install the typed client with `a4 install protocol <ref> --ts`; pass `full: true` for the whole descriptor."
+            )
+        } else {
+            serde_json::json!(format!(
+                "{} Pass `full: true` for the whole descriptor.",
+                crate::entitlements::WITHOUT_INSTALL_HINT
+            ))
+        };
         shaped_result(&summary)
     }
 
@@ -3776,8 +3787,8 @@ impl AreteMcp {
                           version, the curated knowledge summary, verified SDK targets, \
                           capabilities keyed by stable language-neutral `operationId` \
                           values (e.g. `program/<programId>/raw-instruction/deploy`), and \
-                          sanitized delivery state. Use after `search_catalog`; install \
-                          the exact version shown with \
+                          sanitized delivery state. Use after `search_catalog`; with the \
+                          `install` command group, install the exact version shown with \
                           `a4 install <kind> <slug>@=<version>`.\n\n\
                           The entry is compact by default: identity hashes \
                           (`packageReleaseHash`, `bundleHash`, `setHash`, ...), \
@@ -5092,6 +5103,7 @@ impl AreteMcp {
             registry_says.then_some(api_error.problem.error.as_str()),
             entry.as_ref(),
             FIND_LIVE_HINT,
+            self.surface.can_install(),
         )
     }
 

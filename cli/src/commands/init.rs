@@ -128,7 +128,9 @@ pub struct InitPlan {
     pub agents_md: bool,
     pub skills: bool,
     pub mcp: bool,
-    /// The account's command groups, which pick the skills to install.
+    /// The account's command groups, which pick the skills to install and
+    /// decide whether `arete.toml` is written: the project manifest is the
+    /// start of the install flow, so it needs the `install` group.
     pub surface: Surface,
 }
 
@@ -162,7 +164,7 @@ pub fn project_root(config_path: &str) -> PathBuf {
 pub fn run(args: InitArgs, config_path: &str, json: bool) -> Result<()> {
     let mut plan = InitPlan::from_args(&args)?;
     let env = Env::from_process(project_root(config_path));
-    if plan.skills {
+    if plan.skills || plan.manifest {
         plan.surface = crate::entitlements::selected_account_surface(config_path);
     }
     if plan.selection == Selection::Detected && ui::interactive() {
@@ -260,8 +262,14 @@ pub fn execute(env: &Env, config_path: &Path, plan: &InitPlan) -> Result<InitRep
     let has = |id: &str| selected.iter().any(|selected| selected == id);
     let mut results = Vec::new();
 
-    if plan.manifest {
+    if plan.manifest && plan.surface.allows(arete_mcp::entitlements::Group::Install) {
         results.push(write_manifest(env, config_path, plan));
+    } else if plan.manifest {
+        results.push(ItemResult::new(
+            "arete.toml",
+            Outcome::skipped(MANIFEST_NEEDS_INSTALL, None),
+            Some(display_path(env, config_path)),
+        ));
     }
 
     // A project configured for any coding agent defaults to the restricted
@@ -370,6 +378,11 @@ fn write_auth_profile(env: &Env, dry_run: bool) -> ItemResult {
 
 /// Writer: `arete.toml` (create; `unchanged` if present; `--force`
 /// rewrites only `[project]`).
+/// Why `a4 init` leaves `arete.toml` alone for an account without the
+/// `install` command group. Skills, MCP config and project instructions are
+/// still set up.
+pub const MANIFEST_NEEDS_INSTALL: &str = "project installs (arete.toml, arete.lock, a4 install) need the `install` command group; skills and MCP config are set up without it";
+
 fn write_manifest(env: &Env, config_path: &Path, plan: &InitPlan) -> ItemResult {
     let item = "arete.toml";
     let shown = Some(display_path(env, config_path));
@@ -567,6 +580,44 @@ mod tests {
             "{:?}",
             report.results
         );
+    }
+
+    /// Without the `install` group, init still sets the agent up but leaves
+    /// the project manifest alone and says why.
+    #[test]
+    fn without_the_install_group_the_manifest_is_skipped() {
+        use arete_mcp::entitlements::Group;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("proj");
+        let home = dir.path().join("home");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&home).unwrap();
+        let env = Env::new(&root, Some(home), &[]);
+        let config = root.join("arete.toml");
+        let mut sandboxes_only = plan(Selection::Detected);
+        sandboxes_only.surface =
+            Surface::Groups([Group::Account, Group::Sandboxes].into_iter().collect());
+        let report = execute(&env, &config, &sandboxes_only).unwrap();
+        assert!(!report.has_errors());
+        assert!(!config.exists());
+        let manifest = report
+            .results
+            .iter()
+            .find(|result| result.item == "arete.toml")
+            .unwrap();
+        assert_eq!(
+            manifest.outcome,
+            Outcome::skipped(MANIFEST_NEEDS_INSTALL, None)
+        );
+        assert!(report
+            .results
+            .iter()
+            .any(|result| result.item == "agents-md" && result.outcome == Outcome::Created));
+
+        let mut installer = plan(Selection::Detected);
+        installer.surface = Surface::Groups([Group::Install].into_iter().collect());
+        execute(&env, &config, &installer).unwrap();
+        assert!(config.exists());
     }
 
     #[test]

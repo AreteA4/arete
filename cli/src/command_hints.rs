@@ -10,12 +10,12 @@ pub fn unknown_command_tips(name: &str) -> Option<&'static [&'static str]> {
         "read a stack view once: `a4 get <Entity>/<view> --stack <stack>` (`--where`, `--key`, `--select`, `--limit`)",
         "follow it live: `a4 stream <Entity>/<view> --stack <stack>`",
         "from an agent: `a4 mcp` serves the `read_view` and `subscribe` tools",
-        "from an app: install the stack's SDK with `a4 install stack <stack> --ts`",
+        "from an app, with the `install` command group: install the stack's SDK with `a4 install stack <stack> --ts`",
     ];
     const STREAM: &[&str] = &[
         "follow a stack view live: `a4 stream <Entity>/<view> --stack <stack>`",
         "from an agent: `a4 mcp` serves the `subscribe` tool",
-        "from an app: install the stack's SDK with `a4 install stack <stack> --ts`",
+        "from an app, with the `install` command group: install the stack's SDK with `a4 install stack <stack> --ts`",
     ];
     const SEARCH: &[&str] = &[
         "search the catalog by intent: `a4 explore catalog --query \"<what you want to do>\"`",

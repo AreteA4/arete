@@ -358,7 +358,10 @@ pub fn render_listing(listing: &Value) -> String {
             text(step, "access")
         ));
     }
-    if let Some(package_ref) = listing["packageRef"].as_str() {
+    if let Some(package_ref) = listing["packageRef"]
+        .as_str()
+        .filter(|_| crate::entitlements::can_install())
+    {
         out.push_str(&format!(
             "\n  Install: {}\n",
             protocol_listing::install_command(package_ref).cyan()

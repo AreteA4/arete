@@ -124,8 +124,8 @@ impl BodyCap {
         match self {
             Self::ToolResult => format!(
                 "registry response for {path} is at least {bytes} bytes, over the {limit} byte \
-                 limit for a single tool result. Use `a4 explore` or `a4 install` on the \
-                 command line for payloads this large."
+                 limit for a single tool result. Use `a4 explore` on the command line for \
+                 payloads this large."
             ),
             Self::StackDescriptor => format!(
                 "the stack install descriptor at {path} is at least {bytes} bytes, over the \
@@ -138,8 +138,8 @@ impl BodyCap {
             Self::ProgramDescriptor => format!(
                 "the program install descriptor at {path} is at least {bytes} bytes, over the \
                  {limit} byte limit this server reads. get_program_knowledge describes its \
-                 instructions and accounts by `section`, and `a4 install program` reads the \
-                 full descriptor on the command line."
+                 instructions and accounts by `section`, and `a4 explore program` reads the \
+                 descriptor on the command line."
             ),
             Self::ProtocolDescriptor => format!(
                 "the protocol install descriptor at {path} is at least {bytes} bytes, over the \

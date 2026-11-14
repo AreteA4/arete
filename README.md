@@ -76,12 +76,16 @@ npx @usearete/a4 install                            # if you prefer npm
 Then, in your project:
 
 ```bash
-a4 init -y          # arete.toml, AGENTS.md block, agent skills, MCP config
+a4 init -y          # AGENTS.md block, agent skills, MCP config (+ arete.toml with `install`)
 a4 doctor --json    # ready when the JSON status is "ok"
 a4 explore catalog --query "token accounts" --json
 a4 explore catalog program spl-token --json
-a4 install program spl-token --ts
+a4 install program spl-token --ts   # needs the `install` command group
 ```
+
+Every account gets sandboxes. Other command groups, including `install` (SDK
+generation and the `arete.toml` / `arete.lock` project flow), are enabled per
+account; `a4 --help` lists what yours includes.
 
 Update with `a4 self update`. Coding agents can do all of this from one prompt:
 

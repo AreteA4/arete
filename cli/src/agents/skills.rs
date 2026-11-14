@@ -29,7 +29,8 @@ const LEGACY_SKILL_NAMES: [&str; 2] = ["arete-consume", "arete-build"];
 pub fn skill_groups(name: &str) -> &'static [Group] {
     match name {
         "arete-sandbox" => &[Group::Sandboxes],
-        "arete" | "arete-programs" => &[Group::Registry],
+        // Discovery, and the dependencies and SDKs an install brings.
+        "arete" | "arete-programs" => &[Group::Registry, Group::Install],
         "arete-streams" => &[Group::Streams],
         "arete-stack-authoring" => &[Group::Stacks],
         "arete-deploy" => &[Group::Stacks, Group::Protocols],
