@@ -166,8 +166,10 @@ fn init_yes_json_succeeds_in_an_empty_directory_without_a_tty() {
         )
     });
     assert_eq!(report["schemaVersion"], 1, "report: {report}");
+    // No key: a4 can't see the account's command groups, and arete.toml is
+    // a project install, so init skips it.
     assert!(
-        project.path().join("arete.toml").is_file(),
-        "a4 init should create arete.toml; report: {report}"
+        !project.path().join("arete.toml").exists(),
+        "a4 init should skip arete.toml without the install group; report: {report}"
     );
 }

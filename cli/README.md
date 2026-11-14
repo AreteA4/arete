@@ -99,12 +99,21 @@ When you are logged in, `a4 --help`, completions (`a4 --completions <shell>`)
 and "did you mean" suggestions list only the command groups the Arete API
 reports for your account (`commandGroups` on `GET /api/auth/me`):
 `sandboxes` (`sandbox`, plus `stream`, `get` and `program account`, which
-then read through a sandbox), `streams` (`stream`, `get`), `stacks` (`create`, `up`, `status`, `stack`,
+then read through a sandbox, and the discovery commands `explore` and
+`know`), `streams` (`stream`, `get`), `stacks` (`create`, `up`, `status`, `stack`,
 `program`, `idl`), `registry` (`explore`, `know`), `install` (`install`,
 `update`, `remove`, `sdk`, and the `arete.toml` that `init` writes),
-`protocols` (`protocol`, `squads`, and `create`) and `dev` (`dev`). Account commands (`init`, `doctor`, `auth`, `login`, `mcp`, `self`,
+`protocols` (`protocol`, `squads`, and `create`) and `dev` (`dev`). Every
+account has `sandboxes` by default, so every account can explore; reading a
+descriptor needs an API key. Account commands (`init`, `doctor`, `auth`, `login`, `mcp`, `self`,
 `upgrade`, `config`, `telemetry`) are always listed. With no login, when the
-API can't be reached, or when it reports no groups, every command is listed.
+API can't be reached, or when it reports no groups, every command is listed
+and runs, and the API decides, except the project installs: `install`,
+`update`, `remove`, `sdk`, the protocol project commands below and
+`arete.toml` in `init` are hidden and refused until the API reports
+`install` (admins have every group). To build SDKs from local files with no
+account, in CI for example, set `ARETE_INSTALL_WITHOUT_ACCOUNT=1`; it never
+widens the groups the API reports.
 A command left out also refuses to run: typed anyway, it stops before doing
 anything, local or remote, with an error naming the group it needs. The API
 refuses the same things on its side (the registry's resolver refuses installs

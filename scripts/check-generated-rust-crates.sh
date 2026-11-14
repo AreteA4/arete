@@ -85,6 +85,10 @@ done
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/arete-generated-crates.XXXXXX")"
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+# These build SDKs from local files with no account. Without a key the CLI
+# can't see command groups and hides `a4 sdk`; this lets it run anyway (it
+# never widens groups the API reports).
+export ARETE_INSTALL_WITHOUT_ACCOUNT=1
 if [[ -n "${A4_BIN:-}" ]]; then
     A4_CMD=("$A4_BIN")
 else

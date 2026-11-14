@@ -76,8 +76,14 @@ leaves commands out, it says so at the bottom. A command left out also
 refuses to run: typed anyway, it stops before doing anything with an error
 naming the command group it needs. Without a key, when the API can't be
 reached, or when it reports no groups, every command is listed and runs, and
-the API decides. `a4 help <command>` or `a4 <command> --help` shows a
-command's help whether or not the list includes it.
+the API decides, except the project installs: `a4 install`, `a4 update`,
+`a4 remove`, `a4 sdk`, the protocol project commands below, `a4 stack
+compose` into a project and `arete.toml` in `a4 init` are hidden and refused
+until the API reports the `install` command group (admins have every group).
+To build SDKs from local files with no account, in CI for example, set
+`ARETE_INSTALL_WITHOUT_ACCOUNT=1`; it never widens the groups the API
+reports. `a4 help <command>` or `a4 <command> --help` shows a command's help
+whether or not the list includes it.
 
 Protocol projects are project installs, so `a4 protocol init`,
 `a4 protocol deploy`, `a4 dev up`, `a4 dev sdk` and the `protocol` and
@@ -111,8 +117,8 @@ Scripts that read inside those pass-through objects should accept both spellings
 gets the account and sandbox (`a4 sandbox`) commands, and with sandboxes the
 read commands `a4 get`, `a4 stream` and `a4 program account`, which read
 through a sandbox (see
-[Reading through a sandbox](#reading-through-a-sandbox)). Discovery
-(`registry`: `a4 explore`, `a4 know`), project installs (`install`:
+[Reading through a sandbox](#reading-through-a-sandbox)), and discovery
+(`a4 explore`, `a4 know`; descriptors need an API key). Project installs (`install`:
 `a4 install`, `a4 update`, `a4 remove`, `a4 sdk`, and the `arete.toml` that
 `a4 init` writes), stacks, protocols and dev environments are enabled per
 account; see [Private beta](/private-beta/). A command typed anyway still

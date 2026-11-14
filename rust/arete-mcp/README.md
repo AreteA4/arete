@@ -155,15 +155,18 @@ only their tools. `ping`, `account_status`, `rename_agent` and
 
 | Group | Tools |
 |-------|-------|
-| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`), and the `streams` read tools and `program_read_account`, which then read through a sandbox: an account reporting only `account` and `sandboxes` still sees `connect`, `read_view`, `get_entity`, `query_entities` and the rest |
+| `sandboxes` | `sandbox_*` (also need an API key or `ARETE_SANDBOX_ID`), the `streams` read tools and `program_read_account`, which then read through a sandbox, and discovery: `explore_*`, the catalog and the knowledge tools. An account reporting only `account` and `sandboxes` sees all of these, but not `describe_sdk` or `resolve_artifact` |
 | `streams` | connection, subscription and cache tools, `read_view` and `program_read_account` |
 | `stacks` | `program_read_account` |
-| `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools, `describe_sdk` |
+| `registry` | `explore_*`, `resolve_artifact`, the catalog and knowledge tools |
+| `install` | `describe_sdk` (the SDKs a project install generated), `resolve_artifact` |
 | `protocols` | `protocol_*`, `squads_*` |
 | `dev` | `dev_*` |
 
 With no key, when the API can't be reached, or when it reports no groups,
-every tool is listed as before. Hiding is never the gate: the API refuses
+every tool is listed except the `install` group's (`describe_sdk`), which
+needs the API to report `install`; `ARETE_INSTALL_WITHOUT_ACCOUNT=1` lists it
+anyway for builds with no account. Hiding is never the gate: the API refuses
 calls the account may not make, whether the tool is listed or not.
 
 ### Discovery

@@ -13,6 +13,9 @@ const MARKER: &str = ".arete/dev/local-program-admission.pending";
 fn scaffold(root: &Path) {
     let output = Command::new(env!("CARGO_BIN_EXE_a4"))
         .current_dir(root.parent().unwrap())
+        // No key: a4 can't see command groups, and `protocol init` is a
+        // project install.
+        .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
         .args(["protocol", "init", "--local-idl"])
         .arg(root)
         .output()

@@ -29,9 +29,11 @@ const LEGACY_SKILL_NAMES: [&str; 2] = ["arete-consume", "arete-build"];
 pub fn skill_groups(name: &str) -> &'static [Group] {
     match name {
         "arete-sandbox" => &[Group::Sandboxes],
-        // Discovery, and the dependencies and SDKs an install brings.
-        "arete" | "arete-programs" => &[Group::Registry, Group::Install],
-        "arete-streams" => &[Group::Streams],
+        // Discovery, and the dependencies and SDKs an install brings. A
+        // default (sandbox) account explores too, and reads and acts on what
+        // it finds through its sandbox.
+        "arete" | "arete-programs" => &[Group::Registry, Group::Install, Group::Sandboxes],
+        "arete-streams" => &[Group::Streams, Group::Sandboxes],
         "arete-stack-authoring" => &[Group::Stacks],
         "arete-deploy" => &[Group::Stacks, Group::Protocols],
         "arete-protocols" => &[Group::Protocols, Group::Dev],
@@ -896,7 +898,13 @@ fi
         );
         assert_eq!(
             skills_for(&agent),
-            vec!["arete-sandbox", "arete", "arete-programs"]
+            vec!["arete-sandbox", "arete", "arete-streams", "arete-programs"]
+        );
+        // A default account explores and reads through its sandbox.
+        let default = Surface::Groups([Group::Account, Group::Sandboxes].into_iter().collect());
+        assert_eq!(
+            skills_for(&default),
+            vec!["arete-sandbox", "arete", "arete-streams", "arete-programs"]
         );
         let account_only = Surface::Groups([Group::Account].into_iter().collect());
         assert!(skills_for(&account_only).is_empty());
