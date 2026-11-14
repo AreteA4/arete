@@ -129,9 +129,10 @@ fn a4_with_env(sb: &Sandbox, args: &[&str], vars: &[(&str, &str)]) -> Output {
         .env("DO_NOT_TRACK", "1")
         // These sandboxes have no key, so a4 can't see the account's
         // command groups; most tests here check the project files, which
-        // need `install`. `init_without_groups_skips_the_manifest` turns
-        // this off.
+        // need `install`, so they run as this repository's CI builds do.
+        // `init_without_groups_skips_the_manifest` leaves CI out.
         .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
+        .env("CI", "true")
         .envs(vars.iter().copied());
     command.output().unwrap()
 }
@@ -192,15 +193,14 @@ fn read(sb: &Sandbox, relative: &str) -> String {
 
 /// With no key, a4 can't see the account's command groups, so `init`
 /// writes the agent files but not `arete.toml`, and the project install
-/// commands are hidden and refused.
+/// commands are hidden and refused. The CI hook's variable alone, outside
+/// CI, changes none of that; under CI it does.
 #[test]
 fn init_without_groups_skips_the_manifest() {
     let sb = sandbox("empty", false);
-    let output = a4_with_env(
-        &sb,
-        &["init", "-y", "--json"],
-        &[("ARETE_INSTALL_WITHOUT_ACCOUNT", "0")],
-    );
+    // The hook variable is set (by the harness) but this is not CI.
+    let unset = [("CI", "false")];
+    let output = a4_with_env(&sb, &["init", "-y", "--json"], &unset);
     assert!(
         output.status.success(),
         "{}",
@@ -212,7 +212,6 @@ fn init_without_groups_skips_the_manifest() {
     assert_eq!(items["agents-md"]["status"], "created");
     assert!(!sb.root.join("arete.toml").exists());
 
-    let unset = [("ARETE_INSTALL_WITHOUT_ACCOUNT", "0")];
     let help = a4_with_env(&sb, &["--help"], &unset);
     let help = String::from_utf8_lossy(&help.stdout);
     for hidden in ["install", "update", "remove", "sdk"] {
@@ -226,6 +225,15 @@ fn init_without_groups_skips_the_manifest() {
     assert!(!refused.status.success());
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("could not confirm"), "{stderr}");
+    assert!(!stderr.contains("ARETE_INSTALL"), "{stderr}");
+
+    // Under CI the hook lists and runs them.
+    let help = a4_with_env(&sb, &["--help"], &[]);
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("\n  sdk "), "{help}");
+    let listed = a4_with_env(&sb, &["sdk", "list"], &[]);
+    let stderr = String::from_utf8_lossy(&listed.stderr);
+    assert!(!stderr.contains("could not confirm"), "{stderr}");
 }
 
 #[test]
@@ -394,7 +402,8 @@ fn init_with_node_and_receipt_makes_doctor_ok() {
             .env("A4_DOCS_MCP_URL", format!("{}/mcp", sb.server))
             .env("A4_LATEST_URL", "http://127.0.0.1:1/latest.json")
             .env("DO_NOT_TRACK", "1")
-            .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1");
+            .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
+            .env("CI", "true");
         let output = command.output().unwrap();
         let value: Value = serde_json::from_slice(&output.stdout).unwrap_or_else(|_| {
             panic!(

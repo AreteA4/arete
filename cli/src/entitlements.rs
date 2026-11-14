@@ -6,9 +6,8 @@
 //! be reached, or when it reports no groups, the groups are unknown: every
 //! command is listed and runs, and the API decides, except the project
 //! install commands (the `install` group), which generate SDKs on this
-//! machine and so are hidden and refused until the API reports `install`
-//! ([`INSTALL_WITHOUT_ACCOUNT_ENV`] lifts that for builds from local files
-//! with no account). Otherwise a command the account's groups hide is also
+//! machine and so are hidden and refused until the API reports `install`.
+//! Otherwise a command the account's groups hide is also
 //! refused when typed anyway: [`require_command`] stops it with an error
 //! naming the group before it does anything, local or remote. The API still refuses what the account may not use; the client
 //! refusal only makes that the first thing the account sees. A command named
@@ -99,10 +98,6 @@ Project install commands (install, update, remove, sdk, and the protocol
 project commands) are not listed: they need an account whose command groups
 include `install`. Sign in with `a4 login` to see what your account can use.";
 
-/// Set to `1` to run the project install commands when the CLI has no
-/// account groups to go by; see [`arete_mcp::entitlements`].
-pub use arete_mcp::entitlements::INSTALL_WITHOUT_ACCOUNT_ENV;
-
 /// The project install commands: they write `arete.toml` / `arete.lock` and
 /// generate SDKs from the registry, and need the `install` group.
 pub const INSTALL_COMMANDS: [&str; 4] = ["install", "update", "remove", "sdk"];
@@ -157,8 +152,7 @@ fn unknown_groups_refusal(what: &str) -> String {
         "{what}: this needs the `install` command group, and a4 could not confirm \
          this account has it (no API key, the Arete API could not be reached, or \
          it reported no command groups). Sign in with `a4 login` with an account \
-         that has `install`. To build from local files with no account (in CI, \
-         for example), set {INSTALL_WITHOUT_ACCOUNT_ENV}=1."
+         that has `install`."
     )
 }
 
@@ -376,8 +370,8 @@ pub fn account_surface(api_url: Option<&str>, profile: Option<&str>, config: &st
     unknown_groups_override(surface)
 }
 
-/// [`INSTALL_WITHOUT_ACCOUNT_ENV`]: with no groups to go by, also allow the
-/// `install` group. Groups the API reports are never widened.
+/// This repository's CI hook ([`arete_mcp::entitlements::ci_install_hook`]):
+/// unknown groups only, never groups the API reports.
 fn unknown_groups_override(surface: Surface) -> Surface {
     arete_mcp::entitlements::with_install_opt_in(surface)
 }
@@ -587,7 +581,7 @@ mod tests {
                 .to_string();
             assert!(error.contains("could not confirm"), "{error}");
             assert!(error.contains("a4 login"), "{error}");
-            assert!(error.contains(INSTALL_WITHOUT_ACCOUNT_ENV), "{error}");
+            assert!(!error.contains("ARETE_INSTALL"), "{error}");
         }
         let error = require_every(
             &unknown,
@@ -602,7 +596,7 @@ mod tests {
         for (command, subcommand) in refused {
             require_command(&admin, command, subcommand).unwrap();
         }
-        // The opt-in widens only unknown groups, never reported ones.
+        // The CI hook widens only unknown groups, never reported ones.
         assert_eq!(
             arete_mcp::entitlements::widen_unknown(Surface::Everything, false),
             Surface::Everything

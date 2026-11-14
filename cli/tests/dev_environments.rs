@@ -588,7 +588,8 @@ fn a4(origin: &str, dir: &Path) -> Command {
         .env("ARETE_API_KEY", KEY)
         .env("ARETE_CREDENTIALS_PATH", dir.join("no-credentials.toml"))
         // The mock API reports no command groups, and `dev up` and
-        // `protocol init` are project installs.
+        // `protocol init` are project installs; `CI` below makes the hook
+        // apply.
         .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
         .env_remove("ARETE_PROFILE")
         .env_remove("ARETE_DEV_ENV")

@@ -20,6 +20,7 @@ struct Run {
 fn a4(home: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_a4"));
     cmd.env_remove("CI")
+        .env_remove("GITHUB_ACTIONS")
         .env_remove("A4_NON_INTERACTIVE")
         .env_remove("A4_YES")
         .env_remove("ARETE_API_KEY")
@@ -148,7 +149,9 @@ fn init_yes_json_succeeds_in_an_empty_directory_without_a_tty() {
     let home = tempfile::tempdir().expect("tempdir");
     let project = tempfile::tempdir().expect("tempdir");
     let mut cmd = a4(home.path());
+    // The CI hook's variable alone, outside CI, doesn't make init write it.
     cmd.args(["init", "-y", "--json", "--no-skills", "--no-mcp"])
+        .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
         .current_dir(project.path());
     let run = run_with_timeout(cmd, "a4 init -y --json");
 

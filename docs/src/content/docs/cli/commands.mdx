@@ -80,9 +80,7 @@ the API decides, except the project installs: `a4 install`, `a4 update`,
 `a4 remove`, `a4 sdk`, the protocol project commands below, `a4 stack
 compose` into a project and `arete.toml` in `a4 init` are hidden and refused
 until the API reports the `install` command group (admins have every group).
-To build SDKs from local files with no account, in CI for example, set
-`ARETE_INSTALL_WITHOUT_ACCOUNT=1`; it never widens the groups the API
-reports. `a4 help <command>` or `a4 <command> --help` shows a command's help
+`a4 help <command>` or `a4 <command> --help` shows a command's help
 whether or not the list includes it.
 
 Protocol projects are project installs, so `a4 protocol init`,

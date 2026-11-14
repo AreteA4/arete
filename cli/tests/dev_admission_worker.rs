@@ -14,8 +14,9 @@ fn scaffold(root: &Path) {
     let output = Command::new(env!("CARGO_BIN_EXE_a4"))
         .current_dir(root.parent().unwrap())
         // No key: a4 can't see command groups, and `protocol init` is a
-        // project install.
+        // project install; run as this repository's CI does.
         .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
+        .env("CI", "true")
         .args(["protocol", "init", "--local-idl"])
         .arg(root)
         .output()

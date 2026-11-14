@@ -126,21 +126,32 @@ impl Surface {
     }
 }
 
-/// Set to `1` to treat unknown groups (no key, API unreachable, or no
-/// groups reported) as every group, so the `install` group's commands and
-/// tools run, for example to build SDKs from local files in CI. It never
-/// widens groups the API reports.
-pub const INSTALL_WITHOUT_ACCOUNT_ENV: &str = "ARETE_INSTALL_WITHOUT_ACCOUNT";
+/// Internal hook for this repository's CI, which builds example SDKs and
+/// runs integration tests from local files with no account. Not a product
+/// setting. See [`ci_install_hook`].
+const CI_INSTALL_HOOK_ENV: &str = "ARETE_INSTALL_WITHOUT_ACCOUNT";
 
-/// `surface`, widened to every group when it is unknown and
-/// [`INSTALL_WITHOUT_ACCOUNT_ENV`] is `1`.
+/// Whether the CI hook is on, reading variables through `var`: the hook
+/// variable is `1` and the process runs under CI (`CI` is `true` or `1`, or
+/// `GITHUB_ACTIONS` is `true`). The hook variable alone does nothing.
+#[doc(hidden)]
+pub fn ci_install_hook(var: impl Fn(&str) -> Option<String>) -> bool {
+    let is = |name: &str, accepted: &[&str]| {
+        var(name)
+            .is_some_and(|value| accepted.contains(&value.trim().to_ascii_lowercase().as_str()))
+    };
+    is(CI_INSTALL_HOOK_ENV, &["1"]) && (is("CI", &["true", "1"]) || is("GITHUB_ACTIONS", &["true"]))
+}
+
+/// `surface`, widened to every group when it is unknown and the CI hook
+/// ([`ci_install_hook`]) is on. Groups the API reports are never widened.
+#[doc(hidden)]
 pub fn with_install_opt_in(surface: Surface) -> Surface {
-    let opted_in =
-        std::env::var(INSTALL_WITHOUT_ACCOUNT_ENV).is_ok_and(|value| value.trim() == "1");
-    widen_unknown(surface, opted_in)
+    widen_unknown(surface, ci_install_hook(|name| std::env::var(name).ok()))
 }
 
 /// `surface`, widened to every group when it is unknown and `opted_in`.
+#[doc(hidden)]
 pub fn widen_unknown(surface: Surface, opted_in: bool) -> Surface {
     if opted_in && surface == Surface::Everything {
         Surface::Groups(Group::ALL.into_iter().collect())
@@ -396,6 +407,41 @@ mod tests {
         let admin = Surface::Groups(Group::ALL.into_iter().collect());
         assert!(admin.can_install());
         assert!(mcp_tool_visible(&admin, "describe_sdk"));
+    }
+
+    /// The CI hook needs both its variable and a CI environment; the
+    /// variable alone does nothing, and it never widens reported groups.
+    #[test]
+    fn the_ci_hook_needs_a_ci_environment() {
+        let env = |vars: &'static [(&'static str, &'static str)]| {
+            move |name: &str| {
+                vars.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.to_string())
+            }
+        };
+        const HOOK: &str = "ARETE_INSTALL_WITHOUT_ACCOUNT";
+        assert!(!ci_install_hook(env(&[])));
+        assert!(!ci_install_hook(env(&[(HOOK, "1")])));
+        assert!(!ci_install_hook(env(&[(HOOK, "1"), ("CI", "false")])));
+        assert!(!ci_install_hook(env(&[(HOOK, "1"), ("CI", "")])));
+        assert!(!ci_install_hook(env(&[(HOOK, "true"), ("CI", "true")])));
+        assert!(!ci_install_hook(env(&[("CI", "true")])));
+        assert!(ci_install_hook(env(&[(HOOK, "1"), ("CI", "true")])));
+        assert!(ci_install_hook(env(&[(HOOK, "1"), ("CI", "1")])));
+        assert!(ci_install_hook(env(&[
+            (HOOK, "1"),
+            ("GITHUB_ACTIONS", "true")
+        ])));
+
+        let admin = Surface::Groups(Group::ALL.into_iter().collect());
+        assert_eq!(widen_unknown(Surface::Everything, true), admin);
+        assert_eq!(
+            widen_unknown(Surface::Everything, false),
+            Surface::Everything
+        );
+        let default = Surface::Groups([Group::Account, Group::Sandboxes].into_iter().collect());
+        assert_eq!(widen_unknown(default.clone(), true), default);
     }
 
     #[test]

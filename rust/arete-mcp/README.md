@@ -165,8 +165,7 @@ only their tools. `ping`, `account_status`, `rename_agent` and
 
 With no key, when the API can't be reached, or when it reports no groups,
 every tool is listed except the `install` group's (`describe_sdk`), which
-needs the API to report `install`; `ARETE_INSTALL_WITHOUT_ACCOUNT=1` lists it
-anyway for builds with no account. Hiding is never the gate: the API refuses
+needs the API to report `install`. Hiding is never the gate: the API refuses
 calls the account may not make, whether the tool is listed or not.
 
 ### Discovery

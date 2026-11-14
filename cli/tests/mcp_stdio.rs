@@ -176,7 +176,7 @@ fn a4_mcp_describes_an_installed_sdk_of_the_project_it_runs_in() {
         .arg("mcp")
         .current_dir(project.path().join("src"))
         // No key, so no command groups: `describe_sdk` is an `install`
-        // tool, listed only with the opt-in for builds with no account.
+        // tool, listed here only through this repository's CI hook.
         .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
         .env("CI", "1")
         .env("DO_NOT_TRACK", "1")
@@ -272,8 +272,10 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
         .env_remove("ARETE_API_KEY")
         .env_remove("ARETE_PROFILE")
         .env_remove("ARETE_CREDENTIALS_PATH")
-        .env_remove("ARETE_INSTALL_WITHOUT_ACCOUNT")
-        .env("CI", "1")
+        // The CI hook's variable alone, outside CI, lists nothing more.
+        .env("ARETE_INSTALL_WITHOUT_ACCOUNT", "1")
+        .env_remove("CI")
+        .env_remove("GITHUB_ACTIONS")
         .env("DO_NOT_TRACK", "1")
         .env("A4_NO_UPDATE_CHECK", "1")
         .stdin(Stdio::piped())
