@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.56.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.55.2...arete-mcp-v0.56.0) (2026-11-14)
+
+
+### Features
+
+* **cli,mcp:** gate project installs behind the install command group ([76b19cc](https://github.com/AreteA4/arete/commit/76b19cc6f97487a58d884a6afff0ac05f6d8ba73))
+* **cli,mcp:** gate project installs behind the install command group ([8f2a36f](https://github.com/AreteA4/arete/commit/8f2a36fc3693275bf0f1b639847060fd87095506))
+* **cli:** rename an agent and show its id ([968c08e](https://github.com/AreteA4/arete/commit/968c08e50d8542af4c0c5880aae39a80355075e4))
+* **cli:** rename an agent and show its id ([7dc547b](https://github.com/AreteA4/arete/commit/7dc547bcf3f4ba93268c0ea63e5ad8b0d4f3bc84))
+
 ## [0.55.2](https://github.com/AreteA4/arete/compare/arete-mcp-v0.55.1...arete-mcp-v0.55.2) (2026-11-13)
 
 
