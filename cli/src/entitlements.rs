@@ -5,7 +5,10 @@
 //! [`arete_mcp::entitlements`]). Without an account key, when the API can't
 //! be reached, or when it reports no groups, every command is listed as
 //! before. Hiding is UX only: a command typed anyway still runs, and the API
-//! refuses what the account may not use. A command named on the command line
+//! refuses what the account may not use. The exception is the project
+//! install commands ([`INSTALL_COMMANDS`]): typed by an account the API
+//! reports without `install`, they stop with [`require_install`]'s error
+//! before doing anything, local or remote. A command named on the command line
 //! (`a4 explore --help`, `a4 help explore`, `a4 get` with a missing
 //! argument) is never hidden: its own help and errors are shown as for any
 //! account.
@@ -32,7 +35,8 @@ pub fn command_groups(name: &str) -> Option<&'static [Group]> {
         // `program account` reads; the rest manage the account's programs
         // (see `subcommand_groups`).
         "program" => &[Group::Stacks, Group::Streams, Group::Sandboxes],
-        "explore" | "know" | "install" | "update" | "remove" | "sdk" => &[Group::Registry],
+        "explore" | "know" => &[Group::Registry],
+        "install" | "update" | "remove" | "sdk" => &[Group::Install],
         "protocol" | "squads" => &[Group::Protocols],
         "dev" => &[Group::Dev],
         "sandbox" => &[Group::Sandboxes],
@@ -55,9 +59,55 @@ pub fn subcommand_groups(parent: &str, name: &str) -> Option<&'static [Group]> {
 /// The help footer when `visible` leaves commands out: they still run, and
 /// naming one shows its help.
 pub const HIDDEN_COMMANDS_NOTE: &str = "\
-Commands outside this account's command groups are not listed. Any a4 command
-still runs when the API allows it, and `a4 help <command>` (or
-`a4 <command> --help`) shows its help.";
+Commands outside this account's command groups are not listed. Most still run
+when the API allows them; project installs (install, update, remove, sdk) need
+the `install` command group. `a4 help <command>` (or `a4 <command> --help`)
+shows a command's help.";
+
+/// The project install commands: they write `arete.toml` / `arete.lock` and
+/// generate SDKs from the registry, and need the `install` group.
+pub const INSTALL_COMMANDS: [&str; 4] = ["install", "update", "remove", "sdk"];
+
+/// What an account without the `install` group is told when it runs one of
+/// [`INSTALL_COMMANDS`].
+pub const INSTALL_GROUP_REQUIRED: &str = "\
+this account does not have the `install` command group, which `a4 install`, \
+`a4 update`, `a4 remove` and `a4 sdk` need (they generate SDKs from the \
+registry and write arete.toml / arete.lock). Ask the Arete team for access. \
+Without it, act through a sandbox: `a4 sandbox list`, or the sandbox MCP tools \
+(`sandbox_preview`, then `sandbox_invoke`).";
+
+/// The `--config` path `main` parsed, for lookups made deep inside a command.
+static CONFIG_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+static CAN_INSTALL: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+
+/// Remember the `--config` path for [`can_install`]. `main` calls it once.
+pub fn remember_config_path(config: &str) {
+    let _ = CONFIG_PATH.set(config.to_string());
+}
+
+/// Whether output may suggest a project install (`a4 install ...`) to this
+/// account: `GET /api/auth/me` reports `install`, or reports no groups at
+/// all. Looked up at most once per process.
+pub fn can_install() -> bool {
+    if cfg!(test) {
+        return true;
+    }
+    *CAN_INSTALL.get_or_init(|| {
+        let config = CONFIG_PATH.get().map_or("arete.toml", String::as_str);
+        selected_account_surface(config).can_install()
+    })
+}
+
+/// Refuse `command` when it is one of [`INSTALL_COMMANDS`] and `surface`
+/// lacks `install`. [`Surface::Everything`] (no key, API unreachable, or an
+/// API that reports no groups) passes: the API decides.
+pub fn require_install(surface: &Surface, command: &str) -> anyhow::Result<()> {
+    if INSTALL_COMMANDS.contains(&command) && !surface.allows(Group::Install) {
+        anyhow::bail!("a4 {command}: {INSTALL_GROUP_REQUIRED}");
+    }
+    Ok(())
+}
 
 /// `cmd` without the top-level commands `surface` does not grant.
 pub fn visible(cmd: Command, surface: &Surface) -> Command {
@@ -294,5 +344,42 @@ mod tests {
         let request = server.request();
         assert!(request.request_line.starts_with("GET /api/auth/me "));
         assert_eq!(request.header("authorization"), Some("Bearer a4_sk_test"));
+    }
+
+    #[test]
+    fn project_installs_need_the_install_group() {
+        let default = Surface::Groups([Group::Account, Group::Sandboxes].into_iter().collect());
+        let registry = Surface::Groups([Group::Sandboxes, Group::Registry].into_iter().collect());
+        let install = Surface::Groups([Group::Install].into_iter().collect());
+        for command in INSTALL_COMMANDS {
+            assert_eq!(
+                command_groups(command),
+                Some(&[Group::Install][..]),
+                "{command}"
+            );
+            for surface in [&default, &registry] {
+                let error = require_install(surface, command).unwrap_err().to_string();
+                assert!(error.starts_with(&format!("a4 {command}: ")), "{error}");
+                assert!(error.contains("`install` command group"), "{error}");
+                assert!(error.contains("sandbox_preview"), "{error}");
+            }
+            require_install(&install, command).unwrap();
+            // No groups to go by: the API decides.
+            require_install(&Surface::Everything, command).unwrap();
+        }
+        // Discovery and everything else are not install commands.
+        for command in ["explore", "know", "init", "doctor", "sandbox", "up"] {
+            require_install(&default, command).unwrap();
+        }
+        assert_eq!(command_groups("explore"), Some(&[Group::Registry][..]));
+        // Hidden from a default account's help, listed with the grant.
+        let help = visible(<crate::Cli as clap::CommandFactory>::command(), &default)
+            .render_help()
+            .to_string();
+        assert!(!help.contains("\n  install"), "{help}");
+        let help = visible(<crate::Cli as clap::CommandFactory>::command(), &install)
+            .render_help()
+            .to_string();
+        assert!(help.contains("\n  install"), "{help}");
     }
 }

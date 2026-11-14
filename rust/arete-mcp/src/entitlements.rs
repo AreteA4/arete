@@ -36,12 +36,16 @@ pub enum Group {
     Protocols,
     /// Dev environments (`a4 dev`, `dev_*` tools).
     Dev,
-    /// Discovery and installs (`a4 explore`, `a4 know`, `a4 install`, `a4 sdk`).
+    /// Discovery (`a4 explore`, `a4 know`, the catalog and knowledge tools).
     Registry,
+    /// Project installs: `a4 install`, `a4 update`, `a4 remove`, `a4 sdk`,
+    /// and the `arete.toml` / `arete.lock` flow that generates SDKs from the
+    /// registry. The registry's resolver refuses accounts without it.
+    Install,
 }
 
 impl Group {
-    pub const ALL: [Group; 7] = [
+    pub const ALL: [Group; 8] = [
         Group::Account,
         Group::Sandboxes,
         Group::Streams,
@@ -49,6 +53,7 @@ impl Group {
         Group::Protocols,
         Group::Dev,
         Group::Registry,
+        Group::Install,
     ];
 
     /// The group's name on the wire.
@@ -61,6 +66,7 @@ impl Group {
             Group::Protocols => "protocols",
             Group::Dev => "dev",
             Group::Registry => "registry",
+            Group::Install => "install",
         }
     }
 
@@ -115,6 +121,18 @@ impl Surface {
     }
 }
 
+/// What discovery output tells an account without the `install` group in
+/// place of an SDK install command: the descriptor it is reading, and the
+/// sandbox path every account has.
+pub const WITHOUT_INSTALL_HINT: &str = "Generating SDKs (`a4 install`) needs the `install` command group, which this account does not have. Read schemas, instructions and accounts from this descriptor, and act through a sandbox: `sandbox_preview` checks an action without signing, `sandbox_invoke` runs it (CLI: `a4 sandbox`).";
+
+impl Surface {
+    /// Whether output may suggest a project install (`a4 install ...`).
+    pub fn can_install(&self) -> bool {
+        self.allows(Group::Install)
+    }
+}
+
 /// The groups an MCP tool belongs to; `None` is a tool this table does not
 /// know (listed, and caught by the test that classifies every tool).
 pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
@@ -123,13 +141,17 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
     const STREAM_READS: &[Group] = &[Group::Streams, Group::Sandboxes];
     const PROGRAM_READS: &[Group] = &[Group::Stacks, Group::Streams, Group::Sandboxes];
     const REGISTRY: &[Group] = &[Group::Registry];
+    const INSTALL: &[Group] = &[Group::Install];
+    // Raw artifacts are SDK inputs, and discovery reads them too.
+    const ARTIFACTS: &[Group] = &[Group::Install, Group::Registry];
     const PROTOCOLS: &[Group] = &[Group::Protocols];
     const DEV: &[Group] = &[Group::Dev];
     Some(match tool {
         "ping" | "account_status" | "rename_agent" | "create_claim_link" => ACCOUNT,
-        "describe_sdk"
-        | "resolve_artifact"
-        | "search_catalog"
+        // The installed SDKs of this project: only an install writes them.
+        "describe_sdk" => INSTALL,
+        "resolve_artifact" => ARTIFACTS,
+        "search_catalog"
         | "get_catalog_entry"
         | "list_catalog_vocabulary"
         | "search_knowledge"
@@ -237,6 +259,25 @@ mod tests {
         assert!(mcp_tool_visible(&Surface::Everything, "dev_status"));
     }
 
+    /// Discovery and installs are separate grants: `registry` lists the
+    /// explore and catalog tools but not the installed-SDK reference, which
+    /// needs `install`; raw artifacts are listed with either.
+    #[test]
+    fn install_is_its_own_group() {
+        let registry = Surface::Groups([Group::Registry].into_iter().collect());
+        assert!(mcp_tool_visible(&registry, "explore_stack"));
+        assert!(mcp_tool_visible(&registry, "resolve_artifact"));
+        assert!(!mcp_tool_visible(&registry, "describe_sdk"));
+        let install = Surface::Groups([Group::Install].into_iter().collect());
+        assert!(mcp_tool_visible(&install, "describe_sdk"));
+        assert!(mcp_tool_visible(&install, "resolve_artifact"));
+        assert!(!mcp_tool_visible(&install, "explore_stack"));
+        assert_eq!(
+            Surface::from_account(&json!({"commandGroups": ["install"]})),
+            Surface::Groups([Group::Install].into_iter().collect())
+        );
+    }
+
     /// An account whose `GET /api/auth/me` reports only `account` and
     /// `sandboxes` sees every live-view and program-read tool, which then
     /// read through its sandbox, and none of the other groups' tools.
@@ -271,6 +312,7 @@ mod tests {
             "explore_stacks",
             "search_catalog",
             "describe_sdk",
+            "resolve_artifact",
             "protocol_submit",
             "squads_status",
             "dev_status",

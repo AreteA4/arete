@@ -188,7 +188,7 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
     // The skills this account should have, as `a4 init` installs them.
     let surface = crate::entitlements::selected_account_surface(config_path);
     let skill_names = skills::skills_for(&surface);
-    let mut checks = run_checks(&env, config, &skill_names);
+    let mut checks = run_checks(&env, config, &skill_names, surface.can_install());
 
     if args.fix {
         let fixable: Vec<&Check> = checks.iter().filter(|check| is_fixable(check)).collect();
@@ -224,7 +224,7 @@ pub fn run(args: DoctorArgs, config_path: &str, json: bool) -> Result<()> {
                 print!("{}", report.render());
                 println!();
             }
-            checks = run_checks(&env, config, &skill_names);
+            checks = run_checks(&env, config, &skill_names, surface.can_install());
         }
     }
 
@@ -380,7 +380,15 @@ impl ProjectUsage {
 
 /// Run every check from the WP8 table, in order.
 /// `skills` are the Arete skills this account should have installed.
-pub fn run_checks(env: &Env, config_path: &Path, skills: &[&'static str]) -> Vec<Check> {
+/// `can_install`: whether the account has the `install` command group. Without
+/// it `a4 init` writes no `arete.toml`, so a missing one is expected, not a
+/// failure.
+pub fn run_checks(
+    env: &Env,
+    config_path: &Path,
+    skills: &[&'static str],
+    can_install: bool,
+) -> Vec<Check> {
     let mut checks = Vec::new();
     let detection = detect(env);
     let receipt = Receipt::load().ok().flatten();
@@ -397,7 +405,7 @@ pub fn run_checks(env: &Env, config_path: &Path, skills: &[&'static str]) -> Vec
     checks.push(cli_path(receipt.as_ref(), &path_env));
 
     // project.manifest / project.lock
-    let facts = match project_manifest(config_path) {
+    let facts = match project_manifest(config_path, can_install) {
         Ok(facts) => {
             checks.push(Check::ok(
                 "project.manifest",
@@ -695,8 +703,18 @@ fn cli_path(receipt: Option<&Receipt>, path_env: &std::ffi::OsStr) -> Check {
     }
 }
 
-fn project_manifest(config_path: &Path) -> std::result::Result<ProjectFacts, Check> {
+/// What doctor says about a missing `arete.toml` for an account without the
+/// `install` command group: nothing to fix.
+pub const NO_MANIFEST_WITHOUT_INSTALL: &str = "no arete.toml: project installs need the `install` command group, which this account does not have; sandboxes and reads need no manifest";
+
+fn project_manifest(
+    config_path: &Path,
+    can_install: bool,
+) -> std::result::Result<ProjectFacts, Check> {
     let id = "project.manifest";
+    if !config_path.exists() && !can_install {
+        return Err(Check::info(id, NO_MANIFEST_WITHOUT_INSTALL, None));
+    }
     if !config_path.exists() {
         return Err(Check::fail(
             id,
@@ -1922,6 +1940,25 @@ mod tests {
             Some("a4 doctor --fix".to_string()),
         );
         assert!(is_fixable(&missing));
+    }
+
+    /// Without the `install` group `a4 init` writes no arete.toml, so doctor
+    /// reports its absence as nothing to fix; with it, a missing manifest
+    /// still fails with `a4 init` as the fix.
+    #[test]
+    fn a_missing_manifest_fails_only_for_accounts_that_can_install() {
+        let missing = Path::new("/definitely/missing/arete.toml");
+        let Err(check) = project_manifest(missing, false) else {
+            panic!("no manifest");
+        };
+        assert_eq!(check.status, Status::Info);
+        assert_eq!(check.fix, None);
+        assert!(!needs_attention(&check));
+        let Err(check) = project_manifest(missing, true) else {
+            panic!("no manifest");
+        };
+        assert_eq!(check.status, Status::Fail);
+        assert_eq!(check.fix.as_deref(), Some("a4 init"));
     }
 
     #[test]

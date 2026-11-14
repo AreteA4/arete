@@ -32,7 +32,7 @@ pub fn squads_dashboard_url(multisig: Option<&str>) -> String {
 }
 
 /// Where code that creates a multisig or adds the proposer goes.
-pub const SQUADS_PROGRAM_SDK_HINT: &str = "For code or a hot-wallet script, install the squads-v4 program SDK (`a4 install program squads-v4`) and use its Arete setup helpers; the member's wallet signs.";
+pub const SQUADS_PROGRAM_SDK_HINT: &str = "For code or a hot-wallet script, an account with the `install` command group can install the squads-v4 program SDK (`a4 install program squads-v4`) and use its Arete setup helpers; the member's wallet signs.";
 
 /// The Squads app steps that add the proposer without any transaction from
 /// Arete: what teams whose members sign with hardware wallets can follow.

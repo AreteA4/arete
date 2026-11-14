@@ -219,7 +219,12 @@ struct StackExploreOutput {
     /// Whether the logged-in account meets the transaction requirement.
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<Value>,
-    install_command: String,
+    /// Only for an account with the `install` command group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_command: Option<String>,
+    /// Instead of `install_command`, for an account without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_hint: Option<&'static str>,
     /// The stack's catalog knowledge: its document, and each described
     /// entity's summary and field descriptions.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,7 +255,12 @@ struct ProgramExploreOutput {
     types: Vec<TypeSummary>,
     program_read: ProgramReadSummary,
     sdk_targets: Vec<SdkTargetSummary>,
-    install_command: String,
+    /// Only for an account with the `install` command group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_command: Option<String>,
+    /// Instead of `install_command`, for an account without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_hint: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -726,7 +736,11 @@ pub fn show_stack(reference: &str, options: StackOptions<'_>, json: bool) -> Res
         if let Some(account) = account_readiness(&client, &summary["auth"]) {
             summary["account"] = account;
         }
-        summary["installCommand"] = json!(format!("a4 install stack {install_ref} --ts"));
+        if crate::entitlements::can_install() {
+            summary["installCommand"] = json!(format!("a4 install stack {install_ref} --ts"));
+        } else {
+            summary["installHint"] = json!(arete_mcp::entitlements::WITHOUT_INSTALL_HINT);
+        }
         summary
     } else {
         shape::stack_views(&stack, &options.views, knowledge.as_ref())?
@@ -965,6 +979,7 @@ fn definition_only_answer(
         registry_says.then_some(api_error.problem.error.as_str()),
         entry.as_ref(),
         FIND_LIVE_HINT,
+        crate::entitlements::can_install(),
     )
 }
 
@@ -1053,10 +1068,14 @@ fn protocol_explore_output(install: &Value) -> Result<Value> {
             .context("Registry returned an invalid protocol install descriptor")?;
     crate::project::protocol::protocol_spec(&protocol)?;
     let mut output = arete_mcp::protocol::protocol_install_summary(install);
-    output["install"] = json!(format!(
-        "a4 install protocol {} --ts",
-        install["package"].as_str().unwrap_or_default()
-    ));
+    if crate::entitlements::can_install() {
+        output["install"] = json!(format!(
+            "a4 install protocol {} --ts",
+            install["package"].as_str().unwrap_or_default()
+        ));
+    } else {
+        output["installHint"] = json!(arete_mcp::entitlements::WITHOUT_INSTALL_HINT);
+    }
     Ok(output)
 }
 
@@ -1130,6 +1149,8 @@ fn render_protocol(output: &Value) -> String {
     }
     if let Some(install) = output["install"].as_str() {
         let _ = writeln!(text, "\nInstall: {install}");
+    } else if let Some(hint) = output["installHint"].as_str() {
+        let _ = writeln!(text, "\n{hint}");
     }
     text
 }
@@ -1183,10 +1204,14 @@ pub fn show_program(reference: &str, options: ProgramOptions<'_>, json: bool) ->
         shape::program_sections(&program, state, &sections)
     };
     output["schemaVersion"] = json!(EXPLORE_SCHEMA_VERSION);
-    output["installCommand"] = json!(format!(
-        "a4 install program {} --ts",
-        descriptor.install_name
-    ));
+    if crate::entitlements::can_install() {
+        output["installCommand"] = json!(format!(
+            "a4 install program {} --ts",
+            descriptor.install_name
+        ));
+    } else {
+        output["installHint"] = json!(arete_mcp::entitlements::WITHOUT_INSTALL_HINT);
+    }
     if summary {
         output["hint"] = json!(PROGRAM_SUMMARY_HINT);
     }
@@ -1771,7 +1796,8 @@ fn build_stack_output(
         auth_requirements: shape::auth_requirements(&serde_json::to_value(typescript)?),
         sdk_endpoints: sdk_endpoints(typescript, None),
         account: None,
-        install_command: format!("a4 install stack {install_ref} --ts"),
+        install_command: offered_install(format!("a4 install stack {install_ref} --ts")),
+        install_hint: install_hint(),
         knowledge: knowledge.map(|knowledge| full_stack_knowledge(typescript, knowledge)),
     })
 }
@@ -1950,7 +1976,11 @@ fn build_program_output(
             "typescript",
             descriptor.definition.extensions.as_ref(),
         )?],
-        install_command: format!("a4 install program {} --ts", descriptor.install_name),
+        install_command: offered_install(format!(
+            "a4 install program {} --ts",
+            descriptor.install_name
+        )),
+        install_hint: install_hint(),
     })
 }
 
@@ -2146,7 +2176,14 @@ fn render_stack(output: &StackExploreOutput) -> String {
         output.account.as_ref(),
     ));
     text.push_str(&render_sdk_endpoints(&output.sdk_endpoints));
-    text.push_str(&format!("\nInstall\n  {}\n", output.install_command));
+    text.push_str(&format!(
+        "\nInstall\n  {}\n",
+        output
+            .install_command
+            .as_deref()
+            .or(output.install_hint)
+            .unwrap_or("-")
+    ));
     text
 }
 
@@ -2343,10 +2380,7 @@ fn render_stack_summary(output: &Value) -> String {
         text.push_str("  Transactions: require transaction access on your account\n");
     }
     text.push_str(&render_auth_notes(&Value::Null, output.get("account")));
-    text.push_str(&format!(
-        "\nInstall\n  {}\n",
-        output["installCommand"].as_str().unwrap_or("-"),
-    ));
+    text.push_str(&format!("\nInstall\n  {}\n", install_or_hint(output),));
     if let Some(hint) = output["hint"].as_str() {
         text.push_str(&format!("\n{hint}\n"));
     }
@@ -2432,10 +2466,7 @@ fn render_program_summary(output: &Value) -> String {
     if let Some(entry) = output["sdkExtension"]["entry"].as_str() {
         text.push_str(&format!("\nSDK extension\n  {entry}\n"));
     }
-    text.push_str(&format!(
-        "\nInstall\n  {}\n",
-        output["installCommand"].as_str().unwrap_or("-")
-    ));
+    text.push_str(&format!("\nInstall\n  {}\n", install_or_hint(output)));
     if let Some(hint) = output["hint"].as_str() {
         text.push_str(&format!("\n{hint}\n"));
     }
@@ -2721,10 +2752,7 @@ fn render_program_sections(output: &Value) -> String {
             ));
         }
     }
-    text.push_str(&format!(
-        "\nInstall\n  {}\n",
-        output["installCommand"].as_str().unwrap_or("-")
-    ));
+    text.push_str(&format!("\nInstall\n  {}\n", install_or_hint(output)));
     text
 }
 
@@ -2752,7 +2780,11 @@ fn render_program(output: &ProgramExploreOutput) -> String {
         output.program_read.endpoint,
         auth_requirement(&output.program_read.auth),
         render_sdk_targets(&output.sdk_targets),
-        output.install_command
+        output
+            .install_command
+            .as_deref()
+            .or(output.install_hint)
+            .unwrap_or("-")
     ));
     text
 }
@@ -3312,13 +3344,40 @@ fn string_list(value: &Value, key: &str) -> String {
 /// catalog showed (`=<version>`), so a later activation cannot silently swap
 /// the release under the user. The lockfile then records the
 /// `packageReleaseHash` printed beside it.
+/// What the catalog renderers print as the install line: the pinned
+/// command, or, for an account without the `install` group, that installs
+/// need it.
 fn pinned_install_command(entry: &Value) -> String {
+    if !crate::entitlements::can_install() {
+        return NEEDS_INSTALL_GROUP.to_string();
+    }
     let kind = entry["kind"].as_str().unwrap_or("-");
     let slug = entry["slug"].as_str().unwrap_or("-");
     match entry["version"].as_str() {
         Some(version) => format!("a4 install {kind} {slug}@={version}"),
         None => format!("a4 install {kind} {slug}"),
     }
+}
+
+/// `command` when the account may install, for the full outputs.
+fn offered_install(command: String) -> Option<String> {
+    crate::entitlements::can_install().then_some(command)
+}
+
+/// The hint the full outputs carry instead of an install command.
+fn install_hint() -> Option<&'static str> {
+    (!crate::entitlements::can_install()).then_some(arete_mcp::entitlements::WITHOUT_INSTALL_HINT)
+}
+
+/// The install line for an account without the `install` command group.
+const NEEDS_INSTALL_GROUP: &str = "needs the `install` command group (use a sandbox instead)";
+
+/// The install command `output` carries, or the reason it has none.
+fn install_or_hint(output: &Value) -> &str {
+    output["installCommand"]
+        .as_str()
+        .or_else(|| output["installHint"].as_str())
+        .unwrap_or("-")
 }
 
 /// The continuation command for each kind the overview cut short, with its
@@ -4745,7 +4804,11 @@ mod tests {
         assert_eq!(registry.next_target(), install_target("ore", Some("rust")));
         let output = build_stack_output(&install_ref, &typescript, &rust, None).unwrap();
         assert_eq!(output.install_ref, "ore");
-        assert_eq!(output.install_command, "a4 install stack ore --ts");
+        assert_eq!(
+            output.install_command.as_deref(),
+            Some("a4 install stack ore --ts")
+        );
+        assert_eq!(output.install_hint, None);
     }
 
     #[test]

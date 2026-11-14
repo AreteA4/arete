@@ -1391,6 +1391,14 @@ fn run(cli: Cli) -> anyhow::Result<()> {
         return Ok(());
     };
 
+    entitlements::remember_config_path(&cli.config);
+    // Project installs need the `install` command group: an account the API
+    // reports without it is stopped here, before anything local or remote.
+    let name = command_name(&command);
+    if entitlements::INSTALL_COMMANDS.contains(&name) {
+        entitlements::require_install(&entitlements::selected_account_surface(&cli.config), name)?;
+    }
+
     match command {
         Commands::Create {
             name,
@@ -2856,16 +2864,28 @@ mod tests {
     #[test]
     fn a_granted_group_lists_its_commands() {
         use arete_mcp::entitlements::Group;
+        // `registry` is discovery; project installs are their own group.
         let registry = entitlements::visible(
             Cli::command(),
             &surface(&[Group::Account, Group::Sandboxes, Group::Registry]),
         );
         let (help, _) = rendered_help(registry.clone());
-        for listed in ["install", "update", "remove", "sdk", "explore", "know"] {
+        for listed in ["explore", "know"] {
             assert!(help.contains(&format!("  {listed} ")), "{listed} missing");
         }
-        assert!(!help.contains("  dev "));
-        let error = registry.try_get_matches_from(["a4", "instal"]).unwrap_err();
+        for hidden in ["install", "update", "remove", "sdk", "dev"] {
+            assert!(!help.contains(&format!("  {hidden} ")), "{hidden} listed");
+        }
+        let install = entitlements::visible(
+            Cli::command(),
+            &surface(&[Group::Account, Group::Sandboxes, Group::Install]),
+        );
+        let (help, _) = rendered_help(install.clone());
+        for listed in ["install", "update", "remove", "sdk"] {
+            assert!(help.contains(&format!("  {listed} ")), "{listed} missing");
+        }
+        assert!(!help.contains("  explore "));
+        let error = install.try_get_matches_from(["a4", "instal"]).unwrap_err();
         assert!(error.to_string().contains("install"), "{error}");
         // `create` is in two groups: either one lists it. An account list
         // without `account` still keeps sign-in.

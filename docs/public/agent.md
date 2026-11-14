@@ -81,7 +81,8 @@ skill has the workflow; the guides are
 https://docs.arete.run/using-stacks/quickstart/ and
 https://docs.arete.run/building-protocols/definition/. For an existing
 published protocol, use `a4 protocol search`, `a4 protocol show <slug>`, inspect
-the package descriptor, and `a4 install protocol <package> --ts`.
+the package descriptor, and, with the `install` command group,
+`a4 install protocol <package> --ts`.
 
 Protocol execution through MCP is documented at
 https://docs.arete.run/agent-skills/protocols/. Use `dev: true` for the project's
@@ -146,8 +147,9 @@ Update later with `a4 self update`. Do not substitute a Cargo install.
 
 ### Initialise
 
-`a4 init -y` writes `arete.toml`, project instructions, the skills the
-account's command groups cover, and the stream and docs MCP configuration. It is idempotent. Use `--global` only
+`a4 init -y` writes project instructions, the skills the account's command
+groups cover, and the stream and docs MCP configuration; with the `install`
+command group it also writes `arete.toml`. It is idempotent. Use `--global` only
 when user-scoped setup was requested.
 
 ### Authenticate
@@ -201,12 +203,22 @@ bindings, and install command; do not invent missing delivery.
 | `arete-stack-authoring` | Custom read models and portable artifacts            |
 | `arete-deploy`          | Only explicitly authorized publication or deployment |
 
-Use MCP for agent exploration and protocol execution, and generated SDKs for
-shipped application code. Answer live reads
+Use MCP for agent exploration and protocol execution, and generated SDKs (with
+the `install` command group) for shipped application code. Answer live reads
 with provenance (stack and view). If no suitable view exists, explain the gap.
 Do not construct endpoints.
 
 ### Install capabilities
+
+Generating SDKs needs the `install` command group, which accounts get by grant
+(admins have it). With it, `a4 install` is listed in `a4 --help` and explore
+output carries an `installCommand`. Without it, explore output carries an
+`installHint` instead, `a4 install` stops with an error naming the group, and
+the registry refuses the install. Don't try to install then: read schemas and
+instructions from the explored descriptor, and act through a sandbox
+(`sandbox_preview`, then `sandbox_invoke`; see Sandbox workflows above).
+
+With the group:
 
     a4 install protocol <package> --ts
     a4 install program <slug> --ts

@@ -325,12 +325,15 @@ fn entry_brief(entry: &Value) -> Value {
 ///
 /// `detail` is the registry's message; `find_live` says how to search for a
 /// live stack in the caller's interface (CLI flags or MCP arguments).
+/// `can_install` is whether the account has the `install` command group:
+/// without it the answer points at the sandbox path instead of `a4 install`.
 pub fn definition_only_stack(
     reference: &str,
     registry_says: bool,
     detail: Option<&str>,
     catalog_entry: Option<&Value>,
     find_live: &str,
+    can_install: bool,
 ) -> Option<Value> {
     let catalog_live = catalog_entry.and_then(is_live_stack);
     if !registry_says && catalog_live != Some(false) {
@@ -350,8 +353,7 @@ pub fn definition_only_stack(
     if let Some(entry) = catalog_entry {
         out.insert("catalog".into(), entry_brief(entry));
     }
-    out.insert(
-        "next".into(),
+    let next = if can_install {
         serde_json::json!([
             format!(
                 "`a4 install stack {slug} --ts` installs its typed SDK and program SDKs: build \
@@ -361,8 +363,14 @@ pub fn definition_only_stack(
              its views stream"
                 .to_string(),
             find_live.to_string(),
-        ]),
-    );
+        ])
+    } else {
+        serde_json::json!([
+            crate::entitlements::WITHOUT_INSTALL_HINT.to_string(),
+            find_live.to_string(),
+        ])
+    };
+    out.insert("next".into(), next);
     Some(Value::Object(out))
 }
 
@@ -891,7 +899,8 @@ mod tests {
         let entry = json!({"kind": "stack", "slug": "pumpfun", "version": "1.1.4",
             "protocol": "pump-fun", "summary": "Pump.", "modes": ["build", "read"],
             "packageReleaseHash": "sha256:aa"});
-        let answer = definition_only_stack("pumpfun", false, None, Some(&entry), "find").unwrap();
+        let answer =
+            definition_only_stack("pumpfun", false, None, Some(&entry), "find", true).unwrap();
         assert_eq!(answer["kind"], "stack-definition-only");
         assert_eq!(answer["live"], false);
         assert_eq!(answer["catalog"]["protocol"], "pump-fun");
@@ -903,7 +912,8 @@ mod tests {
         assert_eq!(answer["next"][2], "find");
 
         let registry =
-            definition_only_stack("pumpfun", true, Some("no hosted stream"), None, "f").unwrap();
+            definition_only_stack("pumpfun", true, Some("no hosted stream"), None, "f", true)
+                .unwrap();
         assert_eq!(registry["detail"], "no hosted stream");
         assert!(registry.get("catalog").is_none());
 
@@ -911,7 +921,8 @@ mod tests {
         // A single entry: summary and protocols under `knowledge`, no modes.
         let single = json!({"kind": "stack", "slug": "pumpfun", "version": "1.1.4",
             "knowledge": {"summary": "Pump.", "protocols": ["pump-fun"]}});
-        let answer = definition_only_stack("pumpfun", false, None, Some(&single), "f").unwrap();
+        let answer =
+            definition_only_stack("pumpfun", false, None, Some(&single), "f", true).unwrap();
         assert_eq!(
             answer["catalog"],
             json!({"slug": "pumpfun", "version": "1.1.4", "protocol": "pump-fun", "summary": "Pump."})
@@ -919,9 +930,15 @@ mod tests {
 
         let mut live = entry.clone();
         live["modes"] = json!(["subscribe"]);
-        assert!(definition_only_stack("pumpfun", false, None, Some(&live), "f").is_none());
+        assert!(definition_only_stack("pumpfun", false, None, Some(&live), "f", true).is_none());
+        // Without the `install` group: the sandbox path, not `a4 install`.
+        let answer =
+            definition_only_stack("pumpfun", false, None, Some(&single), "f", false).unwrap();
+        let next = answer["next"].to_string();
+        assert!(!next.contains("a4 install stack"), "{next}");
+        assert!(next.contains("sandbox_invoke"), "{next}");
         let program = json!({"kind": "program", "slug": "pumpfun"});
-        assert!(definition_only_stack("pumpfun", false, None, Some(&program), "f").is_none());
-        assert!(definition_only_stack("pumpfun", false, None, None, "f").is_none());
+        assert!(definition_only_stack("pumpfun", false, None, Some(&program), "f", true).is_none());
+        assert!(definition_only_stack("pumpfun", false, None, None, "f", true).is_none());
     }
 }

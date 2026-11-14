@@ -100,13 +100,17 @@ and "did you mean" suggestions list only the command groups the Arete API
 reports for your account (`commandGroups` on `GET /api/auth/me`):
 `sandboxes` (`sandbox`, plus `stream`, `get` and `program account`, which
 then read through a sandbox), `streams` (`stream`, `get`), `stacks` (`create`, `up`, `status`, `stack`,
-`program`, `idl`), `registry` (`explore`, `know`, `install`, `update`,
-`remove`, `sdk`), `protocols` (`protocol`, `squads`, and `create`) and `dev`
-(`dev`). Account commands (`init`, `doctor`, `auth`, `login`, `mcp`, `self`,
+`program`, `idl`), `registry` (`explore`, `know`), `install` (`install`,
+`update`, `remove`, `sdk`, and the `arete.toml` that `init` writes),
+`protocols` (`protocol`, `squads`, and `create`) and `dev` (`dev`). Account commands (`init`, `doctor`, `auth`, `login`, `mcp`, `self`,
 `upgrade`, `config`, `telemetry`) are always listed. With no login, when the
 API can't be reached, or when it reports no groups, every command is listed.
 Hiding is never the gate: a command typed anyway runs, and the API refuses
-what the account may not use. Hiding trims only the listing: when commands
+what the account may not use. The project install commands (`install`,
+`update`, `remove`, `sdk`) also stop on the client, with an error naming the
+`install` group, when the API reports the account without it; the registry's
+resolver refuses them either way. Without `install`, `a4 init` still sets up
+skills and MCP config but leaves `arete.toml` alone. Hiding trims only the listing: when commands
 are left out, `a4 --help` says so, and a command named on the command line
 (`a4 help explore`, `a4 explore --help`, `a4 get` with a missing argument)
 shows its own help and errors for every account.

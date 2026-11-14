@@ -43,14 +43,15 @@ pub fn install_command(package_ref: &str) -> String {
 }
 
 /// One listing as the tool returns it: the registry's fields plus `trust`
-/// (a readable trust tier) and `install` (the exact install command).
-pub fn listing_view(listing: &Value) -> Value {
+/// (a readable trust tier) and, when the account has the `install` command
+/// group, `install` (the exact install command).
+pub fn listing_view(listing: &Value, can_install: bool) -> Value {
     let mut view = match listing {
         Value::Object(object) => object.clone(),
         _ => Map::new(),
     };
     view.insert("trust".into(), json!(trust_label(listing)));
-    if let Some(package_ref) = listing["packageRef"].as_str() {
+    if let Some(package_ref) = listing["packageRef"].as_str().filter(|_| can_install) {
         view.insert("install".into(), json!(install_command(package_ref)));
     }
     Value::Object(view)
@@ -58,20 +59,26 @@ pub fn listing_view(listing: &Value) -> Value {
 
 /// A page of listings (`{ items, nextCursor? }`) with each item through
 /// [`listing_view`] and a `hint`.
-pub fn listings_view(page: &Value) -> Value {
+pub fn listings_view(page: &Value, can_install: bool) -> Value {
     let items: Vec<Value> = page["items"]
         .as_array()
         .into_iter()
         .flatten()
-        .map(listing_view)
+        .map(|listing| listing_view(listing, can_install))
         .collect();
     let mut view = json!({ "items": items });
     let mut hint = String::from(
         "Callable protocol packages hosted on Arete, reviewed ones first. `trust` is \
          \"reviewed by Arete\" (with `reviewHash`) or \"unreviewed\"; `attestedExecutions30d` \
-         counts attested executions in the last 30 days. Install one with its `install` \
-         command; `protocol_actions` lists what a wallet can do on its deployment.",
+         counts attested executions in the last 30 days. ",
     );
+    hint.push_str(if can_install {
+        "Install one with its `install` command; `protocol_actions` lists what a wallet can \
+         do on its deployment."
+    } else {
+        "`protocol_actions` lists what a wallet can do on its deployment. Installing a typed \
+         client needs the `install` command group, which this account does not have."
+    });
     if let Some(cursor) = page["nextCursor"]
         .as_str()
         .filter(|cursor| !cursor.is_empty())
@@ -117,10 +124,22 @@ mod tests {
         assert_eq!(install_command("tip-jar"), "a4 install protocol tip-jar");
     }
 
+    /// Without the `install` group a listing carries no install command, and
+    /// the hint doesn't suggest one.
+    #[test]
+    fn without_install_a_page_suggests_no_install() {
+        let view = listings_view(&json!({ "items": [listing("reviewed")] }), false);
+        assert!(view["items"][0].get("install").is_none());
+        assert_eq!(view["items"][0]["trust"], "reviewed by Arete");
+        let hint = view["hint"].as_str().unwrap();
+        assert!(!hint.contains("its `install` command"), "{hint}");
+        assert!(hint.contains("`install` command group"), "{hint}");
+    }
+
     #[test]
     fn a_page_keeps_the_registry_fields_and_adds_trust_install_and_cursor() {
         let page = json!({ "items": [listing("reviewed")], "nextCursor": "c2" });
-        let view = listings_view(&page);
+        let view = listings_view(&page, true);
         let item = &view["items"][0];
         assert_eq!(item["slug"], "tip-jar");
         assert_eq!(item["attestedExecutions30d"], 12);
@@ -130,7 +149,7 @@ mod tests {
         assert_eq!(view["nextCursor"], "c2");
         assert!(view["hint"].as_str().unwrap().contains("cursor"));
 
-        let last = listings_view(&json!({ "items": [] }));
+        let last = listings_view(&json!({ "items": [] }), true);
         assert!(last.get("nextCursor").is_none());
         assert_eq!(last["items"], json!([]));
     }

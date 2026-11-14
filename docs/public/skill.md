@@ -26,7 +26,8 @@ a4 doctor --json
 ```
 
 `a4 init` configures the project, installs the Arete skills, and registers the
-Arete stream and documentation MCP servers for detected coding agents. If the
+Arete stream and documentation MCP servers for detected coding agents. It
+writes `arete.toml` only for an account with the `install` command group. If the
 current agent process does not see new skills or tools, ask the user to reload
 or restart the host, then run `a4 doctor --json` again.
 
@@ -42,8 +43,9 @@ and `a4 stream --dev` exercise and inspect that deployment. Private dev handlers
 can iterate without review; production handlers require review.
 
 For integration, search with `a4 protocol search`, inspect `a4 protocol show
-<slug>` and `a4 explore protocol <package>`, then install the exact advertised
-package with `a4 install protocol <package> --ts`. See
+<slug>` and `a4 explore protocol <package>`, then, with the `install` command
+group, install the exact advertised package with
+`a4 install protocol <package> --ts`. See
 https://docs.arete.run/integrating-protocols/overview/.
 
 Cloud environments and deployment require account access beyond restricted
@@ -132,12 +134,20 @@ Before reporting token amounts, check each field's `amount` in
 are whole tokens, `scale: "raw"` values are base units (divide by
 `10^decimals`; for SOL these are lamports).
 
-Use MCP, `a4 get` or `a4 stream` for investigation. Use a generated SDK for application
-code.
+Use MCP, `a4 get` or `a4 stream` for investigation. Use a generated SDK for
+application code when the account can install one (below).
 
 ## Install an exact dependency
 
-Prefer the install command reported by the descriptor:
+Installing needs the `install` command group, which accounts get by grant. An
+account has it when `a4 install` is listed in `a4 --help` and explore output
+carries an `installCommand`. Without it, explore output carries an
+`installHint` instead, `a4 install` stops with an error naming the group, and
+the registry refuses the install: read schemas and instructions from the
+explored descriptor, and act through a sandbox (`sandbox_preview`, then
+`sandbox_invoke`; see https://docs.arete.run/sandboxes/connect-agent/).
+
+With the group, prefer the install command reported by the descriptor:
 
 ```bash
 a4 install program <slug> --ts
