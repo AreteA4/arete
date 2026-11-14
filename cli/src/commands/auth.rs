@@ -329,6 +329,9 @@ pub fn whoami(json: bool) -> Result<()> {
             "Authenticated agent".green().bold()
         );
         println!();
+        if let Some(id) = identity.id {
+            println!("  ID:          {id}");
+        }
         println!("  Slug:        {}", identity.slug);
         println!("  Name:        {}", identity.display_name);
         println!("  Claim state: {}", identity.claim_state);
@@ -507,6 +510,7 @@ fn print_agent_identity_json(
         serde_json::to_string(&serde_json::json!({
             "schemaVersion": 1,
             "principalKind": "agent",
+            "id": identity.id,
             "slug": identity.slug,
             "displayName": identity.display_name,
             "status": identity.status,
@@ -525,6 +529,60 @@ fn print_agent_identity_json(
         }))?
     );
     Ok(())
+}
+
+/// `a4 auth rename <name>`: change the signed-in agent's display name.
+///
+/// Only an agent key can rename, and only its own agent: the API takes the
+/// agent from the key. The id and slug never change.
+pub fn rename(name: &str, json: bool) -> Result<()> {
+    let api_url = config::get_api_url(None);
+    let api_key = ApiClient::load_api_key_for_url(&api_url)?;
+    let client = ApiClient::new()?;
+    let spinner = (!json).then(|| ui::create_spinner("Renaming agent..."));
+    let renamed = perform_rename(&client, &api_key, name);
+    if let Some(spinner) = spinner {
+        spinner.finish_and_clear();
+    }
+    println!("{}", rename_output(&renamed?, json)?);
+    Ok(())
+}
+
+/// Check the name and the key locally, then rename. Nothing is sent for an
+/// empty name or a key that is not an agent key.
+fn perform_rename(
+    client: &ApiClient,
+    api_key: &str,
+    name: &str,
+) -> Result<crate::api_client::AgentRenameResponse> {
+    let name = name.trim();
+    if name.is_empty() {
+        anyhow::bail!("The new name must not be empty");
+    }
+    if !api_key.starts_with("a4_ak_") {
+        anyhow::bail!(
+            "a4 auth rename renames an agent account, and the active credential is not an agent key. Run it with the agent's profile (`a4 --profile agent auth rename …`)"
+        );
+    }
+    client.agent_rename(name)
+}
+
+fn rename_output(renamed: &crate::api_client::AgentRenameResponse, json: bool) -> Result<String> {
+    if json {
+        return Ok(serde_json::to_string(&serde_json::json!({
+            "schemaVersion": 1,
+            "id": renamed.id,
+            "slug": renamed.slug,
+            "displayName": renamed.display_name,
+        }))?);
+    }
+    Ok(format!(
+        "{} Renamed agent {} to \"{}\" (id {})",
+        ui::symbols::SUCCESS.green().bold(),
+        renamed.slug.bold(),
+        renamed.display_name,
+        renamed.id
+    ))
 }
 
 pub fn claim_link(json: bool) -> Result<()> {
@@ -1343,6 +1401,7 @@ fn perform_signup(
 fn signup_json_payload(outcome: &SignupOutcome, profile: &str) -> serde_json::Value {
     serde_json::json!({
         "schemaVersion": 1,
+        "id": outcome.identity.id,
         "slug": outcome.identity.slug,
         "displayName": outcome.identity.display_name,
         "createdAt": outcome.identity.created_at,
@@ -2106,6 +2165,69 @@ mod signup_tests {
         assert_eq!(format_remaining_seconds(1), "1s");
         assert_eq!(format_remaining_seconds(59), "59s");
         assert_eq!(format_remaining_seconds(60), "1m");
+    }
+
+    #[test]
+    fn rename_sends_the_trimmed_name_with_the_agent_key() {
+        let server = MockServer::json(
+            200,
+            r#"{"id":42,"slug":"agt_7f3a","displayName":"Dogfood"}"#,
+        );
+        let client =
+            ApiClient::with_base_url(server.base_url()).with_api_key("a4_ak_me".to_string());
+        let renamed = perform_rename(&client, "a4_ak_me", "  Dogfood  ").expect("renamed");
+        assert_eq!(renamed.id, 42);
+        assert_eq!(renamed.display_name, "Dogfood");
+
+        let request = server.request();
+        assert_eq!(request.request_line, "PATCH /api/agents/me HTTP/1.1");
+        assert_eq!(request.header("authorization"), Some("Bearer a4_ak_me"));
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        assert_eq!(body, serde_json::json!({ "displayName": "Dogfood" }));
+
+        let json: serde_json::Value =
+            serde_json::from_str(&rename_output(&renamed, true).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "schemaVersion": 1,
+                "id": 42,
+                "slug": "agt_7f3a",
+                "displayName": "Dogfood",
+            })
+        );
+        let human = rename_output(&renamed, false).unwrap();
+        assert!(human.contains("Dogfood"), "{human}");
+        assert!(human.contains("42"), "{human}");
+    }
+
+    #[test]
+    fn rename_refuses_empty_names_and_non_agent_keys_without_a_request() {
+        // Nothing listens here: a request would fail with a connection error.
+        let client =
+            ApiClient::with_base_url("http://127.0.0.1:9").with_api_key("a4_sk_human".to_string());
+        let empty = perform_rename(&client, "a4_ak_me", "   ").expect_err("empty name");
+        assert!(empty.to_string().contains("must not be empty"), "{empty}");
+        let human = perform_rename(&client, "a4_sk_human", "Dogfood").expect_err("human key");
+        assert!(human.to_string().contains("not an agent key"), "{human}");
+    }
+
+    #[test]
+    fn whoami_json_reports_the_agent_id_and_tolerates_its_absence() {
+        let mut with_id: serde_json::Value = serde_json::from_str(ME_BODY).unwrap();
+        with_id["id"] = serde_json::json!(42);
+        let identity: AgentMeResponse = serde_json::from_value(with_id).unwrap();
+        assert_eq!(identity.id, Some(42));
+        let outcome = SignupOutcome {
+            identity,
+            credentials_path: std::path::PathBuf::from("credentials.toml"),
+            created: true,
+            idempotent: Some(false),
+        };
+        assert_eq!(signup_json_payload(&outcome, "agent")["id"], 42);
+
+        let older: AgentMeResponse = serde_json::from_str(ME_BODY).unwrap();
+        assert_eq!(older.id, None);
     }
 
     #[test]

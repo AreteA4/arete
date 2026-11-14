@@ -762,6 +762,12 @@ enum AuthCommands {
     /// Create a short-lived link for a human to claim this agent
     ClaimLink,
 
+    /// Rename this agent account (its id and slug stay the same)
+    Rename {
+        /// The new display name
+        name: String,
+    },
+
     /// Manage API keys (agent accounts manage their own agent keys)
     #[command(subcommand)]
     Keys(KeysCommands),
@@ -1931,6 +1937,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             AuthCommands::Status => commands::auth::status(cli.json),
             AuthCommands::Whoami => commands::auth::whoami(cli.json),
             AuthCommands::ClaimLink => commands::auth::claim_link(cli.json),
+            AuthCommands::Rename { name } => commands::auth::rename(&name, cli.json),
             AuthCommands::Keys(keys_cmd) => match keys_cmd {
                 KeysCommands::List => commands::auth::list_keys(cli.json),
                 KeysCommands::Create { name, expiry_days } => {

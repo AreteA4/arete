@@ -143,14 +143,15 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 | Subscription | `subscribe`, `unsubscribe`, `list_subscriptions` | Per connection |
 | Cache | `get_entity`, `list_entities`, `get_recent`, `query_entities` | Per subscription |
 | Protocols | `protocol_check`, `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_squads_proposer`, `protocol_squads_status`, `squads_status`, `squads_attach`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
+| Account | `account_status`, `rename_agent`, `create_claim_link` | Agent key resolved automatically; sent only to Arete origins |
 | Health | `ping` | None |
 
 ### Which tools are listed
 
 At startup `a4 mcp` asks the Arete API which command groups the account may
 use (`commandGroups` on `GET /api/auth/me`, with the resolved key) and lists
-only their tools. `ping`, `account_status` and `create_claim_link` are
-always listed.
+only their tools. `ping`, `account_status`, `rename_agent` and
+`create_claim_link` are always listed.
 
 | Group | Tools |
 |-------|-------|
