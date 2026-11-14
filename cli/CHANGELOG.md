@@ -6,6 +6,28 @@
 
 * **cli,mcp:** sandbox Rules v2 is no longer supported. `a4 sandbox rules validate`, `a4 sandbox rules show` and the MCP `sandbox_rules` tool refuse a version 2 document (from a file or from the API) with one line, `Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).`, and exit 1 (`sandbox-rules-version-unsupported` with `--json` / in MCP). Rules v3 is the only format.
 
+## [0.57.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.56.0...a4-cli-v0.57.0) (2026-11-14)
+
+
+### Features
+
+* **cli,mcp:** discovery for every account; installs need known groups ([5a801c8](https://github.com/AreteA4/arete/commit/5a801c8316d33e5f2969529de9c06554e2d55a11))
+* **cli:** refuse hidden commands; protocol projects need the install group ([bcb60e7](https://github.com/AreteA4/arete/commit/bcb60e76d24b2a86e66a510ad9de3660d531ed6c))
+* **cli:** refuse hidden commands; protocol projects need the install group ([ffab68b](https://github.com/AreteA4/arete/commit/ffab68bff6a1419d046f642c90bdda1348bd2b14))
+
+
+### Bug Fixes
+
+* **cli,mcp:** limit the no-account install hook to CI and drop it from docs ([fc29bfb](https://github.com/AreteA4/arete/commit/fc29bfbbf72773f9ec19b87f5358f2b5d133be2c))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.56.0 to 0.57.0
+    * arete-mcp bumped from 0.56.0 to 0.57.0
+
 ## [0.56.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.55.2...a4-cli-v0.56.0) (2026-11-14)
 
 
