@@ -364,7 +364,7 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
             "Fix programId or the seeds: each seed is {kind, value} (or {kind: \"bytes\", hex}), at most 15 seeds of at most 32 bytes each."
         }
         "sandbox-intent-invalid" | "sandbox-intent-foreign-signer" => {
-            "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer. Accounts with a `fill` in sandbox_rules can be left out; `missingAccounts` lists the ones still needed."
+            "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer. Accounts with a `fill` in sandbox_rules can be left out; `missingAccounts` lists the ones still needed, and `accountGuidance` says per account how to find it (its `lookup`) or what Arete fills it from once another is given (`waitingOn`): give the accounts to find first."
         }
         "sandbox-guard-trial-failed" => {
             "The transaction fails when run. Check accounts and amounts; the guard's logs are in the details when present."
