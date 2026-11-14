@@ -1303,6 +1303,16 @@ fn restore_default_sigpipe() {
 #[cfg(not(unix))]
 fn restore_default_sigpipe() {}
 
+/// The subcommand this process was asked to run (`init` for
+/// `a4 protocol init ...`), from its arguments.
+fn typed_subcommand() -> Option<String> {
+    let matches = Cli::command()
+        .try_get_matches_from(std::env::args_os())
+        .ok()?;
+    let (_, command) = matches.subcommand()?;
+    command.subcommand_name().map(str::to_string)
+}
+
 fn command_name(cmd: &Commands) -> &'static str {
     match cmd {
         Commands::Create { .. } => "create",
@@ -1392,11 +1402,15 @@ fn run(cli: Cli) -> anyhow::Result<()> {
     };
 
     entitlements::remember_config_path(&cli.config);
-    // Project installs need the `install` command group: an account the API
-    // reports without it is stopped here, before anything local or remote.
+    // A command the account's command groups hide refuses to run: an account
+    // the API reports without its group is stopped here, before anything
+    // local or remote. Account commands (sign-in, doctor, mcp) never look.
     let name = command_name(&command);
-    if entitlements::INSTALL_COMMANDS.contains(&name) {
-        entitlements::require_install(&entitlements::selected_account_surface(&cli.config), name)?;
+    if entitlements::command_groups(name) != Some(&[arete_mcp::entitlements::Group::Account][..]) {
+        let surface = entitlements::running_surface(&cli.config);
+        if surface != arete_mcp::entitlements::Surface::Everything {
+            entitlements::require_command(&surface, name, typed_subcommand().as_deref())?;
+        }
     }
 
     match command {

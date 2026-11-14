@@ -1445,6 +1445,14 @@ fn point_installed_sdk_at_deployment(
     if result.live_endpoints.is_empty() {
         return;
     }
+    // The reinstall is a project install; the deployment stands either way.
+    if !crate::entitlements::can_install() {
+        println!(
+            "  {} The SDK for '{alias}' was not pointed at this deployment: reinstalling it needs the `install` command group, which this account does not have. Pass its endpoints to your client instead.",
+            ui::symbols::ARROW.blue()
+        );
+        return;
+    }
     println!();
     match record_stack_endpoints_and_install(config_path, alias, result.live_endpoints.clone()) {
         Ok(true) => println!(

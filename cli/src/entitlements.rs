@@ -3,15 +3,22 @@
 //!
 //! The groups come from the Arete API (`GET /api/auth/me`, see
 //! [`arete_mcp::entitlements`]). Without an account key, when the API can't
-//! be reached, or when it reports no groups, every command is listed as
-//! before. Hiding is UX only: a command typed anyway still runs, and the API
-//! refuses what the account may not use. The exception is the project
-//! install commands ([`INSTALL_COMMANDS`]): typed by an account the API
-//! reports without `install`, they stop with [`require_install`]'s error
-//! before doing anything, local or remote. A command named on the command line
-//! (`a4 explore --help`, `a4 help explore`, `a4 get` with a missing
-//! argument) is never hidden: its own help and errors are shown as for any
+//! be reached, or when it reports no groups, every command is listed and
+//! runs as before, and the API decides. Otherwise a command the account's
+//! groups hide is also refused when typed anyway: [`require_command`] stops
+//! it with an error naming the group before it does anything, local or
+//! remote. The API still refuses what the account may not use; the client
+//! refusal only makes that the first thing the account sees. A command named
+//! on the command line (`a4 explore --help`, `a4 help explore`, `a4 get`
+//! with a missing argument) still shows its own help and errors as for any
 //! account.
+//!
+//! Some commands need a second group on top of their own
+//! ([`subcommand_requires`]): `a4 protocol init`, `a4 protocol deploy`,
+//! `a4 dev up` and `a4 dev sdk` create or run a protocol project, which
+//! writes `arete.toml` / `arete.lock` and installs from the registry, so they
+//! need `install` as well. The protocol templates of `a4 create` need
+//! `protocols` and `install` ([`PROTOCOL_TEMPLATE_GROUPS`]).
 //!
 //! Read commands (`get`, `stream`, `program account`) are also listed for an
 //! account granted `sandboxes`: a sandbox reads the programs in its rules and
@@ -56,13 +63,28 @@ pub fn subcommand_groups(parent: &str, name: &str) -> Option<&'static [Group]> {
     }
 }
 
-/// The help footer when `visible` leaves commands out: they still run, and
-/// naming one shows its help.
+/// Groups a subcommand needs on top of its own, every one of them. These
+/// create or run a protocol project, which is a project install:
+/// `a4 protocol init` writes `arete.toml` and installs the System Program;
+/// `a4 protocol deploy` pins its local programs' releases in `arete.lock`
+/// and regenerates the installed client; `a4 dev up` and `a4 dev sdk`
+/// generate the protocol's client and local programs.
+pub fn subcommand_requires(parent: &str, name: &str) -> &'static [Group] {
+    match (parent, name) {
+        ("protocol", "init" | "deploy") | ("dev", "up" | "sdk") => &[Group::Install],
+        _ => &[],
+    }
+}
+
+/// What the protocol templates of `a4 create` need, every one of them:
+/// they run `a4 protocol init`.
+pub const PROTOCOL_TEMPLATE_GROUPS: [Group; 2] = [Group::Protocols, Group::Install];
+
+/// The help footer when `visible` leaves commands out: naming one shows its
+/// help, but it refuses to run.
 pub const HIDDEN_COMMANDS_NOTE: &str = "\
-Commands outside this account's command groups are not listed. Most still run
-when the API allows them; project installs (install, update, remove, sdk) need
-the `install` command group. `a4 help <command>` (or `a4 <command> --help`)
-shows a command's help.";
+Commands outside this account's command groups are not listed, and refuse to
+run. `a4 help <command>` (or `a4 <command> --help`) shows a command's help.";
 
 /// The project install commands: they write `arete.toml` / `arete.lock` and
 /// generate SDKs from the registry, and need the `install` group.
@@ -109,6 +131,95 @@ pub fn require_install(surface: &Surface, command: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Refuse `a4 <command> [<subcommand>]` when `surface` hides it: none of its
+/// groups ([`command_groups`], or [`subcommand_groups`] for a subcommand
+/// that has its own), or not every group it needs on top
+/// ([`subcommand_requires`]). [`Surface::Everything`] passes: the API
+/// decides.
+pub fn require_command(
+    surface: &Surface,
+    command: &str,
+    subcommand: Option<&str>,
+) -> anyhow::Result<()> {
+    if *surface == Surface::Everything {
+        return Ok(());
+    }
+    require_install(surface, command)?;
+    let Some(mut any_of) = command_groups(command) else {
+        return Ok(());
+    };
+    let mut path = format!("a4 {command}");
+    let mut all_of: &[Group] = &[];
+    if let Some(subcommand) = subcommand {
+        if let Some(groups) = subcommand_groups(command, subcommand) {
+            any_of = groups;
+        }
+        all_of = subcommand_requires(command, subcommand);
+        path = format!("{path} {subcommand}");
+    }
+    if !surface.allows_any(any_of) {
+        anyhow::bail!("{}", group_refusal(&path, any_of, "or"));
+    }
+    require_every(surface, &path, all_of)
+}
+
+/// Refuse `what` (`a4 create --template protocol`, say) unless `surface`
+/// has every group in `all_of`. [`Surface::Everything`] passes.
+pub fn require_every(surface: &Surface, what: &str, all_of: &[Group]) -> anyhow::Result<()> {
+    let missing: Vec<Group> = all_of
+        .iter()
+        .copied()
+        .filter(|group| !surface.allows(*group))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!("{}", group_refusal(what, &missing, "and"))
+}
+
+/// `what: this account does not have the `a` <joiner> `b` command group(s),
+/// which it needs`, and what to do instead.
+fn group_refusal(what: &str, groups: &[Group], joiner: &str) -> String {
+    let names = groups
+        .iter()
+        .map(|group| format!("`{}`", group.as_str()))
+        .collect::<Vec<_>>()
+        .join(&format!(" {joiner} "));
+    let noun = if groups.len() > 1 && joiner == "and" {
+        "command groups"
+    } else {
+        "command group"
+    };
+    let instead = if groups.contains(&Group::Install) {
+        "Project installs (arete.toml, arete.lock and the SDKs generated from the \
+         registry) need `install`; ask the Arete team for access. Without it, act \
+         through a sandbox: `a4 sandbox list`, or the sandbox MCP tools \
+         (`sandbox_preview`, then `sandbox_invoke`)."
+    } else {
+        "Ask the Arete team for access."
+    };
+    format!(
+        "{what}: this account does not have the {names} {noun}, which `{what}` needs. {instead}"
+    )
+}
+
+/// [`running_surface`] for the `--config` path `main` remembered.
+pub fn current_surface() -> Surface {
+    running_surface(CONFIG_PATH.get().map_or("arete.toml", String::as_str))
+}
+
+/// The account's surface for a command about to run, as
+/// [`selected_account_surface`] reads it. Unit tests run commands with no
+/// account: everything.
+pub fn running_surface(config: &str) -> Surface {
+    if cfg!(test) {
+        return Surface::Everything;
+    }
+    let surface = selected_account_surface(config);
+    let _ = CAN_INSTALL.set(surface.can_install());
+    surface
+}
+
 /// `cmd` without the top-level commands `surface` does not grant.
 pub fn visible(cmd: Command, surface: &Surface) -> Command {
     if *surface == Surface::Everything {
@@ -139,7 +250,7 @@ pub fn visible(cmd: Command, surface: &Surface) -> Command {
 }
 
 /// `cmd` with the subcommands `surface` does not grant hidden from its help
-/// and completions; they still run when named.
+/// and completions; [`require_command`] refuses them when named.
 fn hide_subcommands(cmd: Command, surface: &Surface) -> Command {
     let parent = cmd.get_name().to_string();
     let hidden: Vec<String> = cmd
@@ -147,6 +258,9 @@ fn hide_subcommands(cmd: Command, surface: &Surface) -> Command {
         .map(|sub| sub.get_name().to_string())
         .filter(|name| {
             subcommand_groups(&parent, name).is_some_and(|groups| !surface.allows_any(groups))
+                || subcommand_requires(&parent, name)
+                    .iter()
+                    .any(|group| !surface.allows(*group))
         })
         .collect();
     hidden.iter().fold(cmd, |cmd, name| {
@@ -344,6 +458,131 @@ mod tests {
         let request = server.request();
         assert!(request.request_line.starts_with("GET /api/auth/me "));
         assert_eq!(request.header("authorization"), Some("Bearer a4_sk_test"));
+    }
+
+    fn groups(list: &[Group]) -> Surface {
+        Surface::Groups(list.iter().copied().collect())
+    }
+
+    #[test]
+    fn hidden_commands_refuse_to_run() {
+        let default = groups(&[Group::Account, Group::Sandboxes]);
+        // Hidden from a default account, and refused when typed anyway.
+        for command in [
+            "explore", "know", "up", "stack", "protocol", "dev", "create",
+        ] {
+            let error = require_command(&default, command, None)
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with(&format!("a4 {command}: ")), "{error}");
+            assert!(error.contains("command group"), "{error}");
+            assert!(
+                error.contains(&format!("which `a4 {command}` needs")),
+                "{error}"
+            );
+        }
+        let error = require_command(&default, "explore", None)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`registry` command group"), "{error}");
+        assert!(error.contains("Ask the Arete team"), "{error}");
+        // What the defaults list runs.
+        for command in ["init", "doctor", "auth", "mcp", "sandbox", "get", "stream"] {
+            require_command(&default, command, None).unwrap();
+        }
+        // `program account` reads through a sandbox; the rest manage programs.
+        require_command(&default, "program", Some("account")).unwrap();
+        let error = require_command(&default, "program", Some("push"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.starts_with("a4 program push: "), "{error}");
+        assert!(error.contains("`stacks` command group"), "{error}");
+        // A granted group runs; no groups to go by runs everything.
+        require_command(&groups(&[Group::Registry]), "explore", None).unwrap();
+        for command in ["explore", "install", "protocol", "dev"] {
+            require_command(&Surface::Everything, command, Some("init")).unwrap();
+        }
+    }
+
+    #[test]
+    fn protocol_projects_need_the_install_group_as_well() {
+        let protocols = groups(&[
+            Group::Account,
+            Group::Sandboxes,
+            Group::Protocols,
+            Group::Dev,
+        ]);
+        let both = groups(&[Group::Protocols, Group::Dev, Group::Install]);
+        for (command, subcommand) in [
+            ("protocol", "init"),
+            ("protocol", "deploy"),
+            ("dev", "up"),
+            ("dev", "sdk"),
+        ] {
+            let error = require_command(&protocols, command, Some(subcommand))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.starts_with(&format!("a4 {command} {subcommand}: ")),
+                "{error}"
+            );
+            assert!(error.contains("`install` command group"), "{error}");
+            assert!(error.contains("sandbox_preview"), "{error}");
+            require_command(&both, command, Some(subcommand)).unwrap();
+        }
+        // The rest of `a4 protocol` and `a4 dev` needs only its own group.
+        for (command, subcommand) in [
+            ("protocol", "actions"),
+            ("protocol", "search"),
+            ("dev", "status"),
+        ] {
+            require_command(&protocols, command, Some(subcommand)).unwrap();
+        }
+        // `install` alone doesn't open `a4 protocol`.
+        let error = require_command(&groups(&[Group::Install]), "protocol", Some("init"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("`protocols` command group"), "{error}");
+
+        // The protocol templates of `a4 create` need both.
+        let what = "a4 create --template protocol";
+        let error = require_every(&protocols, what, &PROTOCOL_TEMPLATE_GROUPS)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.starts_with("a4 create --template protocol: "),
+            "{error}"
+        );
+        assert!(error.contains("`install` command group"), "{error}");
+        let error = require_every(&groups(&[Group::Stacks]), what, &PROTOCOL_TEMPLATE_GROUPS)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("`protocols` and `install` command groups"),
+            "{error}"
+        );
+        require_every(&both, what, &PROTOCOL_TEMPLATE_GROUPS).unwrap();
+        require_every(&Surface::Everything, what, &PROTOCOL_TEMPLATE_GROUPS).unwrap();
+
+        // Hidden from help without `install`, listed with it.
+        let help = |surface: &Surface, parent: &str| {
+            let mut cmd = visible(<crate::Cli as clap::CommandFactory>::command(), surface);
+            cmd.find_subcommand_mut(parent)
+                .unwrap()
+                .render_help()
+                .to_string()
+        };
+        let protocol_help = help(&protocols, "protocol");
+        assert!(!protocol_help.contains("\n  init"), "{protocol_help}");
+        assert!(!protocol_help.contains("\n  deploy"), "{protocol_help}");
+        assert!(protocol_help.contains("\n  actions"), "{protocol_help}");
+        let dev_help = help(&protocols, "dev");
+        assert!(!dev_help.contains("\n  up "), "{dev_help}");
+        assert!(dev_help.contains("\n  status"), "{dev_help}");
+        let protocol_help = help(&both, "protocol");
+        assert!(protocol_help.contains("\n  init"), "{protocol_help}");
+        assert!(protocol_help.contains("\n  deploy"), "{protocol_help}");
+        assert!(help(&both, "dev").contains("\n  up "));
     }
 
     #[test]
