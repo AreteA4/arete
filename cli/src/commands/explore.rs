@@ -219,7 +219,12 @@ struct StackExploreOutput {
     /// Whether the logged-in account meets the transaction requirement.
     #[serde(skip_serializing_if = "Option::is_none")]
     account: Option<Value>,
-    install_command: String,
+    /// Only for an account with the `install` command group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_command: Option<String>,
+    /// Instead of `install_command`, for an account without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_hint: Option<&'static str>,
     /// The stack's catalog knowledge: its document, and each described
     /// entity's summary and field descriptions.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -250,7 +255,12 @@ struct ProgramExploreOutput {
     types: Vec<TypeSummary>,
     program_read: ProgramReadSummary,
     sdk_targets: Vec<SdkTargetSummary>,
-    install_command: String,
+    /// Only for an account with the `install` command group.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_command: Option<String>,
+    /// Instead of `install_command`, for an account without it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    install_hint: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -1786,7 +1796,8 @@ fn build_stack_output(
         auth_requirements: shape::auth_requirements(&serde_json::to_value(typescript)?),
         sdk_endpoints: sdk_endpoints(typescript, None),
         account: None,
-        install_command: format!("a4 install stack {install_ref} --ts"),
+        install_command: offered_install(format!("a4 install stack {install_ref} --ts")),
+        install_hint: install_hint(),
         knowledge: knowledge.map(|knowledge| full_stack_knowledge(typescript, knowledge)),
     })
 }
@@ -1965,7 +1976,11 @@ fn build_program_output(
             "typescript",
             descriptor.definition.extensions.as_ref(),
         )?],
-        install_command: format!("a4 install program {} --ts", descriptor.install_name),
+        install_command: offered_install(format!(
+            "a4 install program {} --ts",
+            descriptor.install_name
+        )),
+        install_hint: install_hint(),
     })
 }
 
@@ -2161,7 +2176,14 @@ fn render_stack(output: &StackExploreOutput) -> String {
         output.account.as_ref(),
     ));
     text.push_str(&render_sdk_endpoints(&output.sdk_endpoints));
-    text.push_str(&format!("\nInstall\n  {}\n", output.install_command));
+    text.push_str(&format!(
+        "\nInstall\n  {}\n",
+        output
+            .install_command
+            .as_deref()
+            .or(output.install_hint)
+            .unwrap_or("-")
+    ));
     text
 }
 
@@ -2758,7 +2780,11 @@ fn render_program(output: &ProgramExploreOutput) -> String {
         output.program_read.endpoint,
         auth_requirement(&output.program_read.auth),
         render_sdk_targets(&output.sdk_targets),
-        output.install_command
+        output
+            .install_command
+            .as_deref()
+            .or(output.install_hint)
+            .unwrap_or("-")
     ));
     text
 }
@@ -3331,6 +3357,16 @@ fn pinned_install_command(entry: &Value) -> String {
         Some(version) => format!("a4 install {kind} {slug}@={version}"),
         None => format!("a4 install {kind} {slug}"),
     }
+}
+
+/// `command` when the account may install, for the full outputs.
+fn offered_install(command: String) -> Option<String> {
+    crate::entitlements::can_install().then_some(command)
+}
+
+/// The hint the full outputs carry instead of an install command.
+fn install_hint() -> Option<&'static str> {
+    (!crate::entitlements::can_install()).then_some(arete_mcp::entitlements::WITHOUT_INSTALL_HINT)
 }
 
 /// The install line for an account without the `install` command group.
@@ -4768,7 +4804,11 @@ mod tests {
         assert_eq!(registry.next_target(), install_target("ore", Some("rust")));
         let output = build_stack_output(&install_ref, &typescript, &rust, None).unwrap();
         assert_eq!(output.install_ref, "ore");
-        assert_eq!(output.install_command, "a4 install stack ore --ts");
+        assert_eq!(
+            output.install_command.as_deref(),
+            Some("a4 install stack ore --ts")
+        );
+        assert_eq!(output.install_hint, None);
     }
 
     #[test]
