@@ -43,10 +43,10 @@ A grant gives one agent access to one sandbox, for a set of actions:
 | `invoke`   | Run named instructions of the programs your rules enable, swaps included, and the functions those programs offer (the `call` action) |
 | `withdraw` | Send SOL to your wallet, the only destination a withdraw can have                                                                    |
 
-Grants are managed on the sandbox's page in the dashboard. An action you
-didn't grant is refused before anything is sent, with
-`sandbox-action-not-granted` and rule `session-grant`. `sandbox_status` tells
-the agent which actions it holds.
+Grants are managed on the sandbox's page in the dashboard. Arete refuses an
+action you didn't grant before anything is signed, with
+`sandbox-action-not-granted` and rule `session-grant`, and records the
+refusal. `sandbox_status` tells the agent which actions it holds.
 
 The agent sees every sandbox granted to it with `sandbox_list` (or
 `a4 sandbox list`): you don't pass it an id. With more than one, it picks the

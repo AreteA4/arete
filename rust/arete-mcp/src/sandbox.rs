@@ -17,8 +17,10 @@
 //! the grants and mints a short-lived token for the chosen sandbox at
 //! `POST /ws/sessions` (`targetKind: "sandbox"`). The mint succeeds only
 //! while the sandbox's owner grants this agent access, and the token carries
-//! one `sandbox:<action>` scope per granted action. The token, not the API
-//! key, is what the sandbox routes see; it is re-minted when it expires.
+//! one `sandbox:<action>` scope per granted action: the API refuses an
+//! action the token does not grant (`sandbox-action-not-granted`). The
+//! token, not the API key, is what the sandbox routes see; it is re-minted
+//! when it expires.
 //! Neither is sent anywhere but the API origin (`ARETE_API_URL`, else the
 //! default Arete API), and only when that origin is an Arete host over HTTPS
 //! or loopback. Neither is ever returned in a tool result.
@@ -364,7 +366,7 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
             "Fix programId or the seeds: each seed is {kind, value} (or {kind: \"bytes\", hex}), at most 15 seeds of at most 32 bytes each."
         }
         "sandbox-intent-invalid" | "sandbox-intent-foreign-signer" => {
-            "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer. Accounts with a `fill` in sandbox_rules can be left out; `missingAccounts` lists the ones still needed, and `accountGuidance` says per account how to find it (its `lookup`) or what Arete fills it from once another is given (`waitingOn`): give the accounts to find first."
+            "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer. A `program` name that matches no program, or several, comes back with `candidates` (`programId` and `names`): use one of those programIds. Accounts with a `fill` in sandbox_rules can be left out; `missingAccounts` lists the ones still needed, and `accountGuidance` says per account how to find it (its `lookup`) or what Arete fills it from once another is given (`waitingOn`): give the accounts to find first."
         }
         "sandbox-guard-trial-failed" => {
             "The transaction fails when run. Check accounts and amounts; the guard's logs are in the details when present."
@@ -628,8 +630,6 @@ struct SessionToken {
     expires_at: u64,
     /// Unix seconds, when it was minted here.
     minted_at: u64,
-    /// The granted actions (`sandbox:<action>` scopes without the prefix).
-    actions: Vec<String>,
 }
 
 impl SessionToken {
@@ -1207,24 +1207,10 @@ impl SandboxClient {
                     "The Arete API minted no sandbox token",
                 )
             })?;
-        // Fail closed: no scopes means no actions.
-        let actions = body
-            .get("scopes")
-            .and_then(Value::as_array)
-            .map(|scopes| {
-                scopes
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .filter_map(|scope| scope.strip_prefix("sandbox:"))
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
         let minted = SessionToken {
             minted_at: unix_now(),
             token: token.to_string(),
             expires_at: body.get("expiresAt").and_then(Value::as_u64).unwrap_or(0),
-            actions,
         };
         if let Ok(mut tokens) = self.tokens.lock() {
             tokens.insert(sandbox_id.to_string(), minted.clone());
@@ -1239,46 +1225,27 @@ impl SandboxClient {
         body: Option<Value>,
         idempotency_key: Option<&str>,
     ) -> Result<Value, SandboxRefusal> {
-        self.call_with(None, method, path, body, idempotency_key)
-            .await
-    }
-
-    async fn call_with(
-        &self,
-        action: Option<SandboxActionName>,
-        method: reqwest::Method,
-        path: &str,
-        body: Option<Value>,
-        idempotency_key: Option<&str>,
-    ) -> Result<Value, SandboxRefusal> {
         let target = self.resolve().await?;
-        self.call_in(
-            &target.sandbox_id,
-            action,
-            method,
-            path,
-            body,
-            idempotency_key,
-        )
-        .await
+        self.call_in(&target.sandbox_id, method, path, body, idempotency_key)
+            .await
     }
 
     /// `path` under the sandbox routes with a token for `sandbox_id`. A
     /// token the API calls expired or invalid is re-minted once and the
     /// call repeated: the API refuses those before running anything, so the
     /// repeat (with the same idempotency key) cannot run an action twice.
-    /// With `action`, every token used (the first and a renewed one) must
-    /// grant it.
+    /// Whether the token grants an action is the API's to decide: it
+    /// refuses one outside the grant (`sandbox-action-not-granted`, with a
+    /// `requestId`) and records the refusal for the owner.
     async fn call_in(
         &self,
         sandbox_id: &str,
-        action: Option<SandboxActionName>,
         method: reqwest::Method,
         path: &str,
         body: Option<Value>,
         idempotency_key: Option<&str>,
     ) -> Result<Value, SandboxRefusal> {
-        let session = self.authorized(sandbox_id, action).await?;
+        let session = self.session(sandbox_id).await?;
         self.trusted_origin()?;
         let url = format!("{}/api/sandbox/v1{path}", self.api_base);
         let kind = CallKind::of(&method, path);
@@ -1301,7 +1268,7 @@ impl SandboxClient {
             return first;
         }
         self.forget_token(sandbox_id);
-        let renewed = self.authorized(sandbox_id, action).await?;
+        let renewed = self.session(sandbox_id).await?;
         self.send(method, &url, &renewed.token, body, idempotency_key, kind)
             .await
     }
@@ -1404,7 +1371,6 @@ impl SandboxClient {
         let mut body = self
             .call_in(
                 &target.sandbox_id,
-                None,
                 reqwest::Method::GET,
                 "/wallet",
                 None,
@@ -1461,7 +1427,7 @@ impl SandboxClient {
 
     async fn reads_of(&self, sandbox_id: &str) -> Result<Value, SandboxRefusal> {
         let reads = self
-            .call_in(sandbox_id, None, reqwest::Method::GET, "/reads", None, None)
+            .call_in(sandbox_id, reqwest::Method::GET, "/reads", None, None)
             .await?;
         if let Ok(mut cached) = self.reads.lock() {
             cached.insert(sandbox_id.to_string(), (Instant::now(), reads.clone()));
@@ -1506,7 +1472,6 @@ impl SandboxClient {
         let body = self
             .call_in(
                 &sandbox_id,
-                None,
                 reqwest::Method::POST,
                 "/sessions",
                 Some(target.body()),
@@ -1589,43 +1554,6 @@ impl SandboxClient {
             .await
     }
 
-    /// A live session for `sandbox_id`, granting `action` when one is
-    /// given: an action the owner's grant does not include is refused
-    /// before anything is sent to the sandbox routes.
-    async fn authorized(
-        &self,
-        sandbox_id: &str,
-        action: Option<SandboxActionName>,
-    ) -> Result<SessionToken, SandboxRefusal> {
-        let session = self.session(sandbox_id).await?;
-        let Some(action) = action else {
-            return Ok(session);
-        };
-        let grant = action.grant();
-        if session.actions.iter().any(|a| a == grant) {
-            return Ok(session);
-        }
-        let error = if grant == action.as_str() {
-            format!("This agent is not granted `{grant}` on this sandbox")
-        } else {
-            format!(
-                "This agent is not granted `{grant}` on this sandbox, which `{}` needs",
-                action.as_str()
-            )
-        };
-        Err(SandboxRefusal {
-            status: 0,
-            body: json!({
-                "code": "sandbox-action-not-granted", "retryable": false,
-                "rule": "session-grant",
-                "error": error,
-                "action": action.as_str(),
-                "granted": session.actions,
-            }),
-            kind: CallKind::Read,
-        })
-    }
-
     /// Dry-run `action` with `args`: plan and guard result, nothing signed
     /// or recorded.
     pub async fn preview(
@@ -1633,8 +1561,7 @@ impl SandboxClient {
         action: SandboxActionName,
         args: Value,
     ) -> Result<Value, SandboxRefusal> {
-        self.call_with(
-            Some(action),
+        self.call(
             reqwest::Method::POST,
             action.preview_path(),
             Some(args),
@@ -1650,8 +1577,7 @@ impl SandboxClient {
         args: Value,
         idempotency_key: &str,
     ) -> Result<Value, SandboxRefusal> {
-        self.call_with(
-            Some(action),
+        self.call(
             reqwest::Method::POST,
             action.invoke_path(),
             Some(args),
@@ -1679,7 +1605,7 @@ impl SandboxClient {
                 &format!("/actions{}", query.page_query(cursor.as_deref(), wanted)),
             );
             let page = self
-                .call_in(&sandbox_id, None, reqwest::Method::GET, &path, None, None)
+                .call_in(&sandbox_id, reqwest::Method::GET, &path, None, None)
                 .await?;
             pages_read += 1;
             let Some(page_items) = page.get("items").and_then(Value::as_array) else {
@@ -1718,7 +1644,7 @@ impl SandboxClient {
     pub async fn holdings(&self) -> Result<Value, SandboxRefusal> {
         let sandbox_id = self.resolve().await?.sandbox_id;
         let path = ledger_path(&sandbox_id, "/holdings");
-        self.call_in(&sandbox_id, None, reqwest::Method::GET, &path, None, None)
+        self.call_in(&sandbox_id, reqwest::Method::GET, &path, None, None)
             .await
     }
 
@@ -1846,6 +1772,13 @@ pub fn new_idempotency_key() -> String {
 /// An Action API action an agent may run, when the owner grants it. There
 /// is no swap action: a swap is an `invoke` of the instructions the route
 /// needs, from Jupiter's `/swap-instructions` or the venue's own program.
+///
+/// Both actions, previewed or run, report the wallet's SOL change as
+/// `walletLamportsChange` (signed: negative is SOL leaving the wallet) and
+/// `outflowLamports` (what left it, 0 when it gained), each with the network
+/// fee already included; `networkFeeLamports` is that fee alone. The older
+/// `outflow.lamports` (preview) and `guardedWalletDeltaLamports` (invoke)
+/// count SOL lost as positive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SandboxActionName {
@@ -1854,7 +1787,11 @@ pub enum SandboxActionName {
     /// remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?,
     /// computeUnitPriceMicroLamports?, transactionFormat?: "v1" | "v0" }`,
     /// 1 to 32 instructions named exactly as `sandbox_rules` lists them,
-    /// as long as the built transaction fits its format.
+    /// as long as the built transaction fits its format. `program` is the
+    /// base58 program id or a name the rules know it by (IDL name such as
+    /// `kamino_lending`, or display name such as `Kamino Lend`; case,
+    /// spaces, `-` and `_` ignored); an unknown or ambiguous name is refused
+    /// with `sandbox-intent-invalid` and `candidates`.
     Invoke,
     /// A function the program offers (`sandbox_rules` lists them per
     /// program as `functions`): Arete plans the whole instruction sequence,
@@ -2419,7 +2356,6 @@ pub(crate) mod tests {
                 token: "old".into(),
                 expires_at: now + 90,
                 minted_at: now - 510,
-                actions: Vec::new(),
             },
         );
         let stack = ReadTarget::Stack {
@@ -3218,16 +3154,29 @@ pub(crate) mod tests {
             .contains("idempotency-key: key-7"));
     }
 
+    /// The API's refusal of an action the token does not grant, as it
+    /// answers it.
+    fn not_granted() -> Value {
+        json!({
+            "code": "sandbox-action-not-granted",
+            "error": "This agent is not granted `invoke` on this sandbox",
+            "rule": "session-grant",
+            "retryable": false,
+            "requestId": "req-42",
+        })
+    }
+
     #[tokio::test]
-    async fn a_renewed_token_must_still_grant_the_action() {
-        // The first mint grants withdraw; after expiry the owner narrowed the
-        // grant, and the renewed token grants nothing.
+    async fn a_renewed_token_is_still_checked_by_the_api() {
+        // The first token has expired; after the re-mint the owner has
+        // narrowed the grant, and the API refuses the action. The refusal
+        // comes back as the API sent it.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let seen = Arc::new(Mutex::new(Vec::<String>::new()));
         let log = seen.clone();
         std::thread::spawn(move || {
-            let mut mints = 0;
+            let (mut mints, mut withdraws) = (0, 0);
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { return };
                 let mut buffer = [0u8; 8192];
@@ -3236,20 +3185,19 @@ pub(crate) mod tests {
                 log.lock().unwrap().push(head.clone());
                 let (status, body) = if head.starts_with("POST /ws/sessions") {
                     mints += 1;
-                    let scopes = if mints == 1 {
-                        json!(["sandbox:withdraw"])
-                    } else {
-                        json!([])
-                    };
                     (
                         200,
-                        json!({ "token": format!("tok-{mints}"), "expiresAt": unix_now() + 600, "scopes": scopes }),
+                        json!({ "token": format!("tok-{mints}"), "expiresAt": unix_now() + 600, "scopes": [] }),
                     )
                 } else {
-                    (
-                        401,
-                        json!({ "code": "sandbox-session-expired", "error": "expired" }),
-                    )
+                    withdraws += 1;
+                    match withdraws {
+                        1 => (
+                            401,
+                            json!({ "code": "sandbox-session-expired", "error": "expired" }),
+                        ),
+                        _ => (403, not_granted()),
+                    }
                 };
                 let body = body.to_string();
                 let _ = write!(
@@ -3267,11 +3215,14 @@ pub(crate) mod tests {
             )
             .await
             .unwrap_err();
+        assert_eq!(refusal.status, 403);
         assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
+        assert_eq!(refusal.body["requestId"], "req-42");
         let seen = requests(&seen);
-        // mint, withdraw (401), mint: the retry is never sent.
-        assert_eq!(seen.len(), 3, "{seen:?}");
+        // mint, withdraw (401), mint, withdraw (403).
+        assert_eq!(seen.len(), 4, "{seen:?}");
         assert!(seen[2].starts_with("POST /ws/sessions"));
+        assert!(seen[3].to_ascii_lowercase().contains("bearer tok-2"));
     }
 
     #[tokio::test]
@@ -3421,24 +3372,51 @@ pub(crate) mod tests {
         assert_eq!(body_of(&seen[3]), withdraw);
     }
 
+    /// Whether the grant covers an action is the API's decision, never a
+    /// local one: the request is sent, and the API's refusal reaches the
+    /// agent with its status and requestId, as any other refusal does.
     #[tokio::test]
-    async fn an_action_outside_the_grant_fails_closed_before_it_is_sent() {
-        let (base, seen) = stub_with(vec![], json!(["sandbox:withdraw"]));
+    async fn an_action_outside_the_grant_is_refused_by_the_api() {
+        let (base, seen) = stub_with(
+            vec![
+                ("POST", "/api/sandbox/v1/actions/invoke", 403, not_granted()),
+                (
+                    "POST",
+                    "/api/sandbox/v1/actions/preview",
+                    403,
+                    not_granted(),
+                ),
+                ("POST", "/api/sandbox/v1/actions/call", 403, not_granted()),
+                (
+                    "POST",
+                    "/api/sandbox/v1/actions/call/preview",
+                    403,
+                    not_granted(),
+                ),
+            ],
+            json!(["sandbox:withdraw"]),
+        );
         let client = client(&base);
         let refusal = client
             .invoke(SandboxActionName::Invoke, json!({}), "k-1")
             .await
             .unwrap_err();
         let shown = refusal.to_json();
+        assert_eq!(shown["status"], 403);
         assert_eq!(shown["code"], "sandbox-action-not-granted");
         assert_eq!(shown["rule"], "session-grant");
-        assert_eq!(shown["granted"], json!(["withdraw"]));
+        assert_eq!(shown["requestId"], "req-42");
+        assert!(
+            shown["hint"].as_str().unwrap().contains("sandbox_status"),
+            "{shown}"
+        );
         let refusal = client
             .preview(SandboxActionName::Invoke, json!({}))
             .await
             .unwrap_err();
-        assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
-        // A call runs under the invoke grant, so it is refused too.
+        assert_eq!(refusal.status, 403);
+        assert_eq!(refusal.body["requestId"], "req-42");
+        // A call runs under the invoke grant: the API refuses it too.
         for refusal in [
             client
                 .invoke(SandboxActionName::Call, json!({}), "k-2")
@@ -3449,21 +3427,20 @@ pub(crate) mod tests {
                 .await
                 .unwrap_err(),
         ] {
-            let shown = refusal.to_json();
-            assert_eq!(shown["code"], "sandbox-action-not-granted");
-            assert_eq!(shown["action"], "call");
-            assert!(
-                shown["error"]
-                    .as_str()
-                    .unwrap()
-                    .contains("not granted `invoke`"),
-                "{shown}"
-            );
+            assert_eq!(refusal.status, 403);
+            assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
+            assert_eq!(refusal.body["requestId"], "req-42");
         }
-        // Only the mint went out.
-        assert_eq!(requests(&seen).len(), 1);
+        let seen = requests(&seen);
+        // One mint, then every request went out.
+        assert_eq!(seen.len(), 5, "{seen:?}");
+        assert!(seen[1].starts_with("POST /api/sandbox/v1/actions/invoke "));
+        assert!(seen[2].starts_with("POST /api/sandbox/v1/actions/preview "));
+        assert!(seen[3].starts_with("POST /api/sandbox/v1/actions/call "));
+        assert!(seen[4].starts_with("POST /api/sandbox/v1/actions/call/preview "));
     }
 
+    /// A call runs under the invoke grant: it goes to its own routes.
     #[tokio::test]
     async fn an_invoke_grant_allows_call() {
         let (base, seen) = stub_with(
@@ -3498,27 +3475,30 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(body["status"], "landed");
-        // A withdraw is still outside the grant.
-        let refusal = client
-            .invoke(SandboxActionName::Withdraw, json!({}), "k-2")
-            .await
-            .unwrap_err();
-        assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
-        assert_eq!(
-            refusal.body["error"],
-            "This agent is not granted `withdraw` on this sandbox"
-        );
         assert_eq!(requests(&seen).len(), 3);
     }
 
+    /// A mint that names no scopes is not refused here either: the API
+    /// decides.
     #[tokio::test]
-    async fn a_mint_without_scopes_grants_nothing() {
-        let (base, _) = stub_with(vec![], Value::Null);
+    async fn a_mint_without_scopes_still_sends_the_action() {
+        let (base, seen) = stub_with(
+            vec![(
+                "POST",
+                "/api/sandbox/v1/actions/withdraw",
+                403,
+                not_granted(),
+            )],
+            Value::Null,
+        );
         let refusal = client(&base)
             .invoke(SandboxActionName::Withdraw, json!({}), "k-1")
             .await
             .unwrap_err();
+        assert_eq!(refusal.status, 403);
         assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
+        assert_eq!(refusal.body["requestId"], "req-42");
+        assert_eq!(requests(&seen).len(), 2);
     }
 
     #[test]
