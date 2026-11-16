@@ -1775,8 +1775,9 @@ pub fn new_idempotency_key() -> String {
 ///
 /// Both actions, previewed or run, report the wallet's SOL change as
 /// `walletLamportsChange` (signed: negative is SOL leaving the wallet,
-/// positive is SOL coming in, as from a sell or a withdraw; the sign of the
-/// history's `solDelta`) and `outflowLamports` (what was spent, 0 when the
+/// positive is SOL coming in, as from a sell or a withdraw; wrapped SOL
+/// counts as SOL, so it matches the history's `solDelta` unless the action
+/// wraps or unwraps SOL) and `outflowLamports` (what was spent, 0 when the
 /// wallet gained), each with the network fee already included;
 /// `networkFeeLamports` is that fee alone. The older `outflow.lamports`
 /// (preview) and `guardedWalletDeltaLamports` (invoke) count SOL lost as
