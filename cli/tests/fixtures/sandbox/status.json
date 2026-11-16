@@ -1,0 +1,23 @@
+{
+  "sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10",
+  "cluster": "mainnet-beta",
+  "environment": "mainnet",
+  "sandboxExpiresAt": null,
+  "walletAddress": "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM",
+  "withdrawAddress": "4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T",
+  "balanceLamports": 1394995000,
+  "actions": ["invoke", "withdraw"],
+  "feeLamports": 0,
+  "expiresAt": "2026-11-15T13:00:00Z",
+  "tokens": [
+    {
+      "account": "3emsAVdmGKERbHjmGfQ6oZ1e35dkf5iYcS6U4CPKFVaa",
+      "mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+      "tokenProgram": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+      "amount": "1234500000",
+      "decimals": 6
+    }
+  ],
+  "rulesRevision": 3,
+  "selection": { "sandboxId": "6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10", "source": "saved" }
+}

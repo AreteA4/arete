@@ -67,7 +67,7 @@ original result, `replayed: true`) or look the action up with
 sandbox: `sandbox_reads` lists the programs its rules let you read, and
 `program_read_account`, `read_view` and `connect` take the same `sandbox`.
 From the CLI: `a4 sandbox list`, `a4 sandbox use <id|name>`,
-`a4 sandbox history`, `a4 sandbox holdings`, `a4 sandbox rules show`,
+`a4 sandbox status`, `a4 sandbox history`, `a4 sandbox holdings`, `a4 sandbox rules show`,
 `a4 sandbox reads`, and `--sandbox <id|name>` on `a4 program account decode`,
 `a4 get` and `a4 stream`. Guide: https://docs.arete.run/sandboxes/connect-agent/.
 Never ask the owner for a private key or their own API key; owner operations

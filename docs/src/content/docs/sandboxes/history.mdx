@@ -15,6 +15,7 @@ a4 sandbox use <id or name>                # choose one for this folder
 a4 sandbox history                         # newest first, 20 per page
 a4 sandbox history --status landed --since 24h
 a4 sandbox history --program Pump.fun --all --json
+a4 sandbox status                          # wallet, balances, granted actions
 a4 sandbox holdings
 a4 sandbox rules show
 ```
@@ -81,8 +82,11 @@ Refusals record the `code` and rule that refused.
 
 Holdings list SOL, each token (with `acquiredBySandbox` for tokens the
 sandbox bought, which it may always sell) and program positions, as of a
-slot. Lending and liquidity positions show as labelled raw accounts for now,
-not decoded balances.
+slot. A Kamino obligation carries its decoded `obligation`: the lending
+market, each deposit (cToken amount, and the underlying amount at the
+reserve's exchange rate) and each borrow. `a4 sandbox holdings` prints one
+line per deposit and borrow, in whole units. Other lending and liquidity
+positions show as labelled raw accounts for now, not decoded balances.
 
 ## Caveats
 
