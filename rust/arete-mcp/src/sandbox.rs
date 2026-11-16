@@ -1774,11 +1774,13 @@ pub fn new_idempotency_key() -> String {
 /// needs, from Jupiter's `/swap-instructions` or the venue's own program.
 ///
 /// Both actions, previewed or run, report the wallet's SOL change as
-/// `walletLamportsChange` (signed: negative is SOL leaving the wallet) and
-/// `outflowLamports` (what left it, 0 when it gained), each with the network
-/// fee already included; `networkFeeLamports` is that fee alone. The older
-/// `outflow.lamports` (preview) and `guardedWalletDeltaLamports` (invoke)
-/// count SOL lost as positive.
+/// `walletLamportsChange` (signed: negative is SOL leaving the wallet,
+/// positive is SOL coming in, as from a sell or a withdraw; the sign of the
+/// history's `solDelta`) and `outflowLamports` (what was spent, 0 when the
+/// wallet gained), each with the network fee already included;
+/// `networkFeeLamports` is that fee alone. The older `outflow.lamports`
+/// (preview) and `guardedWalletDeltaLamports` (invoke) count SOL lost as
+/// positive: the opposite sign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum SandboxActionName {
@@ -3260,6 +3262,45 @@ pub(crate) mod tests {
         let refusal = client.status().await.unwrap_err();
         assert_eq!(refusal.body["code"], "sandbox-agent-key-required");
         assert!(requests(&seen).is_empty());
+    }
+
+    /// A withdraw from a lending protocol brings SOL in: the result says
+    /// so with a positive `walletLamportsChange` and nothing spent, and the
+    /// older field, counting SOL lost as positive, reads negative. The
+    /// client hands every field to the agent as answered.
+    #[tokio::test]
+    async fn a_credit_result_keeps_its_signed_change() {
+        let credit = json!({
+            "status": "landed",
+            "outflowLamports": 0,
+            "walletLamportsChange": 44_050_078,
+            "networkFeeLamports": 5_000,
+            "guardedWalletDeltaLamports": -44_050_078,
+            "tokenOutflow": {},
+        });
+        let (base, _) = stub(vec![(
+            "POST",
+            "/api/sandbox/v1/actions/invoke",
+            200,
+            credit.clone(),
+        )]);
+        let result = client(&base)
+            .invoke(
+                SandboxActionName::Invoke,
+                json!({ "instructions": [] }),
+                "k-1",
+            )
+            .await
+            .unwrap();
+        for field in [
+            "outflowLamports",
+            "walletLamportsChange",
+            "networkFeeLamports",
+            "guardedWalletDeltaLamports",
+        ] {
+            assert_eq!(result[field], credit[field], "{field}");
+        }
+        assert!(result["walletLamportsChange"].as_i64().unwrap() > 0);
     }
 
     #[tokio::test]
