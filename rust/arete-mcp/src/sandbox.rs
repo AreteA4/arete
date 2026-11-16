@@ -1601,15 +1601,24 @@ impl SandboxClient {
         let Some(action) = action else {
             return Ok(session);
         };
-        if session.actions.iter().any(|a| a == action.as_str()) {
+        let grant = action.grant();
+        if session.actions.iter().any(|a| a == grant) {
             return Ok(session);
         }
+        let error = if grant == action.as_str() {
+            format!("This agent is not granted `{grant}` on this sandbox")
+        } else {
+            format!(
+                "This agent is not granted `{grant}` on this sandbox, which `{}` needs",
+                action.as_str()
+            )
+        };
         Err(SandboxRefusal {
             status: 0,
             body: json!({
                 "code": "sandbox-action-not-granted", "retryable": false,
                 "rule": "session-grant",
-                "error": format!("This agent is not granted `{}` on this sandbox", action.as_str()),
+                "error": error,
                 "action": action.as_str(),
                 "granted": session.actions,
             }),
@@ -1847,6 +1856,15 @@ pub enum SandboxActionName {
     /// 1 to 32 instructions named exactly as `sandbox_rules` lists them,
     /// as long as the built transaction fits its format.
     Invoke,
+    /// A function the program offers (`sandbox_rules` lists them per
+    /// program as `functions`): Arete plans the whole instruction sequence,
+    /// account setup, refreshes and SOL wrapping included, and fills the
+    /// wallet and accounts. `args`: `{ program, function, input,
+    /// computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat?:
+    /// "v1" | "v0" }`, `function` named as listed (e.g.
+    /// `transactions.obligation.deposit`) and `input` its JSON input. Granted
+    /// with `invoke`; the result adds the `plan` that was built.
+    Call,
     /// SOL to the owner's withdraw address, the only destination a withdraw
     /// can have. `args`: `{ lamports, transactionFormat?: "v1" | "v0" }`.
     /// The result's `outflowLamports` is `lamports` plus the network fee.
@@ -1857,6 +1875,15 @@ impl SandboxActionName {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Invoke => "invoke",
+            Self::Call => "call",
+            Self::Withdraw => "withdraw",
+        }
+    }
+
+    /// The grant that allows this action: a `call` runs under `invoke`.
+    pub fn grant(self) -> &'static str {
+        match self {
+            Self::Invoke | Self::Call => "invoke",
             Self::Withdraw => "withdraw",
         }
     }
@@ -1864,6 +1891,7 @@ impl SandboxActionName {
     fn invoke_path(self) -> &'static str {
         match self {
             Self::Invoke => "/actions/invoke",
+            Self::Call => "/actions/call",
             Self::Withdraw => "/actions/withdraw",
         }
     }
@@ -1871,6 +1899,7 @@ impl SandboxActionName {
     fn preview_path(self) -> &'static str {
         match self {
             Self::Invoke => "/actions/preview",
+            Self::Call => "/actions/call/preview",
             Self::Withdraw => "/actions/withdraw/preview",
         }
     }
@@ -1917,9 +1946,10 @@ pub struct SandboxInvokeArgs {
     /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
     #[serde(default)]
     pub sandbox: Option<String>,
-    /// The action: `invoke` (named program instructions, swaps included) or
-    /// `withdraw` (SOL to the owner). `sandbox_status` lists the ones
-    /// granted.
+    /// The action: `call` (a function `sandbox_rules` lists for a program),
+    /// `invoke` (named program instructions, swaps included) or `withdraw`
+    /// (SOL to the owner). `sandbox_status` lists the ones granted; `call`
+    /// needs `invoke`.
     pub action: SandboxActionName,
     /// The action's arguments, as the action's description gives them.
     /// Pass u64/u128 amounts as decimal strings.
@@ -3292,12 +3322,23 @@ pub(crate) mod tests {
             ),
             (
                 "POST",
+                "/api/sandbox/v1/actions/call",
+                200,
+                json!({ "status": "landed" }),
+            ),
+            (
+                "POST",
                 "/api/sandbox/v1/actions/withdraw",
                 200,
                 json!({ "status": "landed" }),
             ),
         ]);
         let client = client(&base);
+        let call = json!({
+            "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "function": "transactions.obligation.deposit",
+            "input": { "reserve": "R", "amount": "0.1" }
+        });
         let invoke = json!({
             "instructions": [{
                 "program": "P", "instruction": "buy",
@@ -3310,16 +3351,18 @@ pub(crate) mod tests {
         let withdraw = json!({ "lamports": "1000" });
         for (action, args, key) in [
             (SandboxActionName::Invoke, &invoke, "k-1"),
-            (SandboxActionName::Withdraw, &withdraw, "k-2"),
+            (SandboxActionName::Call, &call, "k-2"),
+            (SandboxActionName::Withdraw, &withdraw, "k-3"),
         ] {
             let body = client.invoke(action, args.clone(), key).await.unwrap();
             assert_eq!(body["status"], "landed");
         }
         let seen = requests(&seen);
-        assert_eq!(seen.len(), 3);
+        assert_eq!(seen.len(), 4);
         for (request, (path, args, key)) in seen[1..].iter().zip([
             ("/api/sandbox/v1/actions/invoke", &invoke, "k-1"),
-            ("/api/sandbox/v1/actions/withdraw", &withdraw, "k-2"),
+            ("/api/sandbox/v1/actions/call", &call, "k-2"),
+            ("/api/sandbox/v1/actions/withdraw", &withdraw, "k-3"),
         ]) {
             assert!(request.starts_with(&format!("POST {path} ")), "{request}");
             assert!(request
@@ -3340,30 +3383,42 @@ pub(crate) mod tests {
             ),
             (
                 "POST",
+                "/api/sandbox/v1/actions/call/preview",
+                200,
+                json!({ "pass": true }),
+            ),
+            (
+                "POST",
                 "/api/sandbox/v1/actions/withdraw/preview",
                 200,
                 json!({ "pass": true }),
             ),
         ]);
         let client = client(&base);
+        let call = json!({
+            "program": "P", "function": "transactions.trade.buy", "input": { "amount": "1" }
+        });
         let withdraw = json!({ "lamports": "1" });
         for (action, args) in [
             (SandboxActionName::Invoke, json!({ "instructions": [] })),
+            (SandboxActionName::Call, call.clone()),
             (SandboxActionName::Withdraw, withdraw.clone()),
         ] {
             let body = client.preview(action, args).await.unwrap();
             assert_eq!(body["pass"], true);
         }
         let seen = requests(&seen);
-        assert_eq!(seen.len(), 3, "{seen:?}");
+        assert_eq!(seen.len(), 4, "{seen:?}");
         for (request, path) in seen[1..].iter().zip([
             "/api/sandbox/v1/actions/preview",
+            "/api/sandbox/v1/actions/call/preview",
             "/api/sandbox/v1/actions/withdraw/preview",
         ]) {
             assert!(request.starts_with(&format!("POST {path} ")), "{request}");
             assert!(!request.to_ascii_lowercase().contains("idempotency-key"));
         }
-        assert_eq!(body_of(&seen[2]), withdraw);
+        assert_eq!(body_of(&seen[2]), call);
+        assert_eq!(body_of(&seen[3]), withdraw);
     }
 
     #[tokio::test]
@@ -3383,8 +3438,77 @@ pub(crate) mod tests {
             .await
             .unwrap_err();
         assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
+        // A call runs under the invoke grant, so it is refused too.
+        for refusal in [
+            client
+                .invoke(SandboxActionName::Call, json!({}), "k-2")
+                .await
+                .unwrap_err(),
+            client
+                .preview(SandboxActionName::Call, json!({}))
+                .await
+                .unwrap_err(),
+        ] {
+            let shown = refusal.to_json();
+            assert_eq!(shown["code"], "sandbox-action-not-granted");
+            assert_eq!(shown["action"], "call");
+            assert!(
+                shown["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("not granted `invoke`"),
+                "{shown}"
+            );
+        }
         // Only the mint went out.
         assert_eq!(requests(&seen).len(), 1);
+    }
+
+    #[tokio::test]
+    async fn an_invoke_grant_allows_call() {
+        let (base, seen) = stub_with(
+            vec![
+                (
+                    "POST",
+                    "/api/sandbox/v1/actions/call/preview",
+                    200,
+                    json!({ "pass": true }),
+                ),
+                (
+                    "POST",
+                    "/api/sandbox/v1/actions/call",
+                    200,
+                    json!({ "status": "landed" }),
+                ),
+            ],
+            json!(["sandbox:invoke"]),
+        );
+        let client = client(&base);
+        let args = json!({
+            "program": "P", "function": "transactions.obligation.deposit",
+            "input": { "reserve": "R", "amount": "0.1" }
+        });
+        let body = client
+            .preview(SandboxActionName::Call, args.clone())
+            .await
+            .unwrap();
+        assert_eq!(body["pass"], true);
+        let body = client
+            .invoke(SandboxActionName::Call, args, "k-1")
+            .await
+            .unwrap();
+        assert_eq!(body["status"], "landed");
+        // A withdraw is still outside the grant.
+        let refusal = client
+            .invoke(SandboxActionName::Withdraw, json!({}), "k-2")
+            .await
+            .unwrap_err();
+        assert_eq!(refusal.body["code"], "sandbox-action-not-granted");
+        assert_eq!(
+            refusal.body["error"],
+            "This agent is not granted `withdraw` on this sandbox"
+        );
+        assert_eq!(requests(&seen).len(), 3);
     }
 
     #[tokio::test]
@@ -3603,8 +3727,8 @@ pub(crate) mod tests {
     }
 
     /// Agents swap with `invoke`: `sandbox_invoke` and `sandbox_preview`
-    /// offer only `invoke` and `withdraw`, and refuse `swap` before anything
-    /// is sent.
+    /// offer only `invoke`, `call` and `withdraw`, and refuse `swap` before
+    /// anything is sent.
     #[test]
     fn swap_is_not_an_action() {
         for schema in [
@@ -3614,7 +3738,7 @@ pub(crate) mod tests {
             let mut offered = Vec::new();
             enum_values(&schema, &mut offered);
             offered.sort();
-            assert_eq!(offered, ["invoke", "withdraw"], "{schema}");
+            assert_eq!(offered, ["call", "invoke", "withdraw"], "{schema}");
         }
         let invoke = serde_json::from_value::<SandboxInvokeArgs>(json!({
             "action": "swap",
@@ -3634,7 +3758,7 @@ pub(crate) mod tests {
             preview.to_string().contains("unknown variant `swap`"),
             "{preview}"
         );
-        for action in ["invoke", "withdraw"] {
+        for action in ["invoke", "call", "withdraw"] {
             let args: SandboxPreviewArgs =
                 serde_json::from_value(json!({ "action": action })).unwrap();
             assert_eq!(args.action.as_str(), action);
@@ -3652,6 +3776,7 @@ pub(crate) mod tests {
             (Method::POST, "/actions/preview", CallKind::Preview),
             (Method::POST, "/actions/call/preview", CallKind::Preview),
             (Method::POST, "/actions/invoke", CallKind::Action),
+            (Method::POST, "/actions/call", CallKind::Action),
             (Method::POST, "/actions/withdraw", CallKind::Action),
         ] {
             assert_eq!(CallKind::of(&method, path), kind, "{method} {path}");
