@@ -29,7 +29,11 @@
 //! is not such a document but the agent's view of the rules
 //! ([`is_agent_view`]): the enabled programs with their instructions'
 //! arguments and accounts, the baseline, and the signed document itself as
-//! `signedRules`. Its numbers are `rulesFormat` (the format, 3) and
+//! `signedRules`. An argument's `type` is IDL JSON; a defined type
+//! (`{"defined": "Name"}` or `{"defined": {"name": "Name"}}`) resolves
+//! through the program's `types`, a map from type name to the IDL
+//! definition's `type` (`kind: "struct"` with `fields`, or `kind: "enum"`
+//! with `variants`). Older answers carry no `types`. Its numbers are `rulesFormat` (the format, 3) and
 //! `revision` (which signing of the sandbox's rules is active, 1 for the
 //! first). Earlier answers called the revision `version`, so an agent view's
 //! `version` is never read as a format.

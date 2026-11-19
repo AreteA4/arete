@@ -1,7 +1,7 @@
 //! `a4 sandbox`: list the sandboxes the account has been granted and choose
-//! one, read a sandbox wallet's history, holdings and rules, list the
-//! programs it can read, and check a Rules v3 document before its owner
-//! signs it.
+//! one, read a sandbox wallet's status (address, balances, granted actions),
+//! history, holdings and rules, list the programs it can read, and check a
+//! Rules v3 document before its owner signs it.
 //!
 //! The reads go to the Arete API's sandbox routes with a short-lived token
 //! the account's API key mints for the sandbox (as the MCP `sandbox_*` tools
@@ -34,6 +34,9 @@ pub enum SandboxCommands {
     List,
     /// Choose the sandbox the other commands use in this directory
     Use(UseArgs),
+    /// The sandbox wallet: address, SOL and token balances, and the actions
+    /// this agent is granted
+    Status(SandboxTarget),
     /// The sandbox's actions, newest first (paginated, with filters)
     History(HistoryArgs),
     /// What the sandbox wallet holds now: SOL, tokens and program positions
@@ -137,6 +140,7 @@ pub fn run(command: SandboxCommands, config: &str, json: bool) -> Result<()> {
     match command {
         SandboxCommands::List => list(json),
         SandboxCommands::Use(args) => use_sandbox(args, json),
+        SandboxCommands::Status(target) => status(target, json),
         SandboxCommands::History(args) => history(args, json),
         SandboxCommands::Holdings(args) => holdings(args, json),
         SandboxCommands::Rules(RulesCommands::Show(target)) => rules_show(target, json),
@@ -489,6 +493,122 @@ pub fn render_list(body: &Value) -> String {
     }
     if let Some(note) = body["note"].as_str() {
         out.push_str(&format!("\n{note}\n"));
+    }
+    out
+}
+
+// ---- status -------------------------------------------------------------------
+
+fn status(target: SandboxTarget, json: bool) -> Result<()> {
+    let runtime = runtime()?;
+    let client = SandboxClient::from_env().targeting(target.sandbox.as_deref());
+    let body = runtime
+        .block_on(client.status())
+        .map_err(|refusal| refused(refusal, json))?;
+    if json {
+        println!("{body}");
+        return Ok(());
+    }
+    // The wallet does not carry the sandbox's name; the listing does. Not
+    // worth failing over: an API without the listing shows the id alone.
+    let name = body["selection"]["sandboxId"]
+        .as_str()
+        .or_else(|| body["sandboxId"].as_str())
+        .and_then(|id| {
+            let grants = runtime.block_on(client.granted(false)).ok()?;
+            grants
+                .into_iter()
+                .find(|grant| grant.sandbox_id == id)
+                .and_then(|grant| grant.name)
+        });
+    print!("{}", render_status(&body, name.as_deref()));
+    Ok(())
+}
+
+/// The human rendering of `a4 sandbox status`: the sandbox and how it was
+/// chosen, the wallet, its balances and the granted actions. `name` is the
+/// sandbox's name, when the listing gives one.
+pub fn render_status(body: &Value, name: Option<&str>) -> String {
+    let id = body["selection"]["sandboxId"]
+        .as_str()
+        .or_else(|| body["sandboxId"].as_str())
+        .unwrap_or("?");
+    let mut out = format!("{} {id}", "Sandbox".bold());
+    if let Some(name) = name {
+        out.push_str(&format!("  {}", name.bold()));
+    }
+    if let Some(source) = body["selection"]["source"].as_str() {
+        out.push_str(&format!("  ({})", source_label(source)));
+    }
+    out.push_str("\n\n");
+    let row = |out: &mut String, label: &str, value: &str| {
+        out.push_str(&format!("  {label:<11}{value}\n"));
+    };
+    row(
+        &mut out,
+        "Wallet",
+        body["walletAddress"].as_str().unwrap_or("?"),
+    );
+    if let Some(cluster) = body["cluster"].as_str() {
+        let mut shown = cluster.to_string();
+        // A dev environment's wallet holds forked, free funds.
+        if let Some(environment) = body["environment"]
+            .as_str()
+            .filter(|environment| *environment != "mainnet")
+        {
+            shown.push_str(&format!(" ({environment})"));
+        }
+        row(&mut out, "Cluster", &shown);
+    }
+    let sol = amount(&body["balanceLamports"])
+        .map(|lamports| units(lamports, 9))
+        .unwrap_or_else(|| "?".into());
+    row(&mut out, "SOL", &sol);
+
+    let tokens = body["tokens"].as_array().cloned().unwrap_or_default();
+    if tokens.is_empty() {
+        row(&mut out, "Tokens", "none");
+    } else {
+        out.push_str("  Tokens\n");
+        for token in &tokens {
+            let held = match amount(&token["amount"]) {
+                Some(raw) => match token["decimals"].as_u64() {
+                    Some(decimals) => units(raw, decimals as u32),
+                    None => format!("{raw} (raw)"),
+                },
+                None => "?".into(),
+            };
+            out.push_str(&format!(
+                "    {}  {held}\n",
+                token["mint"].as_str().unwrap_or("?")
+            ));
+        }
+    }
+
+    if let Some(actions) = body["actions"].as_array() {
+        let actions: Vec<&str> = actions.iter().filter_map(Value::as_str).collect();
+        let actions = if actions.is_empty() {
+            "none".to_string()
+        } else {
+            actions.join(", ")
+        };
+        row(&mut out, "Actions", &actions);
+    }
+    if let Some(address) = body["withdrawAddress"].as_str() {
+        row(&mut out, "Withdraws", &format!("to {address}"));
+    }
+    if let Some(revision) = body["rulesRevision"].as_u64() {
+        row(&mut out, "Rules", &format!("revision {revision}"));
+    }
+    if let Some(fee) = amount(&body["feeLamports"]).filter(|fee| *fee != 0) {
+        row(
+            &mut out,
+            "Arete fee",
+            &format!("{} SOL per action", units(fee, 9)),
+        );
+    }
+    if let Some(expires) = body["sandboxExpiresAt"].as_str() {
+        row(&mut out, "Expires", expires);
     }
     out
 }
@@ -871,7 +991,7 @@ pub fn render_holdings(body: &Value, sandbox_id: &str) -> String {
 
     let positions = body["positions"].as_array().cloned().unwrap_or_default();
     if !positions.is_empty() {
-        out.push_str("  Positions (raw accounts)\n");
+        out.push_str("  Positions\n");
         for position in &positions {
             let program = position["program"]
                 .as_str()
@@ -883,14 +1003,87 @@ pub fn render_holdings(body: &Value, sandbox_id: &str) -> String {
                     }
                 })
                 .unwrap_or_else(|| "?".into());
-            out.push_str(&format!(
-                "    {program}  {}  {}\n",
+            let mut line = format!(
+                "    {program}  {}  {}",
                 position["label"].as_str().unwrap_or("account"),
                 position["account"].as_str().unwrap_or("?")
-            ));
+            );
+            let obligation = &position["obligation"];
+            if let Some(market) = obligation["lendingMarket"].as_str() {
+                line.push_str(&format!("  market {}", short(market)));
+            }
+            out.push_str(&line);
+            out.push('\n');
+            if obligation.is_object() {
+                out.push_str(&obligation_lines(obligation));
+            }
         }
     }
     out
+}
+
+/// A decoded lending obligation: one line per deposit (the cToken amount,
+/// and what it is worth in the underlying token at the reserve's rate when
+/// the reserve could be read) and one per borrow. Amounts are in whole units
+/// when the decimals are known, else raw.
+fn obligation_lines(obligation: &Value) -> String {
+    let deposits = obligation["deposits"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let borrows = obligation["borrows"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if deposits.is_empty() && borrows.is_empty() {
+        return "      no deposits or borrows\n".into();
+    }
+    let mut out = String::new();
+    for deposit in &deposits {
+        let decimals = deposit["underlyingDecimals"].as_u64().map(|d| d as u32);
+        let mut line = format!(
+            "      deposit  {}  {} cToken",
+            short(deposit["reserve"].as_str().unwrap_or("?")),
+            amount_text(&deposit["cTokenAmount"], decimals)
+        );
+        if !deposit["underlyingAmount"].is_null() {
+            line.push_str(&format!(
+                " ≈ {} {}",
+                amount_text(&deposit["underlyingAmount"], decimals),
+                mint_label(&deposit["underlyingMint"])
+            ));
+        }
+        if let Some(rate) = deposit["exchangeRate"].as_str() {
+            line.push_str(&format!(" @ {rate}"));
+        }
+        out.push_str(&line);
+        out.push('\n');
+    }
+    for borrow in &borrows {
+        let decimals = borrow["underlyingDecimals"].as_u64().map(|d| d as u32);
+        out.push_str(&format!(
+            "      borrow   {}  {} {}\n",
+            short(borrow["reserve"].as_str().unwrap_or("?")),
+            amount_text(&borrow["borrowedAmount"], decimals),
+            mint_label(&borrow["underlyingMint"])
+        ));
+    }
+    out
+}
+
+/// A raw amount in whole units with `decimals`, else raw and marked so. Text
+/// that is not an integer is shown as it is.
+fn amount_text(value: &Value, decimals: Option<u32>) -> String {
+    match (amount(value), decimals) {
+        (Some(raw), Some(decimals)) => units(raw, decimals),
+        (Some(raw), None) => format!("{raw} (raw)"),
+        (None, _) => value.as_str().unwrap_or("?").to_string(),
+    }
+}
+
+/// A mint, shortened; `token` when the reserve could not be read.
+fn mint_label(mint: &Value) -> String {
+    mint.as_str().map(short).unwrap_or_else(|| "token".into())
 }
 
 // ---- rules --------------------------------------------------------------------
@@ -1154,10 +1347,7 @@ pub fn render_rules(body: &Value) -> String {
                 program["name"].as_str().unwrap_or("?"),
                 program["programId"].as_str().unwrap_or("?")
             );
-            line.push_str(&format!(
-                "\n           instructions: {}",
-                allowed_instructions(program)
-            ));
+            line.push_str(&instruction_lines(program));
             line.push_str(&functions(program));
             if let Some(limit) = program["spendLimit"].as_object() {
                 let lamports = limit
@@ -1229,6 +1419,218 @@ fn functions(program: &Value) -> String {
         out.push_str(&format!("\n             {line}"));
     }
     out
+}
+
+/// What goes under a program's line about its instructions: the names on
+/// one line, or, when the agent view details them, one line per allowed
+/// instruction with its arguments.
+fn instruction_lines(program: &Value) -> String {
+    let Some(signatures) = instruction_signatures(program) else {
+        return format!(
+            "\n           instructions: {}",
+            allowed_instructions(program)
+        );
+    };
+    let mut out = String::from("\n           instructions:");
+    if program["allowed"].as_str() == Some("any") {
+        out.push_str(" any");
+    }
+    for signature in signatures {
+        out.push_str(&format!("\n             {signature}"));
+    }
+    out
+}
+
+/// One `name(arg: type, ...)` per allowed instruction, when the agent view
+/// details the program's instructions (`instructions: [{name, args}]`);
+/// `None` for names alone (the signed document) or no details. An allowed
+/// name without details is shown alone.
+fn instruction_signatures(program: &Value) -> Option<Vec<String>> {
+    let detailed: Vec<&Value> = program["instructions"]
+        .as_array()?
+        .iter()
+        .filter(|entry| entry["name"].is_string() && entry["args"].is_array())
+        .collect();
+    if detailed.is_empty() {
+        return None;
+    }
+    let types = program["types"].as_object();
+    let signature = |name: &str| match detailed.iter().find(|entry| entry["name"] == name) {
+        Some(entry) => instruction_signature(entry, types),
+        None => name.to_string(),
+    };
+    let signatures: Vec<String> = match program["allowed"].as_array() {
+        Some(allowed) => allowed
+            .iter()
+            .filter_map(|entry| entry.as_str().or_else(|| entry["name"].as_str()))
+            .map(signature)
+            .collect(),
+        None => detailed
+            .iter()
+            .map(|entry| instruction_signature(entry, types))
+            .collect(),
+    };
+    (!signatures.is_empty()).then_some(signatures)
+}
+
+/// How deep defined types are expanded in an argument's type: the
+/// argument's own type and the defined types inside it; deeper ones are
+/// shown by name.
+const EXPAND_DEPTH: usize = 2;
+
+/// `name(arg: type, ...)` for an instruction of the agent view.
+fn instruction_signature(
+    instruction: &Value,
+    types: Option<&serde_json::Map<String, Value>>,
+) -> String {
+    let args: Vec<String> = instruction["args"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|arg| {
+            format!(
+                "{}: {}",
+                arg["name"].as_str().unwrap_or("?"),
+                type_label(&arg["type"], types, 0, &mut Vec::new())
+            )
+        })
+        .collect();
+    format!(
+        "{}({})",
+        instruction["name"].as_str().unwrap_or("?"),
+        args.join(", ")
+    )
+}
+
+/// An IDL type, compactly: `u64`, `Option<u8>`, `Vec<Pubkey>`, `[u8; 32]`,
+/// and a defined type expanded from `types` (`Name { a: u8 }`,
+/// `Name (A | B)`) up to [`EXPAND_DEPTH`], else by name. `expanding` holds
+/// the defined types being expanded, so a recursive type stops at its name.
+fn type_label(
+    ty: &Value,
+    types: Option<&serde_json::Map<String, Value>>,
+    depth: usize,
+    expanding: &mut Vec<String>,
+) -> String {
+    let Value::Object(object) = ty else {
+        return ty.as_str().unwrap_or("?").to_string();
+    };
+    if let Some(defined) = object.get("defined") {
+        let name = defined
+            .as_str()
+            .or_else(|| defined["name"].as_str())
+            .unwrap_or("?");
+        return defined_label(name, types, depth, expanding);
+    }
+    if let Some(generic) = object.get("generic").and_then(Value::as_str) {
+        return generic.to_string();
+    }
+    if let Some(array) = object.get("array").and_then(Value::as_array) {
+        let length = match array.get(1) {
+            Some(Value::Number(length)) => length.to_string(),
+            Some(other) => type_label(other, types, depth, expanding),
+            None => "?".into(),
+        };
+        let item = array
+            .first()
+            .map(|item| type_label(item, types, depth, expanding))
+            .unwrap_or_else(|| "?".into());
+        return format!("[{item}; {length}]");
+    }
+    for (key, wrapper) in [("option", "Option"), ("coption", "COption"), ("vec", "Vec")] {
+        if let Some(inner) = object.get(key) {
+            return format!("{wrapper}<{}>", type_label(inner, types, depth, expanding));
+        }
+    }
+    // Some other wrapper: `key<inner>`.
+    match object.iter().next() {
+        Some((key, inner)) if object.len() == 1 => {
+            format!("{key}<{}>", type_label(inner, types, depth, expanding))
+        }
+        _ => "?".into(),
+    }
+}
+
+/// A defined type by `name`: its definition from `types` when there is one
+/// and the depth allows, else the name.
+fn defined_label(
+    name: &str,
+    types: Option<&serde_json::Map<String, Value>>,
+    depth: usize,
+    expanding: &mut Vec<String>,
+) -> String {
+    let Some(definition) = types.and_then(|types| types.get(name)) else {
+        return name.to_string();
+    };
+    if depth >= EXPAND_DEPTH || expanding.iter().any(|open| open == name) {
+        return name.to_string();
+    }
+    expanding.push(name.to_string());
+    let label = match definition["kind"].as_str() {
+        Some("struct") => format!(
+            "{name}{}",
+            fields_label(&definition["fields"], types, depth + 1, expanding)
+        ),
+        Some("enum") => {
+            let variants: Vec<String> = definition["variants"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .map(|variant| {
+                    format!(
+                        "{}{}",
+                        variant["name"].as_str().unwrap_or("?"),
+                        fields_label(&variant["fields"], types, depth + 1, expanding)
+                    )
+                })
+                .collect();
+            if variants.is_empty() {
+                name.to_string()
+            } else {
+                format!("{name} ({})", variants.join(" | "))
+            }
+        }
+        Some("type") if !definition["alias"].is_null() => {
+            type_label(&definition["alias"], types, depth, expanding)
+        }
+        _ => name.to_string(),
+    };
+    expanding.pop();
+    label
+}
+
+/// A struct's or variant's fields: ` { a: u8, b: u64 }` when named,
+/// `(u8, u64)` when a tuple, nothing when there are none.
+fn fields_label(
+    fields: &Value,
+    types: Option<&serde_json::Map<String, Value>>,
+    depth: usize,
+    expanding: &mut Vec<String>,
+) -> String {
+    let fields = fields.as_array().cloned().unwrap_or_default();
+    if fields.is_empty() {
+        return String::new();
+    }
+    let named = fields.iter().all(|field| field["name"].is_string());
+    let shown: Vec<String> = fields
+        .iter()
+        .map(|field| {
+            if named {
+                format!(
+                    "{}: {}",
+                    field["name"].as_str().unwrap_or("?"),
+                    type_label(&field["type"], types, depth, expanding)
+                )
+            } else {
+                type_label(field, types, depth, expanding)
+            }
+        })
+        .collect();
+    if named {
+        format!(" {{ {} }}", shown.join(", "))
+    } else {
+        format!("({})", shown.join(", "))
+    }
 }
 
 /// The instructions a program entry allows: a v3 `instructions` list of
@@ -1689,8 +2091,92 @@ mod tests {
             )),
             "{text}"
         );
-        assert!(text.contains("Positions (raw accounts)"), "{text}");
-        assert!(text.contains("KLen…gmjD  obligation"), "{text}");
+        assert!(text.contains("  Positions\n"), "{text}");
+        // A position without a decoded `obligation` keeps its one line.
+        assert!(
+            text.contains(
+                "    KLen…gmjD  obligation  H4dH3hmyWZ1SbsMzYqMKdyFBsUuvHGbzvNNxGg8bPFuu\n    "
+            ),
+            "{text}"
+        );
+    }
+
+    /// A decoded Kamino obligation: a line per deposit, in the underlying
+    /// token's units with its value at the reserve's rate, and per borrow.
+    /// A reserve that could not be read leaves its amounts raw.
+    #[test]
+    fn holdings_render_decoded_obligations() {
+        colored::control::set_override(false);
+        let text = render_holdings(&fixture("holdings.json"), "sbx");
+        let expected = "    KLen…gmjD  Kamino obligation  5xLRsQnVdPbJJ1TVBf5RUzJ3cXcKqVgF6zU6aH5pyLzM  market 7u3H…5PfF\n\
+             \x20     deposit  d4A2…Bc4Q  0.022755326 cToken ≈ 0.026416668 So11…1112 @ 1.160901249\n\
+             \x20     deposit  Ga4r…auXp  5000 (raw) cToken\n\
+             \x20     borrow   D6q6…gJ59  1.234567 EPjF…Dt1v\n";
+        assert!(text.ends_with(expected), "{text}");
+
+        let empty = json!({
+            "sol": "0", "tokens": [],
+            "positions": [{
+                "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD", "account": "A",
+                "kind": "kaminoObligation", "label": "Kamino obligation",
+                "obligation": { "lendingMarket": null, "deposits": [], "borrows": [] }
+            }]
+        });
+        let text = render_holdings(&empty, "sbx");
+        assert!(
+            text.ends_with("Kamino obligation  A\n      no deposits or borrows\n"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn status_renders_the_wallet_balances_and_grants() {
+        colored::control::set_override(false);
+        let text = render_status(&fixture("status.json"), Some("Bot"));
+        assert_eq!(
+            text,
+            format!(
+                "Sandbox 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10  Bot  (saved for this directory)\n\
+                 \n\
+                 \x20 Wallet     9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM\n\
+                 \x20 Cluster    mainnet-beta\n\
+                 \x20 SOL        1.394995\n\
+                 \x20 Tokens\n\
+                 \x20   {MINT}  1234.5\n\
+                 \x20 Actions    invoke, withdraw\n\
+                 \x20 Withdraws  to 4Nd1mBQtrMJVYVfKf2PJy9NZUZdTAsp7D4xWLs4gDB4T\n\
+                 \x20 Rules      revision 3\n"
+            )
+        );
+
+        // A dev environment's wallet, nothing held or granted, a fee, and
+        // no name or selection (an older server's answer).
+        let mut body = fixture("status.json");
+        body["environment"] = json!("devenv:e1");
+        body["sandboxExpiresAt"] = json!("2026-11-16T00:00:00Z");
+        body["tokens"] = json!([]);
+        body["actions"] = json!([]);
+        body["feeLamports"] = json!(1000);
+        body.as_object_mut().unwrap().remove("selection");
+        let text = render_status(&body, None);
+        assert!(
+            text.starts_with("Sandbox 6f1c2c43-6d3c-4a51-9b8e-0e3c1e2a7b10\n\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  Cluster    mainnet-beta (devenv:e1)\n"),
+            "{text}"
+        );
+        assert!(text.contains("  Tokens     none\n"), "{text}");
+        assert!(text.contains("  Actions    none\n"), "{text}");
+        assert!(
+            text.contains("  Arete fee  0.000001 SOL per action\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  Expires    2026-11-16T00:00:00Z\n"),
+            "{text}"
+        );
     }
 
     #[test]
@@ -1698,6 +2184,13 @@ mod tests {
         let page = fixture("history-page.json");
         assert!(page["items"][0].get("raw").is_some());
         assert!(ledger::without_raw(page)["items"][0].get("raw").is_none());
+        // A decoded obligation is not raw data: it stays.
+        let holdings = ledger::without_raw(fixture("holdings.json"));
+        assert!(holdings["positions"][1].get("raw").is_none());
+        assert_eq!(
+            holdings["positions"][1]["obligation"]["deposits"][0]["cTokenAmount"],
+            "22755326"
+        );
     }
 
     #[test]
@@ -1735,7 +2228,10 @@ mod tests {
             text.starts_with("Rules v3 (revision 1, as this agent sees them)\n"),
             "{text}"
         );
-        assert!(text.contains("instructions: buy\n"), "{text}");
+        assert!(
+            text.contains("           instructions:\n             buy()\n"),
+            "{text}"
+        );
         assert!(text.contains("instructions: any\n"), "{text}");
         assert!(
             text.contains("Always allowed: System, Associated Token"),
@@ -1777,6 +2273,85 @@ mod tests {
             text.contains("\n             transactions.obligation.withdraw\n"),
             "{text}"
         );
+    }
+
+    fn kamino_view(types: Option<Value>) -> Value {
+        let mut program = json!({
+            "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+            "name": "Kamino Lend",
+            "allowed": ["initObligation", "depositReserveLiquidity", "refreshReserve"],
+            "instructions": [
+                { "name": "initObligation", "discriminator": [251, 10, 231, 76, 27, 11, 159, 96],
+                  "args": [{ "name": "args", "type": { "defined": "InitObligationArgs" } }],
+                  "accounts": [] },
+                { "name": "depositReserveLiquidity", "discriminator": [169, 201, 30, 126, 6, 205, 102, 68],
+                  "args": [
+                      { "name": "liquidityAmount", "type": "u64" },
+                      { "name": "mode", "type": { "option": { "defined": { "name": "Mode" } } } },
+                      { "name": "path", "type": { "vec": { "defined": "Hop" } } },
+                      { "name": "seed", "type": { "array": ["u8", 32] } }
+                  ],
+                  "accounts": [] }
+            ]
+        });
+        if let Some(types) = types {
+            program["types"] = types;
+        }
+        json!({ "view": "agent", "rulesFormat": 3, "revision": 2, "programs": [program], "baseline": [] })
+    }
+
+    /// The agent view's instructions are listed one per line with their
+    /// arguments, defined types expanded from `types`: a struct's fields, an
+    /// enum's variants, the types inside them expanded once more, deeper
+    /// ones by name.
+    #[test]
+    fn the_agent_view_lists_instruction_signatures() {
+        colored::control::set_override(false);
+        let types = json!({
+            "InitObligationArgs": { "kind": "struct", "fields": [
+                { "name": "tag", "type": "u8" }, { "name": "id", "type": "u8" }
+            ] },
+            "Mode": { "kind": "enum", "variants": [
+                { "name": "Plain" },
+                { "name": "Capped", "fields": [{ "name": "cap", "type": { "defined": "Cap" } }] },
+                { "name": "Pair", "fields": ["u8", "u64"] }
+            ] },
+            "Cap": { "kind": "struct", "fields": [{ "name": "limit", "type": { "defined": "Limit" } }] },
+            "Limit": { "kind": "struct", "fields": [{ "name": "lamports", "type": "u64" }] },
+            "Hop": { "kind": "struct", "fields": [
+                { "name": "next", "type": { "option": { "defined": "Hop" } } }
+            ] }
+        });
+        let text = render_rules(&kamino_view(Some(types)));
+        assert!(
+            text.contains(
+                "           instructions:\n\
+                 \x20            initObligation(args: InitObligationArgs { tag: u8, id: u8 })\n\
+                 \x20            depositReserveLiquidity(liquidityAmount: u64, \
+                 mode: Option<Mode (Plain | Capped { cap: Cap { limit: Limit } } | Pair(u8, u64))>, \
+                 path: Vec<Hop { next: Option<Hop> }>, seed: [u8; 32])\n\
+                 \x20            refreshReserve\n"
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("defined"), "{text}");
+    }
+
+    /// An older server sends no `types`: a defined type is shown by its
+    /// name, never as raw JSON.
+    #[test]
+    fn without_types_a_defined_type_is_shown_by_name() {
+        colored::control::set_override(false);
+        let text = render_rules(&kamino_view(None));
+        assert!(
+            text.contains("initObligation(args: InitObligationArgs)\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("mode: Option<Mode>, path: Vec<Hop>, seed: [u8; 32])"),
+            "{text}"
+        );
+        assert!(!text.contains("defined") && !text.contains('{'), "{text}");
     }
 
     /// What `rules show` printed before the API named its numbers: the

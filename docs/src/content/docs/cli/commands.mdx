@@ -160,6 +160,7 @@ side: registry installs (`403 command-group-required`) to an account without
 | `a4 squads status\|list\|attach`                                              | Your account's Squads multisigs (set them up on the dashboard)    |
 | `a4 sandbox list`                                                             | The sandboxes your agent has been granted, and the one in use     |
 | `a4 sandbox use <id\|name>`                                                   | Choose the sandbox `a4 sandbox` and `a4 mcp` use in this folder   |
+| `a4 sandbox status`                                                           | A sandbox's wallet, balances and granted actions (alpha)          |
 | `a4 sandbox history\|holdings\|rules show`                                    | A sandbox's actions, holdings and rules (alpha)                   |
 | `a4 sandbox reads`                                                            | The programs a sandbox can read (alpha)                           |
 | `a4 sandbox rules validate <file>`                                            | Check a Rules v3 file locally                                     |
@@ -1475,13 +1476,14 @@ actions go through the MCP `sandbox_invoke` tool.
 a4 sandbox list                                   # granted sandboxes; * marks the one in use
 a4 sandbox use Treasury                           # choose one (id or name) for this folder
 a4 sandbox use --clear                            # forget the choice
+a4 sandbox status                                 # wallet, SOL and tokens, granted actions
 a4 sandbox history                                # newest first, 20 per page
 a4 sandbox history --sandbox <id|name>            # another sandbox, for this command only
 a4 sandbox history --status landed --since 24h    # filtered, across pages
 a4 sandbox history --cursor <nextCursor>          # the next page
 a4 sandbox history --all --json                   # every page, as JSON
-a4 sandbox holdings                               # SOL, tokens, positions
-a4 sandbox rules show                             # the rules, as the agent sees them
+a4 sandbox holdings                               # SOL, tokens, positions (Kamino obligations decoded)
+a4 sandbox rules show                             # the rules, each instruction with its arguments
 a4 sandbox reads                                  # the programs the sandbox can read
 a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: stdin)
 ```
@@ -1507,6 +1509,15 @@ and lists them; with none granted, `sandbox-none-granted`.
 | `--all`                | `history`: read every page                                                               |
 | `--raw`                | Keep raw transactions and accounts in `--json` output                                    |
 | `--json`               | The answer as JSON                                                                       |
+
+`status` shows the sandbox and how it was chosen, the wallet address, its
+SOL and token balances in whole units, and the actions this agent is
+granted (`--json`: the API's wallet answer with `selection`). `holdings`
+prints a decoded Kamino obligation as one line per deposit (the cToken
+amount and its value in the underlying token at the reserve's rate) and per
+borrow. `rules show` lists each allowed instruction with its arguments, a
+struct or enum argument expanded from the program's IDL types (`Name { a: u8 }`,
+`Name (A | B)`).
 
 The filters are applied by `a4` to the pages it reads; a filtered read
 keeps reading (up to 10 pages) until enough actions match. `rules validate`
