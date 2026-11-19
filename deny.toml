@@ -37,4 +37,6 @@ ignore = [
     { id = "RUSTSEC-2026-0414", reason = "pulldown-cmark wikilinks event growth; build-time only (prost-build), pending a separate dependency refresh" },
     { id = "RUSTSEC-2026-0433", reason = "pulldown-cmark nested image wikilinks; build-time only (prost-build), pending a separate dependency refresh" },
     { id = "RUSTSEC-2026-0441", reason = "pin-utils unmaintained (via futures-util); no maintained release to move to yet" },
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained (direct dep of the CLI, auth and MCP crates; also via object_store, rmcp, schemars); no maintained release to move to yet" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained (via object_store); no maintained release to move to yet" },
 ]
