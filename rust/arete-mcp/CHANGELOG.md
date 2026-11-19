@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.58.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.57.0...arete-mcp-v0.58.0) (2026-11-19)
+
+
+### Features
+
+* **cli,mcp:** show sandbox function input schemas ([954ce54](https://github.com/AreteA4/arete/commit/954ce54fbea0db8e4ac9514d6b85acd951c0b676))
+* **cli,mcp:** show sandbox function input schemas ([dcdb273](https://github.com/AreteA4/arete/commit/dcdb273f09fd89bff99c366fec47b19f6f51fb46))
+* **mcp:** run program functions from the sandbox tools with a `call` action ([43efe26](https://github.com/AreteA4/arete/commit/43efe26770a4ae327d5204f12040609928fb8539))
+* **mcp:** run program functions from the sandbox tools with a `call` action ([5ceaef5](https://github.com/AreteA4/arete/commit/5ceaef514f21417c9913b66fe540672870439e9a))
+
+
+### Bug Fixes
+
+* **cli,mcp:** sandbox CLI and MCP papercuts ([79d1ab6](https://github.com/AreteA4/arete/commit/79d1ab65969b4fa920979d390ba5a1cfbce852d5))
+* **mcp:** let the API refuse ungranted actions; describe the wallet change fields ([d499e06](https://github.com/AreteA4/arete/commit/d499e06526632e3cd625470046950de1b1902c84))
+* **mcp:** say a SOL credit reads positive, as sandbox_history's solDelta ([b0898a1](https://github.com/AreteA4/arete/commit/b0898a186b0d0c80dd5a2c064e0773f1dff7b26c))
+
 ## [0.57.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.56.0...arete-mcp-v0.57.0) (2026-11-14)
 
 
