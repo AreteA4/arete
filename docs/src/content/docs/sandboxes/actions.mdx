@@ -71,18 +71,18 @@ have to guess it:
 }
 ```
 
-| Key             | Meaning                                                                                                    |
-| --------------- | ---------------------------------------------------------------------------------------------------------- |
-| `name`          | The field, as `input` names it                                                                             |
-| `type`          | `pubkey`, `amount`, `bool`, `string`, an integer width (`u8`, `i32`, `i64`), or `enum`                     |
-| `required`      | Whether the call needs it                                                                                  |
-| `fill`          | `wallet`: the sandbox wallet. Leave it out; any other address there is refused                             |
+| Key             | Meaning                                                                                                   |
+| --------------- | --------------------------------------------------------------------------------------------------------- |
+| `name`          | The field, as `input` names it                                                                            |
+| `type`          | `pubkey`, `amount`, `bool`, `string`, an integer width (`u8`, `i32`, `i64`), or `enum`                    |
+| `required`      | Whether the call needs it                                                                                 |
+| `fill`          | `wallet`: the sandbox wallet. Leave it out; any other address there is refused                            |
 | `description`   | What the field is, and its default when the default depends on other fields                               |
-| `units`         | For an `amount`: the token a `ui` amount is in                                                             |
-| `default`       | The value used when the field is left out                                                                  |
+| `units`         | For an `amount`: the token a `ui` amount is in                                                            |
+| `default`       | The value used when the field is left out                                                                 |
 | `values`        | Literals the field takes besides its type, each with its `meaning` (`"max"` on Kamino withdraw and repay) |
-| `variants`      | For an `enum`: the strings it takes                                                                        |
-| `unknownFields` | `refused` (a field the schema does not list is an error) or `ignored`                                      |
+| `variants`      | For an `enum`: the strings it takes                                                                       |
+| `unknownFields` | `refused` (a field the schema does not list is an error) or `ignored`                                     |
 
 An `amount` is `{ "ui": "1.5" }` in whole units of its `units` token,
 `{ "raw": "1500000" }` in base units, or a bare integer (base units). A bare
