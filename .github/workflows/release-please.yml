@@ -535,23 +535,51 @@ jobs:
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
         env:
           KIT_VERSION: ${{ needs.release-please.outputs.adapter_kit_version }}
+        # The registry can list a new version before its tarball downloads,
+        # so wait for both. The install below also pulls the SDK version
+        # this commit pins, so wait for that tarball too.
         run: |
-          for attempt in {1..30}; do
-            published_version="$(npm view "@usearete/adapter-kit@${KIT_VERSION}" version 2>/dev/null || true)"
-            if [[ "$published_version" == "$KIT_VERSION" ]]; then
-              echo "@usearete/adapter-kit@${KIT_VERSION} is available"
-              exit 0
-            fi
-            echo "Waiting for @usearete/adapter-kit@${KIT_VERSION} (attempt ${attempt}/30)"
-            sleep 10
+          sdk_version="$(node -p 'require("./typescript/core/package.json").version')"
+          deadline=$((SECONDS + 600))
+          delay=5
+          for spec in "@usearete/adapter-kit@${KIT_VERSION}" "@usearete/sdk@${sdk_version}"; do
+            while :; do
+              tarball="$(npm view --prefer-online "$spec" dist.tarball 2>/dev/null || true)"
+              status=000
+              if [[ -n "$tarball" ]]; then
+                status="$(curl --silent --location --max-time 60 --output /dev/null --write-out '%{http_code}' "$tarball" || true)"
+              fi
+              if [[ "$status" == 200 ]]; then
+                echo "$spec is available at $tarball"
+                break
+              fi
+              if (( SECONDS + delay > deadline )); then
+                echo "::error::$spec was not downloadable within 10 minutes (tarball: ${tarball:-not listed}, HTTP $status)"
+                exit 1
+              fi
+              echo "Waiting for $spec (tarball: ${tarball:-not listed}, HTTP $status); retrying in ${delay}s"
+              sleep "$delay"
+              delay=$((delay * 2 > 60 ? 60 : delay * 2))
+            done
           done
-          echo "::error::@usearete/adapter-kit@${KIT_VERSION} did not propagate within 5 minutes"
-          exit 1
         shell: bash
 
+      # Retry in case one registry edge still lags the one the wait checked.
       - name: Check published Kit adapter imports
         if: needs.release-please.outputs.adapter_kit_release_created == 'true'
-        run: node pack-smoke.mjs --registry
+        run: |
+          for attempt in 1 2 3; do
+            if node pack-smoke.mjs --registry; then
+              exit 0
+            fi
+            if (( attempt < 3 )); then
+              echo "Registry import check failed (attempt ${attempt}/3); retrying in $((attempt * 30))s"
+              sleep $((attempt * 30))
+            fi
+          done
+          echo "::error::The published Kit adapter failed the registry import check 3 times"
+          exit 1
+        shell: bash
         working-directory: typescript/adapters/kit
 
       - name: No Kit adapter release in this run
