@@ -1396,8 +1396,9 @@ pub fn render_rules(body: &Value) -> String {
 }
 
 /// The functions a program entry offers (the agent view's `{ name,
-/// summary }` objects or a signed document's names), one per line, or
-/// nothing when it lists none.
+/// summary, input? }` objects or a signed document's names), one per line,
+/// or nothing when it lists none. A function with an `input` schema is
+/// shown as a signature, its summary on the line below.
 fn functions(program: &Value) -> String {
     let lines: Vec<String> = program["functions"]
         .as_array()
@@ -1405,10 +1406,20 @@ fn functions(program: &Value) -> String {
         .flatten()
         .filter_map(|function| {
             let name = function.as_str().or_else(|| function["name"].as_str())?;
-            Some(match function["summary"].as_str() {
-                Some(summary) if !summary.trim().is_empty() => format!("{name}  {summary}"),
-                _ => name.to_string(),
-            })
+            let summary = function["summary"]
+                .as_str()
+                .map(str::trim)
+                .filter(|summary| !summary.is_empty());
+            Some(
+                match (function_signature(name, &function["input"]), summary) {
+                    (Some(signature), Some(summary)) => {
+                        format!("{signature}\n               {summary}")
+                    }
+                    (Some(signature), None) => signature,
+                    (None, Some(summary)) => format!("{name}  {summary}"),
+                    (None, None) => name.to_string(),
+                },
+            )
         })
         .collect();
     if lines.is_empty() {
@@ -1419,6 +1430,46 @@ fn functions(program: &Value) -> String {
         out.push_str(&format!("\n             {line}"));
     }
     out
+}
+
+/// `name(field: type, optional?: type = default, ...)` from a function's
+/// `input` schema (`{ fields: [{ name, type, required, fill?, default?,
+/// values?, variants? }] }`), or `None` when it has none. Members Arete
+/// fills (the wallet) are left out; an enum shows its variants and a member
+/// with special values adds them (`amount | "max"`).
+fn function_signature(name: &str, input: &Value) -> Option<String> {
+    let fields = input["fields"].as_array()?;
+    let members: Vec<String> = fields
+        .iter()
+        .filter(|field| field["fill"].is_null())
+        .filter_map(|field| {
+            let member = field["name"].as_str()?;
+            let mut ty = match field["variants"].as_array() {
+                Some(variants) if !variants.is_empty() => variants
+                    .iter()
+                    .map(|variant| variant.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" | "),
+                _ => field["type"].as_str().unwrap_or("?").to_string(),
+            };
+            for value in field["values"].as_array().into_iter().flatten() {
+                if let Some(value) = value.get("value") {
+                    ty.push_str(&format!(" | {value}"));
+                }
+            }
+            let optional = if field["required"].as_bool() == Some(false) {
+                "?"
+            } else {
+                ""
+            };
+            let default = match field.get("default") {
+                Some(default) if !default.is_null() => format!(" = {default}"),
+                _ => String::new(),
+            };
+            Some(format!("{member}{optional}: {ty}{default}"))
+        })
+        .collect();
+    Some(format!("{name}({})", members.join(", ")))
 }
 
 /// What goes under a program's line about its instructions: the names on
@@ -2273,6 +2324,68 @@ mod tests {
             text.contains("\n             transactions.obligation.withdraw\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn functions_with_an_input_schema_render_as_signatures() {
+        colored::control::set_override(false);
+        let text = render_rules(&json!({
+            "view": "agent",
+            "rulesFormat": 3,
+            "revision": 1,
+            "programs": [{
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "name": "Kamino Lending",
+                "allowed": [],
+                "functions": [
+                    {
+                        "name": "transactions.obligation.withdraw",
+                        "summary": "Withdraw collateral from an obligation",
+                        "input": {
+                            "fields": [
+                                { "name": "owner", "type": "pubkey", "required": false, "fill": "wallet" },
+                                { "name": "reserve", "type": "pubkey", "required": true },
+                                { "name": "amount", "type": "amount", "required": true,
+                                  "units": "the reserve's liquidity mint",
+                                  "values": [{ "value": "max", "meaning": "the whole deposit" }] },
+                                { "name": "payer", "type": "pubkey", "required": false }
+                            ],
+                            "unknownFields": "refused"
+                        }
+                    },
+                    {
+                        "name": "transactions.position.addLiquidity",
+                        "input": {
+                            "fields": [
+                                { "name": "width", "type": "i64", "required": true },
+                                { "name": "strategy", "type": "enum", "required": false,
+                                  "variants": ["spot", "curve", "bidAsk"], "default": "spot" },
+                                { "name": "bps", "type": "i64", "required": false, "default": 10000 }
+                            ]
+                        }
+                    },
+                    // An API that sends no `input` keeps the name and summary.
+                    { "name": "transactions.obligation.deposit", "summary": "Deposit" }
+                ]
+            }]
+        }));
+        assert!(
+            text.contains(
+                "\n             transactions.obligation.withdraw(reserve: pubkey, amount: amount | \"max\", payer?: pubkey)\n               Withdraw collateral from an obligation\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "\n             transactions.position.addLiquidity(width: i64, strategy?: \"spot\" | \"curve\" | \"bidAsk\" = \"spot\", bps?: i64 = 10000)\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n             transactions.obligation.deposit  Deposit\n"),
+            "{text}"
+        );
+        assert!(!text.contains("owner"), "{text}");
     }
 
     fn kamino_view(types: Option<Value>) -> Value {
