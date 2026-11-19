@@ -1,17 +1,19 @@
 ---
 title: Actions
-description: The actions an agent can run in a sandbox (invoke and withdraw), how to swap with invoke, how to preview them, and how to run each exactly once.
+description: The actions an agent can run in a sandbox (call, invoke and withdraw), how to swap with invoke, how to preview them, and how to run each exactly once.
 ---
 
 An agent changes a sandbox's wallet through exactly one tool,
-`sandbox_invoke`, with one of two actions: `invoke` or `withdraw`. Each needs a
-[grant](/sandboxes/agents/#grants), and each can be previewed first with
-`sandbox_preview`, which takes the same arguments.
+`sandbox_invoke`, with one of three actions: `call`, `invoke` or `withdraw`.
+Each needs a [grant](/sandboxes/agents/#grants) (a `call` runs under the
+`invoke` grant), and each can be previewed first with `sandbox_preview`,
+which takes the same arguments.
 
 The loop is: **discover → preview → invoke.**
 
 1. `sandbox_status` and `sandbox_rules`: what the wallet holds, which actions
-   this agent holds, and which programs and instructions are allowed.
+   this agent holds, and which programs, instructions and functions are
+   allowed.
 2. `sandbox_derive`, when the action needs an address: a PDA (computed
    locally, with no network call) or an associated token account.
 3. `sandbox_preview`: a dry run. Returns `pass` with what the wallet would
@@ -19,6 +21,41 @@ The loop is: **discover → preview → invoke.**
 4. `sandbox_invoke`: runs it.
 
 Pass u64 amounts as decimal strings.
+
+## call
+
+A function a program offers: `sandbox_rules` lists them per program as
+`functions` (`name` and `summary`). Arete plans the whole instruction
+sequence (account setup, refreshes, wrapping SOL), fills the sandbox wallet
+and the accounts, and checks the result like any other action. When a
+program lists a function for what you want to do, prefer `call` to
+hand-assembling an `invoke`: a Kamino Lend deposit, for example, needs
+reserve, obligation and farm refreshes in exact positions, and the function
+gets them right.
+
+```json
+{
+  "action": "call",
+  "args": {
+    "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+    "function": "transactions.obligation.deposit",
+    "input": { "reserve": "<reserve>", "amount": "0.1" }
+  }
+}
+```
+
+| Argument                        | Meaning                                                      |
+| ------------------------------- | ------------------------------------------------------------ |
+| `program`                       | The program id                                               |
+| `function`                      | The function, named as `sandbox_rules` lists it              |
+| `input`                         | The function's JSON input; the wallet member can be left out |
+| `computeUnitLimit`              | Optional compute budget                                      |
+| `computeUnitPriceMicroLamports` | Optional priority fee, per compute unit                      |
+| `transactionFormat`             | `"v1"` (default) or `"v0"`                                   |
+
+The result has the same shape as an `invoke` result, plus `plan`: the
+`function`, `program`, `extension`, `pinnedSlot` and `fees` it was built
+from.
 
 ## invoke
 

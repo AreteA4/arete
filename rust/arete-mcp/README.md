@@ -635,7 +635,9 @@ resolves, the call is refused before any token is minted, with
   `fill` (`fixed`, `wallet` or `derived` from the program's spec) can be
   left out of an `invoke`: Arete fills it. `baseline` lists the plumbing
   programs with the instructions each allows at the top level and their
-  accounts (associated token `createIdempotent` needs only `mint`). Rules
+  accounts (associated token `createIdempotent` needs only `mint`). A
+  program may also list `functions` (`name`, `summary`): run one as a
+  `call` action rather than hand-assembling an `invoke`. Rules
   in a format before version 3 are refused with
   `sandbox-rules-version-unsupported` and one line.
 - `sandbox_derive({ kind: "ata" | "pda", ... })` — a program-derived
@@ -655,6 +657,7 @@ resolves, the call is refused before any token is minted, with
   a dry run, `withdraw` included. A refusal's `path` is the index in the
   request's `instructions`; `transactionPath` gives the transaction's own
   index when it differs (a v0 compute budget or a fee leg comes first).
+  A `call` result adds the `plan` it built.
 - `sandbox_invoke({ action, args, idempotencyKey? })` — runs one action.
   This is the only tool that moves funds; there are no per-action tools.
   Returns the action id, status, signature, `outflowLamports` (everything
@@ -735,12 +738,23 @@ per-window caps. `a4 sandbox rules validate <file>` checks a Rules v3
 document locally.
 
 Actions (an action the owner did not grant is refused before anything is
-sent, with code `sandbox-action-not-granted` and rule `session-grant`):
+sent, with code `sandbox-action-not-granted` and rule `session-grant`; a
+`call` runs under the `invoke` grant):
 
 | `action`   | `args` |
 | ---------- | ------ |
+| `call`     | `{ program, function, input, computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` — a function `sandbox_rules` lists under the program's `functions`, with its JSON `input`; Arete plans the whole instruction sequence (account setup, refreshes, wrapping SOL) and fills the wallet and accounts. The result adds `plan` (`function`, `program`, `extension`, `pinnedSlot`, `fees`) |
 | `invoke`   | `{ instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` — 1 to 32 named instructions, exactly as `sandbox_rules` lists them, that fit one transaction (v1: 4096 bytes, 64 accounts); the wallet is the only signer |
 | `withdraw` | `{ lamports, transactionFormat? }` — SOL to the owner's withdraw address, the only destination a withdraw can have |
+
+When `sandbox_rules` lists `functions` for a program, prefer `call` to
+hand-assembling an `invoke`: a Kamino Lend deposit, for example, needs
+reserve and obligation refreshes in exact positions, and the function
+plans them. Preview it first:
+
+```json
+{"action":"call","args":{"program":"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD","function":"transactions.obligation.deposit","input":{"reserve":"<reserve>","amount":"0.1"}}}
+```
 
 There is no swap action. A swap is an `invoke` of the instructions that
 make it: a venue's own (for example PumpSwap `buy`/`sell` for a coin that

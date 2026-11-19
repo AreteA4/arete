@@ -1158,6 +1158,7 @@ pub fn render_rules(body: &Value) -> String {
                 "\n           instructions: {}",
                 allowed_instructions(program)
             ));
+            line.push_str(&functions(program));
             if let Some(limit) = program["spendLimit"].as_object() {
                 let lamports = limit
                     .get("lamports")
@@ -1200,6 +1201,32 @@ pub fn render_rules(body: &Value) -> String {
         .collect();
     if !baseline.is_empty() {
         out.push_str(&format!("  Always allowed: {}\n", baseline.join(", ")));
+    }
+    out
+}
+
+/// The functions a program entry offers (the agent view's `{ name,
+/// summary }` objects or a signed document's names), one per line, or
+/// nothing when it lists none.
+fn functions(program: &Value) -> String {
+    let lines: Vec<String> = program["functions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|function| {
+            let name = function.as_str().or_else(|| function["name"].as_str())?;
+            Some(match function["summary"].as_str() {
+                Some(summary) if !summary.trim().is_empty() => format!("{name}  {summary}"),
+                _ => name.to_string(),
+            })
+        })
+        .collect();
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from("\n           functions (the `call` action):");
+    for line in lines {
+        out.push_str(&format!("\n             {line}"));
     }
     out
 }
@@ -1715,6 +1742,41 @@ mod tests {
             "{text}"
         );
         assert!(!text.contains("Transfers"), "{text}");
+        assert!(!text.contains("functions"), "{text}");
+    }
+
+    #[test]
+    fn the_agent_view_renders_a_programs_functions() {
+        colored::control::set_override(false);
+        let text = render_rules(&json!({
+            "view": "agent",
+            "rulesFormat": 3,
+            "revision": 1,
+            "programs": [{
+                "programId": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
+                "name": "Kamino Lending",
+                "allowed": ["depositReserveLiquidityAndObligationCollateralV2"],
+                "functions": [
+                    { "name": "transactions.obligation.deposit",
+                      "summary": "Deposit into a reserve as obligation collateral" },
+                    { "name": "transactions.obligation.withdraw" }
+                ]
+            }]
+        }));
+        assert!(
+            text.contains(
+                "           instructions: depositReserveLiquidityAndObligationCollateralV2\n           functions (the `call` action):\n"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n             transactions.obligation.deposit  Deposit into a reserve as obligation collateral\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("\n             transactions.obligation.withdraw\n"),
+            "{text}"
+        );
     }
 
     /// What `rules show` printed before the API named its numbers: the
