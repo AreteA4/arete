@@ -1820,14 +1820,6 @@ impl SandboxActionName {
         }
     }
 
-    /// The grant that allows this action: a `call` runs under `invoke`.
-    pub fn grant(self) -> &'static str {
-        match self {
-            Self::Invoke | Self::Call => "invoke",
-            Self::Withdraw => "withdraw",
-        }
-    }
-
     fn invoke_path(self) -> &'static str {
         match self {
             Self::Invoke => "/actions/invoke",
