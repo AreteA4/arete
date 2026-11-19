@@ -59,7 +59,10 @@ Loop: `sandbox_status` and `sandbox_rules` first, `sandbox_preview` every
 action, then `sandbox_invoke` (the only tool that moves funds). When
 `sandbox_rules` lists `functions` for a program, run one with the `call`
 action instead of hand-assembling an `invoke`: it plans the whole instruction
-sequence (account setup, refreshes, wrapping SOL). On a refusal,
+sequence (account setup, refreshes, wrapping SOL). Each function's `input`
+lists the fields its `call` input takes (type, required, units, default and
+special values such as `"max"`); an `amount` is `{ "ui": "0.1" }` in whole
+units or `{ "raw": "100000000" }` in base units. On a refusal,
 follow its `hint`; after a `sandbox_invoke` timeout, never retry under a new
 key: resend the same request with the same `idempotencyKey` (it returns the
 original result, `replayed: true`) or look the action up with

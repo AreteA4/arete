@@ -201,7 +201,7 @@ impl SandboxRefusal {
             && out.get("shortfall").and_then(Value::as_str) == Some("token");
         let hint = token_shortfall
             .then(|| TOKEN_FUNDS_HINT.to_string())
-            .or_else(|| hint_for(&code, retryable, self.kind))
+            .or_else(|| hint_for(&code, retryable, self.kind, &out))
             .or_else(|| out.get("hint").and_then(Value::as_str).map(str::to_string))
             .unwrap_or_else(|| generic_hint(retryable, self.kind).to_string());
         // A same-key resubmit of the same request gets the original
@@ -296,7 +296,15 @@ fn generic_hint(retryable: bool, kind: CallKind) -> &'static str {
 }
 
 /// What an agent can do about a refusal.
-fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
+fn hint_for(
+    code: &str,
+    retryable: bool,
+    kind: CallKind,
+    details: &Map<String, Value>,
+) -> Option<String> {
+    if code == "sandbox-function-not-allowlisted" {
+        return Some(function_not_allowlisted(details));
+    }
     if transport_failure(code) {
         return Some(generic_hint(true, kind).to_string());
     }
@@ -368,6 +376,12 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         "sandbox-intent-invalid" | "sandbox-intent-foreign-signer" => {
             "Fix the instruction: names, args and accounts must match sandbox_rules; the sandbox wallet is the only signer. A `program` name that matches no program, or several, comes back with `candidates` (`programId` and `names`): use one of those programIds. Accounts with a `fill` in sandbox_rules can be left out; `missingAccounts` lists the ones still needed, and `accountGuidance` says per account how to find it (its `lookup`) or what Arete fills it from once another is given (`waitingOn`): give the accounts to find first."
         }
+        "sandbox-function-input-invalid" => {
+            "The function's input does not decode. sandbox_rules lists each function's `input`: give every field with `required: true`, use the field names and types it shows (an `amount` is `{ \"ui\": \"1.5\" }` in whole units of its `units` token, or `{ \"raw\": \"1500000\" }` in base units), and leave out fields it does not list (`unknownFields: \"refused\"`). The wallet field (`fill: \"wallet\"`) can be left out."
+        }
+        "sandbox-function-not-installed" => {
+            "This Arete build has no planner for that function. Use one sandbox_rules lists under the program's `functions`, or send the instructions as an `invoke`."
+        }
         "sandbox-guard-trial-failed" => {
             "The transaction fails when run. Check accounts and amounts; the guard's logs are in the details when present."
         }
@@ -405,6 +419,23 @@ fn hint_for(code: &str, retryable: bool, kind: CallKind) -> Option<String> {
         _ => return None,
     }
     .to_string())
+}
+
+/// The hint for a function the rules do not allow: the ones they do, from
+/// the refusal's `allowedFunctions` when the API sends it.
+fn function_not_allowlisted(details: &Map<String, Value>) -> String {
+    let allowed: Option<Vec<&str>> = details
+        .get("allowedFunctions")
+        .and_then(Value::as_array)
+        .map(|names| names.iter().filter_map(Value::as_str).collect());
+    match allowed.as_deref() {
+        Some([]) => "The sandbox's rules allow no functions of this program. Send its instructions as an `invoke` (sandbox_rules lists the allowed ones), or ask the owner to allow the function, in the dashboard.".to_string(),
+        Some(names) => format!(
+            "The sandbox's rules allow only these functions of this program: {}. Call one of them (sandbox_rules lists each one's `input`), or ask the owner to allow this one, in the dashboard.",
+            names.join(", ")
+        ),
+        None => "The sandbox's rules do not allow that function. Use one sandbox_rules lists under the program's `functions`, or ask the owner to allow it, in the dashboard.".to_string(),
+    }
 }
 
 /// What a sandbox read session is for.
@@ -2600,8 +2631,71 @@ pub(crate) mod tests {
             "sandbox-reads-mainnet-only",
             "sandbox-inactive",
         ] {
-            assert!(hint_for(code, false, CallKind::Read).is_some(), "{code}");
+            assert!(
+                hint_for(code, false, CallKind::Read, &Map::new()).is_some(),
+                "{code}"
+            );
         }
+    }
+
+    #[test]
+    fn a_function_refusal_lists_the_allowed_functions() {
+        let refusal = |body: Value| {
+            SandboxRefusal {
+                status: 403,
+                body,
+                kind: CallKind::Preview,
+            }
+            .to_json()
+        };
+        let allowed = refusal(json!({
+            "code": "sandbox-function-not-allowlisted",
+            "error": "the sandbox allows these functions of Kamino Lending (KLend...) only: ...",
+            "function": "transactions.obligation.borrow",
+            "allowedFunctions": [
+                "transactions.obligation.deposit",
+                "transactions.obligation.withdraw"
+            ],
+        }));
+        let hint = allowed["hint"].as_str().unwrap();
+        assert!(
+            hint.contains(
+                "only these functions of this program: transactions.obligation.deposit, transactions.obligation.withdraw."
+            ),
+            "{hint}"
+        );
+        assert_eq!(
+            allowed["allowedFunctions"][1],
+            "transactions.obligation.withdraw"
+        );
+
+        let none = refusal(json!({
+            "code": "sandbox-function-not-allowlisted",
+            "allowedFunctions": [],
+        }));
+        assert!(
+            none["hint"]
+                .as_str()
+                .unwrap()
+                .contains("allow no functions"),
+            "{none}"
+        );
+
+        // An API that sends no names still gets a hint that says where to look.
+        let older = refusal(json!({ "code": "sandbox-function-not-allowlisted" }));
+        assert!(
+            older["hint"]
+                .as_str()
+                .unwrap()
+                .contains("sandbox_rules lists under the program's `functions`"),
+            "{older}"
+        );
+
+        let invalid = refusal(json!({ "code": "sandbox-function-input-invalid" }));
+        assert!(
+            invalid["hint"].as_str().unwrap().contains("`input`"),
+            "{invalid}"
+        );
     }
 
     #[test]

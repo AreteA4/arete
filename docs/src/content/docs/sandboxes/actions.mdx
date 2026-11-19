@@ -25,7 +25,7 @@ Pass u64 amounts as decimal strings.
 ## call
 
 A function a program offers: `sandbox_rules` lists them per program as
-`functions` (`name` and `summary`). Arete plans the whole instruction
+`functions` (`name`, `summary` and `input`). Arete plans the whole instruction
 sequence (account setup, refreshes, wrapping SOL), fills the sandbox wallet
 and the accounts, and checks the result like any other action. When a
 program lists a function for what you want to do, prefer `call` to
@@ -39,10 +39,62 @@ gets them right.
   "args": {
     "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD",
     "function": "transactions.obligation.deposit",
-    "input": { "reserve": "<reserve>", "amount": "0.1" }
+    "input": { "reserve": "<reserve>", "amount": { "ui": "0.1" } }
   }
 }
 ```
+
+### Function inputs
+
+Each function's `input` describes the `input` a `call` takes, so you never
+have to guess it:
+
+```json
+{
+  "name": "transactions.obligation.withdraw",
+  "summary": "Withdraw collateral from an obligation, in liquidity units or 'max'",
+  "input": {
+    "fields": [
+      { "name": "owner", "type": "pubkey", "required": false, "fill": "wallet",
+        "description": "The obligation owner; signs" },
+      { "name": "reserve", "type": "pubkey", "required": true,
+        "description": "The reserve to withdraw from" },
+      { "name": "amount", "type": "amount", "required": true,
+        "units": "the reserve's liquidity mint",
+        "values": [{ "value": "max", "meaning": "the whole deposit" }],
+        "description": "Liquidity to withdraw" },
+      { "name": "payer", "type": "pubkey", "required": false,
+        "description": "Pays for created accounts; defaults to the owner" }
+    ],
+    "unknownFields": "refused"
+  }
+}
+```
+
+| Key             | Meaning                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------------------------------------- |
+| `name`          | The field, as `input` names it                                                                             |
+| `type`          | `pubkey`, `amount`, `bool`, `string`, an integer width (`u8`, `i32`, `i64`), or `enum`                     |
+| `required`      | Whether the call needs it                                                                                  |
+| `fill`          | `wallet`: the sandbox wallet. Leave it out; any other address there is refused                             |
+| `description`   | What the field is, and its default when the default depends on other fields                               |
+| `units`         | For an `amount`: the token a `ui` amount is in                                                             |
+| `default`       | The value used when the field is left out                                                                  |
+| `values`        | Literals the field takes besides its type, each with its `meaning` (`"max"` on Kamino withdraw and repay) |
+| `variants`      | For an `enum`: the strings it takes                                                                        |
+| `unknownFields` | `refused` (a field the schema does not list is an error) or `ignored`                                      |
+
+An `amount` is `{ "ui": "1.5" }` in whole units of its `units` token,
+`{ "raw": "1500000" }` in base units, or a bare integer (base units). A bare
+decimal string such as `"0.1"` is refused. A function listed without `input`
+(an older server) is described only by its summary. `a4 sandbox rules show`
+prints each function as a signature, such as
+`transactions.obligation.withdraw(reserve: pubkey, amount: amount | "max", payer?: pubkey)`.
+
+A function the rules do not allow is refused with
+`sandbox-function-not-allowlisted`; its `allowedFunctions` lists the ones
+they do. Input that does not match the schema is refused with
+`sandbox-function-input-invalid`.
 
 | Argument                        | Meaning                                                      |
 | ------------------------------- | ------------------------------------------------------------ |
