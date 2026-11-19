@@ -6,6 +6,32 @@
 
 * **cli,mcp:** sandbox Rules v2 is no longer supported. `a4 sandbox rules validate`, `a4 sandbox rules show` and the MCP `sandbox_rules` tool refuse a version 2 document (from a file or from the API) with one line, `Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).`, and exit 1 (`sandbox-rules-version-unsupported` with `--json` / in MCP). Rules v3 is the only format.
 
+## [0.58.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.57.0...a4-cli-v0.58.0) (2026-11-19)
+
+
+### Features
+
+* **cli,mcp:** show sandbox function input schemas ([954ce54](https://github.com/AreteA4/arete/commit/954ce54fbea0db8e4ac9514d6b85acd951c0b676))
+* **cli,mcp:** show sandbox function input schemas ([dcdb273](https://github.com/AreteA4/arete/commit/dcdb273f09fd89bff99c366fec47b19f6f51fb46))
+* **cli:** `a4 sandbox status`, decoded obligations and instruction signatures ([777ffdd](https://github.com/AreteA4/arete/commit/777ffddbd15c43d58ee6ad02cdd1f0a49cb65739))
+* **mcp:** run program functions from the sandbox tools with a `call` action ([43efe26](https://github.com/AreteA4/arete/commit/43efe26770a4ae327d5204f12040609928fb8539))
+* **mcp:** run program functions from the sandbox tools with a `call` action ([5ceaef5](https://github.com/AreteA4/arete/commit/5ceaef514f21417c9913b66fe540672870439e9a))
+
+
+### Bug Fixes
+
+* **cli,mcp:** sandbox CLI and MCP papercuts ([79d1ab6](https://github.com/AreteA4/arete/commit/79d1ab65969b4fa920979d390ba5a1cfbce852d5))
+* **cli:** the npm launcher no longer counts as a PATH shadow ([e1d3299](https://github.com/AreteA4/arete/commit/e1d3299987d4d371fce5d19384650daa6addd77c))
+* **cli:** the npm launcher no longer counts as a PATH shadow ([4307468](https://github.com/AreteA4/arete/commit/4307468859ff39534bed2c1aaff1b43e483ca651))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.57.0 to 0.58.0
+    * arete-mcp bumped from 0.57.0 to 0.58.0
+
 ## [0.57.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.56.0...a4-cli-v0.57.0) (2026-11-14)
 
 
