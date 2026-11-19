@@ -109,19 +109,59 @@ pub fn path_contains(path_env: &OsStr, dir: &Path) -> bool {
 /// Another `a4` that would shadow `install_dir/a4` on this PATH: the first
 /// PATH entry *before* `install_dir` (or anywhere, when `install_dir` is not
 /// on PATH) that contains an executable `a4`/`a4.exe` and is not
-/// `install_dir` itself. Typical hits: `~/.cargo/bin/a4`, an npm global shim.
+/// `install_dir` itself. Typical hits: `~/.cargo/bin/a4`, an older binary
+/// copied elsewhere.
+///
+/// A PATH entry is `install_dir` when it matches textually (after dropping a
+/// trailing separator) or when both resolve to the same directory, so a
+/// symlinked home or a doubled separator still counts. The `@usearete/a4`
+/// npm launcher ([`is_npm_launcher`]) is never a shadow: it runs the binary
+/// the install receipt records, which is the one installed here. npx and a
+/// global npm install both put it on PATH as `a4`. On Windows npm writes
+/// `a4.cmd`/`a4.ps1` shims, which are not `a4.exe` and so never match.
 pub fn shadowing_binary(path_env: &OsStr, install_dir: &Path) -> Option<PathBuf> {
     let wanted = normalise(install_dir);
+    let wanted_resolved = std::fs::canonicalize(install_dir).ok();
     for entry in split_path(path_env) {
-        if normalise(&entry) == wanted {
+        if normalise(&entry) == wanted
+            || wanted_resolved
+                .as_ref()
+                .is_some_and(|wanted| std::fs::canonicalize(&entry).ok().as_ref() == Some(wanted))
+        {
             return None;
         }
         let candidate = entry.join(binary_file_name());
-        if is_executable_file(&candidate) {
+        if is_executable_file(&candidate) && !is_npm_launcher(&candidate) {
             return Some(candidate);
         }
     }
     None
+}
+
+/// The comment that marks the npm package's launcher script
+/// (`packages/arete/bin/a4.js`).
+const NPM_LAUNCHER_MARKER: &[u8] = b"@usearete/a4 launcher";
+/// How much of a candidate is read looking for [`NPM_LAUNCHER_MARKER`],
+/// which sits in the script's first lines.
+const NPM_LAUNCHER_SCAN_BYTES: u64 = 4096;
+
+/// Whether `candidate` is the `@usearete/a4` npm launcher: a node script
+/// that runs the binary recorded in `~/.arete/receipt.json`. It resolves
+/// (through npm's `.bin` symlink) to `@usearete/a4/bin/a4.js`, or its first
+/// few KB carry the launcher's marker comment.
+fn is_npm_launcher(candidate: &Path) -> bool {
+    let resolved = std::fs::canonicalize(candidate).unwrap_or_else(|_| candidate.to_path_buf());
+    if resolved.ends_with(Path::new("@usearete").join("a4").join("bin").join("a4.js")) {
+        return true;
+    }
+    use std::io::Read;
+    let mut head = Vec::new();
+    let read = std::fs::File::open(&resolved)
+        .and_then(|file| file.take(NPM_LAUNCHER_SCAN_BYTES).read_to_end(&mut head));
+    read.is_ok()
+        && head
+            .windows(NPM_LAUNCHER_MARKER.len())
+            .any(|window| window == NPM_LAUNCHER_MARKER)
 }
 
 fn normalise(path: &Path) -> PathBuf {
@@ -192,6 +232,85 @@ mod tests {
         );
         assert!(!path_contains(&path, &install_dir));
         assert!(path_contains(&joined(&[&install_dir]), &install_dir));
+    }
+
+    #[cfg(unix)]
+    fn executable(path: &Path, contents: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, contents).unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    const LAUNCHER: &str = "#!/usr/bin/env node\n\"use strict\";\n\n// @usearete/a4 launcher. Scriptless bootstrapper for the Arete CLI (`a4`):\n";
+
+    /// `npx @usearete/a4 install` (and a global npm install) puts npm's
+    /// `.bin/a4`, a symlink to the launcher script, first on PATH. The
+    /// launcher runs the installed binary, so it shadows nothing; a real
+    /// `a4` before the install dir still does.
+    #[cfg(unix)]
+    #[test]
+    fn the_npm_launcher_is_not_a_shadow() {
+        let root = tempfile::tempdir().unwrap();
+        let install_dir = root.path().join("local-bin");
+        executable(&install_dir.join("a4"), "#!/bin/sh\n");
+        let package = root.path().join("npx/node_modules/@usearete/a4");
+        executable(&package.join("bin/a4.js"), LAUNCHER);
+        let npm_bin = root.path().join("npx/node_modules/.bin");
+        std::fs::create_dir_all(&npm_bin).unwrap();
+        std::os::unix::fs::symlink("../@usearete/a4/bin/a4.js", npm_bin.join("a4")).unwrap();
+        let joined =
+            |dirs: &[&PathBuf]| std::env::join_paths(dirs.iter().map(|d| d.as_os_str())).unwrap();
+
+        let path = joined(&[&npm_bin, &install_dir]);
+        assert_eq!(shadowing_binary(&path, &install_dir), None);
+
+        // Recognised by its marker alone, wherever the script lives (a
+        // checkout of the package, a renamed directory).
+        let checkout = root.path().join("checkout/bin");
+        executable(&checkout.join("a4"), LAUNCHER);
+        let path = joined(&[&checkout, &install_dir]);
+        assert_eq!(shadowing_binary(&path, &install_dir), None);
+
+        // A real binary between the launcher and the install dir still
+        // shadows it.
+        let cargo_bin = root.path().join("cargo-bin");
+        executable(&cargo_bin.join("a4"), "#!/bin/sh\nexec cargo-built\n");
+        let path = joined(&[&npm_bin, &cargo_bin, &install_dir]);
+        assert_eq!(
+            shadowing_binary(&path, &install_dir),
+            Some(cargo_bin.join("a4"))
+        );
+    }
+
+    /// The install dir is recognised on PATH through a symlink or a doubled
+    /// separator, so an `a4` after it is not reported.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_install_dir_is_recognised() {
+        let root = tempfile::tempdir().unwrap();
+        let real = root.path().join("real-bin");
+        executable(&real.join("a4"), "#!/bin/sh\n");
+        let link = root.path().join("link-bin");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let later = root.path().join("later");
+        executable(&later.join("a4"), "#!/bin/sh\n");
+        let joined =
+            |dirs: &[&PathBuf]| std::env::join_paths(dirs.iter().map(|d| d.as_os_str())).unwrap();
+
+        // PATH names the link; the install dir is the real directory.
+        assert_eq!(shadowing_binary(&joined(&[&link, &later]), &real), None);
+        // And the other way round.
+        assert_eq!(shadowing_binary(&joined(&[&real, &later]), &link), None);
+        // A doubled separator.
+        let doubled = PathBuf::from(format!("{}//real-bin", root.path().display()));
+        assert_eq!(shadowing_binary(&joined(&[&doubled, &later]), &real), None);
+        // Not on PATH at all: the other `a4` is still found.
+        assert_eq!(
+            shadowing_binary(&joined(&[&later]), &link),
+            Some(later.join("a4"))
+        );
     }
 
     #[test]

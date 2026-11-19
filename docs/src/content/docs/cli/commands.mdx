@@ -409,7 +409,7 @@ a4 self install [--install-dir <DIR>] [--no-modify-path] [--source <sh|ps1|npm|m
 | `--source <name>`                       | Recorded in the receipt                                                                                                                                         |
 | `--force`                               | Copy even when the target is already this binary (a re-run normally skips the copy)                                                                             |
 
-Writes `~/.arete/receipt.json` (`version`, `binary`, `installDir`, `platform`, `source`, `verified`, `modifyPath`, `installedAt`), adds `~/.local/bin` to `~/.profile` and your shell's rc file (or `HKCU\Environment\Path` on Windows, and `$GITHUB_PATH` in Actions) when it is not already there, and always ends stdout with the `A4_BIN=` and `export PATH=` lines. With `--json` the receipt plus `pathModified` and `shadowedBy` precede them.
+Writes `~/.arete/receipt.json` (`version`, `binary`, `installDir`, `platform`, `source`, `verified`, `modifyPath`, `installedAt`), adds `~/.local/bin` to `~/.profile` and your shell's rc file (or `HKCU\Environment\Path` on Windows, and `$GITHUB_PATH` in Actions) when it is not already there, and always ends stdout with the `A4_BIN=` and `export PATH=` lines. With `--json` the receipt plus `pathModified` and `shadowedBy` (another `a4` earlier on PATH; the `@usearete/a4` npm launcher is not one, since it runs the installed binary) precede them.
 
 ### a4 self update
 
