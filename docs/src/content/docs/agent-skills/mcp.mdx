@@ -455,6 +455,13 @@ protocol's own fees (history items don't carry it). `guardPipeline` (such as `ex
 pipeline that checked the action, null or absent on older actions and on
 actions that never reached the guard (a rejected one, for example).
 
+A passing `sandbox_preview` also lists `newAccounts` and `closedAccounts`
+with their rent (a temporary account the transaction creates and closes is
+in `closedAccounts` with `temporary: true`), `newAccountRentLamports`,
+`closedAccountRentLamports` and `outflowParts`. A refused `call` carries
+`stages`, `failedStage`, the `plan` as far as it got and `guardPipeline`.
+See [Preview results](/sandboxes/actions/#preview-results).
+
 ### Reading through a sandbox
 
 `sandbox_reads` lists the programs a sandbox can read: exactly the programs
