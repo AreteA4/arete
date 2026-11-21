@@ -110,6 +110,23 @@ A function the rules do not allow is refused with
 they do. Input that does not match the schema is refused with
 `sandbox-function-input-invalid`.
 
+A function may also list `instructions`: the program's instructions it
+builds for every input. The rules must allow each one, so `sandbox_rules`
+adds `missingInstructions` to a function that builds one they do not. A
+call to it is refused with `sandbox-function-instruction-not-allowlisted`
+before anything is planned; only the owner can allow the instruction, so
+use another function, or an `invoke` of instructions the rules allow,
+until then.
+
+SPL Token, Token-2022 and the System program are on the sandbox's baseline
+(`baseline` in `sandbox_rules`) for account plumbing such as wrapping SOL,
+but the baseline grants none of their functions. A function of one of them
+that the rules do not list is refused with `sandbox-function-not-allowlisted`
+and `allowedFunctions: []`; its `grant` names the program, the function and
+the instructions the owner adds to allow it. A program with no such function
+answers `sandbox-function-not-installed`: send the instruction itself as an
+`invoke`.
+
 | Argument                        | Meaning                                                      |
 | ------------------------------- | ------------------------------------------------------------ |
 | `program`                       | The program id                                               |

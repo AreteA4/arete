@@ -69,13 +69,16 @@ naming the matching `a4` command.
 
 ## Rules
 
-| Code                                                                                 | Meaning                                                                |
-| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------- |
-| `sandbox-program-not-allowlisted`, `sandbox-guard-program-not-allowlisted`           | The program isn't in the rules. Only the owner can add it.             |
-| `sandbox-instruction-not-allowlisted`, `sandbox-guard-instruction-not-allowlisted`   | That instruction isn't allowed for the program.                        |
-| `sandbox-guard-outflow-exceeded`, `sandbox-limit-per-action`, `sandbox-limit-window` | Over a limit. Use a smaller amount; `remaining` says how much is left. |
-| `sandbox-rules-missing`, `sandbox-rules-unsigned`                                    | The owner must set or re-sign the rules                                |
-| `sandbox-paused`                                                                     | The sandbox is paused. Only the owner can resume it.                   |
+| Code                                                                                 | Meaning                                                                                                                                                             |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-program-not-allowlisted`, `sandbox-guard-program-not-allowlisted`           | The program isn't in the rules or the baseline. Only the owner can add it.                                                                                          |
+| `sandbox-instruction-not-allowlisted`, `sandbox-guard-instruction-not-allowlisted`   | That instruction isn't allowed for the program. For a `call`, the message names the function that built it.                                                         |
+| `sandbox-function-not-allowlisted`                                                   | The rules don't grant that function; `allowedFunctions` lists the ones they do. For a baseline program, `grant` names the program, function and instructions to add |
+| `sandbox-function-instruction-not-allowlisted`                                       | The rules grant the function but not an instruction it builds (`missingInstructions`). Only the owner can allow it; until then use another function                 |
+| `sandbox-function-not-installed`                                                     | The program has no such function. Send the instruction as an `invoke`                                                                                               |
+| `sandbox-guard-outflow-exceeded`, `sandbox-limit-per-action`, `sandbox-limit-window` | Over a limit. Use a smaller amount; `remaining` says how much is left.                                                                                              |
+| `sandbox-rules-missing`, `sandbox-rules-unsigned`                                    | The owner must set or re-sign the rules                                                                                                                             |
+| `sandbox-paused`                                                                     | The sandbox is paused. Only the owner can resume it.                                                                                                                |
 
 ## The request
 
