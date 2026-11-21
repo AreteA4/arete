@@ -8,17 +8,25 @@
 //! do), so they work for an agent the sandbox's owner has granted access.
 //! The sandbox resolves as for the MCP tools: `--sandbox`, then the one
 //! chosen with `a4 sandbox use` for this directory, then `ARETE_SANDBOX_ID`,
-//! then the only active sandbox granted. They never run an action: actions
-//! go through the MCP `sandbox_invoke` tool. `rules validate` reads a local
-//! file and sends nothing.
+//! then the only active sandbox granted.
+//!
+//! `preview` and `invoke` are the one-shot forms of the MCP `sandbox_preview`
+//! and `sandbox_invoke` tools, for hosts that cannot run a stdio MCP server:
+//! the same `invoke`, `call` and `withdraw` actions, sent to the same routes
+//! through the same client, with the same results and refusals (`--json`
+//! prints them as the tools return them). `action` looks one up by id or
+//! idempotency key, as `sandbox_action` does. `rules validate` reads a
+//! local file and sends nothing.
 
 use std::io::Read;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};
-use arete_mcp::sandbox::{ledger, rules, SandboxClient, SandboxRefusal};
+use arete_mcp::sandbox::{
+    ledger, rules, ActionLookup, SandboxActionName, SandboxClient, SandboxRefusal,
+};
 use chrono::{DateTime, Duration, Utc};
-use clap::{Args, Subcommand};
+use clap::{ArgGroup, Args, Subcommand, ValueEnum};
 use colored::Colorize;
 use serde_json::{json, Value};
 
@@ -52,6 +60,137 @@ pub enum SandboxCommands {
     /// account decode` and their stacks with `a4 get` / `a4 stream`, each with
     /// --sandbox
     Reads(SandboxTarget),
+    /// Dry-run one action: every check, nothing signed or recorded
+    ///
+    /// Builds the transaction and runs every check without signing, sending
+    /// or recording anything. Takes the action and arguments `a4 sandbox
+    /// invoke` takes: --call (a function `a4 sandbox rules show` lists),
+    /// --invoke (named program instructions) or --withdraw (SOL to the
+    /// owner). Prints whether it passes and what the wallet would lose, or
+    /// the refusal with its code, rule, requestId and, for a call, the
+    /// stages it got through. Exits 1 when it does not pass. --json prints
+    /// the result as the MCP `sandbox_preview` tool returns it.
+    ///
+    /// Examples:
+    ///   a4 sandbox preview --call <program> transactions.obligation.deposit \
+    ///     --input '{"reserve":"<reserve>","amount":{"ui":"0.1"}}'
+    ///   a4 sandbox preview --call <program> transactions.obligation.deposit --input @deposit.json
+    ///   a4 sandbox preview --invoke @instructions.json
+    ///   a4 sandbox preview --withdraw 50000000
+    #[command(verbatim_doc_comment)]
+    Preview(ActionArgs),
+    /// Run one action from the sandbox wallet and wait for it to confirm
+    ///
+    /// Builds, checks, signs and sends the transaction. Takes the same
+    /// action flags as `a4 sandbox preview`: preview first. Every run has an
+    /// idempotency key (--idempotency-key, else generated), printed on
+    /// success and on refusal. The same request under the same key never
+    /// runs twice and returns the original result (`replayed: true`), so
+    /// after a timeout retry with the same key, never a new one, or look the
+    /// action up with `a4 sandbox action --idempotency-key`. Exits 1 when its
+    /// transaction failed; a refusal exits 77 (not granted or not signed
+    /// in), 75 (rate limited) or 1. --json prints the result as the MCP
+    /// `sandbox_invoke` tool returns it.
+    ///
+    /// Examples:
+    ///   a4 sandbox invoke --call <program> transactions.obligation.deposit --input @deposit.json
+    ///   a4 sandbox invoke --withdraw 50000000 --idempotency-key withdraw-2026-11-21
+    #[command(verbatim_doc_comment)]
+    Invoke(InvokeArgs),
+    /// Look one action up by its id or the idempotency key it ran under
+    ///
+    /// Use it after a timeout instead of retrying under a new key: status,
+    /// reject code, signature, what left the wallet and the guard pipeline.
+    Action(ActionLookupArgs),
+}
+
+/// One action, as `a4 sandbox preview` and `a4 sandbox invoke` take it:
+/// exactly one of --call, --invoke and --withdraw.
+#[derive(Args, Debug, Clone, Default)]
+#[command(group(
+    ArgGroup::new("sandbox_action")
+        .required(true)
+        .args(["call", "invoke", "withdraw"])
+))]
+pub struct ActionArgs {
+    #[command(flatten)]
+    pub target: SandboxTarget,
+
+    /// Run a function a program offers: the program and the function, as
+    /// `a4 sandbox rules show` lists them with each function's input. Arete
+    /// plans the instructions and fills the wallet and accounts.
+    #[arg(long, num_args = 2, value_names = ["PROGRAM", "FUNCTION"])]
+    pub call: Option<Vec<String>>,
+
+    /// The --call function's input: JSON, @FILE, or - for stdin
+    #[arg(
+        long,
+        value_name = "JSON|@FILE|-",
+        requires = "call",
+        conflicts_with_all = ["invoke", "withdraw"]
+    )]
+    pub input: Option<String>,
+
+    /// Run named program instructions: the invoke arguments as JSON
+    /// (`{"instructions":[{program, instruction, args?, accounts?}]}`, or the
+    /// instructions array alone), @FILE, or - for stdin
+    #[arg(long, value_name = "JSON|@FILE|-")]
+    pub invoke: Option<String>,
+
+    /// Send SOL to the owner's withdraw address (the only destination a
+    /// withdraw can have): the amount in lamports
+    #[arg(long, value_name = "LAMPORTS")]
+    pub withdraw: Option<u64>,
+
+    /// The transaction format (default: the API's, Solana v1)
+    #[arg(long, value_enum)]
+    pub transaction_format: Option<TransactionFormat>,
+
+    /// The compute unit limit for --call or --invoke
+    #[arg(long, value_name = "UNITS", conflicts_with = "withdraw")]
+    pub compute_unit_limit: Option<u32>,
+
+    /// The compute unit price for --call or --invoke, in micro-lamports
+    #[arg(long, value_name = "MICRO_LAMPORTS", conflicts_with = "withdraw")]
+    pub compute_unit_price: Option<u64>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+pub struct InvokeArgs {
+    #[command(flatten)]
+    pub action: ActionArgs,
+
+    /// Your key for this action (1 to 128 characters). Generated when left
+    /// out; either way it is printed. Retry a timed-out run with the same key.
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(Args, Debug, Clone, Default)]
+#[command(group(
+    ArgGroup::new("lookup")
+        .required(true)
+        .args(["action_id", "idempotency_key"])
+))]
+pub struct ActionLookupArgs {
+    #[command(flatten)]
+    pub target: SandboxTarget,
+
+    /// The action's id, as `a4 sandbox invoke` printed it
+    #[arg(value_name = "ACTION_ID")]
+    pub action_id: Option<String>,
+
+    /// Or the idempotency key it ran under
+    #[arg(long, value_name = "KEY")]
+    pub idempotency_key: Option<String>,
+}
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionFormat {
+    /// Solana v1 transactions: up to 4096 bytes and 64 accounts
+    V1,
+    /// The older v0 format: up to 1232 bytes
+    V0,
 }
 
 #[derive(Args, Debug, Clone, Default)]
@@ -146,6 +285,9 @@ pub fn run(command: SandboxCommands, config: &str, json: bool) -> Result<()> {
         SandboxCommands::Rules(RulesCommands::Show(target)) => rules_show(target, json),
         SandboxCommands::Rules(RulesCommands::Validate { file }) => rules_validate(&file, json),
         SandboxCommands::Reads(target) => reads_show(target, config, json),
+        SandboxCommands::Preview(args) => preview(args, json),
+        SandboxCommands::Invoke(args) => invoke(args, json),
+        SandboxCommands::Action(args) => action_lookup(args, json),
     }
 }
 
@@ -286,14 +428,69 @@ pub fn cli_hint(refusal: &SandboxRefusal) -> Option<&'static str> {
     })
 }
 
+/// `hint` with the MCP tool names it mentions replaced by the `a4 sandbox`
+/// commands that do the same.
+pub fn cli_terms(hint: &str) -> String {
+    // Longest first, so a name is never matched inside a longer one.
+    const TOOLS: [(&str, &str); 10] = [
+        ("sandbox_holdings", "`a4 sandbox holdings`"),
+        ("sandbox_history", "`a4 sandbox history`"),
+        ("sandbox_preview", "`a4 sandbox preview`"),
+        ("sandbox_invoke", "`a4 sandbox invoke`"),
+        ("sandbox_action", "`a4 sandbox action`"),
+        ("sandbox_status", "`a4 sandbox status`"),
+        ("sandbox_select", "`a4 sandbox use`"),
+        ("sandbox_rules", "`a4 sandbox rules show`"),
+        ("sandbox_reads", "`a4 sandbox reads`"),
+        ("sandbox_list", "`a4 sandbox list`"),
+    ];
+    let mut out = String::with_capacity(hint.len());
+    let mut rest = hint;
+    'scan: while !rest.is_empty() {
+        let at_word_start = !out
+            .chars()
+            .last()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+        if at_word_start {
+            for (tool, command) in TOOLS {
+                // A tool name, alone or in backticks, not part of a longer word.
+                for quoted in [true, false] {
+                    let name = if quoted {
+                        format!("`{tool}`")
+                    } else {
+                        tool.to_string()
+                    };
+                    let Some(after) = rest.strip_prefix(name.as_str()) else {
+                        continue;
+                    };
+                    if !quoted
+                        && after
+                            .chars()
+                            .next()
+                            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        continue;
+                    }
+                    out.push_str(command);
+                    rest = after;
+                    continue 'scan;
+                }
+            }
+        }
+        let next = rest.chars().next().unwrap_or_default();
+        out.push(next);
+        rest = &rest[next.len_utf8()..];
+    }
+    out.replace("an idempotencyKey", "an --idempotency-key")
+        .replace("a new idempotencyKey", "a new --idempotency-key")
+        .replace("the idempotencyKey", "the --idempotency-key")
+}
+
 /// Print a refusal the way API errors are printed (the problem as JSON on
 /// stdout with --json, else the message and a hint on stderr) and exit
 /// with 77 for auth refusals, 75 when rate limited, else 1.
 fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
-    let mut shown = refusal.to_json();
-    if let Some(hint) = cli_hint(&refusal) {
-        shown["hint"] = json!(hint);
-    }
+    let shown = shown_refusal(&refusal);
     if json {
         println!("{shown}");
     } else {
@@ -314,12 +511,457 @@ fn refused(refusal: SandboxRefusal, json: bool) -> anyhow::Error {
             );
         }
     }
+    refusal_exit(&refusal)
+}
+
+/// The refusal as the MCP tools return it, with its hint in CLI terms.
+fn shown_refusal(refusal: &SandboxRefusal) -> Value {
+    let mut shown = refusal.to_json();
+    let hint = cli_hint(refusal)
+        .map(str::to_string)
+        .or_else(|| shown["hint"].as_str().map(cli_terms));
+    if let Some(hint) = hint {
+        shown["hint"] = json!(hint);
+    }
+    shown
+}
+
+/// 77 for auth refusals, 75 when rate limited, else 1.
+fn refusal_exit(refusal: &SandboxRefusal) -> anyhow::Error {
     let code = match refusal.status {
         401 | 403 => 77,
         429 => 75,
         _ => 1,
     };
     ExitCode(code).into()
+}
+
+// ---- preview, invoke and action ----------------------------------------------
+
+impl ActionArgs {
+    /// The action and its `args`, as the MCP tools take them.
+    pub fn action(&self) -> Result<(SandboxActionName, Value)> {
+        let (action, mut args) = if let Some(call) = &self.call {
+            let [program, function] = call.as_slice() else {
+                anyhow::bail!("--call takes the program and the function");
+            };
+            let mut args = json!({ "program": program, "function": function });
+            if let Some(input) = &self.input {
+                args["input"] = json_argument("--input", input)?;
+            }
+            (SandboxActionName::Call, args)
+        } else if let Some(invoke) = &self.invoke {
+            let args = match json_argument("--invoke", invoke)? {
+                // The instructions alone.
+                Value::Array(instructions) => json!({ "instructions": instructions }),
+                Value::Object(args) => Value::Object(args),
+                other => anyhow::bail!(
+                    "--invoke takes a JSON object (`{{\"instructions\": [...]}}`) or an array of instructions, not {other}"
+                ),
+            };
+            (SandboxActionName::Invoke, args)
+        } else if let Some(lamports) = self.withdraw {
+            // u64 amounts go as decimal strings.
+            (
+                SandboxActionName::Withdraw,
+                json!({ "lamports": lamports.to_string() }),
+            )
+        } else {
+            anyhow::bail!("give one of --call, --invoke or --withdraw");
+        };
+        let object = args.as_object_mut().expect("action args are an object");
+        if let Some(format) = self.transaction_format {
+            let format = match format {
+                TransactionFormat::V1 => "v1",
+                TransactionFormat::V0 => "v0",
+            };
+            object.insert("transactionFormat".into(), json!(format));
+        }
+        if let Some(limit) = self.compute_unit_limit {
+            object.insert("computeUnitLimit".into(), json!(limit));
+        }
+        if let Some(price) = self.compute_unit_price {
+            object.insert(
+                "computeUnitPriceMicroLamports".into(),
+                json!(price.to_string()),
+            );
+        }
+        Ok((action, args))
+    }
+}
+
+/// A JSON flag value: inline JSON, `@FILE`, or `-` for stdin.
+fn json_argument(flag: &str, value: &str) -> Result<Value> {
+    let (text, source) = if value == "-" {
+        let mut text = String::new();
+        std::io::stdin()
+            .read_to_string(&mut text)
+            .with_context(|| format!("Failed to read {flag} from stdin"))?;
+        (text, "stdin".to_string())
+    } else if let Some(path) = value.strip_prefix('@') {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("Failed to read {flag} from {path}"))?;
+        (text, path.to_string())
+    } else {
+        (value.to_string(), "the argument".to_string())
+    };
+    serde_json::from_str(&text).with_context(|| format!("{flag}: {source} is not valid JSON"))
+}
+
+/// A fresh idempotency key for a run that was not given one.
+fn new_cli_idempotency_key() -> String {
+    format!("a4-{}", uuid::Uuid::new_v4())
+}
+
+fn preview(args: ActionArgs, json: bool) -> Result<()> {
+    let (action, body) = args.action()?;
+    let client = SandboxClient::from_env().targeting(args.target.sandbox.as_deref());
+    let result = runtime()?.block_on(client.preview(action, body));
+    let body = result.map_err(|refusal| action_refused(&refusal, None, json))?;
+    let passed = body["pass"] != false;
+    if json {
+        println!("{body}");
+    } else {
+        print!("{}", render_preview(&body, action));
+    }
+    if passed {
+        Ok(())
+    } else {
+        Err(ExitCode(1).into())
+    }
+}
+
+fn invoke(args: InvokeArgs, json: bool) -> Result<()> {
+    let (action, body) = args.action.action()?;
+    let key = args
+        .idempotency_key
+        .clone()
+        .unwrap_or_else(new_cli_idempotency_key);
+    let client = SandboxClient::from_env().targeting(args.action.target.sandbox.as_deref());
+    let result = runtime()?.block_on(client.invoke(action, body, &key));
+    let body = result.map_err(|refusal| action_refused(&refusal, Some(&key), json))?;
+    let body = arete_mcp::sandbox::with_idempotency_key(body, Some(&key));
+    if json {
+        println!("{body}");
+    } else {
+        print!("{}", render_invoke(&body, action));
+    }
+    if body["status"] == "failed" {
+        Err(ExitCode(1).into())
+    } else {
+        Ok(())
+    }
+}
+
+fn action_lookup(args: ActionLookupArgs, json: bool) -> Result<()> {
+    let lookup = match (args.action_id, args.idempotency_key) {
+        (Some(id), _) => ActionLookup::Id(id),
+        (None, Some(key)) => ActionLookup::IdempotencyKey(key),
+        (None, None) => anyhow::bail!("give the action id or --idempotency-key"),
+    };
+    let client = SandboxClient::from_env().targeting(args.target.sandbox.as_deref());
+    let body = runtime()?
+        .block_on(client.action(&lookup))
+        .map_err(|refusal| action_refused(&refusal, None, json))?;
+    if json {
+        println!("{body}");
+    } else {
+        print!("{}", render_action(&body));
+    }
+    Ok(())
+}
+
+/// Print an action's refusal: with --json, the refusal as the MCP tools
+/// return it (and `idempotencyKey` for a run); else the message, what
+/// refused it (rule, requestId, the stages a call got through, the guard
+/// pipeline), the key and the hint, on stderr.
+fn action_refused(
+    refusal: &SandboxRefusal,
+    idempotency_key: Option<&str>,
+    json: bool,
+) -> anyhow::Error {
+    let shown = arete_mcp::sandbox::with_idempotency_key(shown_refusal(refusal), idempotency_key);
+    if json {
+        println!("{shown}");
+    } else {
+        eprint!("{}", render_refusal(&shown));
+    }
+    refusal_exit(refusal)
+}
+
+/// The human rendering of an action's refusal, `shown` as
+/// [`shown_refusal`] gives it.
+pub fn render_refusal(shown: &Value) -> String {
+    let code = shown["code"].as_str().unwrap_or("sandbox-request-refused");
+    let message = shown["error"]
+        .as_str()
+        .or_else(|| shown["message"].as_str())
+        .unwrap_or("the Arete API refused the request");
+    let mut out = format!("{} {message} ({code})\n", "Error:".red().bold());
+    let row = |out: &mut String, label: &str, value: &str| {
+        out.push_str(&format!("  {label:<16}{value}\n"));
+    };
+    for (label, key) in [
+        ("Rule", "rule"),
+        ("Program", "program"),
+        ("Instruction", "instruction"),
+        ("Mint", "mint"),
+    ] {
+        if let Some(value) = shown[key].as_str() {
+            row(&mut out, label, value);
+        }
+    }
+    if let Some(path) = shown["path"].as_u64() {
+        row(&mut out, "Instruction #", &path.to_string());
+    }
+    for (label, key) in [
+        ("Attempted", "attempted"),
+        ("Cap", "cap"),
+        ("Remaining", "remaining"),
+    ] {
+        if let Some(value) = amount(&shown[key]) {
+            row(&mut out, label, &value.to_string());
+        }
+    }
+    if let Some(stages) = shown["stages"].as_array() {
+        let names: Vec<String> = stages
+            .iter()
+            .map(|stage| {
+                let name = stage["name"]
+                    .as_str()
+                    .or_else(|| stage["stage"].as_str())
+                    .or_else(|| stage.as_str())
+                    .unwrap_or("?");
+                match stage["code"].as_str() {
+                    Some(code) => format!("{name} ({code})"),
+                    None => name.to_string(),
+                }
+            })
+            .collect();
+        row(&mut out, "Stages", &names.join(" → "));
+    }
+    if let Some(stage) = shown["failedStage"].as_str() {
+        let reason = shown["stages"]
+            .as_array()
+            .and_then(|stages| stages.last())
+            .and_then(|stage| stage["reason"].as_str());
+        match reason {
+            Some(reason) => row(&mut out, "Refused at", &format!("{stage}: {reason}")),
+            None => row(&mut out, "Refused at", stage),
+        }
+    }
+    if let Some(pipeline) = shown["guardPipeline"].as_str() {
+        row(&mut out, "Guard pipeline", pipeline);
+    }
+    if let Some(change) = amount(&shown["walletLamportsChange"]) {
+        row(
+            &mut out,
+            "SOL change",
+            &format!("{} SOL", signed_units(change, 9)),
+        );
+    }
+    if shown["replayed"] == true {
+        row(
+            &mut out,
+            "Replayed",
+            "yes: the recorded answer for this key",
+        );
+    }
+    if let Some(request) = shown["requestId"].as_str() {
+        row(&mut out, "Request id", request);
+    }
+    if let Some(key) = shown["idempotencyKey"].as_str() {
+        row(&mut out, "Idempotency key", key);
+    }
+    if let Some(hint) = shown["hint"].as_str() {
+        out.push_str(hint);
+        out.push('\n');
+    }
+    out
+}
+
+/// The wallet's change, what it spent and the fees, as preview and invoke
+/// results report them.
+fn wallet_rows(out: &mut String, body: &Value) {
+    let row = |out: &mut String, label: &str, value: &str| {
+        out.push_str(&format!("  {label:<16}{value}\n"));
+    };
+    let sol = |raw: i128| format!("{} SOL", units(raw, 9));
+    if let Some(change) = amount(&body["walletLamportsChange"]) {
+        row(
+            out,
+            "SOL change",
+            &format!("{} SOL", signed_units(change, 9)),
+        );
+    }
+    if let Some(spent) = amount(&body["outflowLamports"]) {
+        row(out, "Spent", &sol(spent));
+    }
+    if let Some(fee) = amount(&body["networkFeeLamports"]) {
+        row(out, "Network fee", &format!("{} (included)", sol(fee)));
+    }
+    if let Some(fee) = amount(&body["feeLamports"]).filter(|fee| *fee != 0) {
+        row(out, "Protocol fees", &sol(fee));
+    }
+    if let Some(rent) = amount(&body["newAccountRentLamports"]).filter(|rent| *rent != 0) {
+        let count = body["newAccounts"].as_array().map_or(0, Vec::len);
+        row(
+            out,
+            "New account rent",
+            &format!("{} ({count} accounts)", sol(rent)),
+        );
+    }
+    if let Some(rent) = amount(&body["closedAccountRentLamports"]).filter(|rent| *rent != 0) {
+        row(out, "Rent refunded", &sol(rent));
+    }
+    match &body["tokenOutflow"] {
+        Value::Object(mints) => {
+            for (mint, raw) in mints {
+                if let Some(raw) = amount(raw) {
+                    row(out, "Token out", &format!("{mint}  {raw} (raw)"));
+                }
+            }
+        }
+        Value::Array(entries) => {
+            for entry in entries {
+                if let (Some(mint), Some(raw)) = (
+                    entry["mint"].as_str(),
+                    amount(&entry["amount"]).or_else(|| amount(&entry["raw"])),
+                ) {
+                    row(out, "Token out", &format!("{mint}  {raw} (raw)"));
+                }
+            }
+        }
+        _ => {}
+    }
+    if let Some(pipeline) = body["guardPipeline"].as_str() {
+        row(out, "Guard pipeline", pipeline);
+    }
+}
+
+/// What the action names, for a heading: the function, the instructions or
+/// the amount.
+fn action_label(action: SandboxActionName, body: &Value) -> String {
+    let function = body["plan"]["function"].as_str();
+    match (action, function) {
+        (SandboxActionName::Call, Some(function)) => format!("call {function}"),
+        _ => action.as_str().to_string(),
+    }
+}
+
+/// The human rendering of `a4 sandbox preview`.
+pub fn render_preview(body: &Value, action: SandboxActionName) -> String {
+    let passed = body["pass"] != false;
+    let verdict = if passed {
+        "passes".green().bold()
+    } else {
+        "does not pass".red().bold()
+    };
+    let mut out = format!(
+        "{} {}: {verdict}\n",
+        "Preview".bold(),
+        action_label(action, body)
+    );
+    wallet_rows(&mut out, body);
+    if let Some(instructions) = body["plan"]["instructions"].as_array() {
+        out.push_str("  Plan\n");
+        for (index, instruction) in instructions.iter().enumerate() {
+            let program = instruction["program"]
+                .as_str()
+                .or_else(|| instruction["programId"].as_str())
+                .unwrap_or("?");
+            let name = instruction["instruction"]
+                .as_str()
+                .or_else(|| instruction["name"].as_str())
+                .unwrap_or("?");
+            out.push_str(&format!("    {index:>2}. {}  {name}\n", short(program)));
+        }
+    }
+    if passed {
+        out.push_str(
+            "Nothing was signed or sent. Run it with `a4 sandbox invoke` and the same flags.\n",
+        );
+    } else if let Some(reason) = body["reason"].as_str().or_else(|| body["error"].as_str()) {
+        out.push_str(&format!("{reason}\n"));
+    }
+    out
+}
+
+/// The human rendering of `a4 sandbox invoke`.
+pub fn render_invoke(body: &Value, action: SandboxActionName) -> String {
+    let status = body["status"].as_str().unwrap_or("?");
+    let mut out = format!(
+        "{} {}: {}\n",
+        "Action".bold(),
+        action_label(action, body),
+        status_word(status)
+    );
+    let row = |out: &mut String, label: &str, value: &str| {
+        out.push_str(&format!("  {label:<16}{value}\n"));
+    };
+    if let Some(id) = body["actionId"].as_str().or_else(|| body["id"].as_str()) {
+        row(&mut out, "Action id", id);
+    }
+    if let Some(signature) = body["signature"].as_str() {
+        row(&mut out, "Signature", signature);
+    }
+    wallet_rows(&mut out, body);
+    if body["replayed"] == true {
+        row(
+            &mut out,
+            "Replayed",
+            "yes: the original result of this idempotency key",
+        );
+    }
+    if let Some(key) = body["idempotencyKey"].as_str() {
+        row(&mut out, "Idempotency key", key);
+    }
+    match status {
+        "sent" => out.push_str(&format!(
+            "Not confirmed yet. Look it up with `a4 sandbox action --idempotency-key {}`; never rerun it under a new key.\n",
+            shell_word(body["idempotencyKey"].as_str().unwrap_or("<key>"))
+        )),
+        "failed" => out.push_str("The transaction landed but failed: nothing it did took effect beyond the network fee.\n"),
+        _ => {}
+    }
+    out
+}
+
+/// An action's status, colored as in the history, unpadded.
+fn status_word(status: &str) -> String {
+    match status {
+        "landed" => status.green().to_string(),
+        "failed" | "rejected" => status.red().to_string(),
+        _ => status.yellow().to_string(),
+    }
+}
+
+/// The human rendering of `a4 sandbox action`.
+pub fn render_action(body: &Value) -> String {
+    let status = body["status"].as_str().unwrap_or("?");
+    let id = body["id"]
+        .as_str()
+        .or_else(|| body["actionId"].as_str())
+        .unwrap_or("?");
+    let mut out = format!("{} {id}: {}\n", "Action".bold(), status_word(status));
+    let row = |out: &mut String, label: &str, value: &str| {
+        out.push_str(&format!("  {label:<16}{value}\n"));
+    };
+    for (label, key) in [
+        ("Action", "action"),
+        ("Created", "createdAt"),
+        ("Reject code", "rejectCode"),
+        ("Signature", "signature"),
+    ] {
+        if let Some(value) = body[key].as_str() {
+            row(&mut out, label, value);
+        }
+    }
+    wallet_rows(&mut out, body);
+    if let Some(key) = body["idempotencyKey"].as_str() {
+        row(&mut out, "Idempotency key", key);
+    }
+    out
 }
 
 // ---- list and use -------------------------------------------------------------
@@ -1776,8 +2418,118 @@ fn short(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arete_mcp::sandbox::CallKind;
 
     const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
+
+    #[test]
+    fn action_hints_name_the_cli_commands() {
+        assert_eq!(
+            cli_terms("Check sandbox_rules, then `sandbox_preview` and sandbox_invoke."),
+            "Check `a4 sandbox rules show`, then `a4 sandbox preview` and `a4 sandbox invoke`."
+        );
+        assert_eq!(
+            cli_terms("look the action up with sandbox_action and the idempotencyKey"),
+            "look the action up with `a4 sandbox action` and the --idempotency-key"
+        );
+        // Not inside a longer word.
+        assert_eq!(
+            cli_terms("my_sandbox_rules and sandbox_rulesx"),
+            "my_sandbox_rules and sandbox_rulesx"
+        );
+        assert_eq!(cli_terms("sandbox_select."), "`a4 sandbox use`.");
+
+        // Every hint the MCP server gives an action refusal is in CLI terms.
+        for code in [
+            "sandbox-action-not-granted",
+            "sandbox-intent-invalid",
+            "sandbox-function-input-invalid",
+            "sandbox-guard-insufficient-funds",
+            "sandbox-duplicate-action",
+            "sandbox-api-timeout",
+            "sandbox-response-too-large",
+            "sandbox-program-not-allowlisted",
+        ] {
+            for kind in [CallKind::Preview, CallKind::Action] {
+                let refusal = SandboxRefusal {
+                    status: 403,
+                    body: json!({ "code": code, "error": "refused" }),
+                    kind,
+                };
+                let shown = shown_refusal(&refusal);
+                let hint = shown["hint"].as_str().unwrap();
+                assert!(!hint.contains("sandbox_"), "{code}: {hint}");
+                // Everything else is the MCP tools' refusal.
+                let mut mcp = refusal.to_json();
+                mcp["hint"] = shown["hint"].clone();
+                assert_eq!(shown, mcp);
+            }
+        }
+    }
+
+    fn action_args(args: &[&str]) -> ActionArgs {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            action: ActionArgs,
+        }
+        let mut argv = vec!["a4"];
+        argv.extend(args);
+        <Cli as clap::Parser>::try_parse_from(argv).unwrap().action
+    }
+
+    #[test]
+    fn action_flags_become_the_mcp_tools_action_and_args() {
+        let (action, args) = action_args(&[
+            "--call",
+            "KLend",
+            "transactions.obligation.deposit",
+            "--input",
+            r#"{"reserve":"R","amount":{"ui":"0.1"}}"#,
+            "--transaction-format",
+            "v0",
+        ])
+        .action()
+        .unwrap();
+        assert_eq!(action, SandboxActionName::Call);
+        assert_eq!(
+            args,
+            json!({ "program": "KLend", "function": "transactions.obligation.deposit",
+                    "input": { "reserve": "R", "amount": { "ui": "0.1" } },
+                    "transactionFormat": "v0" })
+        );
+
+        let (action, args) = action_args(&[
+            "--invoke",
+            r#"{"instructions":[{"program":"P","instruction":"i"}],"computeUnitLimit":5}"#,
+            "--compute-unit-price",
+            "7",
+        ])
+        .action()
+        .unwrap();
+        assert_eq!(action, SandboxActionName::Invoke);
+        assert_eq!(
+            args,
+            json!({ "instructions": [{ "program": "P", "instruction": "i" }],
+                    "computeUnitLimit": 5, "computeUnitPriceMicroLamports": "7" })
+        );
+
+        let (action, args) = action_args(&["--withdraw", "18446744073709551615"])
+            .action()
+            .unwrap();
+        assert_eq!(action, SandboxActionName::Withdraw);
+        assert_eq!(args, json!({ "lamports": "18446744073709551615" }));
+
+        // A call without --input leaves the input to the API.
+        let (_, args) = action_args(&["--call", "P", "f"]).action().unwrap();
+        assert_eq!(args, json!({ "program": "P", "function": "f" }));
+
+        let error = action_args(&["--invoke", "\"text\""]).action().unwrap_err();
+        assert!(
+            error.to_string().contains("--invoke takes a JSON object"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn a_direct_read_refused_for_a_bound_key_is_recognised() {

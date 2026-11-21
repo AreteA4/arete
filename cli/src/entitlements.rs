@@ -108,8 +108,9 @@ pub const INSTALL_GROUP_REQUIRED: &str = "\
 this account does not have the `install` command group, which `a4 install`, \
 `a4 update`, `a4 remove` and `a4 sdk` need (they generate SDKs from the \
 registry and write arete.toml / arete.lock). Ask the Arete team for access. \
-Without it, act through a sandbox: `a4 sandbox list`, or the sandbox MCP tools \
-(`sandbox_preview`, then `sandbox_invoke`).";
+Without it, act through a sandbox: `a4 sandbox list`, then `a4 sandbox preview` \
+and `a4 sandbox invoke` (or the sandbox MCP tools `sandbox_preview`, then \
+`sandbox_invoke`).";
 
 /// The `--config` path `main` parsed, for lookups made deep inside a command.
 static CONFIG_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -219,8 +220,9 @@ fn group_refusal(what: &str, groups: &[Group], joiner: &str) -> String {
     let instead = if groups.contains(&Group::Install) {
         "Project installs (arete.toml, arete.lock and the SDKs generated from the \
          registry) need `install`; ask the Arete team for access. Without it, act \
-         through a sandbox: `a4 sandbox list`, or the sandbox MCP tools \
-         (`sandbox_preview`, then `sandbox_invoke`)."
+         through a sandbox: `a4 sandbox list`, then `a4 sandbox preview` and \
+         `a4 sandbox invoke` (or the sandbox MCP tools `sandbox_preview`, then \
+         `sandbox_invoke`)."
     } else {
         "Ask the Arete team for access."
     };
