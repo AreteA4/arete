@@ -68,10 +68,10 @@ pub enum SandboxCommands {
     /// --invoke (named program instructions) or --withdraw (SOL to the
     /// owner). Prints whether it passes and what the wallet would lose, or
     /// the refusal with its code, rule, requestId and, for a call, the
-    /// stages it got through. Exits 0 when it passes. A refusal by the
-    /// rules, the guard or the agent's grant, or a missing sign-in, exits
-    /// 77; a rate limit exits 75; any other failure (input the API
-    /// rejects) exits 1. --json prints the result as the MCP
+    /// stages it got through. Exits 0 when it passes and 1 when it returns
+    /// `pass: false`. A refusal by the rules, the guard or the agent's
+    /// grant, or a missing sign-in, exits 77; a rate limit exits 75; any
+    /// other failure (input the API rejects) exits 1. --json prints the result as the MCP
     /// `sandbox_preview` tool returns it.
     ///
     /// Examples:

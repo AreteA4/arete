@@ -1558,9 +1558,8 @@ such as input the API rejects), and with `--json` prints its problem body.
 every check without signing or recording anything, `withdraw` included,
 and prints whether it passes, the wallet's SOL change, what it spends (the
 network fee included), new account rent, the guard pipeline and, for a
-call, the planned instructions. It exits 0 when the preview passes, and as
-any refusal above when it doesn't: 77 when the rules, the guard or the
-grant refuse it.
+call, the planned instructions. It exits 0 when the preview passes and 1
+when it returns `pass: false`. API refusals use the exit codes above.
 `invoke` then runs the same flags: it builds, checks, signs and sends the
 transaction and waits for it to confirm, and prints the action id, status,
 signature and the wallet's change. It exits 1 when its transaction failed.
