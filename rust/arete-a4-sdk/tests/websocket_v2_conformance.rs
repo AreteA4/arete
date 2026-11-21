@@ -645,8 +645,8 @@ async fn an_undecodable_first_record_offers_no_resume_position() {
 
 /// The failure that opened this PR was a class, not three fields: the server
 /// deploys on its own schedule while a pinned SDK upgrades on the consumer's,
-/// so rejecting an added field breaks every deployed client at once. A4-278's
-/// occurrence provenance is the next such field.
+/// so rejecting an added field breaks every deployed client at once. Occurrence
+/// provenance is the next such field.
 #[tokio::test]
 async fn a_field_this_sdk_has_never_heard_of_is_not_a_protocol_error() {
     let fixture = fixture("replay-cursors.json");

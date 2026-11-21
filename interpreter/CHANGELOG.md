@@ -1154,7 +1154,7 @@
 
 ### Features
 
-* **ingestion:** upgrade to Shipstern and preserve V1 config (A4-251) ([faec0b3](https://github.com/AreteA4/arete/commit/faec0b3c2ba6b0dcceb4f05881a4bc95e6e72b25))
+* **ingestion:** upgrade to Shipstern and preserve V1 config ([faec0b3](https://github.com/AreteA4/arete/commit/faec0b3c2ba6b0dcceb4f05881a4bc95e6e72b25))
 
 
 ### Dependencies

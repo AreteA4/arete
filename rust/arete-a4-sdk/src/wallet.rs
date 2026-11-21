@@ -62,7 +62,7 @@ impl fmt::Display for ConfirmationLevel {
     }
 }
 
-/// Transaction version requested of a wallet adapter (A4-250 contract §3).
+/// Transaction version requested of a wallet adapter.
 ///
 /// JSON encoding is `"legacy"` or a **bare JSON number** (`0`/`1`) — never a
 /// stringified number. This is the one quantity-shaped value in the build
@@ -127,7 +127,7 @@ const HEAP_SIZE: &str = "heapSize";
 const PRIORITY_FEE_LAMPORTS: &str = "priorityFeeLamports";
 const COMPUTE_UNIT_PRICE_MICRO_LAMPORTS: &str = "computeUnitPriceMicroLamports";
 
-/// Resource budgets requested for one transaction (A4-250 contract §2),
+/// Resource budgets requested for one transaction,
 /// shared by [`SendOptions`] and [`TransactionInspectionOptions`].
 ///
 /// Serialization is uniform: [`to_json`](Self::to_json) writes every present

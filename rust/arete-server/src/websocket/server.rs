@@ -3573,8 +3573,7 @@ fn member_action(
     // The mutated entity rides its own patch through untouched, but only when
     // the subscriber already holds a copy; a patch for a key the client never
     // received is not an entity. Derived views still send whole entities: the
-    // patch on the bus is scoped to the source view, not this one (see
-    // A4-150).
+    // patch on the bus is scoped to the source view, not this one.
     if held && !is_derived && op != "delete" {
         MemberAction::ForwardPatch
     } else {
@@ -4059,7 +4058,7 @@ mod tests {
     #[test]
     fn derived_views_still_send_whole_entities() {
         // The patch on the bus is scoped to the source view, so a derived
-        // subscription cannot forward it verbatim (A4-150).
+        // subscription cannot forward it verbatim.
         let plan = plan_window(&["1", "2"], &["1", "2"], "1", true, "patch");
         assert_eq!(
             plan,

@@ -10,7 +10,7 @@
 //! all through the stack's [`TransactionTransport`] relay, never a direct RPC
 //! connection.
 //!
-//! # Version semantics (A4-250 contract §3 + SIMD-0385)
+//! # Version semantics (SIMD-0385)
 //!
 //! - An omitted `transaction_version` keeps the existing v0 default.
 //! - legacy/v0 carry the resource budget as `ComputeBudget` program
