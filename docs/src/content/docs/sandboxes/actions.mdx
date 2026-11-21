@@ -258,3 +258,45 @@ instructions, events, balance changes) is in the
 [history](/sandboxes/history/). A refusal is a tool error with `code`,
 `rule`, what triggered it, `retryable` and a `hint`; see
 [Errors and refusals](/sandboxes/errors/).
+
+### Preview results
+
+A passing preview also says what the transaction does with rent:
+
+- `newAccounts`: accounts it creates and leaves open, and `closedAccounts`:
+  accounts it closes. Each is `{ address, owner, space, rentLamports }`. A
+  wrapped-SOL account counts its rent reserve, not the SOL in it.
+- An account the transaction creates and closes again, such as the
+  temporary wSOL account of a native SOL swap or deposit, is in
+  `closedAccounts` with `temporary: true` and the rent it held, and is not
+  in `newAccounts`.
+- `newAccountRentLamports` totals `newAccounts`.
+  `closedAccountRentLamports` totals the closed accounts that existed
+  before the transaction. A temporary account's rent comes back in the same
+  transaction, so neither total counts it.
+- `outflowParts` splits the outflow into `principalLamports` (the SOL the
+  action itself moves), `rentLamports` (new rent less rent refunded),
+  `networkFeeLamports` and `areteFeeLamports`. The four add up to the
+  negated `walletLamportsChange`, and each is negative when SOL comes back.
+
+`principalLamports` is what the program actually took. A lending deposit
+can take slightly less than the amount asked, because the program deposits
+only liquidity that mints whole collateral tokens: a lamport or so stays in
+the temporary wSOL account, and its close returns it.
+
+A `call` the API refused while checking it, previewed or run, says how far
+it got:
+
+- `stages`: each stage it passed, in order (`request`, `plan`, `rebuild`,
+  `fees`, `build`, `check`, `guard`), then the one that refused it with its
+  `code` and `reason`. `failedStage` names that stage.
+- `plan`: the call's plan as far as it got, with the planned
+  `instructions` once the function planned.
+- `guardPipeline`: the pipeline that ran, or for a refusal before the
+  guard, the one that checks this sandbox. `stages` says whether it ran.
+- `walletLamportsChange` and `outflowLamports` when the guard's trial ran
+  before refusing.
+
+A passing preview lists no `stages`. An error before the API checks the
+call, such as `sandbox-api-unreachable` or no sandbox chosen, has none of
+these fields; its `code` and `hint` say what went wrong.

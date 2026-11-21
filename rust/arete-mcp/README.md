@@ -658,6 +658,25 @@ resolves, the call is refused before any token is minted, with
   request's `instructions`; `transactionPath` gives the transaction's own
   index when it differs (a v0 compute budget or a fee leg comes first).
   A `call` result adds the `plan` it built.
+  A passing result also states rent: `newAccounts` (created and left
+  open) and `closedAccounts` (closed), each `{ address, owner, space,
+  rentLamports }`. An account created and closed in the same transaction,
+  such as a temporary wSOL account, is in `closedAccounts` with
+  `temporary: true` and not in `newAccounts`. `newAccountRentLamports`
+  totals `newAccounts`; `closedAccountRentLamports` totals the closed
+  accounts that existed before, so a temporary account counts in neither.
+  `outflowParts` (`principalLamports`, `rentLamports`,
+  `networkFeeLamports`, `areteFeeLamports`) adds up to the negated
+  `walletLamportsChange`; each part is negative when SOL comes back.
+  A `call` the API refused while checking it adds `stages` (each stage
+  passed, then the one that refused it with its `code` and `reason`),
+  `failedStage`, the `plan` as far as it got and `guardPipeline` (the one
+  that ran, or the one that checks the sandbox; `stages` says whether it
+  ran), and `walletLamportsChange`
+  and `outflowLamports` when the guard's trial ran. Passing previews list
+  no `stages`. An error before the API checks the call
+  (`sandbox-api-unreachable`, no sandbox chosen) has none of these fields;
+  its `code` and `hint` say what went wrong.
 - `sandbox_invoke({ action, args, idempotencyKey? })` — runs one action.
   This is the only tool that moves funds; there are no per-action tools.
   Returns the action id, status, signature, `outflowLamports` (everything
