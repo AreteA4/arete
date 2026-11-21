@@ -1586,6 +1586,24 @@ impl ApiClient {
         std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string())
     }
 
+    /// The build the API at `api_url` reports (`GET /version`, no key sent).
+    pub fn api_build(
+        api_url: &str,
+    ) -> std::result::Result<arete_mcp::api_build::ApiBuild, arete_mcp::api_build::ApiBuildError>
+    {
+        use arete_mcp::api_build::{parse_response, version_url, ApiBuildError, TIMEOUT};
+        let unavailable =
+            |error: reqwest::Error| ApiBuildError::Unavailable(error.without_url().to_string());
+        let response = http_client()
+            .get(version_url(api_url))
+            .timeout(TIMEOUT)
+            .send()
+            .map_err(unavailable)?;
+        let status = response.status().as_u16();
+        let body = response.text().map_err(unavailable)?;
+        parse_response(status, &body)
+    }
+
     pub fn new() -> Result<Self> {
         let base_url =
             std::env::var("ARETE_API_URL").unwrap_or_else(|_| DEFAULT_API_URL.to_string());

@@ -22,3 +22,4 @@ pub mod status;
 pub mod stream;
 pub mod telemetry;
 pub mod up;
+pub mod version;
