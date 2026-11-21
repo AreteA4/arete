@@ -668,10 +668,11 @@ resolves, the call is refused before any token is minted, with
   `outflowParts` (`principalLamports`, `rentLamports`,
   `networkFeeLamports`, `areteFeeLamports`) adds up to the negated
   `walletLamportsChange`; each part is negative when SOL comes back.
-  A `call` the API refused while checking it adds `stages` (each stage passed, then the one that
-  refused it with its `code` and `reason`), `failedStage`, the `plan` as far
-  as it got and `guardPipeline` (the one that ran, or the one that checks
-  the sandbox; `stages` says whether it ran), and `walletLamportsChange`
+  A `call` the API refused while checking it adds `stages` (each stage
+  passed, then the one that refused it with its `code` and `reason`),
+  `failedStage`, the `plan` as far as it got and `guardPipeline` (the one
+  that ran, or the one that checks the sandbox; `stages` says whether it
+  ran), and `walletLamportsChange`
   and `outflowLamports` when the guard's trial ran. Passing previews list
   no `stages`. An error before the API checks the call
   (`sandbox-api-unreachable`, no sandbox chosen) has none of these fields;
