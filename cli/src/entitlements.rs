@@ -39,7 +39,7 @@ use crate::api_client::ApiClient;
 pub fn command_groups(name: &str) -> Option<&'static [Group]> {
     Some(match name {
         "init" | "doctor" | "self" | "upgrade" | "mcp" | "auth" | "login" | "config"
-        | "telemetry" | "help" => &[Group::Account],
+        | "version" | "telemetry" | "help" => &[Group::Account],
         "stream" | "get" => &[Group::Streams, Group::Sandboxes],
         "up" | "status" | "stack" | "build" | "idl" => &[Group::Stacks],
         // `program account` reads; the rest manage the account's programs

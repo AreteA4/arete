@@ -4,6 +4,7 @@
 //! [`serve_stdio`]. There is no standalone binary; `a4 init` writes the MCP
 //! config that launches it.
 
+pub mod api_build;
 pub mod authority;
 pub mod catalog_view;
 mod connections;

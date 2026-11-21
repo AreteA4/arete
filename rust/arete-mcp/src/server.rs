@@ -1755,6 +1755,24 @@ impl AreteMcp {
     }
 
     #[tool(
+        description = "The builds in play: this MCP server (`server`: name and version) and the Arete API it talks to (`api`: `url`, `service`, `version`, the `commit` and `imageDigest` it was deployed from, each null when the API was not told; or `error` when the API does not report its build or cannot be reached). Quote both when reporting a problem, and check `api.commit` when behaviour differs from what a fix promised."
+    )]
+    async fn version(&self) -> Result<CallToolResult, McpError> {
+        let api_url = crate::api_build::configured_api_url();
+        let build = crate::api_build::fetch(&reqwest::Client::new(), &api_url).await;
+        let report = json!({
+            "server": {
+                "name": env!("CARGO_PKG_NAME"),
+                "version": env!("CARGO_PKG_VERSION"),
+            },
+            "api": crate::api_build::api_report(&api_url, &build),
+        });
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            serde_json::to_string_pretty(&report).unwrap_or_else(|_| report.to_string()),
+        )]))
+    }
+
+    #[tool(
         description = "List the sandboxes this agent's account has been granted: for each, `sandboxId`, `name` (or null), `walletAddress`, `cluster`, `status` (`active`, or `paused`: actions are refused until the owner resumes it), the granted `actions` and `grantExpiresAt`. `current` is the sandbox the other sandbox_* tools act on when they get no `sandbox` argument, and where that came from (`selected`/`saved` by sandbox_select, `env:ARETE_SANDBOX_ID`, or `only-grant` when exactly one active sandbox is granted); null when one must be chosen, and `note` says what to do. Call this first when a sandbox tool asks you to choose."
     )]
     async fn sandbox_list(&self) -> Result<CallToolResult, McpError> {
@@ -7801,6 +7819,7 @@ mod describe_sdk_tests {
             .tool_names();
         let mut expected: Vec<&str> = vec![
             "ping",
+            "version",
             "account_status",
             "rename_agent",
             "create_claim_link",

@@ -188,7 +188,7 @@ pub fn mcp_tool_groups(tool: &str) -> Option<&'static [Group]> {
     const PROTOCOLS: &[Group] = &[Group::Protocols];
     const DEV: &[Group] = &[Group::Dev];
     Some(match tool {
-        "ping" | "account_status" | "rename_agent" | "create_claim_link" => ACCOUNT,
+        "ping" | "version" | "account_status" | "rename_agent" | "create_claim_link" => ACCOUNT,
         // The installed SDKs of this project: only an install writes them.
         "describe_sdk" => INSTALL,
         "resolve_artifact" => ARTIFACTS,

@@ -163,6 +163,10 @@ enum Commands {
     /// Show overview of stacks, builds, and deployments
     Status,
 
+    /// Show this CLI's version and the build of the Arete API it talks to
+    /// (its commit and image digest, when the API reports them)
+    Version,
+
     /// Discover installable stacks, programs and protocols through the catalog and pinned descriptors
     Explore {
         /// `catalog`, `stacks` (or `list`), `stack`, `program`, `programs`, `protocol`, or a legacy stack reference
@@ -1324,6 +1328,7 @@ fn command_name(cmd: &Commands) -> &'static str {
         Commands::Dev(_) => "dev",
         Commands::Up { .. } => "up",
         Commands::Status => "status",
+        Commands::Version => "version",
         Commands::Explore { .. } => "explore",
         Commands::Know(_) => "know",
         Commands::Install { .. } => "install",
@@ -1451,6 +1456,7 @@ fn run(cli: Cli) -> anyhow::Result<()> {
             cli.json,
         ),
         Commands::Status => commands::status::status(cli.json),
+        Commands::Version => commands::version::version(cli.json),
         Commands::Explore {
             target,
             reference,
