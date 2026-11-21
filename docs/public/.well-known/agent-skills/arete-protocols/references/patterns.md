@@ -137,10 +137,9 @@ needs at least one.
 
 `pda(...)` derives only PDAs the program's IDL names. When a catalog
 program's IDL lacks one your protocol needs (a market authority, a vault
-signer), the fix is a change to that program's catalog IDL: open an issue
-or PR on [AreteA4/arete-artifacts](https://github.com/AreteA4/arete-artifacts)
-naming the PDA, its seeds and where they come from (the program's code or
-docs). Once the program is republished, `a4 install` the new version and
+signer), the fix is a change to that program's catalog IDL: request it
+through [developer support](https://docs.arete.run/contact/), naming the PDA, its seeds and where they
+come from (the program's code or docs). Once the program is republished, `a4 install` the new version and
 derive it with `pda(...)`.
 
 Until then, take the address as an argument of the create step and bind it,
