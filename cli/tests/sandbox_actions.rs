@@ -598,15 +598,14 @@ fn an_interrupted_run_has_already_printed_its_key() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("run a4");
+    // The reader returns every stderr line once the pipe closes, which is
+    // when the killed process is gone.
     let stderr = child.stderr.take().unwrap();
-    let (lines, received) = std::sync::mpsc::channel();
-    thread::spawn(move || {
-        for line in std::io::BufReader::new(stderr)
+    let reader = thread::spawn(move || {
+        std::io::BufReader::new(stderr)
             .lines()
             .map_while(Result::ok)
-        {
-            let _ = lines.send(line);
-        }
+            .collect::<Vec<String>>()
     });
 
     // The run is sent and the API has not answered: interrupt it there.
@@ -623,7 +622,7 @@ fn an_interrupted_run_has_already_printed_its_key() {
     // Nothing on stdout: --json output is still the result alone.
     assert!(output.stdout.is_empty(), "{output:?}");
 
-    let printed: Vec<String> = received.try_iter().collect();
+    let printed = reader.join().expect("the stderr reader");
     let notice = printed
         .iter()
         .find(|line| line.starts_with("Idempotency key: "))
