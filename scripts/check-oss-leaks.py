@@ -35,7 +35,7 @@ import sys
 
 # Repositories of the organization that are public, compared in lower case.
 # A reference to any other repository of the organization fails the check.
-PUBLIC_REPOS = frozenset({"arete", "arete-artifacts", "skills"})
+PUBLIC_REPOS = frozenset({"arete", "skills"})
 
 # Organization references that name something other than a repository.
 #   "Merge pull request #75 from AreteA4/auth" lines that release tooling

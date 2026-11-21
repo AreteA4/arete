@@ -20,7 +20,7 @@ PRIVATE_REPO = f"{ORG}/some-private-thing"
 # References the checker must accept.
 CLEAN_LINES = [
     f"Clone https://github.com/{ORG}/arete.git or browse https://github.com/{ORG}/arete/tree/main/docs.",
-    f"Install skills with `npx skills add {ORG}/skills`. Examples: {ORG}/arete-artifacts.",
+    f"Install skills with `npx skills add {ORG}/skills`.",
     f"Organization page: https://github.com/{ORG} and github.com/{ORG}/.",
     f"Lookalikes are other organizations: not{ORG.lower()}/private-thing.",
     f"* Merge pull request #75 from {ORG}/feature-branch",
