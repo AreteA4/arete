@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.59.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.58.0...arete-mcp-v0.59.0) (2026-11-21)
+
+
+### Features
+
+* **cli:** a4 sandbox preview, invoke and action ([c73f49c](https://github.com/AreteA4/arete/commit/c73f49cd02ad1c770c84bfffe231bdb8f821c9b5))
+* **cli:** add a4 sandbox preview, invoke and action ([9e2ec55](https://github.com/AreteA4/arete/commit/9e2ec55ea14d7d400d1b8e6975d8a1c48894914f))
+
 ## [0.58.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.57.0...arete-mcp-v0.58.0) (2026-11-19)
 
 
