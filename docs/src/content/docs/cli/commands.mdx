@@ -1548,8 +1548,9 @@ output of `rules show --json` (the agent's view, with `rulesFormat` and
 (`signedRules`) and refuses a view without one. Rules are
 built and signed in the [dashboard](https://app.arete.run/dashboard/sandboxes)
 (Sandboxes → Rules); the CLI only shows and checks them.
-A refusal from the API exits 77 (not granted or not signed in), 75 (rate
-limited) or 1, and with `--json` prints its problem body.
+A refusal from the API exits 77 (refused by the rules, the guard or the
+agent's grant, or not signed in), 75 (rate limited) or 1 (any other error,
+such as input the API rejects), and with `--json` prints its problem body.
 
 `preview` and `invoke` take exactly one of `--call`, `--invoke` and
 `--withdraw`, the three actions of the MCP tools (`call` runs under the
@@ -1557,7 +1558,8 @@ limited) or 1, and with `--json` prints its problem body.
 every check without signing or recording anything, `withdraw` included,
 and prints whether it passes, the wallet's SOL change, what it spends (the
 network fee included), new account rent, the guard pipeline and, for a
-call, the planned instructions. It exits 1 when the preview doesn't pass.
+call, the planned instructions. It exits 0 when the preview passes and 1
+when it returns `pass: false`. API refusals use the exit codes above.
 `invoke` then runs the same flags: it builds, checks, signs and sends the
 transaction and waits for it to confirm, and prints the action id, status,
 signature and the wallet's change. It exits 1 when its transaction failed.
