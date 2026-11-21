@@ -284,7 +284,8 @@ can take slightly less than the amount asked, because the program deposits
 only liquidity that mints whole collateral tokens: a lamport or so stays in
 the temporary wSOL account, and its close returns it.
 
-A refused `call`, previewed or run, says how far it got:
+A `call` the API refused while checking it, previewed or run, says how far
+it got:
 
 - `stages`: each stage it passed, in order (`request`, `plan`, `rebuild`,
   `fees`, `build`, `check`, `guard`), then the one that refused it with its
@@ -296,4 +297,6 @@ A refused `call`, previewed or run, says how far it got:
 - `walletLamportsChange` and `outflowLamports` when the guard's trial ran
   before refusing.
 
-A passing preview lists no `stages`.
+A passing preview lists no `stages`. An error before the API checks the
+call, such as `sandbox-api-unreachable` or no sandbox chosen, has none of
+these fields; its `code` and `hint` say what went wrong.
