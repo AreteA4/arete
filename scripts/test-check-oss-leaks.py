@@ -20,6 +20,7 @@ PRIVATE_REPO = f"{ORG}/some-private-thing"
 # References the checker must accept.
 CLEAN_LINES = [
     f"Clone https://github.com/{ORG}/arete.git or browse https://github.com/{ORG}/arete/tree/main/docs.",
+    f"A clone URL can end a sentence: https://github.com/{ORG}/arete.git.",
     f"Install skills with `npx skills add {ORG}/skills`.",
     f"Organization page: https://github.com/{ORG} and github.com/{ORG}/.",
     f"Lookalikes are other organizations: not{ORG.lower()}/private-thing.",
@@ -119,6 +120,26 @@ expect(
     "zebra" not in output.lower() and "mentions" not in output,
     output,
 )
+# A line an extra pattern matches stays hidden even when a built-in rule
+# matches it too, including the repository name it would print.
+overlap = git_tree(
+    {"notes.md": f"{TRACKER_ID} and {ORG}/{secret_word}-9 in one line\n"}
+)
+code, output = run(overlap, extra_patterns=f"{secret_word}-[0-9]+")
+expect("overlapping rules fail the tree", code == 1, output)
+expect(
+    "overlapping rules report every rule without the line",
+    "notes.md:1: tracker-id\n" in output
+    and "notes.md:1: non-public-repo\n" in output
+    and "notes.md:1: matched extra pattern #1" in output,
+    output,
+)
+expect(
+    "overlapping rules hide the matched text",
+    "zebra" not in output.lower() and "one line" not in output and TRACKER_ID not in output,
+    output,
+)
+
 code, output = run(extra, extra_patterns="[unclosed")
 expect("invalid expression is matched literally", code == 0, output)
 

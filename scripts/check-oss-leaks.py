@@ -16,7 +16,8 @@ GitHub organization that are not public. Rules:
                      regular expression (matched case-insensitively; a line that
                      is not a valid expression is matched literally). Hits are
                      reported by number only: neither the pattern nor the
-                     matching line is ever printed. CI fills the variable from
+                     matching line is ever printed, and other rules' hits on
+                     that line omit the line too. CI fills the variable from
                      the OSS_LEAK_EXTRA_PATTERNS repository secret, which GitHub
                      masks in logs; when it is unset the rule is skipped.
 
@@ -102,10 +103,12 @@ def skipped(path):
 
 
 def repo_name(raw):
-    name = raw.lower()
+    # Sentence punctuation first, so "arete.git." at the end of a sentence
+    # still loses its clone suffix.
+    name = raw.lower().rstrip(".")
     if name.endswith(".git"):
         name = name[: -len(".git")]
-    return name.rstrip(".")
+    return name
 
 
 def non_public_references(path, line):
@@ -113,7 +116,7 @@ def non_public_references(path, line):
     names = []
     for match in ORG_REFERENCE.finditer(MERGE_LINE_BRANCH.sub("", line)):
         name = repo_name(match.group(1) or "")
-        if name and name not in allowed:
+        if name and name not in allowed and name not in names:
             names.append(name)
     return names
 
@@ -138,16 +141,26 @@ def scan(root, extra_patterns):
         scanned += 1
         text = data.decode("utf-8", "replace")
         for number, line in enumerate(text.splitlines(), start=1):
+            extra = [
+                index
+                for index, pattern in enumerate(extra_patterns, start=1)
+                if pattern.search(line)
+            ]
+            # A line an extra pattern matches is never printed, in any message,
+            # and neither is a repository name taken from it.
+            hidden = bool(extra)
             shown = line.strip()
             if len(shown) > MAX_PRINTED_LINE:
                 shown = shown[:MAX_PRINTED_LINE] + "..."
             if TRACKER_ID.search(line):
-                hits.append(f"{path}:{number}: tracker-id: {shown}")
+                hits.append(f"{path}:{number}: tracker-id" + ("" if hidden else f": {shown}"))
             for name in non_public_references(path, line):
-                hits.append(f"{path}:{number}: non-public-repo '{name}': {shown}")
-            for index, pattern in enumerate(extra_patterns, start=1):
-                if pattern.search(line):
-                    hits.append(f"{path}:{number}: matched extra pattern #{index}")
+                hits.append(
+                    f"{path}:{number}: non-public-repo"
+                    + ("" if hidden else f" '{name}': {shown}")
+                )
+            for index in extra:
+                hits.append(f"{path}:{number}: matched extra pattern #{index}")
     return scanned, hits
 
 
