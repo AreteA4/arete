@@ -164,6 +164,8 @@ side: registry installs (`403 command-group-required`) to an account without
 | `a4 sandbox history\|holdings\|rules show`                                    | A sandbox's actions, holdings and rules (alpha)                   |
 | `a4 sandbox reads`                                                            | The programs a sandbox can read (alpha)                           |
 | `a4 sandbox rules validate <file>`                                            | Check a Rules v3 file locally                                     |
+| `a4 sandbox preview\|invoke --call\|--invoke\|--withdraw ...`                 | Dry-run, then run, one sandbox action (alpha)                     |
+| `a4 sandbox action <id>\|--idempotency-key <key>`                             | Look one sandbox action up (alpha)                                |
 | `a4 protocol squads proposer\|status [target]`                                | Bring your own Squads multisig: the proposer and its status       |
 | `a4 status`                                                                   | Show project overview                                             |
 | `a4 stack list`                                                               | List deployed stacks                                              |
@@ -1467,10 +1469,13 @@ Dev environments keep their own proposer: use `a4 protocol squads --dev` and
 ### a4 sandbox
 
 List the [sandboxes](/sandboxes/overview/) (alpha) your agent has been
-granted, choose one, read its wallet and check its rules. The reads use a
-short-lived token your account's API key mints for the sandbox, so they work
-for an agent the sandbox's owner granted access. They never run an action:
-actions go through the MCP `sandbox_invoke` tool.
+granted, choose one, read its wallet and check its rules, and preview and run
+its actions. The commands use a short-lived token your account's API key
+mints for the sandbox, so they work for an agent the sandbox's owner granted
+access. `preview`, `invoke` and `action` are one-shot forms of the MCP
+`sandbox_preview`, `sandbox_invoke` and `sandbox_action` tools, for hosts
+that can't run the stdio MCP server (`a4 mcp`): the same actions, results
+and refusals.
 
 ```bash
 a4 sandbox list                                   # granted sandboxes; * marks the one in use
@@ -1486,6 +1491,12 @@ a4 sandbox holdings                               # SOL, tokens, positions (Kami
 a4 sandbox rules show                             # the rules, each instruction with its arguments
 a4 sandbox reads                                  # the programs the sandbox can read
 a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: stdin)
+a4 sandbox preview --call <program> <function> --input @input.json   # dry-run a function
+a4 sandbox preview --invoke @instructions.json    # dry-run named instructions
+a4 sandbox preview --withdraw 50000000            # dry-run a withdraw (lamports)
+a4 sandbox invoke --call <program> <function> --input @input.json    # run it
+a4 sandbox invoke --withdraw 50000000 --idempotency-key <key>         # run, with your own key
+a4 sandbox action --idempotency-key <key>         # look a run up (after a timeout)
 ```
 
 The commands use, in order: `--sandbox`, the sandbox chosen with
@@ -1496,19 +1507,26 @@ even while it is running. With several
 sandboxes and none chosen, a read fails with `sandbox-selection-required`
 and lists them; with none granted, `sandbox-none-granted`.
 
-| Flag                   | Description                                                                              |
-| ---------------------- | ---------------------------------------------------------------------------------------- |
-| `--sandbox <id\|name>` | The sandbox for this command (default: the chosen one, `ARETE_SANDBOX_ID`, the only one) |
-| `--clear`              | `use`: forget the choice for this folder                                                 |
-| `--limit <n>`          | `history`: actions per page, 1 to 100 (default 20)                                       |
-| `--cursor <c>`         | `history`: carry on from a previous `nextCursor`                                         |
-| `--status <s>`         | `history`: only `landed`, `failed`, `rejected`, ...                                      |
-| `--program <p>`        | `history`: only actions that called this program (id or name)                            |
-| `--mint <m>`           | `history`: only actions that moved this token                                            |
-| `--since <t>`          | `history`: only actions since an RFC 3339 time or an age (`30m`, `24h`, `7d`)            |
-| `--all`                | `history`: read every page                                                               |
-| `--raw`                | Keep raw transactions and accounts in `--json` output                                    |
-| `--json`               | The answer as JSON                                                                       |
+| Flag                                           | Description                                                                                     |
+| ---------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `--sandbox <id\|name>`                         | The sandbox for this command (default: the chosen one, `ARETE_SANDBOX_ID`, the only one)        |
+| `--clear`                                      | `use`: forget the choice for this folder                                                        |
+| `--limit <n>`                                  | `history`: actions per page, 1 to 100 (default 20)                                              |
+| `--cursor <c>`                                 | `history`: carry on from a previous `nextCursor`                                                |
+| `--status <s>`                                 | `history`: only `landed`, `failed`, `rejected`, ...                                             |
+| `--program <p>`                                | `history`: only actions that called this program (id or name)                                   |
+| `--mint <m>`                                   | `history`: only actions that moved this token                                                   |
+| `--since <t>`                                  | `history`: only actions since an RFC 3339 time or an age (`30m`, `24h`, `7d`)                   |
+| `--all`                                        | `history`: read every page                                                                      |
+| `--raw`                                        | Keep raw transactions and accounts in `--json` output                                           |
+| `--call <program> <fn>`                        | `preview`, `invoke`: run a function `rules show` lists for the program                          |
+| `--input <json>`                               | `--call`: the function's input as JSON, `@file`, or `-` for stdin                               |
+| `--invoke <json>`                              | `preview`, `invoke`: named instructions (`{"instructions":[...]}` or the array), `@file` or `-` |
+| `--withdraw <lamports>`                        | `preview`, `invoke`: SOL to the owner's withdraw address                                        |
+| `--transaction-format`                         | `preview`, `invoke`: `v1` (default) or `v0`                                                     |
+| `--compute-unit-limit`, `--compute-unit-price` | `--call`, `--invoke`: the compute budget (price in micro-lamports)                              |
+| `--idempotency-key <k>`                        | `invoke`: your key for the run (else generated); `action`: look a run up by it                  |
+| `--json`                                       | The answer as JSON                                                                              |
 
 `status` shows the sandbox and how it was chosen, the wallet address, its
 SOL and token balances in whole units, and the actions this agent is
@@ -1532,6 +1550,33 @@ built and signed in the [dashboard](https://app.arete.run/dashboard/sandboxes)
 (Sandboxes → Rules); the CLI only shows and checks them.
 A refusal from the API exits 77 (not granted or not signed in), 75 (rate
 limited) or 1, and with `--json` prints its problem body.
+
+`preview` and `invoke` take exactly one of `--call`, `--invoke` and
+`--withdraw`, the three actions of the MCP tools (`call` runs under the
+`invoke` grant). Preview first: `preview` builds the transaction and runs
+every check without signing or recording anything, `withdraw` included,
+and prints whether it passes, the wallet's SOL change, what it spends (the
+network fee included), new account rent, the guard pipeline and, for a
+call, the planned instructions. It exits 1 when the preview doesn't pass.
+`invoke` then runs the same flags: it builds, checks, signs and sends the
+transaction and waits for it to confirm, and prints the action id, status,
+signature and the wallet's change. It exits 1 when its transaction failed.
+Every run has an idempotency key (`--idempotency-key`, else generated) that
+`invoke` prints on success and on refusal. The same request under the same
+key never runs twice and returns the original result (`replayed: true`), so
+after a timeout retry with the same key, never a new one, or look the run
+up with `a4 sandbox action --idempotency-key <key>`.
+
+A refused action prints its `code`, the `rule` that refused it, its
+`requestId` and, for a call the API checked, the `stages` it passed and the
+one that refused it (`failedStage`), the `plan` as far as it got and the
+`guardPipeline`, then a hint. With `--json`, `preview`, `invoke` and
+`action` print the result or refusal exactly as the MCP tools return it
+(with `idempotencyKey` for `invoke`), the hint naming `a4` commands. Whether
+this agent holds an action is the API's decision, never the CLI's: an action
+the owner didn't grant is sent, refused by the API with
+`sandbox-action-not-granted`, rule `session-grant` and a `requestId`, and
+recorded for the owner.
 
 #### Reading through a sandbox
 
