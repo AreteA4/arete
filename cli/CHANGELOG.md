@@ -6,6 +6,27 @@
 
 * **cli,mcp:** sandbox Rules v2 is no longer supported. `a4 sandbox rules validate`, `a4 sandbox rules show` and the MCP `sandbox_rules` tool refuse a version 2 document (from a file or from the API) with one line, `Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).`, and exit 1 (`sandbox-rules-version-unsupported` with `--json` / in MCP). Rules v3 is the only format.
 
+## [0.59.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.58.0...a4-cli-v0.59.0) (2026-11-21)
+
+
+### Features
+
+* **cli:** a4 sandbox preview, invoke and action ([c73f49c](https://github.com/AreteA4/arete/commit/c73f49cd02ad1c770c84bfffe231bdb8f821c9b5))
+* **cli:** add a4 sandbox preview, invoke and action ([9e2ec55](https://github.com/AreteA4/arete/commit/9e2ec55ea14d7d400d1b8e6975d8a1c48894914f))
+
+
+### Bug Fixes
+
+* **cli:** print the idempotency key before a sandbox run is sent ([cd21bd5](https://github.com/AreteA4/arete/commit/cd21bd56235397ba9e8d00b7cb9d30157afc3f5b))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.58.0 to 0.59.0
+    * arete-mcp bumped from 0.58.0 to 0.59.0
+
 ## [0.58.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.57.0...a4-cli-v0.58.0) (2026-11-19)
 
 
