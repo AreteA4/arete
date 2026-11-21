@@ -110,13 +110,17 @@ A function the rules do not allow is refused with
 they do. Input that does not match the schema is refused with
 `sandbox-function-input-invalid`.
 
-A function may also list `instructions`: the program's instructions it
-builds for every input. The rules must allow each one, so `sandbox_rules`
-adds `missingInstructions` to a function that builds one they do not. A
+A function may also list `instructions`, the program's instructions it
+builds for every input, and `innerInstructions`, the ones those make as
+inner instructions (a CPI), such as the program's own log or event
+self-CPI: an ORE deploy emits its event as a self-CPI of `log`. The rules
+must allow each one, at any depth, so `sandbox_rules` adds
+`missingInstructions` to a function that needs one they do not allow. A
 call to it is refused with `sandbox-function-instruction-not-allowlisted`
 before anything is planned; only the owner can allow the instruction, so
 use another function, or an `invoke` of instructions the rules allow,
-until then.
+until then. An inner instruction the guard refuses is named in the
+refusal (`instruction`), with a `hint` saying what the owner allows.
 
 SPL Token, Token-2022 and the System program are on the sandbox's baseline
 (`baseline` in `sandbox_rules`) for account plumbing such as wrapping SOL,

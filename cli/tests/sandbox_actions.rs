@@ -485,6 +485,52 @@ fn a_refused_call_shows_the_stages_plan_and_guard_pipeline() {
     }
 }
 
+/// A preview the rules refuse is a 403 and exits 77, as the help says; the
+/// API's own hint is shown for a code the CLI has none of its own for.
+#[test]
+fn a_preview_the_rules_refuse_exits_77_with_the_apis_hint() {
+    let home = tempfile::tempdir().unwrap();
+    let (api, _seen) = stub_api(vec![(
+        "POST /api/sandbox/v1/actions/call/preview",
+        403,
+        json!({
+            "code": "sandbox-function-instruction-not-allowlisted",
+            "error": "the sandbox grants transactions.mining.deployWithCheckpoint of ORE, but not log, which it builds",
+            "rule": "function",
+            "retryable": false,
+            "requestId": "req-9",
+            "missingInstructions": ["log"],
+            "hint": "Only the owner can fix this: allow log in ORE's instructions in the dashboard.",
+        }),
+    )]);
+    let args = [
+        "sandbox",
+        "preview",
+        "--call",
+        "ORE",
+        "transactions.mining.deployWithCheckpoint",
+        "--input",
+        r#"{"amountPerSquare":{"raw":"10000"},"squares":[0]}"#,
+    ];
+    let output = a4(home.path(), &api, &args);
+    assert_eq!(output.status.code(), Some(77), "{output:?}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("(sandbox-function-instruction-not-allowlisted)"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("allow log in ORE's instructions"),
+        "{stderr}"
+    );
+
+    let mut with_json = vec!["--json"];
+    with_json.extend(args);
+    let output = a4(home.path(), &api, &with_json);
+    assert_eq!(output.status.code(), Some(77), "{output:?}");
+    assert_eq!(json_out(&output)["missingInstructions"], json!(["log"]));
+}
+
 #[test]
 fn a_preview_that_does_not_pass_exits_1() {
     let home = tempfile::tempdir().unwrap();
