@@ -1109,6 +1109,15 @@ fn compact_input(input: &Value) -> Option<Value> {
                 .collect(),
         ),
     );
+    // The named types the fields reference (`ConditionalMarket`, a price
+    // union), each described once, as the surface publishes them.
+    if let Some(types) = input
+        .get("types")
+        .and_then(Value::as_array)
+        .filter(|types| !types.is_empty())
+    {
+        out.insert("types".into(), Value::Array(types.clone()));
+    }
     Some(Value::Object(out))
 }
 
@@ -2135,7 +2144,10 @@ mod tests {
                             {"name": "signer", "type": "pubkey", "optional": false, "doc": ""},
                             {"name": "vault", "type": "pubkey", "optional": true, "doc": ""},
                             {"name": "amount", "type": "amount", "optional": false, "doc": "How much."},
-                            {"name": "check.signer", "type": "pubkey", "optional": true, "doc": ""}
+                            {"name": "check.signer", "type": "pubkey", "optional": true, "doc": ""},
+                            {"name": "side", "type": "VaultSide", "optional": true, "doc": ""}
+                        ], "types": [
+                            {"name": "VaultSide", "kind": "enum", "variants": ["base", "quote"], "doc": "Which vault."}
                         ]},
                         "programId": "Demo111"
                     },
@@ -2193,6 +2205,15 @@ mod tests {
         );
         assert!(operation["input"]["fields"][0].get("doc").is_none());
         assert_eq!(operation["input"]["fields"][2]["doc"], "How much.");
+        // A named type a field references is published with the input.
+        assert_eq!(operation["input"]["fields"][4]["type"], "VaultSide");
+        assert_eq!(
+            operation["input"]["types"],
+            json!([{"name": "VaultSide", "kind": "enum", "variants": ["base", "quote"], "doc": "Which vault."}])
+        );
+        // An input without named types carries no `types`.
+        let raw = program_operation(&program(), Ok(&surface), "rawInstructions.setValue").unwrap();
+        assert!(raw["operation"]["input"].get("types").is_none(), "{raw}");
         assert_eq!(
             operation["notReported"],
             json!(["output", "units", "readsDuringPrepare"])

@@ -2518,6 +2518,60 @@ fn render_stack_views(output: &Value) -> String {
     text
 }
 
+/// One input type definition as a line: `VaultSide = "base" | "quote"`,
+/// `PriceInput = number | { atomsPerAtom: number }`, `Order = { size: bigint;
+/// kind?: OrderKind }`, then its doc.
+fn input_type_line(definition: &Value) -> String {
+    fn struct_text(fields: &[Value]) -> String {
+        let members = fields
+            .iter()
+            .map(|field| {
+                format!(
+                    "{}{}: {}",
+                    field["name"].as_str().unwrap_or("-"),
+                    if field["optional"] == true { "?" } else { "" },
+                    field["type"].as_str().unwrap_or("-")
+                )
+            })
+            .collect::<Vec<_>>();
+        format!("{{ {} }}", members.join("; "))
+    }
+    let name = definition["name"].as_str().unwrap_or("-");
+    let shape = match definition["kind"].as_str() {
+        // Literals as JSON, so `"Pass"` does not read as a type name.
+        Some("enum") => value_array(definition, "variants")
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Some("union") => value_array(definition, "variants")
+            .iter()
+            .map(|variant| {
+                if let Some(value) = variant.get("value") {
+                    value.to_string()
+                } else if variant.get("fields").is_some() {
+                    struct_text(value_array(variant, "fields"))
+                } else {
+                    variant["type"].as_str().unwrap_or("-").to_string()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Some("struct") => struct_text(value_array(definition, "fields")),
+        Some("alias") => definition["type"].as_str().unwrap_or("-").to_string(),
+        Some("typeParameter") => format!(
+            "type parameter extends {}",
+            definition["constraint"].as_str().unwrap_or("unknown")
+        ),
+        Some(kind) => kind.to_string(),
+        None => "-".to_string(),
+    };
+    match definition["doc"].as_str().filter(|doc| !doc.is_empty()) {
+        Some(doc) => format!("{name} = {shape}  {doc}"),
+        None => format!("{name} = {shape}"),
+    }
+}
+
 fn render_operation(output: &Value) -> String {
     let operation = &output["operation"];
     let program = &output["program"];
@@ -2567,6 +2621,13 @@ fn render_operation(output: &Value) -> String {
                     .map(|doc| format!("  {doc}"))
                     .unwrap_or_default()
             ));
+        }
+        let types = value_array(input, "types");
+        if !types.is_empty() {
+            text.push_str("\nInput types\n");
+            for definition in types {
+                text.push_str(&format!("  {}\n", input_type_line(definition)));
+            }
         }
     }
     let arguments = value_array(operation, "arguments");
@@ -5199,6 +5260,60 @@ mod tests {
         assert!(rendered.contains("Operation: setValue  (raw-instruction, build)"));
         assert!(rendered.contains("Signers: authority"));
         assert!(rendered.contains("Knowledge surface unavailable: no knowledge"));
+    }
+
+    #[test]
+    fn an_operation_lists_the_types_its_input_names() {
+        let output = json!({
+            "kind": "program-operation",
+            "program": {"displayName": "futarchy"},
+            "operation": {
+                "path": "transactions.market.swap",
+                "kind": "transaction",
+                "mode": "build",
+                "input": {
+                    "typeName": "SwapInput",
+                    "fields": [
+                        {"name": "market", "type": "ConditionalMarket", "optional": false},
+                        {"name": "price", "type": "PriceInput", "optional": true}
+                    ],
+                    "types": [
+                        {"name": "ConditionalMarket", "kind": "enum", "variants": ["Pass", "Fail"]},
+                        {"name": "PriceInput", "kind": "union", "doc": "Every way a price is accepted.", "variants": [
+                            {"type": "number"},
+                            {"kind": "struct", "fields": [{"name": "atomsPerAtom", "type": "number", "optional": false}]},
+                            {"value": "max"}
+                        ]},
+                        {"name": "Order", "kind": "struct", "fields": [
+                            {"name": "size", "type": "bigint", "optional": false},
+                            {"name": "kind", "type": "OrderKind", "optional": true}
+                        ]},
+                        {"name": "OrderKind", "kind": "alias", "type": "string"}
+                    ]
+                }
+            }
+        });
+        let rendered = render_operation(&output);
+        assert!(
+            rendered.contains("  market: ConditionalMarket\n"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("\nInput types\n"), "{rendered}");
+        assert!(
+            rendered.contains("  ConditionalMarket = \"Pass\" | \"Fail\"\n"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains(
+                "  PriceInput = number | { atomsPerAtom: number } | \"max\"  Every way a price is accepted.\n"
+            ),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("  Order = { size: bigint; kind?: OrderKind }\n"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("  OrderKind = string\n"), "{rendered}");
     }
 
     #[test]
