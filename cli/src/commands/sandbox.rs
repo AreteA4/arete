@@ -84,7 +84,8 @@ pub enum SandboxCommands {
     /// Builds, checks, signs and sends the transaction. Takes the same
     /// action flags as `a4 sandbox preview`: preview first. Every run has an
     /// idempotency key (--idempotency-key, else generated), printed on
-    /// success and on refusal. The same request under the same key never
+    /// stderr before the run is sent and again with its result or refusal,
+    /// so an interrupted run can still be retried or looked up. The same request under the same key never
     /// runs twice and returns the original result (`replayed: true`), so
     /// after a timeout retry with the same key, never a new one, or look the
     /// action up with `a4 sandbox action --idempotency-key`. Exits 1 when its
@@ -637,6 +638,11 @@ fn invoke(args: InvokeArgs, json: bool) -> Result<()> {
         .idempotency_key
         .clone()
         .unwrap_or_else(new_cli_idempotency_key);
+    // The key goes to stderr before anything is sent: a run interrupted
+    // while it waits (Ctrl-C, a host's timeout) may still have sent the
+    // transaction, and the key is how to retry it safely or look it up.
+    // stdout stays the result alone.
+    eprintln!("{}", key_notice(&key));
     let client = SandboxClient::from_env().targeting(args.action.target.sandbox.as_deref());
     let result = runtime()?.block_on(client.invoke(action, body, &key));
     let body = result.map_err(|refusal| action_refused(&refusal, Some(&key), json))?;
@@ -651,6 +657,14 @@ fn invoke(args: InvokeArgs, json: bool) -> Result<()> {
     } else {
         Ok(())
     }
+}
+
+/// What `a4 sandbox invoke` prints on stderr before it sends a run.
+pub fn key_notice(key: &str) -> String {
+    let key = shell_word(key);
+    format!(
+        "Idempotency key: {key} (if this run is interrupted, rerun it with --idempotency-key {key}, or look it up with `a4 sandbox action --idempotency-key {key}`; never rerun it under a new key)"
+    )
 }
 
 fn action_lookup(args: ActionLookupArgs, json: bool) -> Result<()> {

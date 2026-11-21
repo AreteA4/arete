@@ -1562,7 +1562,9 @@ call, the planned instructions. It exits 1 when the preview doesn't pass.
 transaction and waits for it to confirm, and prints the action id, status,
 signature and the wallet's change. It exits 1 when its transaction failed.
 Every run has an idempotency key (`--idempotency-key`, else generated) that
-`invoke` prints on success and on refusal. The same request under the same
+`invoke` prints on stderr before it sends the run, so a run interrupted while
+it waits can still be retried or looked up, and again with its result or
+refusal. The same request under the same
 key never runs twice and returns the original result (`replayed: true`), so
 after a timeout retry with the same key, never a new one, or look the run
 up with `a4 sandbox action --idempotency-key <key>`.

@@ -87,6 +87,14 @@ fn stub_api(routes: Vec<(&'static str, u16, Value)>) -> (String, Arc<Mutex<Vec<S
             } else {
                 (404, json!({ "code": "not-found", "error": route }))
             };
+            // Status 0: never answer, as an API still waiting on the chain.
+            if status == 0 {
+                thread::spawn(move || {
+                    thread::sleep(std::time::Duration::from_secs(60));
+                    drop(stream);
+                });
+                continue;
+            }
             let body = body.to_string();
             let _ = write!(
                 stream,
@@ -558,4 +566,75 @@ fn an_action_needs_exactly_one_of_call_invoke_and_withdraw() {
         "{output:?}"
     );
     assert!(action_requests(&seen).is_empty());
+}
+
+#[test]
+fn an_interrupted_run_has_already_printed_its_key() {
+    use std::io::BufRead;
+    use std::time::{Duration, Instant};
+
+    let home = tempfile::tempdir().unwrap();
+    let (api, seen) = stub_api(vec![(
+        "POST /api/sandbox/v1/actions/withdraw",
+        0,
+        Value::Null,
+    )]);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_a4"))
+        .args(["--json", "sandbox", "invoke", "--withdraw", "5"])
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env("ARETE_HOME", home.path().join(".arete"))
+        .env("ARETE_API_URL", &api)
+        .env("ARETE_API_KEY", "a4_ak_test_agent")
+        .env_remove("ARETE_SANDBOX_ID")
+        .env_remove("ARETE_PROFILE")
+        .env_remove("ARETE_CREDENTIALS_PATH")
+        .env("CI", "1")
+        .env("NO_COLOR", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env("A4_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("run a4");
+    let stderr = child.stderr.take().unwrap();
+    let (lines, received) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        for line in std::io::BufReader::new(stderr)
+            .lines()
+            .map_while(Result::ok)
+        {
+            let _ = lines.send(line);
+        }
+    });
+
+    // The run is sent and the API has not answered: interrupt it there.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let sent = loop {
+        if let Some(sent) = action_requests(&seen).into_iter().next() {
+            break sent;
+        }
+        assert!(Instant::now() < deadline, "the run was never sent");
+        thread::sleep(Duration::from_millis(50));
+    };
+    child.kill().unwrap();
+    let output = child.wait_with_output().unwrap();
+    // Nothing on stdout: --json output is still the result alone.
+    assert!(output.stdout.is_empty(), "{output:?}");
+
+    let printed: Vec<String> = received.try_iter().collect();
+    let notice = printed
+        .iter()
+        .find(|line| line.starts_with("Idempotency key: "))
+        .unwrap_or_else(|| panic!("no key on stderr: {printed:?}"));
+    let key = idempotency_header(&sent).expect("the run carries a key");
+    assert!(key.starts_with("a4-"), "{key}");
+    // The key printed is the key the interrupted run was sent under, with
+    // how to retry or look it up.
+    assert!(
+        notice.contains(&format!("--idempotency-key {key}")),
+        "{notice}"
+    );
+    assert!(notice.contains("a4 sandbox action"), "{notice}");
 }
