@@ -164,8 +164,11 @@ exact StackManifest. The control plane resolves its ProgramSpecs to immutable
 Program Releases, prepares each aliased LiveSpec, and creates deployment and
 endpoint bindings.
 
-:::caution[Closed Beta]
-Arete is currently in closed beta. You'll need an API key to deploy. [Contact us on X](https://x.com/usearete) to request access.
+:::note[API key]
+Deploying needs an API key. Sign up and create one at
+[arete.run/keys](https://arete.run/keys?utm_source=docs&utm_medium=referral&utm_campaign=docs&utm_content=workflow_keys),
+then run `a4 auth login --key <key>`. Hosted custom stacks are part of the
+[private beta](/private-beta/).
 :::
 
 ```bash
