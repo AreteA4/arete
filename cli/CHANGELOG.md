@@ -6,6 +6,24 @@
 
 * **cli,mcp:** sandbox Rules v2 is no longer supported. `a4 sandbox rules validate`, `a4 sandbox rules show` and the MCP `sandbox_rules` tool refuse a version 2 document (from a file or from the API) with one line, `Rules version 2 is no longer supported. Build and sign v3 rules in the dashboard (Sandboxes → Rules).`, and exit 1 (`sandbox-rules-version-unsupported` with `--json` / in MCP). Rules v3 is the only format.
 
+## [0.60.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.59.0...a4-cli-v0.60.0) (2026-11-21)
+
+
+### Features
+
+* **cli,mcp:** report the API build next to the client version ([e9cc1a6](https://github.com/AreteA4/arete/commit/e9cc1a62d25700a3fec3e4813d976c50d7e456f3))
+* **cli,mcp:** report the API build next to the client version ([a1b4af6](https://github.com/AreteA4/arete/commit/a1b4af608414d33912ba6b8d9485e9d64d53a5d5))
+* **explore:** show the named types an operation input references ([dc8e5b8](https://github.com/AreteA4/arete/commit/dc8e5b8048d16dfef9ee232680053bcebc154482))
+* **explore:** show the named types an operation input references ([8a2dc0d](https://github.com/AreteA4/arete/commit/8a2dc0d44ff82e7d97b1e832cd5ee36b633a51ef))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * arete-interpreter bumped from 0.59.0 to 0.60.0
+    * arete-mcp bumped from 0.59.0 to 0.60.0
+
 ## [0.59.0](https://github.com/AreteA4/arete/compare/a4-cli-v0.58.0...a4-cli-v0.59.0) (2026-11-21)
 
 
