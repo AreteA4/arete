@@ -116,7 +116,7 @@ impl ConnectionRegistry {
             ..ConnectionConfig::default()
         };
 
-        // TODO(HYP-189): SDK's StoreConfig defaults to 10k entries/view.
+        // TODO: SDK's StoreConfig defaults to 10k entries/view.
         // Revisit per-subscription overrides once we have real agent usage data.
         let store = SharedStore::new();
         let manager = ConnectionManager::new(url.clone(), config, store.clone()).await?;

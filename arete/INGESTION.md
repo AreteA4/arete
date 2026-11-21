@@ -1,8 +1,7 @@
 # Solana transaction observations in ingestion
 
-A4-251 migrates ingestion to published Shipstern and retains the V1 inline
-configuration exposed by its shared instruction context. The exact dependency
-set is:
+Ingestion uses published Shipstern and retains the V1 inline configuration
+exposed by its shared instruction context. The exact dependency set is:
 
 | Package | Version |
 | --- | --- |
@@ -52,8 +51,8 @@ Shipstern 0.9.0 discards the source version flag. Without config, the ingestion
 helper leaves the metadata key absent. It does not classify legacy versus v0
 from missing config, lookup tables or account counts. RPC/codec consumers
 should retain explicit versions available from their own source. Exact
-legacy/v0 classification after Shipstern normalization is the deferred,
-non-blocking A4-259 follow-up.
+legacy/v0 classification after Shipstern normalization is a deferred,
+non-blocking follow-up.
 
 The generated handlers retain their originating context for hooks, CPI/log
 events and immediate async resolver application. Queued instructions retain
@@ -80,7 +79,7 @@ The source also exits when its receiver closes during an idle upstream stream.
 
 Local verification uses Rust `1.98.0 (88d9e12ae 2026-08-18)` and Cargo
 `1.98.0 (797e8a9bc 2026-08-05)` on aarch64-apple-darwin. The implementation was
-initially checked against the A4-251 revised baseline `a30cd285`. It is now
+initially checked against the revised baseline `a30cd285`. It is now
 reconciled with `main` at `542dd39b`, preserving the linked **0.15.0** versions,
 release lockfile updates, and the SDK simulation-budget/V1 option contract from
 PR #198. The ingestion tuple above remains pinned independently.
@@ -132,9 +131,9 @@ release version and run:
 bash scripts/check-generated-ingestion-runtime.sh --mode registry
 ```
 
-A4-252 must wait for that successful registry result and adopt the actual
-published versions. This ingestion release can precede the SDK adapters;
-A4-256 owns the joined SDK lifecycle acceptance and A4-257 owns hosted rollout.
+The SDK adapter work must wait for that successful registry result and adopt
+the actual published versions. This ingestion release can precede the SDK
+adapters; joined SDK lifecycle acceptance and rollout are handled separately.
 
 Provider readiness remains separate from these local checks. Require
 Yellowstone geyser **15.1.1 or later**, or an equivalent provider verified to
@@ -143,6 +142,4 @@ readiness. This minimum is documented in the
 [Solana V1 support matrix](https://solana.com/upgrades/larger-transaction-sizes).
 No live provider or funded transaction was used for these tests.
 
-References: [A4-251](https://linear.app/arete-a4/issue/A4-251),
-[parent A4-247](https://linear.app/arete-a4/issue/A4-247),
-[Shipstern V1 config preservation](https://github.com/solana-rpc/shipstern/commit/d9408248476376bfa40dce8b18d24f2e099ce4bf).
+Reference: [Shipstern V1 config preservation](https://github.com/solana-rpc/shipstern/commit/d9408248476376bfa40dce8b18d24f2e099ce4bf).

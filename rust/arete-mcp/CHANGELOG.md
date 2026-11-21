@@ -165,7 +165,7 @@
 ### Features
 
 * **mcp:** sandbox wallet tools ([4ed1a6e](https://github.com/AreteA4/arete/commit/4ed1a6e9767444efd3e41926eb4cd2fdf17223fc))
-* **mcp:** sandbox wallet tools (A4-417) ([7768adc](https://github.com/AreteA4/arete/commit/7768adc0ad133d43a9e5f02a8149ad6b10e624a3))
+* **mcp:** sandbox wallet tools ([7768adc](https://github.com/AreteA4/arete/commit/7768adc0ad133d43a9e5f02a8149ad6b10e624a3))
 
 
 ### Bug Fixes
@@ -513,7 +513,7 @@
 
 ### Bug Fixes
 
-* **auth:** stabilize agent trial bootstrap (A4-210) ([ed8046a](https://github.com/AreteA4/arete/commit/ed8046af9dd1ce404d7de3bd37cdcfe0b67dca00))
+* **auth:** stabilize agent trial bootstrap ([ed8046a](https://github.com/AreteA4/arete/commit/ed8046af9dd1ce404d7de3bd37cdcfe0b67dca00))
 * **onboarding:** make agent trial bootstrap production-safe ([e9b42c0](https://github.com/AreteA4/arete/commit/e9b42c061e4565aa4166b1d9007eb2b1d29497db))
 
 ## [0.28.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.27.0...arete-mcp-v0.28.0) (2026-09-30)

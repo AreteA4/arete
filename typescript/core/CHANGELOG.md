@@ -857,7 +857,7 @@
 * Add SSR support for Next.js, TanStack Start, and Vite ([70cb1ac](https://github.com/AreteA4/arete/commit/70cb1acbf5b6eedb40947f0accdffd5f722e23d1))
 * Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * improve SDK auth recovery for websocket connections ([193e442](https://github.com/AreteA4/arete/commit/193e442666aa1cc992c8ee364bbd11175ef7128a))
-* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Make snapshots optional with cursor-based filtering ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
 * Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * **typescript-sdk:** Support optional snapshots and cursor-based resume ([3f239e9](https://github.com/AreteA4/arete/commit/3f239e9d9fa2f992b7d8eaa1c467c541af9a8a9a))
 
@@ -951,7 +951,7 @@
 * Add SSR support for Next.js, TanStack Start, and Vite ([70cb1ac](https://github.com/AreteA4/arete/commit/70cb1acbf5b6eedb40947f0accdffd5f722e23d1))
 * Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * improve SDK auth recovery for websocket connections ([193e442](https://github.com/AreteA4/arete/commit/193e442666aa1cc992c8ee364bbd11175ef7128a))
-* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Make snapshots optional with cursor-based filtering ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
 * Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from AreteA4/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * **typescript-sdk:** Support optional snapshots and cursor-based resume ([3f239e9](https://github.com/AreteA4/arete/commit/3f239e9d9fa2f992b7d8eaa1c467c541af9a8a9a))
 

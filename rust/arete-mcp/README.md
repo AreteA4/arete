@@ -901,5 +901,5 @@ return the registry's sign-in error.
 
 ## Status
 
-Tracks Linear issue HYP-189. Triggers (`add_trigger` / `get_triggered`) and an
-HTTP/SSE transport are planned for v2.
+Triggers (`add_trigger` / `get_triggered`) and an HTTP/SSE transport are
+planned for v2.

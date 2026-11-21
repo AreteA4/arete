@@ -1,9 +1,9 @@
 //! The Arete MCP tool server: `AreteMcp` and its tool definitions.
 //!
-//! See HYP-189 for the design. The server speaks the Model Context Protocol
-//! over stdio and exposes tools for AI agents to connect to Arete stacks,
-//! subscribe to views, and query cached entities. See `connections.rs` for the
-//! per-connection registry. Entry point: [`crate::serve_stdio`].
+//! The server speaks the Model Context Protocol over stdio and exposes tools
+//! for AI agents to connect to Arete stacks, subscribe to views, and query
+//! cached entities. See `connections.rs` for the per-connection registry.
+//! Entry point: [`crate::serve_stdio`].
 
 /// LLM-friendly deserializers that accept both the typed form and a string
 /// encoding of the typed form. LLMs frequently emit `"5"` instead of `5` when

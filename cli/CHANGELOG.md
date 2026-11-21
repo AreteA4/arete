@@ -1038,8 +1038,8 @@
 
 ### Bug Fixes
 
-* **auth:** stabilize agent trial bootstrap (A4-210) ([ed8046a](https://github.com/AreteA4/arete/commit/ed8046af9dd1ce404d7de3bd37cdcfe0b67dca00))
-* **auth:** tolerate expiry rounding both ways (A4-210) ([aa4acce](https://github.com/AreteA4/arete/commit/aa4acced84aadd872d13e9ddbc9703c7a626bc44))
+* **auth:** stabilize agent trial bootstrap ([ed8046a](https://github.com/AreteA4/arete/commit/ed8046af9dd1ce404d7de3bd37cdcfe0b67dca00))
+* **auth:** tolerate expiry rounding both ways ([aa4acce](https://github.com/AreteA4/arete/commit/aa4acced84aadd872d13e9ddbc9703c7a626bc44))
 * **cli:** accept a Python export that follows a `;` on its module-level line ([e96dcfc](https://github.com/AreteA4/arete/commit/e96dcfcbb1f2fc4ab7267eaafee089831fed2c7e))
 * **cli:** check every Rust and Python bundle before writing an SDK ([860ba0a](https://github.com/AreteA4/arete/commit/860ba0af46d57e0f3157e02a38608ead63f6726b))
 * **cli:** require a module-level assignment for a Python bundle's export ([1f2269a](https://github.com/AreteA4/arete/commit/1f2269a89a9378ab87606f2162a859ca29b655fa))
@@ -2426,8 +2426,8 @@
 
 * Add 'a4 sdk create rust' command for Rust SDK generation ([baadf84](https://github.com/AreteA4/arete/commit/baadf84ce36053acd07eb3743ccadbb28a3df8cb))
 * Add per-language output directory configuration ([0f58344](https://github.com/AreteA4/arete/commit/0f58344e715b393c4d0bc14422a1baeec1dccad7))
-* add stop command for HYP-145 ([247625e](https://github.com/AreteA4/arete/commit/247625e64c646f8e883f3b8ef7d4b884949f248f))
-* add stop command for HYP-145 ([5838dff](https://github.com/AreteA4/arete/commit/5838dffdec4c56aa4c6fc311f3251c262435deed))
+* add stop command ([247625e](https://github.com/AreteA4/arete/commit/247625e64c646f8e883f3b8ef7d4b884949f248f))
+* add stop command ([5838dff](https://github.com/AreteA4/arete/commit/5838dffdec4c56aa4c6fc311f3251c262435deed))
 * Add typescript ore to cli templates ([f227b74](https://github.com/AreteA4/arete/commit/f227b74a18f051f208f37459a64d49f2b0567d03))
 * add view pipeline for derived views like `latest`, `top10` ([f2f72fa](https://github.com/AreteA4/arete/commit/f2f72fa8894d2a38a13e8ee05791b7e4124977ea))
 * **cli:** add --module flag for Rust SDK generation ([42812e6](https://github.com/AreteA4/arete/commit/42812e673d5b763792b96937d8dd6dee20314253))
@@ -2518,8 +2518,8 @@
 
 * Add 'a4 sdk create rust' command for Rust SDK generation ([baadf84](https://github.com/AreteA4/arete/commit/baadf84ce36053acd07eb3743ccadbb28a3df8cb))
 * Add per-language output directory configuration ([0f58344](https://github.com/AreteA4/arete/commit/0f58344e715b393c4d0bc14422a1baeec1dccad7))
-* add stop command for HYP-145 ([247625e](https://github.com/AreteA4/arete/commit/247625e64c646f8e883f3b8ef7d4b884949f248f))
-* add stop command for HYP-145 ([5838dff](https://github.com/AreteA4/arete/commit/5838dffdec4c56aa4c6fc311f3251c262435deed))
+* add stop command ([247625e](https://github.com/AreteA4/arete/commit/247625e64c646f8e883f3b8ef7d4b884949f248f))
+* add stop command ([5838dff](https://github.com/AreteA4/arete/commit/5838dffdec4c56aa4c6fc311f3251c262435deed))
 * Add typescript ore to cli templates ([f227b74](https://github.com/AreteA4/arete/commit/f227b74a18f051f208f37459a64d49f2b0567d03))
 * add view pipeline for derived views like `latest`, `top10` ([f2f72fa](https://github.com/AreteA4/arete/commit/f2f72fa8894d2a38a13e8ee05791b7e4124977ea))
 * **cli:** add --module flag for Rust SDK generation ([42812e6](https://github.com/AreteA4/arete/commit/42812e673d5b763792b96937d8dd6dee20314253))
@@ -2557,7 +2557,7 @@
 
 ### Features
 
-* add stop command for HYP-145 ([247625e](https://github.com/AreteA4/arete/commit/247625e64c646f8e883f3b8ef7d4b884949f248f))
+* add stop command ([247625e](https://github.com/AreteA4/arete/commit/247625e64c646f8e883f3b8ef7d4b884949f248f))
 * **sdk:** update CLI SDK generation for new Stack trait pattern ([b71d8b2](https://github.com/AreteA4/arete/commit/b71d8b2575ec4ce13546f22dc8793827cfce2a22))
 
 

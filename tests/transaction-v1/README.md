@@ -1,4 +1,4 @@
-# Transaction V1 critical-path integration (A4-256)
+# Transaction V1 critical-path integration
 
 This is the reduced scope for PR #204. It replaces the earlier acceptance plan.
 Removed requirements are cancelled here, not deferred release gates or automatic
@@ -179,8 +179,9 @@ smoke with `--registry` after publication. Python adds a clean-environment impor
 of `arete-sdk[solana]` after publication. No live lifecycle is repeated per
 language or after publication. The existing ingestion registry check is unchanged.
 
-This branch is rebased onto main `fd7ce0e0`, including **A4-253 / PR #205**
-(TypeScript), **A4-254 / PR #200** (Rust), and **A4-255 / PR #201** (Python).
+This branch is rebased onto main `fd7ce0e0`, including the adapter
+implementations for TypeScript (**PR #205**), Rust (**PR #200**) and Python
+(**PR #201**).
 All three real adapter implementations are now integrated; no adapter
 implementation dependency remains. Python's required aggregate CI check and
 base/extra matrix are preserved. The generated Rust test runs in the existing

@@ -1565,7 +1565,7 @@
 
 * Add authentication system with WebSocket integration ([bd7f8ad](https://github.com/AreteA4/arete/commit/bd7f8adca65e2c0222aab32146faa8d57d357735))
 * Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
-* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Make snapshots optional with cursor-based filtering ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
 * Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from HyperTekOrg/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * **react:** add schema filtering support to view hooks ([790ad65](https://github.com/AreteA4/arete/commit/790ad6549be51084c2ba47e1c0001682485596ae))
 * **sdk:** Add builder methods and React hooks for new subscription options ([1f7f95b](https://github.com/AreteA4/arete/commit/1f7f95be29e70391c74cec425ee2badd1f87e0bc))
@@ -1728,7 +1728,7 @@
 
 * Add authentication system with WebSocket integration ([bd7f8ad](https://github.com/AreteA4/arete/commit/bd7f8adca65e2c0222aab32146faa8d57d357735))
 * Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
-* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Make snapshots optional with cursor-based filtering ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
 * Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from AreteA4/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * **sdk:** Add builder methods and React hooks for new subscription options ([1f7f95b](https://github.com/AreteA4/arete/commit/1f7f95be29e70391c74cec425ee2badd1f87e0bc))
 * **typescript-sdk:** Support optional snapshots and cursor-based resume ([3f239e9](https://github.com/AreteA4/arete/commit/3f239e9d9fa2f992b7d8eaa1c467c541af9a8a9a))

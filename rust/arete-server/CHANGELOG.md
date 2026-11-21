@@ -730,22 +730,22 @@
 
 * emit and display account usage identity ([d1ce5ff](https://github.com/AreteA4/arete/commit/d1ce5ffc5e420c990619bb356f3e17e7d2a23e56))
 * **server:** emit account policy usage identity ([db83f8b](https://github.com/AreteA4/arete/commit/db83f8b9f80a7a221a366aa44cc0a441b45eedde))
-* **server:** expose Solana Gateway usage observer (A4-283) ([791c7b3](https://github.com/AreteA4/arete/commit/791c7b391a534073f3b57a7a1cb4ac51b0a2d8b7))
-* **server:** expose Solana Gateway usage observer (A4-283) ([f0d293f](https://github.com/AreteA4/arete/commit/f0d293f441063816f88a504d6ca521866d2082f1))
+* **server:** expose Solana Gateway usage observer ([791c7b3](https://github.com/AreteA4/arete/commit/791c7b391a534073f3b57a7a1cb4ac51b0a2d8b7))
+* **server:** expose Solana Gateway usage observer ([f0d293f](https://github.com/AreteA4/arete/commit/f0d293f441063816f88a504d6ca521866d2082f1))
 
 
 ### Bug Fixes
 
-* **server:** await durable usage shutdown (A4-188) ([7505a5b](https://github.com/AreteA4/arete/commit/7505a5bd2e2afb7f1d8af1a68e7a98bff70e49a0))
+* **server:** await durable usage shutdown ([7505a5b](https://github.com/AreteA4/arete/commit/7505a5bd2e2afb7f1d8af1a68e7a98bff70e49a0))
 * **server:** balance active metrics across auth refresh ([3852b74](https://github.com/AreteA4/arete/commit/3852b74fe937ce0e2de3c6690124ddb8b232caab))
-* **server:** bound recovered usage batches (A4-188) ([4c3633e](https://github.com/AreteA4/arete/commit/4c3633ea88b1068a07da5410b1308a031b35e7d7))
+* **server:** bound recovered usage batches ([4c3633e](https://github.com/AreteA4/arete/commit/4c3633ea88b1068a07da5410b1308a031b35e7d7))
 * **server:** bound recovered websocket usage batches ([e1021a7](https://github.com/AreteA4/arete/commit/e1021a794651ed610bff9a491551fefc8972c37e))
-* **server:** box usage emitter commands (A4-188) ([ea74fe2](https://github.com/AreteA4/arete/commit/ea74fe2e35991c15b08372264921ef87c9362d63))
-* **server:** drain usage backlog on shutdown (A4-188) ([ac82c15](https://github.com/AreteA4/arete/commit/ac82c158e58c1d565b352eabfd4a6feddedd78fd))
-* **server:** flush accepted usage on slow shutdown (A4-188) ([fffaee8](https://github.com/AreteA4/arete/commit/fffaee8e405fa0bce20da9b94099ed1790008884))
-* **server:** preserve late shutdown usage (A4-188) ([3a37462](https://github.com/AreteA4/arete/commit/3a37462498911fa5a950eb51b45ee078646a33b9))
+* **server:** box usage emitter commands ([ea74fe2](https://github.com/AreteA4/arete/commit/ea74fe2e35991c15b08372264921ef87c9362d63))
+* **server:** drain usage backlog on shutdown ([ac82c15](https://github.com/AreteA4/arete/commit/ac82c158e58c1d565b352eabfd4a6feddedd78fd))
+* **server:** flush accepted usage on slow shutdown ([fffaee8](https://github.com/AreteA4/arete/commit/fffaee8e405fa0bce20da9b94099ed1790008884))
+* **server:** preserve late shutdown usage ([3a37462](https://github.com/AreteA4/arete/commit/3a37462498911fa5a950eb51b45ee078646a33b9))
 * **server:** refresh websocket usage identity ([5f49ac0](https://github.com/AreteA4/arete/commit/5f49ac03a40903cf5b69a2275cb4fba96dceb4d7))
-* **server:** retain failed usage across flush barriers (A4-188) ([bc6962c](https://github.com/AreteA4/arete/commit/bc6962c37432b1045b2302fe359d54310f9244bf))
+* **server:** retain failed usage across flush barriers ([bc6962c](https://github.com/AreteA4/arete/commit/bc6962c37432b1045b2302fe359d54310f9244bf))
 
 
 ### Dependencies
@@ -1743,7 +1743,7 @@
 * Add authentication system with WebSocket integration ([bd7f8ad](https://github.com/AreteA4/arete/commit/bd7f8adca65e2c0222aab32146faa8d57d357735))
 * Authentication system with WebSocket integration, SSR support, and security enhancements ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * enforce websocket auth and rate limits on the server ([71a0c04](https://github.com/AreteA4/arete/commit/71a0c04540fa75544eedb250e06aacf5b3709c03))
-* Make snapshots optional with cursor-based filtering (HYP-148) ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
+* Make snapshots optional with cursor-based filtering ([46be9aa](https://github.com/AreteA4/arete/commit/46be9aa235d28a5c1ebe3f32ca94068ada9b245f))
 * Merge pull request [#75](https://github.com/AreteA4/arete/issues/75) from AreteA4/auth ([d9b90f9](https://github.com/AreteA4/arete/commit/d9b90f9bbae6cf3a70273c7fc30230cdb58198df))
 * **server:** Add optional snapshot and cursor-based filtering to WebSocket protocol ([da7b486](https://github.com/AreteA4/arete/commit/da7b4862375de7a25c0e254d6e90aa2c1e64c546))
 
