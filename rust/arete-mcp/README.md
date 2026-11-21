@@ -756,9 +756,13 @@ bought may always be sold, at a loss too. There are no global per-action or
 per-window caps. `a4 sandbox rules validate <file>` checks a Rules v3
 document locally.
 
-Actions (an action the owner did not grant is refused before anything is
-sent, with code `sandbox-action-not-granted` and rule `session-grant`; a
-`call` runs under the `invoke` grant):
+Actions (whether the agent holds one is the API's decision: an action the
+owner did not grant is sent and refused by the API before anything is
+signed, with code `sandbox-action-not-granted`, rule `session-grant` and a
+`requestId`, and the refusal is recorded for the owner; a `call` runs under
+the `invoke` grant). `a4 sandbox preview`, `a4 sandbox invoke` and
+`a4 sandbox action` run the same actions through the same client, with the
+same results and refusals, for hosts without a stdio MCP server:
 
 | `action`   | `args` |
 | ---------- | ------ |

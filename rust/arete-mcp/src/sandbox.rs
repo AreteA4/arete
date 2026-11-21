@@ -1793,6 +1793,17 @@ pub(crate) fn url_encode(value: &str) -> String {
         .collect()
 }
 
+/// `value` (an action's result or refusal JSON) with the idempotency key it
+/// ran under as `idempotencyKey`, unless it already names one. The MCP
+/// tools and the CLI both return it, on success and on error, so the action
+/// can be retried or looked up under the same key.
+pub fn with_idempotency_key(mut value: Value, idempotency_key: Option<&str>) -> Value {
+    if let (Some(key), Some(object)) = (idempotency_key, value.as_object_mut()) {
+        object.entry("idempotencyKey").or_insert_with(|| json!(key));
+    }
+    value
+}
+
 /// A fresh idempotency key for an action the agent did not key itself.
 pub fn new_idempotency_key() -> String {
     format!("mcp-{}", uuid::Uuid::new_v4())

@@ -20,6 +20,20 @@ The loop is: **discover → preview → invoke.**
    lose and the transaction it built, or the refusal.
 4. `sandbox_invoke`: runs it.
 
+Without a stdio MCP server, the same loop runs in one-shot CLI commands:
+`a4 sandbox status` and `a4 sandbox rules show`, then `a4 sandbox preview`
+and `a4 sandbox invoke` with one action:
+
+```bash
+a4 sandbox preview --call <program> <function> --input <json|@file>
+a4 sandbox preview --invoke <json|@file>
+a4 sandbox preview --withdraw <lamports>
+```
+
+They send the same actions through the same client as the tools and return
+the same results and refusals (`--json` prints them as the tools do). See
+[`a4 sandbox`](/cli/commands/#a4-sandbox).
+
 Pass u64 amounts as decimal strings.
 
 ## call

@@ -6,7 +6,8 @@ description: Set up an agent to use a sandbox through the Arete MCP server or th
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
 An agent uses a sandbox through the Arete MCP server (`a4 mcp`), which lists
-the `sandbox_*` tools, or through `a4 sandbox` for reads. Both use the
+the `sandbox_*` tools, or through `a4 sandbox`, which reads it and previews
+and runs its actions in one-shot commands. Both use the
 agent's own account; the agent finds the sandboxes it has been granted
 itself.
 
@@ -119,11 +120,31 @@ read tools `program_read_account`, `read_view` and `connect` also take
 | `a4 sandbox rules show`            | The rules, as the agent sees them                         |
 | `a4 sandbox reads`                 | The programs the sandbox can read                         |
 | `a4 sandbox rules validate <file>` | Check a Rules v3 file locally                             |
+| `a4 sandbox preview ...`           | A dry run of one action, as `sandbox_preview`             |
+| `a4 sandbox invoke ...`            | Runs one action, as `sandbox_invoke`                      |
+| `a4 sandbox action <id>`           | One action's status, as `sandbox_action`                  |
 
-The reads take `--sandbox <id|name>` for one command and `--json`, and resolve
-the sandbox in the same order as the MCP tools. The CLI never runs an action:
-actions go through `sandbox_invoke`. See the
-[CLI reference](/cli/commands/#a4-sandbox).
+The commands take `--sandbox <id|name>` for one command and `--json`, and
+resolve the sandbox in the same order as the MCP tools. `preview` and
+`invoke` are one-shot forms of `sandbox_preview` and `sandbox_invoke` for
+hosts that can't run the stdio MCP server, such as cloud agent hosts: the
+same `call`, `invoke` and `withdraw` actions, with the same results and
+refusals (`code`, `rule`, `requestId`, and for a call `stages`, `plan` and
+`guardPipeline`). Give one action:
+
+```bash
+a4 sandbox preview --call <program> <function> --input '{"reserve":"<reserve>","amount":{"ui":"0.1"}}'
+a4 sandbox preview --call <program> <function> --input @input.json
+a4 sandbox preview --invoke @instructions.json   # {"instructions":[...]} or the array
+a4 sandbox preview --withdraw 50000000           # lamports
+a4 sandbox invoke  --call <program> <function> --input @input.json --idempotency-key <key>
+```
+
+Preview until it passes, then run `invoke` with the same flags. After a
+timeout, rerun `invoke` with the same `--idempotency-key` (it returns the
+original result) or look the run up with
+`a4 sandbox action --idempotency-key <key>`; never rerun it under a new key.
+See the [CLI reference](/cli/commands/#a4-sandbox).
 
 ## Prompts
 
@@ -156,7 +177,8 @@ without skills, put guidance like this in the agent's instructions:
   the task is for before acting.
 - Read `sandbox_status` and `sandbox_rules` before acting; use only programs
   and instructions they list.
-- Preview every action with `sandbox_preview` before `sandbox_invoke`.
+- Preview every action with `sandbox_preview` before `sandbox_invoke`
+  (`a4 sandbox preview` before `a4 sandbox invoke` without MCP).
 - Pass amounts as decimal strings in the smallest unit.
 - On a refusal, follow its `hint`. With `retryable: false`, change the request
   before trying again.
