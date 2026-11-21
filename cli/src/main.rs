@@ -428,8 +428,8 @@ enum Commands {
     #[command(subcommand)]
     Squads(commands::squads::SquadsCommands),
 
-    /// Read a sandbox wallet's history, holdings and rules, and check a
-    /// Rules v3 file (sandboxes are in alpha)
+    /// Read a sandbox wallet's history, holdings and rules, preview and run
+    /// its actions, and check a Rules v3 file (sandboxes are in alpha)
     #[command(subcommand)]
     Sandbox(commands::sandbox::SandboxCommands),
 

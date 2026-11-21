@@ -5335,14 +5335,8 @@ fn sandbox_result(
     result: Result<serde_json::Value, crate::sandbox::SandboxRefusal>,
     idempotency_key: Option<&str>,
 ) -> CallToolResult {
-    let with_key = |mut value: serde_json::Value| {
-        if let (Some(key), Some(object)) = (idempotency_key, value.as_object_mut()) {
-            object
-                .entry("idempotencyKey")
-                .or_insert_with(|| serde_json::json!(key));
-        }
-        value
-    };
+    let with_key =
+        |value: serde_json::Value| crate::sandbox::with_idempotency_key(value, idempotency_key);
     let (text, failed) = match result {
         Ok(body) => (
             serde_json::to_string(&with_key(body)).unwrap_or_default(),
