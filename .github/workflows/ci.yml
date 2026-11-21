@@ -210,6 +210,31 @@ jobs:
       - name: Test publishing authentication selection
         run: bash ./scripts/test-npm-publish-auth.sh
 
+  # Fails when tracked files, CHANGELOGs included, carry internal tracker ids
+  # or reference repositories of the organization that are not public. See
+  # scripts/check-oss-leaks.py for the rules.
+  check-oss-leaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Test the leak checker
+        run: python3 ./scripts/test-check-oss-leaks.py
+
+      # Optional extra patterns come from a secret so GitHub masks them in
+      # logs; the checker reports their hits by number only. Unset, it skips
+      # them.
+      - name: Scan tracked files for leaks
+        env:
+          OSS_LEAK_EXTRA_PATTERNS: ${{ secrets.OSS_LEAK_EXTRA_PATTERNS }}
+        run: python3 ./scripts/check-oss-leaks.py
+
   rust-workspace:
     name: Rust workspace tests
     needs: changes
@@ -1234,6 +1259,7 @@ jobs:
       - linked-release-versions
       - npm-cli-wrapper
       - npm-publish-auth
+      - check-oss-leaks
       - rust-workspace
       - rust-features
       - rust-consumers

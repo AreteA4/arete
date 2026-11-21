@@ -100,7 +100,7 @@ esac
   fail "only pull requests may skip jobs"
 
 # A new job has to choose: be decided here, or always run.
-always_on="changes check-crate-files linked-release-versions lockfile-sync npm-cli-wrapper npm-publish-auth python record-verified-tree rust"
+always_on="changes check-crate-files check-oss-leaks linked-release-versions lockfile-sync npm-cli-wrapper npm-publish-auth python record-verified-tree rust"
 expected="$(printf '%s\n' $all_jobs $always_on | sort | xargs)"
 actual="$(yq -r '.jobs | keys | .[]' "$workflow" | sort | xargs)"
 [ "$actual" = "$expected" ] || fail "ci.yml jobs differ from the decided and always-on lists: [$actual]"
