@@ -112,9 +112,12 @@ pub fn api_report(api_url: &str, build: &Result<ApiBuild, ApiBuildError>) -> Val
 }
 
 /// One line about the API's build, for humans: `arete-api 0.1.0 at
-/// 85c265de0f1a (https://api.arete.run)`.
+/// 85c265de0f1a, image sha256:0123456789ab (https://api.arete.run)`.
+/// The commit and digest are shortened by characters, never bytes, so an
+/// unexpected answer cannot split a character.
 pub fn api_line(api_url: &str, build: &Result<ApiBuild, ApiBuildError>) -> String {
     let url = normalize_api_url(api_url);
+    let short = |text: &str, length: usize| text.chars().take(length).collect::<String>();
     match build {
         Ok(build) => {
             let name = build.service.as_deref().unwrap_or("API");
@@ -124,10 +127,15 @@ pub fn api_line(api_url: &str, build: &Result<ApiBuild, ApiBuildError>) -> Strin
                 .map(|version| format!(" {version}"))
                 .unwrap_or_default();
             let commit = match &build.commit {
-                Some(commit) => format!(" at {}", &commit[..commit.len().min(12)]),
+                Some(commit) => format!(" at {}", short(commit, 12)),
                 None => ", commit not reported".to_string(),
             };
-            format!("{name}{version}{commit} ({url})")
+            let image = build
+                .image_digest
+                .as_deref()
+                .map(|digest| format!(", image {}", short(digest, "sha256:".len() + 12)))
+                .unwrap_or_default();
+            format!("{name}{version}{commit}{image} ({url})")
         }
         Err(error) => format!("{error} ({url})"),
     }
@@ -159,7 +167,34 @@ mod tests {
         );
         assert_eq!(
             api_line("https://api.arete.run", &build),
-            "arete-api 0.1.0 at 85c265de0f1a (https://api.arete.run)"
+            "arete-api 0.1.0 at 85c265de0f1a, image sha256:ab (https://api.arete.run)"
+        );
+    }
+
+    #[test]
+    fn the_digest_names_a_build_without_a_commit() {
+        let digest = format!("sha256:{}", "0123456789abcdef".repeat(4));
+        let build = Ok(ApiBuild {
+            service: Some("arete-api".into()),
+            version: None,
+            commit: None,
+            image_digest: Some(digest),
+        });
+        assert_eq!(
+            api_line("https://api.arete.run", &build),
+            "arete-api, commit not reported, image sha256:0123456789ab (https://api.arete.run)"
+        );
+    }
+
+    #[test]
+    fn unexpected_commit_text_is_shortened_by_characters() {
+        let build = parse_response(
+            200,
+            r#"{"commit":"12345678901é234","imageDigest":"sha256:ééé"}"#,
+        );
+        assert_eq!(
+            api_line("https://api.arete.run", &build),
+            "API at 12345678901é, image sha256:ééé (https://api.arete.run)"
         );
     }
 
