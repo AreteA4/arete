@@ -15,7 +15,9 @@ The loop is: **discover → preview → invoke.**
    this agent holds, and which programs, instructions and functions are
    allowed.
 2. `sandbox_derive`, when the action needs an address: a PDA (computed
-   locally, with no network call) or an associated token account.
+   locally, with no network call) or an associated token account. To find
+   the account an action starts from (a pool, a pair, a reserve) by the
+   addresses it holds, use `sandbox_find_accounts`.
 3. `sandbox_preview`: a dry run. Returns `pass` with what the wallet would
    lose and the transaction it built, or the refusal.
 4. `sandbox_invoke`: runs it.

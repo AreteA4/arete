@@ -1,0 +1,39 @@
+{
+  "programId": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+  "program": "pump_amm",
+  "accountType": "Pool",
+  "fields": [
+    { "field": "base_mint", "value": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU", "offsets": [43] }
+  ],
+  "anyOrder": false,
+  "slot": 312345678,
+  "total": 36,
+  "truncated": true,
+  "sortedBy": {
+    "by": "vaultBalance",
+    "mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+    "vaultField": "pool_base_token_account"
+  },
+  "cached": false,
+  "accounts": [
+    {
+      "address": "H4dH3hmyWZ1SbsMzYqMKdyFBsUuvHGbzvNNxGg8bPFuu",
+      "fields": {
+        "base_mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+        "quote_mint": "So11111111111111111111111111111111111111112",
+        "index": "0"
+      },
+      "vaultBalance": "33377464118"
+    },
+    {
+      "address": "5xLRsQnVdPbJJ1TVBf5RUzJ3cXcKqVgF6zU6aH5pyLzM",
+      "fields": {
+        "base_mint": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+        "quote_mint": "So11111111111111111111111111111111111111112",
+        "index": "1"
+      },
+      "vaultBalance": "1200"
+    }
+  ],
+  "requestId": "req-1"
+}

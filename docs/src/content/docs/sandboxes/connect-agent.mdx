@@ -89,19 +89,20 @@ tools are missing, the server has no agent key: run
 
 ## MCP tools
 
-| Tool               | What it does                                                                                  |
-| ------------------ | --------------------------------------------------------------------------------------------- |
-| `sandbox_list`     | The sandboxes granted to this agent, and the one in use                                       |
-| `sandbox_select`   | Choose the sandbox calls use from now on (by id or name), saved for this project              |
-| `sandbox_status`   | The wallet, its balances, the actions this agent may run and which sandbox it is. Start here. |
-| `sandbox_rules`    | The allowed programs, instructions with their arguments and accounts, limits, allowlist       |
-| `sandbox_reads`    | Read-only: the programs the sandbox can read, exactly the programs its rules enable           |
-| `sandbox_derive`   | An address: a PDA (computed locally) or an associated token account                           |
-| `sandbox_preview`  | A dry run: `pass` and what the wallet would lose, or the refusal                              |
-| `sandbox_invoke`   | Runs one action: the only tool that moves funds                                               |
-| `sandbox_action`   | One action's status, by id or idempotency key                                                 |
-| `sandbox_history`  | Read-only: past actions, newest first, decoded                                                |
-| `sandbox_holdings` | Read-only: SOL, tokens and program positions                                                  |
+| Tool                    | What it does                                                                                  |
+| ----------------------- | --------------------------------------------------------------------------------------------- |
+| `sandbox_list`          | The sandboxes granted to this agent, and the one in use                                       |
+| `sandbox_select`        | Choose the sandbox calls use from now on (by id or name), saved for this project              |
+| `sandbox_status`        | The wallet, its balances, the actions this agent may run and which sandbox it is. Start here. |
+| `sandbox_rules`         | The allowed programs, instructions with their arguments and accounts, limits, allowlist       |
+| `sandbox_reads`         | Read-only: the programs the sandbox can read, exactly the programs its rules enable           |
+| `sandbox_derive`        | An address: a PDA (computed locally) or an associated token account                           |
+| `sandbox_find_accounts` | Read-only: a program's accounts (a pool, pair, reserve) by the addresses they hold            |
+| `sandbox_preview`       | A dry run: `pass` and what the wallet would lose, or the refusal                              |
+| `sandbox_invoke`        | Runs one action: the only tool that moves funds                                               |
+| `sandbox_action`        | One action's status, by id or idempotency key                                                 |
+| `sandbox_history`       | Read-only: past actions, newest first, decoded                                                |
+| `sandbox_holdings`      | Read-only: SOL, tokens and program positions                                                  |
 
 Every tool from `sandbox_status` down takes an optional `sandbox`. Arguments
 for each are in the [MCP reference](/agent-skills/mcp/#sandbox-tools). The
