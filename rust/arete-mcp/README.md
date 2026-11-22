@@ -637,8 +637,11 @@ resolves, the call is refused before any token is minted, with
   programs with the instructions each allows at the top level and their
   accounts (associated token `createIdempotent` needs only `mint`). A
   program may also list `functions` (`name`, `summary`): run one as a
-  `call` action rather than hand-assembling an `invoke`. Rules
-  in a format before version 3 are refused with
+  `call` action rather than hand-assembling an `invoke`. An account to
+  give has a `lookup`; its `search` (`type` and address `fields`) says the
+  account can be found with `sandbox_find_accounts`, and its `findBy` field
+  offsets serve a `getProgramAccounts` `memcmp` search on your own RPC.
+  Rules in a format before version 3 are refused with
   `sandbox-rules-version-unsupported` and one line.
 - `sandbox_derive({ kind: "ata" | "pda", ... })` — a program-derived
   address (`programId`, `seeds`), computed by this server with no network
@@ -648,6 +651,26 @@ resolves, the call is refused before any token is minted, with
   `string`, `pubkey`, `u8`, `u16`, `u32` or `u64` (integers as numbers or
   decimal strings, little-endian), or `{ kind: "bytes", hex }`: at most 15
   seeds of at most 32 bytes each.
+- `sandbox_find_accounts({ program, type, fields, anyOrder?, limit? })` —
+  read-only. A program's accounts of one type whose address fields hold
+  the given addresses, read from the sandbox's chain
+  (`GET /api/sandbox/v1/accounts`): the pool, pair, reserve or market an
+  action starts from. `type` is one a `lookup.search` in `sandbox_rules`
+  names, and `fields` maps 1 to 4 of its `lookup.search.fields` (IDL paths
+  such as `base_mint` or `liquidity.mint_pubkey`) to base58 addresses.
+  `anyOrder: true` with two fields also matches their addresses swapped;
+  `limit` is 1 to 20 (default 20). Returns `accounts` (`address`, decoded
+  `fields`, and the raw `vaultBalance` when sorted by a vault), `total`,
+  `truncated`, `sortedBy` (`vaultBalance` with its `mint` and
+  `vaultField`, `newest` with its `field`, or `address`), `slot` and
+  `cached`. Examples: a PumpSwap `Pool` by `base_mint`; a Meteora DLMM
+  `LbPair` by `token_x_mint` and `token_y_mint` with `anyOrder`; a Kamino
+  `Reserve` by `liquidity.mint_pubkey` (and `lending_market`); a Manifest
+  market by its base and quote mints; a MetaDAO `Proposal` by `dao`. A
+  search with no field is refused (`sandbox-accounts-filter-required`), a
+  type or field that cannot be searched with the ones that can (`types`,
+  `fields`), and one that matches too many with
+  `sandbox-accounts-too-broad`.
 - `sandbox_preview({ action, args })` — a dry run of the same action
   `sandbox_invoke` takes: builds the transaction and runs every check
   without signing or recording anything. Returns `pass` with what the wallet
@@ -825,7 +848,7 @@ with no readable body. The retry rule:
   change. A wallet that cannot pay is `sandbox-guard-insufficient-funds`
   with `balanceLamports` (and `shortfallLamports` when known).
 - `retryable: true` on a read (`sandbox_list`, `sandbox_status`, `sandbox_rules`,
-  `sandbox_derive`, `sandbox_action`, `sandbox_history`,
+  `sandbox_derive`, `sandbox_find_accounts`, `sandbox_action`, `sandbox_history`,
   `sandbox_holdings`) or a `sandbox_preview`: nothing was changed; retry
   the same call after `retryAfterSeconds` when present.
 - `retryable: true` on `sandbox_invoke`: the action may have run unless the

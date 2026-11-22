@@ -44,6 +44,7 @@ An account with no `fill` is yours to give. In `sandbox_rules` it has a
 | `accountType`     | The program account type its name points to (`Pool`, `LbPair`, `Reserve`)                                                     |
 | `discriminator`   | That type's discriminator (base58), for a `getProgramAccounts` `memcmp` at offset 0                                           |
 | `findBy`          | Fields of that type at fixed byte offsets, to search by: `[{ "field": "base_mint", "offset": 43 }]`                           |
+| `search`          | When the account can be searched for: its `type` and the address `fields` to search by (`sandbox_find_accounts`)              |
 | `heldBy`          | Account types of the program with a field naming it (`GlobalConfig.protocol_fee_recipients`): read one and take it from there |
 | `tokenAccountFor` | For a token account of yours: the mints it may be for                                                                         |
 | `unlocks`         | The accounts Arete fills once you give this one                                                                               |
@@ -58,9 +59,14 @@ a reserve. Ways to find it:
   their addresses. You can read it through the sandbox when the sandbox's
   rules allow every program it decodes. See
   [Reading in a sandbox](/sandboxes/read-scope/).
-- **By searching the program.** With your own RPC, run `getProgramAccounts`
-  on the program with a `memcmp` filter for the `discriminator` at offset 0
-  and one for each `findBy` field you know, such as the coin's mint.
+- **By searching the program.** When the `lookup` has a `search`, call
+  `sandbox_find_accounts` (or `a4 sandbox accounts`) with its `type` and the
+  addresses you know, such as the coin's mint for `base_mint`. It reads the
+  sandbox's chain and returns the matching accounts with their decoded
+  address fields; a pool search puts the pool with the most in its vault
+  first. With your own RPC you can instead run `getProgramAccounts` on the
+  program with a `memcmp` filter for the `discriminator` at offset 0 and one
+  for each `findBy` field you know.
 - **From the protocol.** Use its app, API, SDK or docs.
 
 Token accounts of yours that Arete can't pair with a mint (`user_token_in`
@@ -96,8 +102,8 @@ accounts plus the remaining accounts PumpSwap reads after them. You give
 two:
 
 - `pool`: a `Pool` account. Its `findBy` includes `base_mint` at offset 43
-  and `quote_mint` at offset 75, so a coin's pool is a `getProgramAccounts`
-  search for the Pool discriminator and the coin's mint at offset 43.
+  and `quote_mint` at offset 75. Find a coin's pool with
+  `sandbox_find_accounts({ program: "pump_amm", type: "Pool", fields: { base_mint: "<mint>" } })`.
 - `global_config`: PumpSwap's `GlobalConfig` account.
 
 From the pool Arete reads `base_mint`, `quote_mint` and the pool's two token
@@ -136,7 +142,9 @@ give `lb_pair`, an `LbPair` account, and your two token accounts,
 reads both reserves, both mints and the oracle from the pair, derives both
 token programs, and chooses the bin arrays the swap crosses from the pair's
 current active bin when the transaction is built. Bin arrays from an
-earlier quote go stale, so leave them out.
+earlier quote go stale, so leave them out. To find the pair for two mints,
+search `type: "LbPair"` by `token_x_mint` and `token_y_mint` with
+`anyOrder: true`, since either mint can be X.
 
 ### Kamino Lend deposit, with Kamino Farms
 
@@ -149,7 +157,9 @@ with a farm calls it.
 For `depositReserveLiquidityAndObligationCollateral` you give:
 
 - `reserve`: the `Reserve` for the token you deposit. Its `findBy` includes
-  `liquidity.mintPubkey`, the token's mint.
+  `liquidity.mintPubkey`, the token's mint: search with `type: "Reserve"`
+  and `fields: { "liquidity.mint_pubkey": "<mint>" }`, adding
+  `lending_market` to pick one market.
 - `obligation`: your obligation in that market. Kamino derives it from your
   wallet and the market. Its address is in Kamino's SDK and docs, and in
   your earlier transactions.

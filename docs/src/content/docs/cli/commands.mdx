@@ -163,6 +163,7 @@ side: registry installs (`403 command-group-required`) to an account without
 | `a4 sandbox status`                                                           | A sandbox's wallet, balances and granted actions (alpha)          |
 | `a4 sandbox history\|holdings\|rules show`                                    | A sandbox's actions, holdings and rules (alpha)                   |
 | `a4 sandbox reads`                                                            | The programs a sandbox can read (alpha)                           |
+| `a4 sandbox accounts <program> <type> --field <field>=<address>`              | Find a program's accounts by the addresses they hold (alpha)      |
 | `a4 sandbox rules validate <file>`                                            | Check a Rules v3 file locally                                     |
 | `a4 sandbox preview\|invoke --call\|--invoke\|--withdraw ...`                 | Dry-run, then run, one sandbox action (alpha)                     |
 | `a4 sandbox action <id>\|--idempotency-key <key>`                             | Look one sandbox action up (alpha)                                |
@@ -1490,6 +1491,8 @@ a4 sandbox history --all --json                   # every page, as JSON
 a4 sandbox holdings                               # SOL, tokens, positions (Kamino obligations decoded)
 a4 sandbox rules show                             # the rules, each instruction with its arguments
 a4 sandbox reads                                  # the programs the sandbox can read
+a4 sandbox accounts pump_amm Pool --field base_mint=<mint>          # a coin's pool
+a4 sandbox accounts <program> LbPair --field token_x_mint=<a> --field token_y_mint=<b> --any-order
 a4 sandbox rules validate rules.json              # check a Rules v3 file (`-`: stdin)
 a4 sandbox preview --call <program> <function> --input @input.json   # dry-run a function
 a4 sandbox preview --invoke @instructions.json    # dry-run named instructions
