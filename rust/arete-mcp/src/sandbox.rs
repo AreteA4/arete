@@ -25,7 +25,7 @@
 //! default Arete API), and only when that origin is an Arete host over HTTPS
 //! or loopback. Neither is ever returned in a tool result.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -72,13 +72,14 @@ pub const READ_REQUIRED: &str = "sandbox-read-required";
 
 /// The tools this module backs, hidden when there is neither an API key to
 /// list grants with nor a sandbox id.
-pub const TOOL_NAMES: [&str; 11] = [
+pub const TOOL_NAMES: [&str; 12] = [
     "sandbox_list",
     "sandbox_select",
     "sandbox_status",
     "sandbox_rules",
     "sandbox_reads",
     "sandbox_derive",
+    "sandbox_find_accounts",
     "sandbox_preview",
     "sandbox_invoke",
     "sandbox_action",
@@ -89,8 +90,8 @@ pub const TOOL_NAMES: [&str; 11] = [
 /// What a sandbox call does, which decides what retrying it means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CallKind {
-    /// Changes nothing: the wallet, rules, an address, an action lookup,
-    /// history, holdings, the readable programs, and minting the sandbox
+    /// Changes nothing: the wallet, rules, an address, an account search,
+    /// an action lookup, history, holdings, the readable programs, and minting the sandbox
     /// token or a read session.
     #[default]
     Read,
@@ -1585,6 +1586,16 @@ impl SandboxClient {
             .await
     }
 
+    /// A program's accounts of one type that hold the addresses `args`
+    /// names (`GET /accounts`), as the sandbox's chain has them.
+    pub async fn find_accounts(
+        &self,
+        args: &SandboxFindAccountsArgs,
+    ) -> Result<Value, SandboxRefusal> {
+        let path = args.path()?;
+        self.call(reqwest::Method::GET, &path, None, None).await
+    }
+
     /// Dry-run `action` with `args`: plan and guard result, nothing signed
     /// or recorded.
     pub async fn preview(
@@ -2001,6 +2012,74 @@ impl SandboxDeriveArgs {
                 body
             }
         }
+    }
+}
+
+/// The query parameters `GET /accounts` reads itself; any other is a field
+/// filter.
+const ACCOUNTS_PARAMETERS: [&str; 4] = ["program", "type", "anyOrder", "limit"];
+
+#[derive(Debug, Default, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxFindAccountsArgs {
+    /// The sandbox to act on, by sandboxId or name, for this call only.
+    /// Omit it to use the one chosen with `sandbox_select`, else
+    /// ARETE_SANDBOX_ID, else the only sandbox granted (`sandbox_list`).
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    /// The program: its base58 id or a name `sandbox_rules` lists it by
+    /// (e.g. `pump_amm`).
+    pub program: String,
+    /// The account type to find, e.g. `Pool`, `LbPair`, `Reserve`: one an
+    /// allowed instruction's `lookup.search.type` names (case ignored).
+    #[serde(rename = "type")]
+    pub account_type: String,
+    /// 1 to 4 filters: an address field of that type and the base58 address
+    /// it must hold, e.g. `{ "base_mint": "<mint>" }`. Field names are IDL
+    /// paths as `lookup.search.fields` lists them (`liquidity.mint_pubkey`);
+    /// case and `_` are ignored.
+    pub fields: BTreeMap<String, String>,
+    /// With exactly two fields, also match their values swapped: a pair by
+    /// its two mints in either order.
+    #[serde(default)]
+    pub any_order: bool,
+    /// The most accounts to return, 1 to 20 (default 20).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+impl SandboxFindAccountsArgs {
+    /// `/accounts` with the query: `program`, `type`, the field filters,
+    /// then `anyOrder` and `limit` when given. The API checks the values; a
+    /// field that would read as one of its own parameters is refused here.
+    pub fn path(&self) -> Result<String, SandboxRefusal> {
+        let mut query = vec![
+            ("program".to_string(), self.program.trim().to_string()),
+            ("type".to_string(), self.account_type.trim().to_string()),
+        ];
+        for (field, value) in &self.fields {
+            let field = field.trim();
+            if ACCOUNTS_PARAMETERS.contains(&field) {
+                return Err(SandboxRefusal::local(
+                    "sandbox-accounts-request-invalid",
+                    format!(
+                        "`{field}` cannot be a field filter: the account search reads it as its own parameter"
+                    ),
+                ));
+            }
+            query.push((field.to_string(), value.trim().to_string()));
+        }
+        if self.any_order {
+            query.push(("anyOrder".into(), "true".into()));
+        }
+        if let Some(limit) = self.limit {
+            query.push(("limit".into(), limit.to_string()));
+        }
+        let query: Vec<String> = query
+            .iter()
+            .map(|(name, value)| format!("{}={}", url_encode(name), url_encode(value)))
+            .collect();
+        Ok(format!("/accounts?{}", query.join("&")))
     }
 }
 
@@ -3892,6 +3971,11 @@ pub(crate) mod tests {
             (Method::GET, "/rules", CallKind::Read),
             (Method::GET, "/actions?idempotencyKey=k", CallKind::Read),
             (Method::POST, "/derive", CallKind::Read),
+            (
+                Method::GET,
+                "/accounts?program=p&type=Pool&base_mint=m",
+                CallKind::Read,
+            ),
             (Method::POST, "/actions/preview", CallKind::Preview),
             (Method::POST, "/actions/call/preview", CallKind::Preview),
             (Method::POST, "/actions/invoke", CallKind::Action),
@@ -4411,6 +4495,56 @@ pub(crate) mod tests {
         assert_eq!(client(&base).holdings().await.unwrap(), holdings);
         let seen = requests(&seen);
         assert!(seen[1].to_ascii_lowercase().contains("bearer tok-1"));
+    }
+
+    #[tokio::test]
+    async fn account_searches_are_read_with_the_sandbox_token() {
+        let found = json!({
+            "programId": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "program": "pump_amm",
+            "accountType": "Pool", "total": 1, "truncated": false,
+            "sortedBy": { "by": "address" }, "cached": false, "slot": 42,
+            "accounts": [{ "address": "P1", "fields": { "base_mint": "M" } }]
+        });
+        let (base, seen) = stub(vec![(
+            "GET",
+            "/api/sandbox/v1/accounts?program=pump_amm&type=Pool&base_mint=M&quote_mint=Q&anyOrder=true&limit=5",
+            200,
+            found.clone(),
+        )]);
+        let args: SandboxFindAccountsArgs = serde_json::from_value(json!({
+            "program": " pump_amm ", "type": "Pool",
+            "fields": { "quote_mint": "Q", "base_mint": "M" },
+            "anyOrder": true, "limit": 5
+        }))
+        .unwrap();
+        assert_eq!(client(&base).find_accounts(&args).await.unwrap(), found);
+        let seen = requests(&seen);
+        assert!(
+            seen[1].starts_with("GET /api/sandbox/v1/accounts?"),
+            "{}",
+            seen[1]
+        );
+        assert!(seen[1].to_ascii_lowercase().contains("bearer tok-1"));
+    }
+
+    #[test]
+    fn account_search_fields_are_encoded_and_never_shadow_a_parameter() {
+        let args: SandboxFindAccountsArgs = serde_json::from_value(json!({
+            "program": "KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD", "type": "Reserve",
+            "fields": { "liquidity.mint_pubkey": "M" }
+        }))
+        .unwrap();
+        assert_eq!(
+            args.path().unwrap(),
+            "/accounts?program=KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD&type=Reserve&liquidity.mint_pubkey=M"
+        );
+        let args: SandboxFindAccountsArgs = serde_json::from_value(json!({
+            "program": "p", "type": "Pool", "fields": { "limit": "M" }
+        }))
+        .unwrap();
+        let refusal = args.path().unwrap_err();
+        assert_eq!(refusal.code(), "sandbox-accounts-request-invalid");
+        assert!(!refusal.to_json()["retryable"].as_bool().unwrap());
     }
 
     #[test]

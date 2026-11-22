@@ -1,7 +1,8 @@
 //! `a4 sandbox`: list the sandboxes the account has been granted and choose
 //! one, read a sandbox wallet's status (address, balances, granted actions),
-//! history, holdings and rules, list the programs it can read, and check a
-//! Rules v3 document before its owner signs it.
+//! history, holdings and rules, list the programs it can read, find a
+//! program's accounts by the addresses they hold, and check a Rules v3
+//! document before its owner signs it.
 //!
 //! The reads go to the Arete API's sandbox routes with a short-lived token
 //! the account's API key mints for the sandbox (as the MCP `sandbox_*` tools
@@ -23,7 +24,8 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use arete_mcp::sandbox::{
-    ledger, rules, ActionLookup, SandboxActionName, SandboxClient, SandboxRefusal,
+    ledger, rules, ActionLookup, SandboxActionName, SandboxClient, SandboxFindAccountsArgs,
+    SandboxRefusal,
 };
 use chrono::{DateTime, Duration, Utc};
 use clap::{ArgGroup, Args, Subcommand, ValueEnum};
@@ -60,6 +62,25 @@ pub enum SandboxCommands {
     /// account decode` and their stacks with `a4 get` / `a4 stream`, each with
     /// --sandbox
     Reads(SandboxTarget),
+    /// Find a program's accounts by the addresses they hold
+    ///
+    /// Searches the sandbox's chain for accounts of TYPE (an account type an
+    /// allowed instruction's lookup names; `a4 sandbox rules show --json`
+    /// lists each lookup's `search` type and fields) whose address fields
+    /// hold the given addresses: the pool, pair, reserve or market an action
+    /// starts from. Give 1 to 4 --field filters. Prints each account's
+    /// address and decoded fields, how many matched and how they are sorted.
+    /// A refusal by the rules or a missing sign-in exits 77; a rate limit
+    /// exits 75; any other failure exits 1. --json prints the answer as the
+    /// MCP `sandbox_find_accounts` tool returns it.
+    ///
+    /// Examples:
+    ///   a4 sandbox accounts pump_amm Pool --field base_mint=<mint>
+    ///   a4 sandbox accounts <dlmm> LbPair --field token_x_mint=<mint> \
+    ///     --field token_y_mint=<mint> --any-order
+    ///   a4 sandbox accounts kamino_lending Reserve --field liquidity.mint_pubkey=<mint>
+    #[command(verbatim_doc_comment)]
+    Accounts(AccountsArgs),
     /// Dry-run one action: every check, nothing signed or recorded
     ///
     /// Builds the transaction and runs every check without signing, sending
@@ -265,6 +286,65 @@ pub struct HoldingsArgs {
     pub raw: bool,
 }
 
+#[derive(Args, Debug, Clone, Default)]
+pub struct AccountsArgs {
+    #[command(flatten)]
+    pub target: SandboxTarget,
+
+    /// The program: its id or a name the rules list it by
+    #[arg(value_name = "PROGRAM")]
+    pub program: String,
+
+    /// The account type to find, e.g. Pool, LbPair, Reserve (case ignored)
+    #[arg(value_name = "TYPE")]
+    pub account_type: String,
+
+    /// A filter, FIELD=ADDRESS: an address field of TYPE (an IDL path such
+    /// as base_mint or liquidity.mint_pubkey) and the address it holds.
+    /// Repeat for up to 4
+    #[arg(long = "field", value_name = "FIELD=ADDRESS", required = true, value_parser = field_filter)]
+    pub fields: Vec<(String, String)>,
+
+    /// With exactly two fields, also match their addresses swapped (a pair
+    /// by its two mints in either order)
+    #[arg(long)]
+    pub any_order: bool,
+
+    /// The most accounts to show, 1 to 20 (default 20)
+    #[arg(long)]
+    pub limit: Option<u32>,
+}
+
+/// One `--field FIELD=ADDRESS`.
+fn field_filter(text: &str) -> Result<(String, String), String> {
+    match text.split_once('=') {
+        Some((field, address)) if !field.trim().is_empty() && !address.trim().is_empty() => {
+            Ok((field.trim().to_string(), address.trim().to_string()))
+        }
+        _ => Err(format!("expected FIELD=ADDRESS, got `{text}`")),
+    }
+}
+
+impl AccountsArgs {
+    /// The arguments as the MCP `sandbox_find_accounts` tool takes them.
+    pub fn search(&self) -> Result<SandboxFindAccountsArgs> {
+        let mut fields = std::collections::BTreeMap::new();
+        for (field, address) in &self.fields {
+            if fields.insert(field.clone(), address.clone()).is_some() {
+                anyhow::bail!("--field {field} is given twice");
+            }
+        }
+        Ok(SandboxFindAccountsArgs {
+            sandbox: None,
+            program: self.program.clone(),
+            account_type: self.account_type.clone(),
+            fields,
+            any_order: self.any_order,
+            limit: self.limit,
+        })
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RulesCommands {
     /// The rules the sandbox runs under, as this agent sees them
@@ -290,6 +370,7 @@ pub fn run(command: SandboxCommands, config: &str, json: bool) -> Result<()> {
         SandboxCommands::Rules(RulesCommands::Show(target)) => rules_show(target, json),
         SandboxCommands::Rules(RulesCommands::Validate { file }) => rules_validate(&file, json),
         SandboxCommands::Reads(target) => reads_show(target, config, json),
+        SandboxCommands::Accounts(args) => accounts(args, json),
         SandboxCommands::Preview(args) => preview(args, json),
         SandboxCommands::Invoke(args) => invoke(args, json),
         SandboxCommands::Action(args) => action_lookup(args, json),
@@ -437,7 +518,8 @@ pub fn cli_hint(refusal: &SandboxRefusal) -> Option<&'static str> {
 /// commands that do the same.
 pub fn cli_terms(hint: &str) -> String {
     // Longest first, so a name is never matched inside a longer one.
-    const TOOLS: [(&str, &str); 10] = [
+    const TOOLS: [(&str, &str); 11] = [
+        ("sandbox_find_accounts", "`a4 sandbox accounts`"),
         ("sandbox_holdings", "`a4 sandbox holdings`"),
         ("sandbox_history", "`a4 sandbox history`"),
         ("sandbox_preview", "`a4 sandbox preview`"),
@@ -1746,6 +1828,155 @@ fn mint_label(mint: &Value) -> String {
     mint.as_str().map(short).unwrap_or_else(|| "token".into())
 }
 
+// ---- accounts -----------------------------------------------------------------
+
+fn accounts(args: AccountsArgs, json: bool) -> Result<()> {
+    let search = args.search()?;
+    let runtime = runtime()?;
+    let (client, sandbox_id) = client(&runtime, &args.target, json)?;
+    let body = runtime
+        .block_on(client.find_accounts(&search))
+        .map_err(|refusal| refused(refusal, json))?;
+    if json {
+        println!("{body}");
+    } else {
+        print!("{}", render_accounts(&body, &sandbox_id));
+    }
+    Ok(())
+}
+
+/// The human rendering of an account search: what was searched, one row
+/// per account (address, decoded fields, vault balance when sorted by it)
+/// and how many matched and in what order.
+pub fn render_accounts(body: &Value, sandbox_id: &str) -> String {
+    let program = body["program"]
+        .as_str()
+        .or_else(|| body["programId"].as_str())
+        .unwrap_or("?");
+    let mut out = format!(
+        "{} {}  {} accounts of {program}",
+        "Sandbox".bold(),
+        sandbox_id,
+        body["accountType"].as_str().unwrap_or("?")
+    );
+    if let Some(slot) = body["slot"].as_u64() {
+        out.push_str(&format!(" at slot {slot}"));
+    }
+    if body["cached"].as_bool() == Some(true) {
+        out.push_str(" (cached)");
+    }
+    out.push('\n');
+    let searched: Vec<String> = body["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|filter| {
+            let field = filter["field"].as_str()?;
+            out.push_str(&format!(
+                "  {field} = {}\n",
+                filter["value"].as_str().unwrap_or("?")
+            ));
+            Some(field.to_string())
+        })
+        .collect();
+    if body["anyOrder"].as_bool() == Some(true) {
+        out.push_str("  (either order)\n");
+    }
+
+    let accounts = body["accounts"].as_array().cloned().unwrap_or_default();
+    let total = body["total"].as_u64().unwrap_or(accounts.len() as u64);
+    let mut summary = if body["truncated"].as_bool() == Some(true) {
+        format!("{total} matched, showing {}", accounts.len())
+    } else {
+        format!("{total} matched")
+    };
+    let sorted = &body["sortedBy"];
+    match sorted["by"].as_str() {
+        Some("vaultBalance") => summary.push_str(&format!(
+            ", largest {} first (mint {})",
+            sorted["vaultField"].as_str().unwrap_or("vault"),
+            sorted["mint"]
+                .as_str()
+                .map(short)
+                .unwrap_or_else(|| "?".into())
+        )),
+        Some("newest") => summary.push_str(&format!(
+            ", newest {} first",
+            sorted["field"].as_str().unwrap_or("time")
+        )),
+        Some("address") => summary.push_str(", by address"),
+        _ => {}
+    }
+    out.push_str(&format!("  {summary}\n"));
+    if accounts.is_empty() {
+        return out;
+    }
+
+    // The searched fields first, then the rest by name.
+    let mut columns = searched.clone();
+    for account in &accounts {
+        for field in account["fields"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .map(|(k, _)| k)
+        {
+            if !columns.contains(field) {
+                columns.push(field.clone());
+            }
+        }
+    }
+    let vault = accounts
+        .iter()
+        .any(|account| !account["vaultBalance"].is_null());
+    let mut rows = vec![{
+        let mut header = vec!["ADDRESS".to_string()];
+        header.extend(columns.iter().cloned());
+        if vault {
+            header.push("VAULT".into());
+        }
+        header
+    }];
+    for account in &accounts {
+        let mut row = vec![account["address"].as_str().unwrap_or("?").to_string()];
+        for column in &columns {
+            row.push(field_text(&account["fields"][column.as_str()]));
+        }
+        if vault {
+            row.push(field_text(&account["vaultBalance"]));
+        }
+        rows.push(row);
+    }
+    let widths: Vec<usize> = (0..rows[0].len())
+        .map(|at| {
+            rows.iter()
+                .map(|row| row[at].chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .collect();
+    out.push('\n');
+    for row in rows {
+        let cells: Vec<String> = row
+            .iter()
+            .zip(&widths)
+            .map(|(cell, width)| format!("{cell:<width$}"))
+            .collect();
+        out.push_str(&format!("  {}\n", cells.join("  ").trim_end()));
+    }
+    out
+}
+
+/// A decoded field value: addresses shortened, anything else as given.
+fn field_text(value: &Value) -> String {
+    match value {
+        Value::Null => "-".into(),
+        Value::String(text) if rules::is_pubkey(text) => short(text),
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
+}
+
 // ---- rules --------------------------------------------------------------------
 
 fn rules_show(target: SandboxTarget, json: bool) -> Result<()> {
@@ -2948,6 +3179,77 @@ mod tests {
             text.ends_with("Kamino obligation  A\n      no deposits or borrows\n"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn account_searches_render_one_row_per_account_and_the_order() {
+        colored::control::set_override(false);
+        let text = render_accounts(&fixture("accounts.json"), "sbx");
+        assert!(
+            text.starts_with(&format!(
+                "Sandbox sbx  Pool accounts of pump_amm at slot 312345678\n  base_mint = {MINT}\n"
+            )),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "  36 matched, showing 2, largest pool_base_token_account first (mint 7xKX…gAsU)\n"
+            ),
+            "{text}"
+        );
+        // The searched field first, then the rest by name, then the vault.
+        assert!(
+            text.contains("  ADDRESS                                       base_mint  index  quote_mint  VAULT\n"),
+            "{text}"
+        );
+        assert!(
+            text.contains("  H4dH3hmyWZ1SbsMzYqMKdyFBsUuvHGbzvNNxGg8bPFuu  7xKX…gAsU  0      So11…1112   33377464118\n"),
+            "{text}"
+        );
+
+        let none = json!({
+            "program": "pump_amm", "accountType": "Pool", "total": 0, "truncated": false,
+            "sortedBy": { "by": "address" }, "accounts": []
+        });
+        assert!(
+            render_accounts(&none, "sbx").ends_with("  0 matched, by address\n"),
+            "{}",
+            render_accounts(&none, "sbx")
+        );
+    }
+
+    #[test]
+    fn account_flags_become_the_mcp_tools_arguments() {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: AccountsArgs,
+        }
+        let parse = |argv: &[&str]| {
+            <Cli as clap::Parser>::try_parse_from(std::iter::once("a4").chain(argv.iter().copied()))
+                .map(|cli| cli.args)
+        };
+        let args = parse(&[
+            "dlmm",
+            "LbPair",
+            "--field",
+            "token_y_mint=Y",
+            "--field",
+            " token_x_mint = X ",
+            "--any-order",
+            "--limit",
+            "5",
+        ])
+        .unwrap();
+        let search = args.search().unwrap();
+        assert_eq!(
+            search.path().unwrap(),
+            "/accounts?program=dlmm&type=LbPair&token_x_mint=X&token_y_mint=Y&anyOrder=true&limit=5"
+        );
+        assert!(parse(&["dlmm", "LbPair"]).is_err(), "a field is required");
+        assert!(parse(&["dlmm", "LbPair", "--field", "token_x_mint"]).is_err());
+        let twice = parse(&["dlmm", "LbPair", "--field", "a=X", "--field", "a=Y"]).unwrap();
+        assert!(twice.search().is_err());
     }
 
     #[test]
