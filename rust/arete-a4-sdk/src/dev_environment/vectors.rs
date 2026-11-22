@@ -843,3 +843,269 @@ async fn program_reads_name_the_program_id_in_edge_and_direct_mode() {
         json!(program_id)
     );
 }
+
+// ---------------------------------------------------------------------------
+// A program context switched by hand
+// ---------------------------------------------------------------------------
+
+/// The klend Program Read descriptor of `targets.json`.
+fn klend_descriptor(file: &Value) -> ProgramReadDescriptor {
+    serde_json::from_value(file["installed"]["default"]["programReads"]["klend"].clone())
+        .expect("klend descriptor")
+}
+
+/// A context built by hand, holding a secret key when the vector says the
+/// SDK finds one.
+fn hand_built(secret_key: bool) -> crate::program::ProgramBuilder {
+    if secret_key {
+        crate::program::ProgramBuilder::for_client(
+            reqwest::Client::new(),
+            None,
+            None,
+            Some(secret_auth()),
+        )
+    } else {
+        crate::program::ProgramBuilder::new()
+    }
+}
+
+/// Check a hand-built context against one `switch.json` expectation: the
+/// mode it reports, and where its klend reads go.
+fn assert_switched(
+    name: &str,
+    result: Result<crate::program::ProgramBuilder, AreteError>,
+    expect: &Value,
+    descriptor: &ProgramReadDescriptor,
+    program_id: &str,
+) {
+    if let Some(code) = expect["error"]["code"].as_str() {
+        let error = result
+            .err()
+            .unwrap_or_else(|| panic!("{name}: expected {code}"));
+        assert_eq!(error.dev_code(), Some(code), "{name}: {error}");
+        return;
+    }
+    let builder = result.unwrap_or_else(|error| panic!("{name}: {error}"));
+    let mode = mode_of(expect);
+    assert_eq!(builder.environment(), mode.environment(), "{name}");
+    let transport = builder
+        .account_transport_of("klend", Some(program_id), descriptor)
+        .unwrap_or_else(|error| panic!("{name}: {error}"));
+    let ProgramReadDescriptor::HostedBinding { binding, .. } = descriptor else {
+        panic!("hosted binding");
+    };
+    match &mode {
+        SwitchResult::Production => assert_eq!(transport.endpoint(), binding.endpoint, "{name}"),
+        SwitchResult::Edge { edge_url } => assert_eq!(transport.endpoint(), edge_url, "{name}"),
+        // Direct mode reads at the target resolve names on the first read.
+        SwitchResult::Direct { .. } => {}
+    }
+}
+
+/// Every non-browser `switch.json` case that passes the option, applied to
+/// a program context built by hand, decides the same mode as the client
+/// switch and sends its program reads there.
+#[test]
+fn hand_built_program_context_follows_switch_vectors() {
+    let file = load("switch.json");
+    let targets = load("targets.json");
+    let descriptor = klend_descriptor(&targets);
+    let program_id = targets["installed"]["default"]["programs"]["klend"]["programId"]
+        .as_str()
+        .unwrap();
+    let mut ran = 0;
+    for case in cases(&file) {
+        let name = case["name"].as_str().unwrap();
+        let input = &case["input"];
+        if input["option"].is_null() || input["browser"].as_bool() == Some(true) {
+            continue;
+        }
+        let secret_key = input["secretKey"].as_bool() == Some(true);
+        let (switch, _) = run_switch(input);
+        let result = switch.and_then(|switch| hand_built(secret_key).switched(&switch));
+        assert_switched(name, result, &case["expect"], &descriptor, program_id);
+        ran += 1;
+    }
+    assert!(ran >= 10, "ran {ran} option cases");
+}
+
+/// The public `with_environment` on the option cases that read no process
+/// input: `production`, and options naming an edge URL.
+#[test]
+fn with_environment_follows_switch_vectors_that_name_their_target() {
+    let file = load("switch.json");
+    let targets = load("targets.json");
+    let descriptor = klend_descriptor(&targets);
+    let program_id = targets["installed"]["default"]["programs"]["klend"]["programId"]
+        .as_str()
+        .unwrap();
+    let mut ran = 0;
+    for case in cases(&file) {
+        let name = case["name"].as_str().unwrap();
+        let input = &case["input"];
+        let option = &input["option"];
+        let names_target = option == "production" || option["url"].is_string();
+        if !names_target || input["browser"].as_bool() == Some(true) {
+            continue;
+        }
+        let secret_key = input["secretKey"].as_bool() == Some(true);
+        let result = EnvironmentOption::from_json(option)
+            .and_then(|option| hand_built(secret_key).with_environment(option));
+        assert_switched(name, result, &case["expect"], &descriptor, program_id);
+        ran += 1;
+    }
+    assert!(ran >= 4, "ran {ran} cases");
+}
+
+/// `targets.json` Program Read expectations for a context built by hand
+/// and switched with `with_environment`: production and edge endpoints and
+/// the release hash in the path.
+#[test]
+fn with_environment_program_read_targets() {
+    let file = load("targets.json");
+    let mut ran = 0;
+    for case in cases(&file) {
+        let name = case["name"].as_str().unwrap();
+        let input = &case["input"];
+        let installed = installed(&file, input["installed"].as_str().unwrap());
+        let option = match mode_of(&input["mode"]) {
+            SwitchResult::Production => EnvironmentOption::Production,
+            SwitchResult::Edge { edge_url } => EnvironmentOption::dev_edge(edge_url),
+            // A bare context has no secret key to resolve with.
+            SwitchResult::Direct { environment } => {
+                let error = crate::program::ProgramBuilder::new()
+                    .with_environment(EnvironmentOption::dev_direct(environment))
+                    .err()
+                    .expect("direct mode without a secret key");
+                assert_eq!(error.dev_code(), Some(codes::NOT_CONFIGURED), "{name}");
+                continue;
+            }
+        };
+        let expected = &case["expect"]["programReads"]["klend"];
+        let transport = crate::program::ProgramBuilder::new()
+            .with_environment(option)
+            .unwrap()
+            .account_transport_of("klend", Some(&installed.program_id), &installed.read)
+            .unwrap();
+        assert_eq!(transport.endpoint(), expected["endpoint"], "{name}");
+        assert_eq!(
+            transport.release().program_release_hash,
+            expected["pathReleaseHash"],
+            "{name}"
+        );
+        ran += 1;
+    }
+    assert!(ran >= 4, "ran {ran} cases");
+}
+
+/// A bare context stays in production until it is switched: building one
+/// reads no switch input.
+#[test]
+fn bare_program_context_is_production() {
+    let builder = crate::program::ProgramBuilder::new();
+    assert_eq!(builder.environment(), Environment::Production);
+}
+
+/// A context built by hand and switched to an edge reads through the edge
+/// with the identity header `targets.json` expects and no credential, sends
+/// nothing to the production binding, and refuses stack queries.
+#[tokio::test]
+async fn hand_built_program_reads_go_through_the_edge_only() {
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Debug, Clone)]
+    struct Seen {
+        path: String,
+        identity: Option<String>,
+        authorization: bool,
+    }
+    async fn recorder(seen: Arc<Mutex<Vec<Seen>>>, edge: bool) -> String {
+        let app = axum::Router::new().fallback(move |request: axum::extract::Request| {
+            let seen = seen.clone();
+            async move {
+                seen.lock().unwrap().push(Seen {
+                    path: request.uri().path().to_string(),
+                    identity: request
+                        .headers()
+                        .get(DEV_IDENTITY_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string),
+                    authorization: request.headers().contains_key("authorization"),
+                });
+                let mut response = axum::response::IntoResponse::into_response(axum::Json(
+                    json!({ "account": null }),
+                ));
+                if edge {
+                    response
+                        .headers_mut()
+                        .insert(DEV_EDGE_HEADER, axum::http::HeaderValue::from_static("1"));
+                }
+                response
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{address}")
+    }
+
+    let edge_seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+    let production_seen: Arc<Mutex<Vec<Seen>>> = Arc::default();
+    let edge_url = recorder(edge_seen.clone(), true).await;
+    let production = recorder(production_seen.clone(), false).await;
+
+    let file = load("targets.json");
+    let mut descriptor_json = file["installed"]["default"]["programReads"]["klend"].clone();
+    descriptor_json["transport"]["binding"]["endpoint"] = json!(production);
+    descriptor_json["transport"]["binding"]["auth"]["sessionEndpoint"] =
+        json!(format!("{production}/ws/sessions"));
+    let descriptor: ProgramReadDescriptor = serde_json::from_value(descriptor_json).unwrap();
+    let program_id = file["installed"]["default"]["programs"]["klend"]["programId"]
+        .as_str()
+        .unwrap();
+
+    let builder = crate::program::ProgramBuilder::new()
+        .with_environment(EnvironmentOption::dev_edge(edge_url.clone()))
+        .expect("edge option");
+    assert_eq!(builder.environment(), Environment::Dev);
+    builder
+        .account_transport_of("klend", Some(program_id), &descriptor)
+        .unwrap()
+        .read(&crate::program_read_transport::ProgramReadRequest::Fetch {
+            account: "Reserve",
+            address: "x",
+        })
+        .await
+        .expect("edge read");
+
+    let edge_seen = edge_seen.lock().unwrap();
+    let request = edge_seen.first().expect("a request reached the edge");
+    assert!(!request.authorization, "edge requests carry no credential");
+    let identity: Value =
+        serde_json::from_str(request.identity.as_deref().expect("identity header")).unwrap();
+    let edge_case = cases(&file)
+        .iter()
+        .find(|case| case["input"]["mode"]["via"] == "edge")
+        .expect("an edge case");
+    assert_eq!(
+        identity, edge_case["expect"]["programReads"]["klend"]["identityHeader"],
+        "identity header"
+    );
+    assert!(
+        request.path.contains("program-release"),
+        "path names the release: {}",
+        request.path
+    );
+    assert!(
+        production_seen.lock().unwrap().is_empty(),
+        "nothing reaches the production binding"
+    );
+
+    let error = builder
+        .query_executor()
+        .err()
+        .expect("stack queries refused");
+    assert_eq!(error.dev_code(), Some(codes::SURFACE_UNAVAILABLE));
+}

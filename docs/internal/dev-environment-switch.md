@@ -107,6 +107,16 @@ one value apps and `@usearete/automations` read to tell dev from production.
 The switch is decided once per client, at construction. A client never changes
 mode.
 
+A Rust host that builds a program context by hand (`ProgramBuilder::new()`
+with `with_chain` / `with_wallet`) instead of connecting a client passes the
+option to `ProgramBuilder::with_environment`. The same switch decides the mode
+and the context's program account reads follow §3; `ProgramBuilder::environment()`
+reports it. A bare context never reads `ARETE_ENVIRONMENT`, so it stays in
+production until the host passes the option, and the host can switch one
+context without switching the process. Its chain reader and wallet are the ones
+the host set, and its stack queries fail with `devenv-surface-unavailable` in
+dev mode.
+
 ## 3. Endpoints per mode
 
 ### 3.1 Edge

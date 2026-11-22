@@ -519,7 +519,8 @@ auth tokens per binding.
     `a4.programs.<p>.context()` inside a stack client; `ProgramContext::new(&accessor)`
     when an instruction named `context` takes the method name, and
     `ProgramContext::from_parts` / `ProgramBuilder::with_chain` / `with_wallet` for
-    fixtures. Generated items are imported through `super::generated`, a re-export
+    fixtures and hosts that build the context by hand (`ProgramBuilder::with_environment`
+    puts such a context's program reads behind the dev environment switch). Generated items are imported through `super::generated`, a re-export
     module the generator emits beside the bundle: at a standalone program crate's root
     it re-exports the program module's items (`PROGRAM_ID`, `*Params`, builders,
     `pdas`, `<Name>Program`, read descriptors) and the generated types; inside a stack
