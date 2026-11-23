@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.62.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.61.0...arete-sdk-v0.62.0) (2026-11-23)
+
+
+### Features
+
+* **rust-sdk:** let a hand-built ProgramBuilder use the dev environment switch ([73d1c70](https://github.com/AreteA4/arete/commit/73d1c7026aee4bb45baaf840a689657a447e3aa6))
+* **rust-sdk:** let a hand-built ProgramBuilder use the dev environment switch ([f339a0c](https://github.com/AreteA4/arete/commit/f339a0c73f7570b7bbe88db9d6544221d3e80cc5))
+
 ## [0.61.0](https://github.com/AreteA4/arete/compare/arete-sdk-v0.60.0...arete-sdk-v0.61.0) (2026-11-22)
 
 
