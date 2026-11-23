@@ -15,8 +15,8 @@ use std::sync::{Arc, RwLock};
 use crate::auth::AuthConfig;
 use crate::chain::ChainClient;
 use crate::dev_environment::{
-    self, DevMode, EdgeRequestPolicy, EdgeTokens, ProgramReadIdentity, RefusedTokens,
-    ResolveRequest,
+    self, resolve_switch_from_process, DevMode, EdgeRequestPolicy, EdgeTokens, Environment,
+    EnvironmentOption, ProgramReadIdentity, RefusedTokens, ResolveRequest, SwitchResult,
 };
 use crate::error::AreteError;
 use crate::http::HttpAuthClient;
@@ -102,6 +102,61 @@ impl ProgramBuilder {
         self.dev = dev;
         self.dev_queries = queries;
         self
+    }
+
+    /// Put this context's program account reads behind the dev environment
+    /// switch, as [`AreteBuilder::environment`](crate::AreteBuilder::environment)
+    /// does for a connected client.
+    ///
+    /// For hosts that build a program context by hand ([`ProgramBuilder::new`]
+    /// with [`Self::with_chain`] and [`Self::with_wallet`]) instead of going
+    /// through [`Arete::builder`](crate::Arete::builder). A bare context
+    /// never reads `ARETE_ENVIRONMENT`: it stays in production until this is
+    /// called, so the switch is flipped for this context only and not for
+    /// the whole process.
+    ///
+    /// - [`EnvironmentOption::Production`]: hosted program reads go to the
+    ///   generated binding, as before.
+    /// - [`EnvironmentOption::dev_edge`]: every program read goes to the edge
+    ///   at that loopback URL, with no credential and with the program's
+    ///   identity in the edge identity header. Nothing is sent to the
+    ///   production binding. A program without a hosted binding fails with
+    ///   `devenv-surface-unavailable`.
+    /// - [`EnvironmentOption::dev_direct`]: resolve against the environment
+    ///   with this context's secret key. A context built with
+    ///   [`ProgramBuilder::new`] has none, so this fails with
+    ///   `devenv-not-configured`.
+    /// - [`EnvironmentOption::dev`]: the target comes from `ARETE_DEV_URL`,
+    ///   `ARETE_DEV_ENV` or the nearest `.arete/dev/session.json`.
+    ///
+    /// Only program account reads follow the switch. The chain reader and
+    /// wallet are whatever the host set, and stack queries in dev mode fail
+    /// with `devenv-surface-unavailable` rather than reach production.
+    ///
+    /// Errors when the option names an invalid target (for example an edge
+    /// URL that is not loopback with an explicit port), with the same codes
+    /// as the client switch.
+    pub fn with_environment(self, environment: EnvironmentOption) -> Result<Self, AreteError> {
+        let switch = resolve_switch_from_process(Some(&environment), self.auth_config.as_ref())?;
+        self.switched(&switch)
+    }
+
+    /// This context with its program reads in the mode `switch` decided.
+    pub(crate) fn switched(mut self, switch: &SwitchResult) -> Result<Self, AreteError> {
+        let http = self.http.get_or_insert_with(reqwest::Client::new).clone();
+        self.dev = DevMode::of(switch, self.auth_config.as_ref(), &http)?;
+        self.dev_queries = None;
+        Ok(self)
+    }
+
+    /// `Production`, or `Dev` when this context's program reads go through
+    /// a dev environment.
+    pub fn environment(&self) -> Environment {
+        if self.dev.is_some() {
+            Environment::Dev
+        } else {
+            Environment::Production
+        }
     }
 
     /// The connected client's chain reader and its (settable) default
@@ -310,6 +365,16 @@ impl ProgramBuilder {
     pub fn query_executor(&self) -> Result<QueryExecutor, AreteError> {
         if let Some(queries) = &self.dev_queries {
             return Ok(queries.clone());
+        }
+        if self.dev.is_some() {
+            // A context switched by hand has no stack to resolve; its
+            // queries must not fall through to a production endpoint.
+            return Err(dev_environment::surface_unavailable(
+                "Stack queries are not available from a program context switched to a dev \
+                 environment by hand",
+                "Connect with `Arete::builder().environment(..)` to query a stack in a dev \
+                 environment.",
+            ));
         }
         let Some(base) = self.http_base_url.as_deref() else {
             return Err(AreteError::InvalidConfig(
