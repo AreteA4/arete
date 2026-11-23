@@ -1,5 +1,5 @@
-//! WP6 "Done when": `a4 mcp` answers an MCP `initialize` over stdio and
-//! exits once the client closes stdin.
+//! `a4 mcp` answers an MCP `initialize` over stdio and exits once the client
+//! closes stdin.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Command, Stdio};

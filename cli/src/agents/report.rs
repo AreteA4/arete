@@ -135,7 +135,7 @@ pub fn add_agent_command(id: &str, global: bool) -> String {
     }
 }
 
-/// The `a4 init --json` object (spec WP7).
+/// The `a4 init --json` object.
 #[derive(Debug, Clone)]
 pub struct InitReport {
     pub dry_run: bool,

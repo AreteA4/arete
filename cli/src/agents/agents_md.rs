@@ -1,5 +1,5 @@
 //! Instruction files: the `AGENTS.md` managed block, the `CLAUDE.md`
-//! import line and the Gemini `context.fileName` setting (spec WP7 §2–4).
+//! import line and the Gemini `context.fileName` setting.
 
 use std::path::PathBuf;
 
@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use super::jsonc::JsonDoc;
 use super::{display_path, read_optional, upsert_file, Env, ItemResult, Outcome};
 
-/// Exact managed block (spec WP7 §2).
+/// Exact managed block.
 pub const BLOCK: &str = include_str!("templates/agents-block.md");
 pub const BLOCK_VERSION: &str = "v2";
 const BEGIN_PREFIX: &str = "<!-- BEGIN:arete";

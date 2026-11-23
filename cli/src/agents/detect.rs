@@ -1,4 +1,4 @@
-//! Coding-agent detection (spec WP7 table).
+//! Coding-agent detection.
 //!
 //! Signals per agent, in precedence order: an environment variable set by
 //! the agent that is driving this process (`env`), project files (`project`),
@@ -86,7 +86,7 @@ struct Signals {
 
 fn signals(id: &str) -> Signals {
     let (project, env): (&'static [&'static str], &'static [&'static str]) = match id {
-        // CLAUDECODE=1: spec WP7 table (confirmed before implementation).
+        // CLAUDECODE=1 (confirmed before implementation).
         "claude-code" => (&[".claude", "CLAUDE.md", ".mcp.json"], &["CLAUDECODE"]),
         // CURSOR_AGENT: https://cursor.com/docs/agent/tools/terminal ("use the
         // CURSOR_AGENT environment variable in your shell config to detect when
@@ -172,7 +172,7 @@ fn detect_one(env: &Env, id: &str) -> Option<How> {
     None
 }
 
-/// Detect every agent from the WP7 table.
+/// Detect every known agent.
 pub fn detect(env: &Env) -> Detection {
     let agents = AGENT_IDS
         .iter()

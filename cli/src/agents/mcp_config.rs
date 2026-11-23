@@ -1,4 +1,4 @@
-//! MCP config writers (spec WP7 §6): two servers, `arete` (stdio `a4 mcp`)
+//! MCP config writers: two servers, `arete` (stdio `a4 mcp`)
 //! and `arete-docs` (remote), upserted into each agent's config file.
 //! JSON/JSONC files go through the comment-preserving CST, Codex TOML through
 //! `toml_edit`, Goose YAML through `serde_yaml`.

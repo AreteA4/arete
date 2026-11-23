@@ -102,8 +102,8 @@ Server::solana_gateway("gateway-us-east-1")
 Set `ARETE_READ_RPC_URL` for chain reads. Transaction configuration remains
 explicit and uses the existing `ARETE_TRANSACTIONS_*` variables documented
 below. The gateway plan fails startup if transactions are not enabled. Process
-packaging and regional deployment belong in the platform repository; OSS
-exports only this reusable library composition.
+packaging and regional deployment are out of scope for this crate, which only
+exports the reusable library composition.
 
 When an auth plugin is configured, the gateway also requires the stable
 `arete:solana-gateway` audience, `solana-gateway-binding` target kind, and the

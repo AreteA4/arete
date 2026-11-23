@@ -4250,8 +4250,8 @@ fn resolved_extensions_artifact_from_registry(
     Ok(resolved)
 }
 
-/// The registry content hash of an SDK extension bundle, by the rule
-/// arete-platform stores and serves it under (`contentHash`, also served as
+/// The registry content hash of an SDK extension bundle, by the rule the
+/// registry stores and serves it under (`contentHash`, also served as
 /// the artifact's `artifactHash`): the lowercase hex SHA-256 of the compact
 /// JSON `{"files": {<path>: <source>}, "manifest": {"entry", "files",
 /// "inputHash", "inputKind", "language"?, "sdkRange"}}`, object keys sorted,

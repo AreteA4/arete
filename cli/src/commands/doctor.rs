@@ -378,7 +378,7 @@ impl ProjectUsage {
     }
 }
 
-/// Run every check from the WP8 table, in order.
+/// Run every check, in order.
 /// `skills` are the Arete skills this account should have installed.
 /// `can_install`: whether the account has the `install` command group. Without
 /// it `a4 init` writes no `arete.toml`, so a missing one is expected, not a
