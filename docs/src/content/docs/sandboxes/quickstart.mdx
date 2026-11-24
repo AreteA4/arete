@@ -6,8 +6,8 @@ description: Create a sandbox, fund it, sign its rules, grant your agent access 
 import CopyPrompt from "../../../components/CopyPrompt.astro";
 
 This walks through one sandbox from start to finish. You need an Arete
-account, a Solana wallet with a little SOL, and a coding agent that supports
-MCP (Claude Code, Cursor, Codex and others; see
+account with a verified email address, a Solana wallet with a little SOL, and
+a coding agent that supports MCP (Claude Code, Cursor, Codex and others; see
 [Connect your agent](/sandboxes/connect-agent/)).
 
 :::caution[Real funds]
@@ -33,6 +33,13 @@ On the [Sandboxes page](https://app.arete.run/dashboard/sandboxes) of the
 dashboard, create a sandbox. It gets a wallet address. Send SOL to that
 address from your own wallet.
 
+Creating a sandbox needs a verified email address. If yours isn't verified
+yet, verify it at [app.arete.run/verify-email](https://app.arete.run/verify-email).
+The free plan allows one live sandbox at a time. An archived sandbox still
+counts, because archiving keeps its wallet and funds; to make room, withdraw
+its funds and destroy it. See
+[Creating a sandbox](/sandboxes/errors/#creating-a-sandbox).
+
 The wallet you fund from matters: your wallet is always an allowed
 destination, so funds can always come back to you.
 
@@ -40,9 +47,12 @@ destination, so funds can always come back to you.
 
 In the rules builder:
 
-1. Turn on the programs the agent may use.
-2. Optionally narrow each program to certain instructions, and set a spend
-   limit (for example, at most 1 SOL per day through that program).
+1. Review what is on. A sandbox with no signed rules opens with the default
+   set of programs on at safe defaults. Each program offers plain-word
+   actions, such as deposit, withdraw and repay, and each action carries its
+   way out. Riskier actions and some programs stay off until you turn them on.
+2. Turn off what the agent doesn't need, and optionally set a spend limit
+   (for example, at most 1 SOL per day through that program).
 3. Add any other addresses funds may go to. Leave this empty unless you need
    it.
 4. Sign once with your wallet.

@@ -133,14 +133,28 @@ the instructions the owner adds to allow it. A program with no such function
 answers `sandbox-function-not-installed`: send the instruction itself as an
 `invoke`.
 
+One baseline function makes a seeded account: System
+`transactions.account.createWithSeed` (`program: "system"`, input
+`{ seed, owner, space, lamports?, base? }`). It derives the seeded address
+from the wallet and answers it in `plan.resolved`. Its refusals are
+`sandbox-seed-base-not-wallet`, `sandbox-seed-owner-not-linked` and
+`sandbox-seed-account-exists`.
+
 | Argument                        | Meaning                                                      |
 | ------------------------------- | ------------------------------------------------------------ |
-| `program`                       | The program id                                               |
+| `program`                       | The program id, or a name it goes by (below)                 |
 | `function`                      | The function, named as `sandbox_rules` lists it              |
 | `input`                         | The function's JSON input; the wallet member can be left out |
 | `computeUnitLimit`              | Optional compute budget                                      |
 | `computeUnitPriceMicroLamports` | Optional priority fee, per compute unit                      |
 | `transactionFormat`             | `"v1"` (default) or `"v0"`                                   |
+
+`program`, here and in an `invoke`'s `instructions[].program`, is the
+base58 program id or a name the program goes by: its display name
+(`Kamino Lend`), its IDL name (`kamino_lending`, `pump_amm`) or a baseline
+program's name (`SPL Token`, `system`). Matching ignores case, spaces, `-`
+and `_`. An unknown or ambiguous name is refused with
+`sandbox-intent-invalid` and `candidates`, each `{ programId, names }`.
 
 The result has the same shape as an `invoke` result, plus `plan`: the
 `function`, `program`, `extension`, `pinnedSlot` and `fees` it was built
@@ -199,12 +213,19 @@ instruction:
      PumpSwap (pump-amm) `buy` and `sell` for a coin that has left its
      Pump.fun bonding curve, Pump.fun `buy` and `sell` on the curve, or a
      DEX's own swap instruction (Orca Whirlpool, Raydium, Meteora). This is
-     the simplest path.
-   - **A Jupiter route**, when you want the best route across venues: quote
-     with Jupiter's Swap API, then ask it for `/swap-instructions` with the
-     sandbox wallet as the user. Ask the quote for about 50 `maxAccounts`, so
-     the route fits a v1 transaction (64 accounts, no lookup tables). The
-     route only fills through venues whose programs your rules enable.
+     the simplest path. Arete picks the bin arrays of a Meteora DLMM swap and
+     the tick arrays of an Orca Whirlpool or Raydium CLMM swap itself, at
+     preview and invoke; leave them out.
+   - **A Jupiter route**, when you want the best route across venues. When
+     the rules allow a Jupiter route, `sandbox_rules` (and
+     `a4 sandbox rules show --json`) carries a `jupiterSwap` guide: call its
+     `buildUrl` (Jupiter Swap API v2 `/build`) with its `query`. The query
+     sets the sandbox wallet as taker and payer, `transactionVersion=1`,
+     `maxAccounts=50` so the route fits a v1 transaction, `wrapAndUnwrapSol=true`,
+     and `dexes` to the Jupiter labels of the venues the rules allow. The
+     guide also lists `routeInstructions`, `venues` and `steps`. If the
+     venue labels can't be fetched, the guide says so and leaves `dexes`
+     out. Every venue in the route must be in the rules.
 2. **Write the `invoke`.** Name each instruction as `sandbox_rules` lists it
    (Jupiter's swap is one of the Jupiter instructions there, such as
    `route_v2` or `shared_accounts_route_v2`), with its `args` decoded from
@@ -290,7 +311,9 @@ as `execute-v1`. `sandbox_action` lookups and history items carry
 `outflowLamports`, `networkFeeLamports` and `guardPipeline` too (not
 `feeLamports`), and previews carry `outflowLamports` and `guardPipeline`.
 `guardPipeline` is null or absent on actions recorded before it was kept and
-on actions that never reached the guard, such as a rejected one. The full record (decoded
+on actions that never reached the guard, such as a rejected one. Previews,
+`sandbox_rules` and `sandbox_status` also carry the API build's `commit`;
+quote it in bug reports, with `a4 version`. The full record (decoded
 instructions, events, balance changes) is in the
 [history](/sandboxes/history/). A refusal is a tool error with `code`,
 `rule`, what triggered it, `retryable` and a `hint`; see

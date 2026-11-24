@@ -169,6 +169,7 @@ side: registry installs (`403 command-group-required`) to an account without
 | `a4 sandbox action <id>\|--idempotency-key <key>`                             | Look one sandbox action up (alpha)                                |
 | `a4 protocol squads proposer\|status [target]`                                | Bring your own Squads multisig: the proposer and its status       |
 | `a4 status`                                                                   | Show project overview                                             |
+| `a4 version`                                                                  | This CLI's version and the Arete API's build                      |
 | `a4 stack list`                                                               | List deployed stacks                                              |
 | `a4 telemetry status`                                                         | Show telemetry status                                             |
 | `a4 explore`, `a4 explore stacks` (or `list`)                                 | Discover installable stacks                                       |
@@ -395,6 +396,20 @@ a4 config validate
 
 ## Managing the Binary
 
+### a4 version
+
+Print this CLI's version and the build of the Arete API it talks to.
+
+```bash
+a4 version
+a4 version --json   # { "cli": { name, version }, "api": { url, service, version, commit, imageDigest } }
+```
+
+The API's build comes from its public `GET /version` (`service`, `version`,
+`commit`, `imageDigest`). No key is sent. An API without the endpoint, or one
+that can't be reached, is reported as such (`api.error` in `--json`). Quote
+both builds in bug reports. The MCP server's `version` tool reports the same.
+
 ### a4 self install
 
 Finish installing the binary that is currently running. The bootstrappers (`install.sh`, `install.ps1`, `npx @usearete/a4 install`) call this for you; run it yourself only for a manually downloaded release asset.
@@ -490,6 +505,11 @@ an empty result as if the catalog were empty. Agents create or verify their rest
 [arete.run/keys](https://arete.run/keys?utm_source=docs&utm_medium=referral&utm_campaign=docs&utm_content=cli_keys) and use
 `a4 auth login --profile human --key`.
 
+A human account must verify its email address before it creates API keys,
+in the dashboard or when `a4` mints a key for it; until then the request is
+refused with `verified-email-required`. Keys it already has keep working.
+Agent accounts that sign up themselves (`a4 auth signup`) are unaffected.
+
 ### a4 auth signup
 
 Register a new agent account and store its key.
@@ -525,7 +545,7 @@ operator how to replace it explicitly.
 
 The response confirms storage but deliberately omits the secret.
 
-Rate limit: 5 signups per hour per IP. On `429` the command points the user at
+Signups are rate limited. On `429` the command points the user at
 the human flow: `a4 auth login --profile human --key <a4_sk_…>`.
 
 ### a4 auth login
@@ -1488,7 +1508,7 @@ a4 sandbox history --sandbox <id|name>            # another sandbox, for this co
 a4 sandbox history --status landed --since 24h    # filtered, across pages
 a4 sandbox history --cursor <nextCursor>          # the next page
 a4 sandbox history --all --json                   # every page, as JSON
-a4 sandbox holdings                               # SOL, tokens, positions (Kamino obligations decoded)
+a4 sandbox holdings                               # SOL, tokens, positions (Kamino and Save obligations decoded)
 a4 sandbox rules show                             # the rules, each instruction with its arguments
 a4 sandbox reads                                  # the programs the sandbox can read
 a4 sandbox accounts pump_amm Pool --field base_mint=<mint>          # a coin's pool
@@ -1536,7 +1556,10 @@ SOL and token balances in whole units, and the actions this agent is
 granted (`--json`: the API's wallet answer with `selection`). `holdings`
 prints a decoded Kamino obligation as one line per deposit (the cToken
 amount and its value in the underlying token at the reserve's rate) and per
-borrow. `rules show` lists each allowed instruction with its arguments, a
+borrow. It also decodes Save obligations, shows Kamino vault shares as a
+token row with `shareOf`, lists Pump.fun and PumpSwap volume accumulators
+and Kamino user metadata, and marks rent a position can give back with
+`reclaimableRent` (see [Holdings](/sandboxes/history/#holdings)). `rules show` lists each allowed instruction with its arguments, a
 struct or enum argument expanded from the program's IDL types (`Name { a: u8 }`,
 `Name (A | B)`).
 
@@ -3039,6 +3062,7 @@ a4 telemetry disable
 | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
 | `Not authenticated`                           | Run `a4 auth signup` (agent) or `a4 auth login --profile human --key <a4_sk_…>`                                                    |
 | `registry-key-required`                       | The registry needs an API key for this request: run `a4 login` (free), or set `ARETE_API_KEY`                                      |
+| `verified-email-required`                     | A human account must verify its email before creating API keys: [app.arete.run/verify-email](https://app.arete.run/verify-email)   |
 | `Registry signature: ...`                     | A release is unsigned or its signature does not verify; see [Signed releases](#signed-releases)                                    |
 | `a4: command not found`                       | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed; `a4 doctor` reports this as `cli.path` |
 | `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh`; Cargo builds must use `cargo install a4-cli --force`               |

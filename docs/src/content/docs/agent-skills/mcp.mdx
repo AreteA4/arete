@@ -411,8 +411,8 @@ returned.
 | ----------------------- | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
 | `sandbox_list`          |                                                                                  | the granted sandboxes (id, name, wallet, cluster, status, actions) and the one in use          |
 | `sandbox_select`        | `sandbox` (id or name) or `clear: true`                                          | chooses the sandbox calls use from now on, saved for this project                              |
-| `sandbox_status`        |                                                                                  | the wallet, its balances, the actions this agent may run and which sandbox it is (`selection`) |
-| `sandbox_rules`         |                                                                                  | the allowed programs, instructions and `functions` (run with `call`), limits and allowlist     |
+| `sandbox_status`        |                                                                                  | the wallet, balances, actions this agent may run, which sandbox (`selection`), and `positions` |
+| `sandbox_rules`         |                                                                                  | allowed programs, instructions, `functions` (for `call`), limits, allowlist, `jupiterSwap`     |
 | `sandbox_derive`        | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`                 | an address: a PDA computed locally, an ATA under the mint's token program                      |
 | `sandbox_find_accounts` | `program`, `type`, `fields` (1 to 4 `{ field: address }`), `anyOrder?`, `limit?` | read-only: a program's accounts of that type holding those addresses, with decoded fields      |
 | `sandbox_preview`       | `action`, `args`                                                                 | a dry run: `pass` and what the wallet would lose, or the refusal                               |
@@ -455,6 +455,11 @@ Results, lookups and history items give the network fee alone as
 protocol's own fees (history items don't carry it). `guardPipeline` (such as `execute-v1`) names the guard
 pipeline that checked the action, null or absent on older actions and on
 actions that never reached the guard (a rejected one, for example).
+Previews, `sandbox_rules` and `sandbox_status` carry the API build's
+`commit`, the same one the `version` tool reports. `sandbox_rules` carries a
+`jupiterSwap` guide when the rules allow a Jupiter route; see
+[Swaps](/sandboxes/actions/#swaps). `sandbox_status` points to the holdings
+in `positions`.
 
 A passing `sandbox_preview` also lists `newAccounts` and `closedAccounts`
 with their rent (a temporary account the transaction creates and closes is
@@ -633,6 +638,7 @@ arrived, usually because the view id is wrong.
 | Tool                 | Purpose                                                                                                                                                                                               |
 | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ping`               | Health check. Returns `pong`.                                                                                                                                                                         |
+| `version`            | This server's version and the Arete API's build from its public `GET /version` (`service`, `version`, `commit`, `imageDigest`), read with no key, or why it is unknown.                               |
 | `connect`            | Open a WebSocket connection to a stack. Returns a `connection_id`.                                                                                                                                    |
 | `disconnect`         | Close a connection and drop every subscription bound to it.                                                                                                                                           |
 | `subscribe`          | Bind a view on a connection. Streamed entities land in an in-memory cache. The result includes a `next` hint with the `get_recent` call for the new subscription.                                     |

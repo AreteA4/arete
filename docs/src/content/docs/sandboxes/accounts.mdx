@@ -63,11 +63,28 @@ a reserve. Ways to find it:
   `sandbox_find_accounts` (or `a4 sandbox accounts`) with its `type` and the
   addresses you know, such as the coin's mint for `base_mint`. It reads the
   sandbox's chain and returns the matching accounts with their decoded
-  address fields; a pool search puts the pool with the most in its vault
-  first. With your own RPC you can instead run `getProgramAccounts` on the
+  address fields, best first (see below). With your own RPC you can instead run `getProgramAccounts` on the
   program with a `memcmp` filter for the `discriminator` at offset 0 and one
   for each `findBy` field you know.
 - **From the protocol.** Use its app, API, SDK or docs.
+
+A search ranks its matches and says how in `sortedBy`:
+
+- A pool search puts the pool with the most in its vault first. Pools with
+  an active `liquidity` field (Meteora DAMM v2, Raydium CLMM, Orca
+  Whirlpool) sort those with zero liquidity after all others, and the
+  response names the field in `liquidityField`.
+- A type with its own size field ranks largest first
+  (`sortedBy.by: "largest"`). Kamino vaults, for example, rank by assets
+  under management, not by what sits in their token vault.
+
+Raydium CLMM and CPMM pools, Jurassic launches (by `token_mint` or
+`payment_mint`) and MetaDAO DAOs can be searched too. A search by a field
+the type lacks but a related type has is refused with `details.via`, which
+names the path: for a MetaDAO `Proposal` by `baseMint`, find the `Dao` by
+`baseMint`, then the `Proposal` by `dao`. A search that matches too many
+accounts is refused with `sandbox-accounts-too-broad`; `details.fields`
+lists the fields to add.
 
 Token accounts of yours that Arete can't pair with a mint (`user_token_in`
 on a two-sided pool) are usually your associated token accounts. Derive
@@ -180,9 +197,13 @@ the refusal names them.
 
 ## When an account can't be found this way
 
-Some accounts depend on live state or on the way you trade: the tick
-arrays near a pool's current price, or which vault is the input. Names
-can't say which, so these stay yours. Take them from the protocol's quote,
-SDK or API, close to when you send the action. For a Jupiter-routed swap,
-Jupiter's `/swap-instructions` gives every account of the route. See
+Some accounts depend on live state or on the way you trade, such as which
+vault is the input. Names can't say which, so these stay yours. Take them
+from the protocol's quote, SDK or API, close to when you send the action.
+
+Tick arrays are not among them. Arete picks the tick arrays of an Orca
+Whirlpool or Raydium CLMM swap at preview and invoke, as it does the bin
+arrays of a Meteora DLMM swap, so leave them out. For a Jupiter-routed
+swap, the `jupiterSwap` guide in `sandbox_rules` gives the `buildUrl` and
+`query` that return every account of the route. See
 [Actions](/sandboxes/actions/#swaps).

@@ -11,9 +11,30 @@ read; see [Read scope](/sandboxes/read-scope/).
 ## Build and sign
 
 The rules builder on the sandbox's page in the
-[dashboard](https://app.arete.run/dashboard/sandboxes) lists the supported
-programs. Turn on the ones the agent needs, set options for each, add any
-extra destinations and sign once with your wallet.
+[dashboard](https://app.arete.run/dashboard/sandboxes) lists the programs of
+the registry's sandbox catalog, grouped by protocol. For each program it
+offers actions in plain words, such as deposit, withdraw and repay, rather
+than raw admin instructions. Each action carries its way out.
+
+A sandbox with no signed rules opens the builder with the default set on, at
+safe defaults. Riskier actions stay off, such as borrowing on a lending
+program. Some programs start off and must be turned on deliberately: Save,
+Kamino Vault, ORE, MetaDAO, Manifest, Jurassic and native Stake. Review the
+set, turn off what the agent doesn't need, add any extra destinations and
+sign once with your wallet.
+
+Some programs turn others on:
+
+| Turning on   | Also turns on                                    |
+| ------------ | ------------------------------------------------ |
+| Kamino Lend  | Kamino Farms                                     |
+| Kamino Vault | Kamino Lend, with its "vault withdrawals" action |
+
+A program another one needs can't be turned off while that one is on.
+
+Jupiter is offered with only its route instructions: `route_v2`,
+`shared_accounts_route_v2`, `exact_out_route_v2` and
+`shared_accounts_exact_out_route_v2`.
 
 Change the rules the same way: edit, then sign again. An agent whose sandbox
 has no signed rules is refused with `sandbox-rules-missing` or
@@ -40,15 +61,16 @@ Version 3 is the only rules format.
 }
 ```
 
-| Field               | Meaning                                                                                                                |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `version`           | `3`                                                                                                                    |
-| `programs[]`        | The supported programs, each turned on or off with `enabled`                                                           |
-| `programId`         | The program's base58 address                                                                                           |
-| `name`              | The program's name, as the registry lists it                                                                           |
-| `instructions`      | Optional. The instructions allowed for that program; left out, the registry's safe set for it                          |
-| `spendLimit`        | Optional. The most SOL, in lamports (a decimal string), the sandbox may spend through that program per `windowSeconds` |
-| `transferAllowlist` | Addresses funds may be sent to besides your own wallet (always allowed) and the sandbox's own accounts                 |
+| Field               | Meaning                                                                                                                                                    |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`           | `3`                                                                                                                                                        |
+| `programs[]`        | The supported programs, each turned on or off with `enabled`                                                                                               |
+| `programId`         | The program's base58 address                                                                                                                               |
+| `name`              | The program's name, as the registry lists it                                                                                                               |
+| `instructions`      | Optional. The instructions allowed for that program; left out, the registry's safe set for it                                                              |
+| `functions`         | Optional. The functions allowed for that program; with no `functions` field, every function Arete installs for it. `[]` allows none; a list, exactly those |
+| `spendLimit`        | Optional. The most SOL, in lamports (a decimal string), the sandbox may spend through that program per `windowSeconds`                                     |
+| `transferAllowlist` | Addresses funds may be sent to besides your own wallet (always allowed) and the sandbox's own accounts                                                     |
 
 ### Instructions
 
@@ -58,6 +80,22 @@ Listing instructions narrows the program to exactly those.
 Every sandbox also has a small baseline of plumbing, such as creating an
 associated token account, that it needs to hold tokens at all.
 `sandbox_rules` lists the baseline with the programs you enabled.
+
+### Functions
+
+`functions` decides which of a program's functions the agent may run with
+`call`. When signed rules have no `functions` field for a program, the rule
+allows every function Arete installs for that program. `[]` allows none. A
+list allows exactly those.
+
+A function never widens `instructions`. Every instruction it plans, inner
+instructions included, must still be allowed by `instructions`. Otherwise
+`sandbox_rules` shows the function's `missingInstructions` and a call to it
+is refused; see [call](/sandboxes/actions/#call).
+
+`sandbox_rules` may also show `missingDependencies` (with `needsAction` and
+`needsInstructions`) when a program needs another program's action that the
+rules don't allow.
 
 ### Spend limits
 
@@ -84,11 +122,11 @@ Opening a position can create accounts that the sandbox's wallet pays rent
 for. Some of that rent comes back when the agent exits the position. Some of
 it never does.
 
-| Program        | Account                                    | Rent                                   | Comes back?                                                                                                                                                        |
-| -------------- | ------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Kamino Lending | Obligation (`initObligation`)              | About 0.0176 SOL (17,637,760 lamports) | Yes. A withdraw that leaves the obligation with no deposits and no borrows closes it, and the rent goes back to the wallet. There is no separate close instruction |
-| Kamino Lending | User metadata (`initUserMetadata`)         | About 0.0059 SOL (5,892,800 lamports)  | **No.** Kamino Lending has no instruction that closes user metadata                                                                                                |
-| Pump.fun       | Volume tracker (`user_volume_accumulator`) | Set by the account's size              | Yes. `close_user_volume_accumulator` closes it and sends the rent back to the wallet                                                                               |
+| Program            | Account                                    | Rent                                   | Comes back?                                                                                                                                                        |
+| ------------------ | ------------------------------------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Kamino Lending     | Obligation (`initObligation`)              | About 0.0176 SOL (17,637,760 lamports) | Yes. A withdraw that leaves the obligation with no deposits and no borrows closes it, and the rent goes back to the wallet. There is no separate close instruction |
+| Kamino Lending     | User metadata (`initUserMetadata`)         | About 0.0059 SOL (5,892,800 lamports)  | **No.** Kamino Lending has no instruction that closes user metadata                                                                                                |
+| Pump.fun, PumpSwap | Volume tracker (`user_volume_accumulator`) | Set by the account's size              | Yes. `close_user_volume_accumulator` closes it and sends the rent back to the wallet                                                                               |
 
 Rent is the network's rent-exempt minimum for the account's size. The
 amounts above are for the obligation's 3,344 bytes and user metadata's 1,032
@@ -98,6 +136,9 @@ Treat Kamino's user-metadata rent as a one-time cost of using Kamino Lending
 from the sandbox. A wallet has one user-metadata account, made by its first
 deposit. Later deposits reuse it, including after the obligation has closed.
 An agent should not plan to get that rent back.
+
+[Holdings](/sandboxes/history/#holdings) mark the positions whose rent can
+come back with `reclaimableRent`, and say how.
 
 ### Allow the way out
 
