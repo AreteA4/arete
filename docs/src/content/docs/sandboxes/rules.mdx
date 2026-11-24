@@ -61,16 +61,16 @@ Version 3 is the only rules format.
 }
 ```
 
-| Field               | Meaning                                                                                                                |
-| ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `version`           | `3`                                                                                                                    |
-| `programs[]`        | The supported programs, each turned on or off with `enabled`                                                           |
-| `programId`         | The program's base58 address                                                                                           |
-| `name`              | The program's name, as the registry lists it                                                                           |
-| `instructions`      | Optional. The instructions allowed for that program; left out, the registry's safe set for it                          |
-| `functions`         | Optional. The functions allowed for that program; left out, every function Arete installs for it. `[]` allows none     |
-| `spendLimit`        | Optional. The most SOL, in lamports (a decimal string), the sandbox may spend through that program per `windowSeconds` |
-| `transferAllowlist` | Addresses funds may be sent to besides your own wallet (always allowed) and the sandbox's own accounts                 |
+| Field               | Meaning                                                                                                                                                    |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `version`           | `3`                                                                                                                                                        |
+| `programs[]`        | The supported programs, each turned on or off with `enabled`                                                                                               |
+| `programId`         | The program's base58 address                                                                                                                               |
+| `name`              | The program's name, as the registry lists it                                                                                                               |
+| `instructions`      | Optional. The instructions allowed for that program; left out, the registry's safe set for it                                                              |
+| `functions`         | Optional. The functions allowed for that program; with no `functions` field, every function Arete installs for it. `[]` allows none; a list, exactly those |
+| `spendLimit`        | Optional. The most SOL, in lamports (a decimal string), the sandbox may spend through that program per `windowSeconds`                                     |
+| `transferAllowlist` | Addresses funds may be sent to besides your own wallet (always allowed) and the sandbox's own accounts                                                     |
 
 ### Instructions
 
@@ -84,8 +84,9 @@ associated token account, that it needs to hold tokens at all.
 ### Functions
 
 `functions` decides which of a program's functions the agent may run with
-`call`. Left out, the rule allows every function Arete installs for that
-program. `[]` allows none. A list allows exactly those.
+`call`. When signed rules have no `functions` field for a program, the rule
+allows every function Arete installs for that program. `[]` allows none. A
+list allows exactly those.
 
 A function never widens `instructions`. Every instruction it plans, inner
 instructions included, must still be allowed by `instructions`. Otherwise
