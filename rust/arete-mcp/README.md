@@ -802,12 +802,16 @@ plans them. Preview it first:
 {"action":"call","args":{"program":"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD","function":"transactions.obligation.deposit","input":{"reserve":"<reserve>","amount":"0.1"}}}
 ```
 
-There is no swap action. A swap is an `invoke` of the instructions that
+There is no swap action. A swap is one `invoke` of the instructions that
 make it: a venue's own (for example PumpSwap `buy`/`sell` for a coin that
-has left its Pump.fun bonding curve), or a Jupiter route's, from Jupiter's
-Swap API `/swap-instructions`, named and decoded as `sandbox_rules` lists
-them, with the route's extra accounts in `remainingAccounts`. Preview it
-with `sandbox_preview` first.
+has left its Pump.fun bonding curve), or a Jupiter route's. When the rules
+allow a Jupiter route, `sandbox_rules` carries a `jupiterSwap` guide: call
+its `buildUrl` (Jupiter Swap API v2 `/build`) with its `query` (taker and
+payer are the sandbox wallet, `transactionVersion=1`, `maxAccounts=50`,
+`wrapAndUnwrapSol=true`, `dexes` limited to the allowed venues), and send
+the route's instructions named and decoded as `sandbox_rules` lists them,
+with the route's extra accounts in `remainingAccounts`. Every venue in the
+route must still be in the rules. Preview it with `sandbox_preview` first.
 
 Pass u64 amounts as decimal strings. Every `sandbox_invoke` has an
 idempotency key (yours, or generated); it is returned on success and on
