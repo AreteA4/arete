@@ -9,6 +9,9 @@ answered with no readable body. A refusal also names the `rule` that refused
 and what triggered it (`program`, `instruction`, `mint`, `attempted`, `cap`,
 `remaining`), and for `sandbox_invoke` the `idempotencyKey`.
 
+The `hint` names the `a4` command or MCP tool to run next, such as
+`a4 sandbox rules show` or `sandbox_rules`, not an HTTP route.
+
 ## The retry rule
 
 - **`retryable: false`**: the same call fails again. The `hint` says what to
@@ -36,6 +39,18 @@ back with `retryable: true` and is not a permanent refusal, even when the
 record (here or in `sandbox_action`) reads as final. Retry it with a new key,
 after `retryAfterSeconds` when present; the same key only replays the
 outage.
+
+## Creating a sandbox
+
+These refuse the owner, in the dashboard or the API, when creating a
+sandbox. They never stop a sandbox that already exists.
+
+| Code                          | Status | Meaning                                                                                                                                                                                                                       |
+| ----------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `verified-email-required`     | 403    | A human account needs a verified email address to create a sandbox or an API key. Verify it at [app.arete.run/verify-email](https://app.arete.run/verify-email). Existing sandboxes and keys keep working                     |
+| `sandbox-live-limit`          | 409    | The free plan allows 1 live sandbox at a time (`limit` in the body). Archived sandboxes count, because archiving keeps the wallet and its funds. Destroyed ones don't: withdraw the funds, then destroy one to create another |
+| `sandbox-create-rate-limited` | 429    | Creating sandboxes is rate limited. Wait, then try again                                                                                                                                                                      |
+| `sandbox-creation-paused`     | 503    | Arete has briefly paused new sandboxes. Retry after `Retry-After`. Existing sandboxes keep working                                                                                                                            |
 
 ## Choosing a sandbox
 
@@ -82,20 +97,56 @@ naming the matching `a4` command.
 
 ## The request
 
-| Code                                                         | Meaning                                                                                                                                                                                                                           |
-| ------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox-intent-invalid`, `sandbox-intent-foreign-signer`    | Names, args or accounts don't match `sandbox_rules`, or a signer other than the wallet; `missingAccounts` lists what's needed and `accountGuidance` how to find each ([Finding accounts](/sandboxes/accounts/))                   |
-| `sandbox-guard-trial-failed`                                 | The transaction fails when run. Check accounts and amounts; logs are in the details.                                                                                                                                              |
-| `sandbox-guard-insufficient-funds`                           | The wallet can't pay: `balanceLamports`, and `shortfallLamports` when known                                                                                                                                                       |
-| `sandbox-derive-invalid`                                     | Bad `programId` or seeds: at most 15 seeds of at most 32 bytes each                                                                                                                                                               |
-| `sandbox-duplicate-action`, `sandbox-idempotency-key-reused` | The key already belongs to an action, named by its id. Current servers send this only when a different request reuses the key: use a new key. Older servers send it for every repeat, so look the action up with `sandbox_action` |
-| `sandbox-request-invalid`                                    | The API rejected the request's shape                                                                                                                                                                                              |
+| Code                                                                                           | Meaning                                                                                                                                                                                                                                                                                           |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-intent-invalid`, `sandbox-intent-foreign-signer`                                      | Names, args or accounts don't match `sandbox_rules`, or a signer other than the wallet; `missingAccounts` lists what's needed and `accountGuidance` how to find each ([Finding accounts](/sandboxes/accounts/)). An unknown or ambiguous program name lists `candidates` (`{ programId, names }`) |
+| `sandbox-guard-insufficient-funds`                                                             | The wallet can't pay: `balanceLamports`, and `shortfallLamports` when known                                                                                                                                                                                                                       |
+| `sandbox-seed-base-not-wallet`, `sandbox-seed-owner-not-linked`, `sandbox-seed-account-exists` | System `transactions.account.createWithSeed` refused its input; see [call](/sandboxes/actions/#call)                                                                                                                                                                                              |
+| `sandbox-derive-invalid`                                                                       | Bad `programId` or seeds: at most 15 seeds of at most 32 bytes each                                                                                                                                                                                                                               |
+| `sandbox-duplicate-action`, `sandbox-idempotency-key-reused`                                   | The key already belongs to an action, named by its id. Current servers send this only when a different request reuses the key: use a new key. Older servers send it for every repeat, so look the action up with `sandbox_action`                                                                 |
+| `sandbox-request-invalid`                                                                      | The API rejected the request's shape                                                                                                                                                                                                                                                              |
+
+## Plan checks
+
+Before anything is simulated, Arete checks the plan against the chain. These
+refusals have stage `plan` and rule `preflight`, and a hint for the case at
+hand: a Pump.fun coin that has graduated, for example, trades on PumpSwap.
+
+| Code                                      | Meaning                                                                                                                                                             |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sandbox-plan-insufficient-token-balance` | The plan spends more of a token than the wallet's account holds. Names the mint, what is held and what is required                                                  |
+| `sandbox-plan-account-not-initialized`    | An account the action needs, such as a miner or position account, doesn't exist yet. Names it, its type and `createdBy`: the functions or instructions that open it |
+| `sandbox-plan-pool-no-liquidity`          | The pool has zero liquidity. Use another pool of the pair                                                                                                           |
+| `sandbox-plan-seat-not-claimed`           | The wallet hasn't claimed a seat on the Manifest market. Run `transactions.market.setUpTrader` (or Manifest `ClaimSeat`) first                                      |
+| `sandbox-plan-amount-below-minimum`       | The amount is under the vault's minimum deposit (`minimumAmount`)                                                                                                   |
+
+A missing associated token account of the wallet is not refused. Arete adds
+a `createIdempotent` at the start of the plan, lists it in
+`plan.preflight.createdAccounts`, and its rent shows in `newAccounts`.
+
+## Trial failures
+
+The guard runs the transaction before it signs it. When that trial fails,
+the refusal names the failure where it can, with what it knows:
+`failedProgram`, `failureReason`, `accountName`, `programErrorName`,
+`programError`, `programErrorMessage`, `sourceLocation`, `panic` and
+`missingAccounts`.
+
+| Code                                    | Meaning                                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `sandbox-guard-account-not-initialized` | An account the transaction uses doesn't exist (`accountName`)                                               |
+| `sandbox-guard-account-owner-mismatch`  | An account isn't owned by the program the transaction expects                                               |
+| `sandbox-guard-account-data-invalid`    | An account's data isn't what the program expects                                                            |
+| `sandbox-guard-program-panicked`        | The program panicked (`panic`, `sourceLocation`)                                                            |
+| `sandbox-guard-program-error`           | The program returned its own error, 6000 and up (`programError`, `programErrorName`, `programErrorMessage`) |
+| `sandbox-guard-trial-failed`            | Any other failure. Check accounts and amounts; logs are in the details                                      |
 
 ## Access
 
 | Code                                                                            | Meaning                                                                                 |
 | ------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
 | `sandbox-action-not-granted`                                                    | The owner hasn't granted this agent that action                                         |
+| `sandbox-unknown-action`                                                        | A grant lists an action that doesn't exist, such as `swap`. A swap is an `invoke`       |
 | `sandbox-grant-missing`, `sandbox-consent-unsigned`                             | The owner hasn't granted this agent access, or must grant it again                      |
 | `sandbox-agent-key-required`                                                    | Set `ARETE_API_KEY` to the agent account's secret key, or log in as the agent           |
 | `sandbox-session-invalid`, `sandbox-session-revoked`, `sandbox-session-expired` | The sandbox token stopped working and couldn't be renewed; access may have been revoked |

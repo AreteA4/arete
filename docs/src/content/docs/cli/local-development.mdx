@@ -249,6 +249,13 @@ instead of using the variables (Rust: `.environment(EnvironmentOption::dev())`
 on the builder). `client.environment` (Rust: `client.environment()`) tells
 dev from production.
 
+A Rust program context built by hand (`ProgramBuilder::new()` with
+`with_chain` and `with_wallet`) does not read `ARETE_ENVIRONMENT`. Call
+`.with_environment(EnvironmentOption::dev())?` on it, or pass the option you
+resolved; `.environment()` reports the mode. In dev mode its program reads go
+to the dev environment and never to production, and stack queries fail with
+`devenv-surface-unavailable`.
+
 `a4 stream`, `a4 protocol actions`, `a4 protocol squads` and the MCP protocol
 tools follow `ARETE_ENVIRONMENT` too: `dev` acts on the `a4 dev` session as
 `--dev` does. A value other than `production` or `dev` is an error.

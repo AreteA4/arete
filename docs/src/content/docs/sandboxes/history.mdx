@@ -82,11 +82,34 @@ Refusals record the `code` and rule that refused.
 
 Holdings list SOL, each token (with `acquiredBySandbox` for tokens the
 sandbox bought, which it may always sell) and program positions, as of a
-slot. A Kamino obligation carries its decoded `obligation`: the lending
-market, each deposit (cToken amount, and the underlying amount at the
-reserve's exchange rate) and each borrow. `a4 sandbox holdings` prints one
-line per deposit and borrow, in whole units. Other lending and liquidity
-positions show as labelled raw accounts for now, not decoded balances.
+slot. `sandbox_status` points to them in `positions`.
+
+- A Kamino obligation carries its decoded `obligation`: the lending market,
+  each deposit (cToken amount, and the underlying amount at the reserve's
+  exchange rate) and each borrow. Save obligations are decoded too (kind
+  `saveObligation`). `a4 sandbox holdings` prints one line per deposit and
+  borrow, in whole units.
+- Kamino vault shares show as a token row labelled "Kamino vault shares",
+  with `shareOf` (`kind: "kaminoVault"`, the vault, its token mint and
+  decimals).
+- Pump.fun and PumpSwap volume accumulators (`pumpVolumeAccumulator`,
+  `pumpAmmVolumeAccumulator`) and Kamino user metadata are listed as
+  positions.
+
+A position carries `reclaimableRent` (`{ lamports, instruction, function?, how }`)
+only where an instruction the rules can allow closes the account to the
+wallet:
+
+- a Kamino obligation, emptied by a `max` withdraw after repaying all
+  borrows; and
+- the volume accumulators, closed by `close_user_volume_accumulator`.
+
+It is never listed for Kamino user metadata, Save obligations or an
+obligation's farm user state. See
+[Exits and rent](/sandboxes/rules/#exits-and-rent).
+
+Other lending and liquidity positions show as labelled raw accounts for
+now, not decoded balances.
 
 ## Caveats
 

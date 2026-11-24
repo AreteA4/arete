@@ -227,6 +227,8 @@ The scopes are independent:
 | `transaction:inspect` | Blockhash, fee, simulation, status, and block-height requests |
 | `transaction:send`    | Submission of a fully signed wire transaction                 |
 
+A `transaction:send` session also needs one of the `protocols`, `stacks` or `dev` command groups on the account; without one it is refused with 403 `command-group-required`. `read` and `transaction:inspect` need no command group.
+
 Static tokens must already contain the required scopes. Browser publishable-key sessions in Arete Cloud must be origin-bound and requested from the key's exact allowlisted origin.
 
 ## Failure outcomes
