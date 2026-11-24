@@ -1,6 +1,6 @@
-//! WP5 "Done when": with stdin closed (and `CI` unset, so only the TTY check
-//! applies) every command either succeeds or exits 1 with a flag-listing
-//! error; none blocks waiting on stdin.
+//! With stdin closed (and `CI` unset, so only the TTY check applies) every
+//! command either succeeds or exits 1 with a flag-listing error; none blocks
+//! waiting on stdin.
 
 use std::io::Read;
 use std::path::Path;

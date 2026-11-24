@@ -3055,7 +3055,7 @@ fn registry_install_url(base_url: &str, path: &str, language: Option<&str>) -> S
 }
 
 // ============================================================================
-// Agent self-registration (WP9: `a4 auth signup`, `a4 doctor`)
+// Agent self-registration (`a4 auth signup`, `a4 doctor`)
 // ============================================================================
 
 /// Response from `POST /api/agents/signup/v2`. The client-generated secret is

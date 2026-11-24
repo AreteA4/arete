@@ -1,6 +1,6 @@
 name: Onboarding E2E
 
-# Runs the acceptance test from docs/internal/agent-first-onboarding.md (section 0)
+# Runs the agent-first onboarding acceptance test (scripts/e2e-onboarding.sh)
 # against a published a4-cli-v<version> release, using the install scripts from
 # this checkout (so script changes can be validated before they are deployed).
 

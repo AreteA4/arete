@@ -680,7 +680,7 @@ mod tests {
         }
     }
 
-    /// The capability every first-party adapter declares in this ticket.
+    /// A wallet that declares only V0.
     struct V0OnlyWallet;
 
     #[async_trait::async_trait]

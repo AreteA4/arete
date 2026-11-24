@@ -1,4 +1,4 @@
-//! Skills installation via `npx skills` (spec WP7 §5) and the skill-dir
+//! Skills installation via `npx skills` and the skill-dir
 //! checks used by `a4 doctor`.
 
 use std::collections::BTreeSet;

@@ -1267,7 +1267,7 @@ pub fn create_publishable_key(
 }
 
 // ============================================================================
-// Agent self-registration (WP9)
+// Agent self-registration
 // ============================================================================
 
 /// What `a4 auth signup` produced, before any printing.
@@ -1421,7 +1421,7 @@ fn signup_json_payload(outcome: &SignupOutcome, profile: &str) -> serde_json::Va
     })
 }
 
-/// `a4 auth signup`: agent self-registration (WP9).
+/// `a4 auth signup`: agent self-registration.
 ///
 /// Both human and JSON modes omit the key after it has been stored.
 pub fn signup(
