@@ -100,7 +100,7 @@ class AccountResolutionResult:
 
 
 def _sort_by_dependency(
-    metas: List[AccountMeta], overrides: Mapping[str, str]
+    metas: List[AccountMeta], overrides: Mapping[str, Optional[str]]
 ) -> List[AccountMeta]:
     """Topologically sorts accounts so ``AccountRefSeed`` dependencies resolve
     first: non-PDA accounts and PDAs with an explicit address, then the PDAs
@@ -114,7 +114,8 @@ def _sort_by_dependency(
     """
 
     def derived(meta: AccountMeta) -> bool:
-        return isinstance(meta.resolution, Pda) and meta.name not in overrides
+        # Matches ``_resolve_single``: a ``None`` entry is no address.
+        return isinstance(meta.resolution, Pda) and overrides.get(meta.name) is None
 
     non_pda = [meta for meta in metas if not derived(meta)]
     pdas = [meta for meta in metas if derived(meta)]

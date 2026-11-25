@@ -109,14 +109,14 @@ export interface AccountResolutionOptions {
  */
 function sortAccountsByDependency(
   accountMetas: AccountMeta[],
-  explicit: Record<string, string> = {}
+  accounts?: Record<string, string>
 ): AccountMeta[] {
   // Separate accounts resolved directly from the PDAs left to derive
   const nonPda: AccountMeta[] = [];
   const pda: AccountMeta[] = [];
   
   for (const meta of accountMetas) {
-    if (meta.category === 'pda' && explicit[meta.name] === undefined) {
+    if (meta.category === 'pda' && explicitAddress(accounts, meta.name) === undefined) {
       pda.push(meta);
     } else {
       nonPda.push(meta);
@@ -258,7 +258,7 @@ function resolveSingleAccount(
   options: AccountResolutionOptions,
   resolvedMap: Record<string, ResolvedAccount>
 ): ResolvedAccount | null {
-  const explicit = options.accounts?.[meta.name];
+  const explicit = explicitAddress(options.accounts, meta.name);
   if (explicit !== undefined) {
     validateAccountAddress(meta.name, explicit);
     return {
@@ -281,6 +281,20 @@ function resolveSingleAccount(
     default:
       return null;
   }
+}
+
+/**
+ * The caller's explicit address for an account: an own property of the
+ * overrides only, so an account named like an `Object.prototype` member
+ * (`constructor`) is not taken as provided.
+ */
+function explicitAddress(
+  accounts: Record<string, string> | undefined,
+  name: string
+): string | undefined {
+  return accounts !== undefined && Object.prototype.hasOwnProperty.call(accounts, name)
+    ? accounts[name]
+    : undefined;
 }
 
 function validateAccountAddress(name: string, address: string): void {

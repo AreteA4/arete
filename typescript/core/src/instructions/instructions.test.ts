@@ -755,6 +755,33 @@ describe('resolveAccounts', () => {
     );
   });
 
+  it('derives a PDA named like an Object.prototype member after its dependencies', () => {
+    const metas: AccountMeta[] = [
+      {
+        name: 'constructor',
+        isSigner: false,
+        isWritable: false,
+        category: 'pda',
+        pdaConfig: { programId: TOKEN_PROGRAM, seeds: [{ type: 'accountRef', accountName: 'base' }] },
+      },
+      {
+        name: 'base',
+        isSigner: false,
+        isWritable: false,
+        category: 'pda',
+        pdaConfig: { programId: TOKEN_PROGRAM, seeds: [{ type: 'literal', value: 'base' }] },
+      },
+    ];
+    for (const options of [{}, { accounts: {} }]) {
+      const result = resolveAccounts(metas, {}, options);
+      const base = findProgramAddressSync([createSeed('base')], TOKEN_PROGRAM)[0];
+      expect(result.accounts[1]!.address).toBe(base);
+      expect(result.accounts[0]!.address).toBe(
+        findProgramAddressSync([decodeBase58(base)], TOKEN_PROGRAM)[0]
+      );
+    }
+  });
+
   it('breaks a two-account PDA cycle with an explicit address', () => {
     const pdaRef = (name: string, dep: string): AccountMeta => ({
       name,

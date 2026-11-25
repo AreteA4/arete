@@ -282,6 +282,29 @@ class TestResolveAccounts:
             == find_program_address([decode_base58(WSOL_MINT)], TOKEN_PROGRAM)[0]
         )
 
+    def test_a_none_override_keeps_a_pda_after_its_dependencies(self):
+        # "outer" depends on "inner"; a None entry for it is no address, so it
+        # still derives once "inner" has.
+        metas = [
+            meta(
+                "outer",
+                Pda(
+                    PdaConfig(
+                        seeds=[LiteralSeed("outer"), AccountRefSeed("inner")],
+                        program_id=TOKEN_PROGRAM,
+                    )
+                ),
+            ),
+            meta(
+                "inner",
+                Pda(PdaConfig(seeds=[LiteralSeed("inner")], program_id=TOKEN_PROGRAM)),
+            ),
+        ]
+        result = resolve_accounts(metas, {}, overrides={"outer": None})
+        validate_account_resolution(result)
+        assert result.accounts[0].address == OUTER_PDA
+        assert result.accounts[1].address == INNER_PDA
+
     # A token sale's ``launch`` derives from its own fields; a self-referencing
     # seed stands in for them. ``user_position`` derives from ``launch``.
     SELF_SEEDED_LAUNCH = [
