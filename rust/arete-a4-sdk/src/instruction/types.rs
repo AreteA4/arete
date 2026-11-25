@@ -327,7 +327,9 @@ pub enum InstructionError {
         message: String,
     },
     /// PDA `accountRef` seeds form a cycle.
-    #[error("Circular dependency in PDA accounts: {0}")]
+    #[error(
+        "Circular dependency in PDA accounts: {0} (provide the address of an account in the cycle)"
+    )]
     CircularPdaDependency(String),
     /// A PDA account declared no program ID and no fallback was available.
     #[error("Cannot derive PDA for \"{0}\": no program ID specified")]

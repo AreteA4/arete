@@ -700,6 +700,105 @@ describe('resolveAccounts', () => {
       TOKEN_PROGRAM,
     ]);
   });
+
+  // A token sale's `launch` derives from its own fields; a self-referencing
+  // seed stands in for them. `userPosition` derives from `launch`.
+  const selfSeededLaunchMetas: AccountMeta[] = [
+    { name: 'contributor', isSigner: true, isWritable: true, category: 'signer', signerKind: 'wallet' },
+    {
+      name: 'launch',
+      isSigner: false,
+      isWritable: true,
+      category: 'pda',
+      pdaConfig: {
+        programId: TOKEN_PROGRAM,
+        seeds: [
+          { type: 'literal', value: 'launch' },
+          { type: 'accountRef', accountName: 'launch' },
+        ],
+      },
+    },
+    {
+      name: 'userPosition',
+      isSigner: false,
+      isWritable: true,
+      category: 'pda',
+      pdaConfig: {
+        programId: TOKEN_PROGRAM,
+        seeds: [
+          { type: 'literal', value: 'user_position' },
+          { type: 'accountRef', accountName: 'launch' },
+          { type: 'accountRef', accountName: 'contributor' },
+        ],
+      },
+    },
+  ];
+
+  it('uses a provided PDA address and derives its dependents from it', () => {
+    const result = resolveAccounts(selfSeededLaunchMetas, {}, {
+      wallet,
+      accounts: { launch: SYSTEM_PROGRAM },
+    });
+    validateAccountResolution(result);
+    expect(result.accounts.map((a) => a.name)).toEqual(['contributor', 'launch', 'userPosition']);
+    expect(result.accounts[1]!.address).toBe(SYSTEM_PROGRAM);
+    const position = findProgramAddressSync(
+      [createSeed('user_position'), decodeBase58(SYSTEM_PROGRAM), decodeBase58(WSOL_MINT)],
+      TOKEN_PROGRAM
+    )[0];
+    expect(result.accounts[2]!.address).toBe(position);
+  });
+
+  it('still reports a PDA cycle when no account in it is provided', () => {
+    expect(() => resolveAccounts(selfSeededLaunchMetas, {}, { wallet })).toThrow(
+      'Circular dependency in PDA accounts: launch (provide the address of an account in the cycle)'
+    );
+  });
+
+  it('derives a PDA named like an Object.prototype member after its dependencies', () => {
+    const metas: AccountMeta[] = [
+      {
+        name: 'constructor',
+        isSigner: false,
+        isWritable: false,
+        category: 'pda',
+        pdaConfig: { programId: TOKEN_PROGRAM, seeds: [{ type: 'accountRef', accountName: 'base' }] },
+      },
+      {
+        name: 'base',
+        isSigner: false,
+        isWritable: false,
+        category: 'pda',
+        pdaConfig: { programId: TOKEN_PROGRAM, seeds: [{ type: 'literal', value: 'base' }] },
+      },
+    ];
+    for (const options of [{}, { accounts: {} }]) {
+      const result = resolveAccounts(metas, {}, options);
+      const base = findProgramAddressSync([createSeed('base')], TOKEN_PROGRAM)[0];
+      expect(result.accounts[1]!.address).toBe(base);
+      expect(result.accounts[0]!.address).toBe(
+        findProgramAddressSync([decodeBase58(base)], TOKEN_PROGRAM)[0]
+      );
+    }
+  });
+
+  it('breaks a two-account PDA cycle with an explicit address', () => {
+    const pdaRef = (name: string, dep: string): AccountMeta => ({
+      name,
+      isSigner: false,
+      isWritable: false,
+      category: 'pda',
+      pdaConfig: { programId: TOKEN_PROGRAM, seeds: [{ type: 'accountRef', accountName: dep }] },
+    });
+    const metas = [pdaRef('a', 'b'), pdaRef('b', 'a')];
+    expect(() => resolveAccounts(metas, {}, {})).toThrow(/Circular dependency in PDA accounts/);
+
+    const result = resolveAccounts(metas, {}, { accounts: { a: WSOL_MINT } });
+    expect(result.accounts[0]!.address).toBe(WSOL_MINT);
+    expect(result.accounts[1]!.address).toBe(
+      findProgramAddressSync([decodeBase58(WSOL_MINT)], TOKEN_PROGRAM)[0]
+    );
+  });
 });
 
 describe('parseInstructionError', () => {

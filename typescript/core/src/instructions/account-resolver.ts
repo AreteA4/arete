@@ -99,15 +99,24 @@ export interface AccountResolutionOptions {
 
 /**
  * Topologically sort accounts so that dependencies (accountRef) are resolved first.
- * Non-PDA accounts come first, then PDAs in dependency order.
+ * Non-PDA accounts and PDAs with an explicit address come first, then the PDAs
+ * left to derive in dependency order.
+ *
+ * An explicit address wins over derivation, so such a PDA leaves the
+ * dependency graph and breaks any cycle through it: an account whose seeds
+ * read its own fields resolves when its address is given, and its dependents
+ * derive from that address. A cycle with no explicit address still throws.
  */
-function sortAccountsByDependency(accountMetas: AccountMeta[]): AccountMeta[] {
-  // Separate non-PDA and PDA accounts
+function sortAccountsByDependency(
+  accountMetas: AccountMeta[],
+  accounts?: Record<string, string>
+): AccountMeta[] {
+  // Separate accounts resolved directly from the PDAs left to derive
   const nonPda: AccountMeta[] = [];
   const pda: AccountMeta[] = [];
   
   for (const meta of accountMetas) {
-    if (meta.category === 'pda') {
+    if (meta.category === 'pda' && explicitAddress(accounts, meta.name) === undefined) {
       pda.push(meta);
     } else {
       nonPda.push(meta);
@@ -139,11 +148,14 @@ function sortAccountsByDependency(accountMetas: AccountMeta[]): AccountMeta[] {
   function visit(name: string): void {
     if (visited.has(name)) return;
     if (visiting.has(name)) {
-      throw new Error('Circular dependency in PDA accounts: ' + name);
+      throw new Error(
+        'Circular dependency in PDA accounts: ' + name +
+        ' (provide the address of an account in the cycle)'
+      );
     }
     
     const meta = pda.find(m => m.name === name);
-    if (!meta) return; // Not a PDA, skip
+    if (!meta) return; // Not derived; resolved first
     
     visiting.add(name);
     
@@ -185,7 +197,7 @@ export function resolveAccounts(
   options: AccountResolutionOptions
 ): AccountResolutionResult {
   // Sort accounts by dependency
-  const sorted = sortAccountsByDependency(accountMetas);
+  const sorted = sortAccountsByDependency(accountMetas, options.accounts);
   
   // Track resolved accounts for PDA accountRef lookups
   const resolvedMap: Record<string, ResolvedAccount> = {};
@@ -246,7 +258,7 @@ function resolveSingleAccount(
   options: AccountResolutionOptions,
   resolvedMap: Record<string, ResolvedAccount>
 ): ResolvedAccount | null {
-  const explicit = options.accounts?.[meta.name];
+  const explicit = explicitAddress(options.accounts, meta.name);
   if (explicit !== undefined) {
     validateAccountAddress(meta.name, explicit);
     return {
@@ -269,6 +281,20 @@ function resolveSingleAccount(
     default:
       return null;
   }
+}
+
+/**
+ * The caller's explicit address for an account: an own property of the
+ * overrides only, so an account named like an `Object.prototype` member
+ * (`constructor`) is not taken as provided.
+ */
+function explicitAddress(
+  accounts: Record<string, string> | undefined,
+  name: string
+): string | undefined {
+  return accounts !== undefined && Object.prototype.hasOwnProperty.call(accounts, name)
+    ? accounts[name]
+    : undefined;
 }
 
 function validateAccountAddress(name: string, address: string): void {

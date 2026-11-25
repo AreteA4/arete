@@ -9,6 +9,12 @@
 //! 2. PDA accounts resolve in dependency order (accounts they reference via
 //!    `accountRef` seeds come first).
 //!
+//! A PDA with an explicit address resolves in the first pass and leaves the
+//! dependency graph, so it breaks any cycle through it: an account whose
+//! seeds read its own fields (Anchor's `seeds = [b"launch", launch.admin]`)
+//! resolves when its address is given, and its dependents derive from that
+//! address. A cycle with no explicit address still fails.
+//!
 //! Output preserves the original account order. Omitted optional accounts that
 //! precede a resolved account get the program ID as a placeholder (Anchor's
 //! convention); trailing omitted optionals are dropped.
@@ -85,7 +91,7 @@ pub fn resolve_accounts_with_data(
     program_id: Option<&str>,
     account_data: &BTreeMap<String, Vec<u8>>,
 ) -> Result<AccountResolutionResult, InstructionError> {
-    let sorted = sort_by_dependency(metas)?;
+    let sorted = sort_by_dependency(metas, overrides)?;
 
     let mut resolved: BTreeMap<String, ResolvedAccount> = BTreeMap::new();
     let mut missing = Vec::new();
@@ -139,12 +145,20 @@ pub fn resolve_accounts_with_data(
 }
 
 /// Topologically sorts accounts so that `accountRef` dependencies resolve
-/// first: non-PDA accounts, then PDAs in dependency order.
-fn sort_by_dependency(metas: &[AccountMeta]) -> Result<Vec<&AccountMeta>, InstructionError> {
+/// first: non-PDA accounts and PDAs with an explicit address, then the PDAs
+/// left to derive in dependency order.
+fn sort_by_dependency<'a>(
+    metas: &'a [AccountMeta],
+    overrides: &BTreeMap<String, String>,
+) -> Result<Vec<&'a AccountMeta>, InstructionError> {
     let mut sorted: Vec<&AccountMeta> = Vec::with_capacity(metas.len());
     let mut pdas: Vec<&AccountMeta> = Vec::new();
     for meta in metas {
-        if matches!(meta.resolution, AccountResolution::Pda(_)) {
+        // An explicit address wins over derivation (see `resolve_single`), so
+        // such a PDA has no seeds to wait on.
+        if matches!(meta.resolution, AccountResolution::Pda(_))
+            && !overrides.contains_key(&meta.name)
+        {
             pdas.push(meta);
         } else {
             sorted.push(meta);
@@ -173,7 +187,7 @@ fn visit<'a>(
         return Err(InstructionError::CircularPdaDependency(name.to_string()));
     }
     let Some(meta) = pdas.iter().copied().find(|meta| meta.name == name) else {
-        return Ok(()); // Not a PDA; resolved in the non-PDA pass.
+        return Ok(()); // Not derived; resolved in the first pass.
     };
     visiting.insert(name.to_string());
     if let AccountResolution::Pda(config) = &meta.resolution {
@@ -783,6 +797,110 @@ mod tests {
         let err =
             resolve_accounts(&metas, &Map::new(), &BTreeMap::new(), None, None, None).unwrap_err();
         assert!(matches!(err, InstructionError::CircularPdaDependency(_)));
+    }
+
+    #[test]
+    fn an_explicit_address_breaks_a_pda_cycle() {
+        let pda_ref = |name: &str, dep: &str| {
+            meta(
+                name,
+                AccountResolution::Pda(PdaConfig {
+                    program_id: Some(TOKEN_PROGRAM.to_string()),
+                    seeds: vec![PdaSeed::AccountRef(dep.to_string())],
+                }),
+            )
+        };
+        let metas = [pda_ref("a", "b"), pda_ref("b", "a")];
+        let overrides = BTreeMap::from([("a".to_string(), WSOL_MINT.to_string())]);
+        let result = resolve_ok(&metas, json!({}), &overrides, None, None);
+        assert_eq!(result.accounts[0].address, WSOL_MINT);
+        let b = expected_pda(
+            &[bs58::decode(WSOL_MINT).into_vec().unwrap()],
+            TOKEN_PROGRAM,
+        );
+        assert_eq!(result.accounts[1].address, b);
+    }
+
+    /// A token sale's accounts: `launch` derives from its own fields
+    /// (`["launch", launch.admin, launch.launch_id]`), and `user_position`
+    /// from `["user_position", launch, contributor]`.
+    fn self_seeded_launch_metas() -> [AccountMeta; 3] {
+        let launch_field = |field: &str, offset: usize, len: usize| PdaSeed::AccountField {
+            account: "launch".to_string(),
+            field: field.to_string(),
+            offset,
+            len,
+            discriminator: vec![],
+        };
+        [
+            signer("contributor"),
+            meta(
+                "launch",
+                AccountResolution::Pda(PdaConfig {
+                    program_id: Some(TOKEN_PROGRAM.to_string()),
+                    seeds: vec![
+                        PdaSeed::Literal("launch".to_string()),
+                        launch_field("admin", 8, 32),
+                        launch_field("launch_id", 40, 8),
+                    ],
+                }),
+            ),
+            meta(
+                "user_position",
+                AccountResolution::Pda(PdaConfig {
+                    program_id: Some(TOKEN_PROGRAM.to_string()),
+                    seeds: vec![
+                        PdaSeed::Literal("user_position".to_string()),
+                        PdaSeed::AccountRef("launch".to_string()),
+                        PdaSeed::AccountRef("contributor".to_string()),
+                    ],
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn a_provided_self_seeded_pda_resolves_and_its_dependents_derive_from_it() {
+        let metas = self_seeded_launch_metas();
+        let overrides = BTreeMap::from([("launch".to_string(), WSOL_MINT.to_string())]);
+        // No account data: the provided `launch` is not derived, so its own
+        // field seeds are never read.
+        let result = resolve_ok(&metas, json!({}), &overrides, Some(SYSTEM_PROGRAM), None);
+        let names: Vec<&str> = result.accounts.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["contributor", "launch", "user_position"]);
+        assert_eq!(result.accounts[1].address, WSOL_MINT);
+        let position = expected_pda(
+            &[
+                b"user_position".to_vec(),
+                bs58::decode(WSOL_MINT).into_vec().unwrap(),
+                bs58::decode(SYSTEM_PROGRAM).into_vec().unwrap(),
+            ],
+            TOKEN_PROGRAM,
+        );
+        assert_eq!(result.accounts[2].address, position);
+    }
+
+    #[test]
+    fn an_unprovided_self_seeded_pda_still_reports_the_cycle() {
+        let metas = self_seeded_launch_metas();
+        let err = resolve_accounts(
+            &metas,
+            &Map::new(),
+            &BTreeMap::new(),
+            None,
+            Some(SYSTEM_PROGRAM),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err,
+            InstructionError::CircularPdaDependency("launch".to_string())
+        );
+        assert!(
+            err.to_string()
+                .contains("provide the address of an account in the cycle"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
