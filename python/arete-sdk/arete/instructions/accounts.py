@@ -99,11 +99,25 @@ class AccountResolutionResult:
     missing: List[str] = field(default_factory=list)
 
 
-def _sort_by_dependency(metas: List[AccountMeta]) -> List[AccountMeta]:
+def _sort_by_dependency(
+    metas: List[AccountMeta], overrides: Mapping[str, str]
+) -> List[AccountMeta]:
     """Topologically sorts accounts so ``AccountRefSeed`` dependencies resolve
-    first: non-PDA accounts, then PDAs in dependency order."""
-    non_pda = [meta for meta in metas if not isinstance(meta.resolution, Pda)]
-    pdas = [meta for meta in metas if isinstance(meta.resolution, Pda)]
+    first: non-PDA accounts and PDAs with an explicit address, then the PDAs
+    left to derive in dependency order.
+
+    An explicit address wins over derivation, so such a PDA leaves the
+    dependency graph and breaks any cycle through it: an account whose seeds
+    read its own fields resolves when its address is given, and its
+    dependents derive from that address. A cycle with no explicit address
+    still raises.
+    """
+
+    def derived(meta: AccountMeta) -> bool:
+        return isinstance(meta.resolution, Pda) and meta.name not in overrides
+
+    non_pda = [meta for meta in metas if not derived(meta)]
+    pdas = [meta for meta in metas if derived(meta)]
     pda_by_name = {meta.name: meta for meta in pdas}
 
     sorted_pdas: List[AccountMeta] = []
@@ -114,10 +128,14 @@ def _sort_by_dependency(metas: List[AccountMeta]) -> List[AccountMeta]:
         if name in visited:
             return
         if name in visiting:
-            raise InstructionError("Circular dependency in PDA accounts: " + name)
+            raise InstructionError(
+                "Circular dependency in PDA accounts: "
+                + name
+                + " (provide the address of an account in the cycle)"
+            )
         meta = pda_by_name.get(name)
         if meta is None:
-            return  # Not a PDA; resolved in the non-PDA pass.
+            return  # Not derived; resolved first.
         visiting.add(name)
         assert isinstance(meta.resolution, Pda)
         for seed in meta.resolution.config.seeds:
@@ -159,7 +177,7 @@ def resolve_accounts(
     resolved: Dict[str, ResolvedAccount] = {}
     missing: List[str] = []
 
-    for meta in _sort_by_dependency(metas):
+    for meta in _sort_by_dependency(metas, overrides):
         account = _resolve_single(
             meta, args, overrides, resolve, payer, program_id, resolved
         )

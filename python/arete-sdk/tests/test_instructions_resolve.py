@@ -265,6 +265,77 @@ class TestResolveAccounts:
         with pytest.raises(InstructionError, match="Circular dependency"):
             resolve_accounts([pda_ref("a", "b"), pda_ref("b", "a")], {})
 
+    def test_an_explicit_address_breaks_a_pda_cycle(self):
+        def pda_ref(name, dep):
+            return meta(
+                name,
+                Pda(PdaConfig(seeds=[AccountRefSeed(dep)], program_id=TOKEN_PROGRAM)),
+            )
+
+        result = resolve_accounts(
+            [pda_ref("a", "b"), pda_ref("b", "a")], {}, overrides={"a": WSOL_MINT}
+        )
+        validate_account_resolution(result)
+        assert result.accounts[0].address == WSOL_MINT
+        assert (
+            result.accounts[1].address
+            == find_program_address([decode_base58(WSOL_MINT)], TOKEN_PROGRAM)[0]
+        )
+
+    # A token sale's ``launch`` derives from its own fields; a self-referencing
+    # seed stands in for them. ``user_position`` derives from ``launch``.
+    SELF_SEEDED_LAUNCH = [
+        signer_meta("contributor"),
+        meta(
+            "launch",
+            Pda(
+                PdaConfig(
+                    seeds=[LiteralSeed("launch"), AccountRefSeed("launch")],
+                    program_id=TOKEN_PROGRAM,
+                )
+            ),
+        ),
+        meta(
+            "user_position",
+            Pda(
+                PdaConfig(
+                    seeds=[
+                        LiteralSeed("user_position"),
+                        AccountRefSeed("launch"),
+                        AccountRefSeed("contributor"),
+                    ],
+                    program_id=TOKEN_PROGRAM,
+                )
+            ),
+        ),
+    ]
+
+    def test_uses_a_provided_pda_address_and_derives_its_dependents(self):
+        result = resolve_accounts(
+            self.SELF_SEEDED_LAUNCH,
+            {},
+            overrides={"launch": SYSTEM_PROGRAM},
+            payer=WSOL_MINT,
+        )
+        validate_account_resolution(result)
+        assert [a.name for a in result.accounts] == [
+            "contributor",
+            "launch",
+            "user_position",
+        ]
+        assert result.accounts[1].address == SYSTEM_PROGRAM
+        assert result.accounts[2].address == find_program_address(
+            [b"user_position", decode_base58(SYSTEM_PROGRAM), decode_base58(WSOL_MINT)],
+            TOKEN_PROGRAM,
+        )[0]
+
+    def test_still_reports_a_pda_cycle_when_no_account_in_it_is_provided(self):
+        with pytest.raises(
+            InstructionError,
+            match=r"Circular dependency in PDA accounts: launch \(provide the address",
+        ):
+            resolve_accounts(self.SELF_SEEDED_LAUNCH, {}, payer=WSOL_MINT)
+
     def test_errors_when_a_pda_has_no_program_id(self):
         metas = [meta("state", Pda(PdaConfig(seeds=[LiteralSeed("state")])))]
         with pytest.raises(InstructionError, match='Cannot derive PDA for "state"'):
