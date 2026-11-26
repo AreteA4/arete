@@ -8,17 +8,25 @@ primitives a human operator uses through `a4 explore`, `a4 know`, and
 `a4 stream`.
 
 **The server ships inside the `a4` CLI as `a4 mcp`.** It speaks MCP over
-stdio: newline-delimited JSON (one message per line), as the MCP stdio
-transport specifies, with LSP-style `Content-Length` framing also accepted
-for clients that use it, detected per message and mirrored in each reply;
-stdout carries MCP frames only and logs go to stderr. Input that is not a
-message is answered with a JSON-RPC parse error, and a `Content-Length`
-header block that cannot be used (so where the message ends is unknown) is
-answered with one and then the stream is closed. Requests awaiting a reply
-are capped; one past the cap is answered with a `Server busy` error
-(`-32000`) in its own framing, and one that repeats the id of a request
-awaiting a reply with a `Duplicate request id` error (`-32600`) rather
-than a place under the cap. This crate is a library
+stdio, reading JSON-RPC messages in either of two framings, detected per
+message: newline-delimited JSON, one message per line, as the MCP stdio
+transport specifies; or LSP-style `Content-Length` framing, a block of
+`Name: value` header lines holding `Content-Length: <bytes>`, a blank line,
+then that many bytes of JSON. Each reply uses the framing of the request it
+answers; a message the server starts uses the framing last seen from the
+client (newline-delimited before the first). Input that is not JSON gets a
+`Parse error` (`-32700`) and JSON that is not a JSON-RPC message an
+`Invalid request` (`-32600`), both without an id. A header block that
+cannot be used (over 8 KiB, a line that is not a header, or a
+`Content-Length` that is missing, repeated or not a byte count) gets a
+`Parse error` and the stream is closed. A line (newline included) or framed
+body over 16 MiB is dropped without a reply and logged. At most 1024
+requests may await a reply, with 64 KiB of string ids between them; a
+request past either limit gets a `Server busy` error (`-32000`) with its id,
+in its framing. A request that repeats the id of one awaiting a reply gets a
+`Duplicate request id` error (`-32600`) and takes no room in the budget; an
+id is free again once its request is answered or cancelled. stdout carries
+MCP frames only and logs go to stderr. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 

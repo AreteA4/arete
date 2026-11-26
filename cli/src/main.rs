@@ -128,13 +128,26 @@ enum Commands {
 
     /// Run the Arete stream MCP server over stdio
     ///
-    /// Reads newline-delimited JSON-RPC messages from stdin (one message
-    /// per line), as the MCP stdio transport specifies, and also accepts
-    /// LSP-style `Content-Length` framed messages from clients that use
-    /// that framing; it is detected per message, and each request is
-    /// answered in the framing it arrived in. Input that is not a message
-    /// gets a JSON-RPC parse error, and a header block that cannot be used
-    /// gets one and closes the stream. Nothing but MCP frames is written
+    /// Reads JSON-RPC messages from stdin in either of two framings,
+    /// detected per message: newline-delimited JSON, one message per line,
+    /// as the MCP stdio transport specifies; or LSP-style `Content-Length`
+    /// framing, a block of `Name: value` header lines holding
+    /// `Content-Length: <bytes>`, a blank line, then that many bytes of
+    /// JSON. Each reply uses the framing of the request it answers; a
+    /// message the server starts uses the framing last seen from the client
+    /// (newline-delimited before the first). Input that is not JSON gets a
+    /// `Parse error` (-32700) and JSON that is not a JSON-RPC message an
+    /// `Invalid request` (-32600), both without an id. A header block that
+    /// cannot be used (over 8 KiB, a line that is not a header, or a
+    /// `Content-Length` that is missing, repeated or not a byte count) gets
+    /// a `Parse error` and the stream is closed. A line (newline included)
+    /// or framed body over 16 MiB is dropped without a reply and logged.
+    /// At most 1024 requests may await a reply, with 64 KiB of string ids
+    /// between them; a request past either limit gets a `Server busy` error
+    /// (-32000) with its id, in its framing. A request that repeats the id
+    /// of one awaiting a reply gets a `Duplicate request id` error (-32600)
+    /// and takes no room in the budget; an id is free again once its
+    /// request is answered or cancelled. Nothing but MCP frames is written
     /// to stdout; logs go to stderr.
     ///
     /// The `sandbox_*` tools appear in `tools/list` under two visibility
@@ -2645,10 +2658,23 @@ mod tests {
         // Help wraps to the terminal width: compare on one line.
         let long = long.split_whitespace().collect::<Vec<_>>().join(" ");
         for needle in [
-            // Newline-delimited JSON-RPC is the only framing.
-            "newline-delimited JSON-RPC",
-            "one message per line",
-            "`Content-Length` framing is not supported",
+            // Both framings, detected per message; replies mirror the
+            // request's framing.
+            "either of two framings, detected per message",
+            "newline-delimited JSON, one message per line",
+            "LSP-style `Content-Length` framing",
+            "Each reply uses the framing of the request it answers",
+            "the framing last seen from the client",
+            // Bad input and unusable header blocks.
+            "`Parse error` (-32700)",
+            "`Invalid request` (-32600), both without an id",
+            "a `Parse error` and the stream is closed",
+            "over 16 MiB is dropped without a reply",
+            // The outstanding-request budget and duplicate ids.
+            "At most 1024 requests may await a reply, with 64 KiB of string ids",
+            "`Server busy` error (-32000) with its id, in its framing",
+            "`Duplicate request id` error (-32600)",
+            "Nothing but MCP frames is written to stdout; logs go to stderr",
             // Listing conditions: a key for the configured API or a
             // sandbox id (a UUID; else warned and ignored). A saved choice
             // lists nothing.
@@ -2678,9 +2704,9 @@ mod tests {
         ] {
             assert!(long.contains(needle), "{needle:?} missing:\n{long}");
         }
-        // The only mention of Content-Length is the one saying it is not
-        // supported: no other sentence can claim it is accepted.
-        assert_eq!(long.matches("Content-Length").count(), 1, "{long}");
+        // `Content-Length` framing is accepted: the help must not say
+        // otherwise.
+        assert!(!long.contains("not supported"), "{long}");
         // `commandGroups: []` is a known empty set, not an absent one: the
         // help must not fold the two into "no groups".
         assert!(!long.contains("no groups"), "{long}");
