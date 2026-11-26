@@ -11,7 +11,9 @@
 //! npx @usearete/a4 install                          # via npm
 //! ```
 //!
-//! Update with `a4 self update`. Building from source: `cargo install a4-cli`.
+//! Update with `a4 self update`. Building from source needs Rust 1.89 or newer:
+//! `cargo install --locked a4-cli` builds the published release from crates.io,
+//! `cargo install --locked --path cli` an unreleased revision from a checkout.
 //!
 //! ## Commands
 //!
@@ -127,6 +129,15 @@ enum Commands {
     Upgrade(selfhost::UpdateArgs),
 
     /// Run the Arete stream MCP server over stdio
+    ///
+    /// Reads newline-delimited JSON-RPC messages from stdin (one message
+    /// per line), as the MCP stdio transport specifies, and also accepts
+    /// LSP-style `Content-Length` framed messages from clients that use
+    /// that framing; it is detected per message, and each request is
+    /// answered in the framing it arrived in. Input that is not a message
+    /// gets a JSON-RPC parse error, and a header block that cannot be used
+    /// gets one and closes the stream. Nothing but MCP frames is written
+    /// to stdout; logs go to stderr.
     Mcp(commands::mcp::McpArgs),
 
     /// Run a protocol locally against a Surfpool fork and drive it (`a4 dev up`)
