@@ -184,8 +184,9 @@ only their tools. `ping`, `account_status`, `rename_agent` and
 With no key, when the API can't be reached, or when it reports no
 `commandGroups` list, every tool is listed except the `install` group's
 (`describe_sdk`), which needs the API to report `install`; an empty list
-hides all but the always-listed tools. Hiding is never the gate: the API refuses
-calls the account may not make, whether the tool is listed or not.
+hides all but the always-listed tools. Hiding is never the gate: a hidden tool
+cannot be called, and the API refuses the calls a listed tool makes that the
+account may not make.
 
 ### Discovery
 
@@ -351,8 +352,9 @@ chat transcript, and the JSON-RPC stdio traffic between the client and
 
 1. **Explicit `api_key` argument** on the `connect` call (override, useful
    for testing or multi-stack setups; it must match a selected built-in profile)
-2. When **`ARETE_PROFILE` is selected**, that named profile of the `a4`
-   login. A selected profile deliberately outranks `ARETE_API_KEY`.
+2. When a **profile is selected** (`a4 --profile`, else the project's `agent`
+   default, else `ARETE_PROFILE`), that named profile of the `a4` login. A
+   selected profile deliberately outranks `ARETE_API_KEY`, which is not read.
 3. Without a selected profile, **`ARETE_API_KEY`**, then the single `a4` login
    profile holding a key (`a4 auth signup` stores the `agent` profile,
    `a4 auth login --profile human` the `human` one).
