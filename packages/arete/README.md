@@ -45,6 +45,7 @@ Flags and environment:
 | `--install-dir DIR` / `A4_INSTALL_DIR` | Install somewhere other than `~/.local/bin` |
 | `--no-modify-path` / `A4_NO_MODIFY_PATH=1` | Do not edit shell rc files / the Windows user PATH |
 | `--json` | Print the install receipt as JSON (the `A4_BIN=` line still follows) |
+| `--source SOURCE` | Install channel recorded in the receipt (`sh`, `ps1`, `npm` or `manual`); defaults to `npm` |
 | `A4_MANIFEST_BASE_URL`, `A4_LATEST_URL` | Test overrides for the release download base and latest pointer |
 
 The package has no `postinstall` script and no dependencies; nothing touches
@@ -58,7 +59,7 @@ works in the same session: it runs the binary recorded in
 `npx @usearete/a4 explore --json` prints only the command's JSON. `install`
 installs the CLI only when every argument after it is an `a4 self install`
 option: `--install-dir`, `--no-modify-path`, `--json`, `--force`,
-`--verbose`, `-y`/`--yes`, `--non-interactive`, `-c`/`--config`,
+`--source`, `--verbose`, `-y`/`--yes`, `--non-interactive`, `-c`/`--config`,
 `--api-url` or `-h`/`--help`. Anything else is a project install, so
 `npx @usearete/a4 install stack ore --ts` runs `a4 install stack ore --ts`.
 

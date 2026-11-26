@@ -128,12 +128,14 @@ enum Commands {
 
     /// Run the Arete stream MCP server over stdio
     ///
-    /// Reads newline-delimited JSON-RPC from stdin (one message per line,
-    /// as the MCP stdio transport specifies) and writes one message per
-    /// line to stdout. LSP-style `Content-Length` framing is not supported:
-    /// header lines are not messages and are ignored, and a message is
-    /// only read once its line ends. Nothing but MCP frames is written to
-    /// stdout; logs go to stderr.
+    /// Reads newline-delimited JSON-RPC messages from stdin (one message
+    /// per line), as the MCP stdio transport specifies, and also accepts
+    /// LSP-style `Content-Length` framed messages from clients that use
+    /// that framing; it is detected per message, and each request is
+    /// answered in the framing it arrived in. Input that is not a message
+    /// gets a JSON-RPC parse error, and a header block that cannot be used
+    /// gets one and closes the stream. Nothing but MCP frames is written
+    /// to stdout; logs go to stderr.
     ///
     /// The `sandbox_*` tools appear in `tools/list` under two visibility
     /// conditions. First, an account API key that resolves for the
