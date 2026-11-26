@@ -803,12 +803,17 @@ plans them. Preview it first:
 ```
 
 There is no swap action: a swap goes through the venue itself. Prefer a
-`call` of a swap function the venue's program lists in `sandbox_rules`
-(Arete plans it); only when it lists none, send one `invoke` of the venue's
-own instructions (for example PumpSwap `buy`/`sell` for a coin that has
+`call` of a callable swap function: one the venue's program lists in
+`sandbox_rules` without `missingInstructions` (Arete plans it; a function
+with `missingInstructions` is refused before planning). When no swap
+function is callable and the rules allow the venue's instructions, send one
+`invoke` of them (for example PumpSwap `buy`/`sell` for a coin that has
 left its Pump.fun bonding curve), named and with args and accounts as
-`sandbox_rules` lists them. Every program the transaction touches must be
-in the rules. Preview it with `sandbox_preview` first.
+`sandbox_rules` lists them. The venue, and any other program the
+transaction touches beyond the baseline, must be enabled in the rules; the
+baseline (`baseline` in `sandbox_rules`) already allows the swap's
+plumbing: creating your own token accounts and wrapping or unwrapping SOL.
+Preview it with `sandbox_preview` first.
 
 Pass u64 amounts as decimal strings. Every `sandbox_invoke` has an
 idempotency key (yours, or generated); it is returned on success and on

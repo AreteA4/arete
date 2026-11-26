@@ -1824,8 +1824,11 @@ pub fn new_idempotency_key() -> String {
 
 /// An Action API action an agent may run, when the owner grants it. There
 /// is no swap action: a swap goes through the venue itself, as a `call` of
-/// a swap function its program lists in `sandbox_rules`, or, when it lists
-/// none, one `invoke` of the venue's own instructions.
+/// a callable swap function (one its program lists in `sandbox_rules`
+/// without `missingInstructions`), or, when none is callable and the rules
+/// allow the venue's instructions, one `invoke` of them. The venue and any
+/// other program beyond the baseline must be enabled in the rules; the
+/// baseline already allows the plumbing (own token accounts, wrapping SOL).
 ///
 /// Both actions, previewed or run, report the wallet's SOL change as
 /// `walletLamportsChange` (signed: negative is SOL leaving the wallet,

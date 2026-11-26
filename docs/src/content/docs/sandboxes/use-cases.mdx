@@ -21,8 +21,8 @@ An agent that trades tokens on one venue from a research loop.
   spend so much before you notice.
 - **Allowlist:** empty. Proceeds stay in the sandbox or come back to you.
 - **Grant:** `invoke`. Swaps run under it too, through the venue itself: a
-  `call` of a function it lists, or an `invoke` of its own instructions (see
-  [Swaps](/sandboxes/actions/#swaps)).
+  `call` of a swap function it lists without `missingInstructions`, or else
+  an `invoke` of its own instructions (see [Swaps](/sandboxes/actions/#swaps)).
 
 Exits stay allowed whatever the limits: the agent can always sell what it
 bought.
