@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.62.1](https://github.com/AreteA4/arete/compare/arete-python-v0.62.0...arete-python-v0.62.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* let a provided PDA address break a dependency cycle in the account resolvers ([52c37c0](https://github.com/AreteA4/arete/commit/52c37c092fe7d5427cdc0d8647ef5dacdf93da64))
+* let a provided PDA address break a dependency cycle in the account resolvers ([37ad73a](https://github.com/AreteA4/arete/commit/37ad73a3f59534f4c2cc4981299b0a314f0e688e))
+* read explicit account addresses the same way when sorting and resolving ([bd6b3d0](https://github.com/AreteA4/arete/commit/bd6b3d031821ccac4e9d50291badcd4562c451b3))
+
 ## [0.62.0](https://github.com/AreteA4/arete/compare/arete-python-v0.61.0...arete-python-v0.62.0) (2026-11-23)
 
 

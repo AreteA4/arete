@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.62.1](https://github.com/AreteA4/arete/compare/arete-mcp-v0.62.0...arete-mcp-v0.62.1) (2026-11-26)
+
+
+### Bug Fixes
+
+* stop sandbox_invoke telling agents to use /swap-instructions ([e19cc41](https://github.com/AreteA4/arete/commit/e19cc4134f670ce36cd463c6817ca00e1127427c))
+* stop sandbox_invoke telling agents to use /swap-instructions ([b6d0043](https://github.com/AreteA4/arete/commit/b6d004330ed37fb6fb2da21cabb081f42cb3379b))
+
 ## [0.62.0](https://github.com/AreteA4/arete/compare/arete-mcp-v0.61.0...arete-mcp-v0.62.0) (2026-11-23)
 
 
