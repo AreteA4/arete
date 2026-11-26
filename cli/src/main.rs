@@ -155,9 +155,9 @@ enum Commands {
     /// configured API (`--api-url` / `ARETE_API_URL`, default
     /// `https://api.arete.run`), or `ARETE_SANDBOX_ID` set to a sandbox id
     /// (a UUID; any other value is ignored with a warning on stderr). With
-    /// a profile selected (`--profile`, `ARETE_PROFILE`, or the project's
-    /// agent default) the key is only that profile's a4 login for that API
-    /// and `ARETE_API_KEY` is not read: the generated
+    /// a profile selected (`--profile`, else the project's `agent` default,
+    /// else `ARETE_PROFILE`) the key is only that profile's a4 login for
+    /// that API and `ARETE_API_KEY` is not read: the generated
     /// `a4 --profile agent mcp` config uses the `agent` profile's login,
     /// and a key set only in `ARETE_API_KEY` does not count there.
     /// `ARETE_API_KEY` applies only without a selected profile, before the
@@ -165,14 +165,15 @@ enum Commands {
     /// `sandbox_select` or `a4 sandbox use` (saved for the project) does
     /// not list them. Second, their group is `sandboxes`: when
     /// `GET /api/auth/me` reports a `commandGroups` list, they are listed
-    /// only if it names `sandboxes` (an empty list hides them); only a
-    /// missing list, or a lookup that fails or times out (3 seconds),
-    /// leaves the first condition to decide on its own.
+    /// only if it names `sandboxes` (an empty list hides them); with no
+    /// list (no key, a lookup that fails or times out after 3 seconds, or
+    /// an answer without one) the first condition decides on its own.
     ///
     /// Listing is not access. A call needs the key, which mints the
     /// sandbox token, and the API mints one only while the sandbox's owner
-    /// grants the account access; the group check affects listing only,
-    /// and the API refuses what the account may not do. With a sandbox id
+    /// grants the account access. The group check only hides tools (a
+    /// hidden tool cannot be called either) and never grants anything: the
+    /// API refuses what the account may not do. With a sandbox id
     /// alone the tools are listed but every call that needs the API is
     /// refused (`sandbox-agent-key-required`). Setting an agent up with a
     /// key and a sandbox: https://docs.arete.run/sandboxes/connect-agent/
@@ -2685,20 +2686,24 @@ mod tests {
             "a UUID; any other value is ignored with a warning",
             "`sandbox_select` or `a4 sandbox use` (saved for the project) does not list them",
             // A selected profile reads only its own login for that API;
-            // the environment key counts only without one. The generated
-            // config selects `agent`.
+            // the environment key counts only without one. The project's
+            // `agent` default outranks an inherited `ARETE_PROFILE`, as in
+            // `config::resolve_auth_profile`. The generated config selects
+            // `agent`.
+            "(`--profile`, else the project's `agent` default, else `ARETE_PROFILE`)",
             "the key is only that profile's a4 login for that API and `ARETE_API_KEY` is not read",
             "`a4 --profile agent mcp` config uses the `agent` profile's login",
             "`ARETE_API_KEY` applies only without a selected profile, before the a4 login for that API",
             // Their own group rule: a reported list must name `sandboxes`;
             // an empty list hides, a missing list does not.
             "listed only if it names `sandboxes` (an empty list hides them)",
-            "only a missing list, or a lookup that fails or times out (3 seconds)",
+            "with no list (no key, a lookup that fails or times out after 3 seconds, or an answer without one) the first condition decides on its own",
             // Listing is not access: a call needs the key and the owner's
-            // grant (the API's check); the group check only lists.
+            // grant (the API's check). The group check removes the route,
+            // so a hidden tool cannot be called, and grants nothing.
             "Listing is not access",
             "the API mints one only while the sandbox's owner grants the account access",
-            "the group check affects listing only",
+            "The group check only hides tools (a hidden tool cannot be called either) and never grants anything",
             "a sandbox id alone the tools are listed but every call that needs the API is refused (`sandbox-agent-key-required`)",
             "docs.arete.run/sandboxes/connect-agent",
         ] {
@@ -2714,6 +2719,9 @@ mod tests {
         // always listed and `install` needs an explicit grant, so the help
         // must not generalise it to every tool.
         assert!(!long.to_lowercase().contains("every tool"), "{long}");
+        // Hiding removes the tool's route (`AreteMcp::with_surface`): the
+        // help must not say the group check leaves calls alone.
+        assert!(!long.contains("affects listing only"), "{long}");
     }
 
     fn surface(groups: &[arete_mcp::entitlements::Group]) -> arete_mcp::entitlements::Surface {

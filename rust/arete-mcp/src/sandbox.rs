@@ -745,8 +745,9 @@ type CachedRead = (ReadSession, u64);
 
 impl SandboxClient {
     /// From `ARETE_SANDBOX_ID`, `ARETE_API_URL`, the account key the rest
-    /// of this server uses (`ARETE_API_KEY`, else the a4 login for that
-    /// API) and the sandbox saved for the working directory.
+    /// of this server uses (the selected profile's a4 login for that API;
+    /// without a profile, `ARETE_API_KEY`, else the a4 login) and the
+    /// sandbox saved for the working directory.
     pub fn from_env() -> Self {
         if std::env::var(ENV_VAR_RETIRED_SANDBOX_KEY).is_ok_and(|key| !key.trim().is_empty()) {
             tracing::warn!(
