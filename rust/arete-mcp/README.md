@@ -17,10 +17,11 @@ answers; a message the server starts uses the framing last seen from the
 client (newline-delimited before the first). Input that is not JSON gets a
 `Parse error` (`-32700`) and JSON that is not a JSON-RPC message an
 `Invalid request` (`-32600`), both without an id. A header block that
-cannot be used (over 8 KiB, a line that is not a header, or a
-`Content-Length` that is missing, repeated or not a byte count) gets a
-`Parse error` and the stream is closed. A line (newline included) or framed
-body over 16 MiB is dropped without a reply and logged. At most 1024
+cannot be used (over 8 KiB, a header line that starts with whitespace, a
+line that is not a header, or a `Content-Length` that is missing, repeated
+or not a byte count) gets a `Parse error` and the stream is closed. A line
+(newline included) or framed body over 16 MiB is dropped without a reply
+and logged. At most 1024
 requests may await a reply, with 64 KiB of string ids between them; a
 request past either limit gets a `Server busy` error (`-32000`) with its id,
 in its framing. A request that repeats the id of one awaiting a reply gets a
