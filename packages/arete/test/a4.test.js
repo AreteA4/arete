@@ -207,6 +207,31 @@ test("isSelfInstall: only self-install options keep install on the bootstrap pat
   }
 });
 
+test("isSelfInstall: a bare --source stays a self install; --checksums/--signature are the launcher's own", () => {
+  // `--source` takes the next argument as its value, so a bare `--source`
+  // (and `--source --force`, which swallows `--force`) still routes to
+  // `a4 self install`, which reports the missing value.
+  for (const argv of [
+    ["install", "--source"],
+    ["install", "--source", "--force"],
+    ["install", "--no-modify-path", "--source"],
+  ]) {
+    assert.equal(a4.isSelfInstall(argv), true, argv.join(" "));
+  }
+  // The caller cannot supply the launcher's verification flags: such an
+  // invocation is a project install and goes to the installed binary.
+  for (const argv of [
+    ["install", "--checksums", "checksums.txt"],
+    ["install", "--checksums=checksums.txt"],
+    ["install", "--signature", "checksums.txt.minisig"],
+    ["install", "--signature=checksums.txt.minisig"],
+    ["install", "--no-modify-path", "--checksums", "checksums.txt", "--signature", "checksums.txt.minisig"],
+    ["install", "--source", "npm", "--checksums=checksums.txt"],
+  ]) {
+    assert.equal(a4.isSelfInstall(argv), false, argv.join(" "));
+  }
+});
+
 test("project installs run the recorded binary instead of self install", notWindows, async (t) => {
   const home = tempHome(t);
   const areteHome = path.join(home, ".arete");
