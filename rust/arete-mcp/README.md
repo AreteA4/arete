@@ -310,9 +310,10 @@ subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
   `full: true` adds `score` and `coverage_via`.
 - `get_protocol({ protocol })` — one protocol by slug (e.g. `meteora-damm`):
   description, categories, links, programs with roles
-  (core/periphery/deprecated), related protocols, the public stacks streaming
-  its entities, and per-concept coverage. Follow `programs[].slug` into
-  `get_program_knowledge`.
+  (core/periphery/deprecated), related protocols, the stacks covering its
+  entities, and per-concept coverage; a stack's hosting is read from its
+  `coverage[].coverageVia` entries grouped by slug (live if any has
+  `subscribe: true`). Follow `programs[].slug` into `get_program_knowledge`.
 - `get_program_knowledge({ program, section? })` — curated annotations for one
   program by slug (e.g. `meteora-cp-amm`). `section` is `summary` (default),
   `instructions`, `accounts`, or `surface` — the ingested SDK extension surface

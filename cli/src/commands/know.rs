@@ -16,6 +16,7 @@
 //! CLI. Where the contract leaves casing open, both snake_case and camelCase
 //! are accepted via serde aliases.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use anyhow::{bail, Result};
@@ -105,7 +106,15 @@ pub fn search(
 
 pub fn protocol(slug: &str, json: bool) -> Result<()> {
     let slug = validate_slug(slug, "protocol slug")?;
-    let value = ApiClient::new()?.knowledge_protocol(slug)?;
+    let client = ApiClient::new()?;
+    let mut value = client.knowledge_protocol(slug)?;
+    // Best-effort, one request per stack: bounded like the other catalog
+    // knowledge lookups so a slow registry cannot hold the command up.
+    annotate_stack_hosting(&mut value, |stack| {
+        client
+            .catalog_entry_with_timeout("stack", stack, arete_mcp::stack_knowledge::LOOKUP_TIMEOUT)
+            .ok()
+    });
     emit(&value, json, render_protocol)
 }
 
@@ -325,6 +334,12 @@ struct ProtocolStack {
     stack: String,
     #[serde(default)]
     entities: Vec<String>,
+    /// Catalog slug and hosting status, added by
+    /// [`annotate_stack_hosting`]; absent when the catalog could not say.
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    live: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -424,6 +439,60 @@ fn coverage_flags(read: bool, build: bool, subscribe: bool) -> String {
         "none".into()
     } else {
         flags.join(", ")
+    }
+}
+
+/// Resolve each stack's hosting status through the catalog, best-effort.
+///
+/// The payload names a stack (`stacks[].stack`, e.g. `BubblegumStream`)
+/// without its catalog slug or hosting. Its `coverage[].coverageVia` rows
+/// carry the catalog slugs of the stacks behind each concept; `lookup`
+/// fetches one catalog entry by slug, whose `knowledge.name` is the stack
+/// name and whose delivery says whether it streams now
+/// ([`catalog_view::is_live_stack`]). Each matched stack gains `slug` and
+/// `live`; a stack no entry names is left as is, so the renderer reports its
+/// status as unknown. A failed lookup (network, 404, signed out) only leaves
+/// that status unknown, as does a `coverageVia` slug that is not a bare slug
+/// ([`validate_slug`]): it is server-supplied and bound for the catalog URL
+/// path, so it is never fetched. Keys the server already sends are kept.
+fn annotate_stack_hosting(value: &mut Value, mut lookup: impl FnMut(&str) -> Option<Value>) {
+    let slugs: BTreeSet<String> = value["coverage"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|row| {
+            row.get("coverageVia")
+                .or_else(|| row.get("coverage_via"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|via| via["kind"].as_str() == Some("stack"))
+        .filter_map(|via| validate_slug(via["slug"].as_str()?, "coverageVia slug").ok())
+        .map(str::to_owned)
+        .collect();
+    let mut by_name: BTreeMap<String, (String, bool)> = BTreeMap::new();
+    for slug in slugs {
+        let Some(entry) = lookup(&slug) else { continue };
+        let Some(live) = catalog_view::is_live_stack(&entry) else {
+            continue;
+        };
+        if let Some(name) = entry.pointer("/knowledge/name").and_then(Value::as_str) {
+            by_name.entry(name.to_owned()).or_insert((slug, live));
+        }
+    }
+    let Some(stacks) = value.get_mut("stacks").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for stack in stacks {
+        let Some((slug, live)) = stack["stack"].as_str().and_then(|name| by_name.get(name)) else {
+            continue;
+        };
+        let (slug, live) = (slug.clone(), *live);
+        if let Value::Object(map) = stack {
+            map.entry("slug").or_insert(Value::String(slug));
+            map.entry("live").or_insert(Value::Bool(live));
+        }
     }
 }
 
@@ -613,11 +682,21 @@ fn render_protocol(value: &Value) -> String {
         }
     }
     if !parsed.stacks.is_empty() {
-        let _ = writeln!(text, "\n{}", "Live stacks".bold());
+        let _ = writeln!(text, "\n{}", "Stacks".bold());
         for stack in &parsed.stacks {
+            let status = match stack.live {
+                Some(true) => "live",
+                Some(false) => "definition-only: deploy with a4 up",
+                None => "hosting status unknown: a4 explore catalog",
+            };
+            let slug = stack
+                .slug
+                .as_deref()
+                .map(|slug| format!(" ({slug})"))
+                .unwrap_or_default();
             let _ = writeln!(
                 text,
-                "  {}  entities: {}",
+                "  {}{slug}  entities: {}  [{status}]",
                 stack.stack.green().bold(),
                 stack.entities.join(", ")
             );
@@ -953,6 +1032,7 @@ mod tests {
 
     #[test]
     fn protocol_rendering_covers_programs_relations_stacks_and_coverage() {
+        colored::control::set_override(false);
         let text = render_protocol(&json!({
             "slug": "meteora-damm",
             "name": "Meteora DAMM v2",
@@ -972,8 +1052,8 @@ mod tests {
                 "note": "Admin actions run through a Squads vault.",
                 "evidence": "recipes/execute-presale-purchase-via-squads"
             }],
-            "stacks": [{ "stack": "meteora-damm-stream", "entities": ["MeteoraPool"] }],
-            "coverage": [{ "concept": "swap", "read": true, "build": true, "subscribe": false }]
+            "stacks": [{ "stack": "MeteoraDammStream", "entities": ["MeteoraPool"], "slug": "meteora-damm", "live": true }],
+            "coverage": [{ "concept": "swap", "read": true, "build": true, "subscribe": true }]
         }));
         assert!(text.contains("Meteora DAMM v2"), "{text}");
         assert!(text.contains("Categories: dex"), "{text}");
@@ -985,8 +1065,233 @@ mod tests {
         assert!(text.contains("[core]"), "{text}");
         assert!(text.contains("squads-v4"), "{text}");
         assert!(text.contains("composes-with"), "{text}");
-        assert!(text.contains("meteora-damm-stream"), "{text}");
+        assert!(
+            text.contains("MeteoraDammStream (meteora-damm)  entities: MeteoraPool  [live]"),
+            "{text}"
+        );
+        assert!(text.contains("swap: read, build, subscribe"), "{text}");
+    }
+
+    #[test]
+    fn protocol_rendering_labels_each_stack_by_hosting_status() {
+        colored::control::set_override(false);
+        let text = render_protocol(&json!({
+            "slug": "p",
+            "name": "P",
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"], "slug": "hosted", "live": true },
+                { "stack": "BubblegumStream", "entities": ["CompressedTree"], "slug": "bubblegum", "live": false },
+                { "stack": "MysteryStream", "entities": ["Row"] }
+            ]
+        }));
+        assert!(text.contains("\nStacks\n"), "{text}");
+        assert!(!text.contains("Live stacks"), "{text}");
+        assert!(
+            text.contains("HostedStream (hosted)  entities: Pool  [live]"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "BubblegumStream (bubblegum)  entities: CompressedTree  [definition-only: deploy with a4 up]"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "MysteryStream  entities: Row  [hosting status unknown: a4 explore catalog]"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn stack_hosting_is_resolved_through_the_catalog_by_name() {
+        // The payload names stacks; `coverageVia` carries their catalog
+        // slugs. The catalog entry joins the two by `knowledge.name` and
+        // says whether the stack streams (a `deployed-stack` delivery).
+        let mut value = json!({
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"] },
+                { "stack": "BubblegumStream", "entities": ["CompressedTree"] },
+                { "stack": "UnreachableStream", "entities": ["Row"] },
+                { "stack": "UncoveredStream", "entities": ["Row"] },
+                { "stack": "PresetStream", "entities": ["Row"], "live": true }
+            ],
+            "coverage": [
+                { "concept": "swap", "coverageVia": [
+                    { "kind": "program", "slug": "hosted" },
+                    { "kind": "stack", "slug": "hosted" },
+                    { "kind": "stack", "slug": "unreachable" },
+                    { "kind": "stack", "slug": "preset" }
+                ] },
+                { "concept": "mint-tokens", "coverage_via": [
+                    { "kind": "stack", "slug": "bubblegum" },
+                    { "kind": "stack", "slug": "hosted" }
+                ] }
+            ]
+        });
+        let mut looked_up = Vec::new();
+        annotate_stack_hosting(&mut value, |slug| {
+            looked_up.push(slug.to_owned());
+            match slug {
+                "hosted" => Some(json!({
+                    "kind": "stack", "slug": "hosted",
+                    "knowledge": { "name": "HostedStream" },
+                    "delivery": { "kind": "deployed-stack" }
+                })),
+                "bubblegum" => Some(json!({
+                    "kind": "stack", "slug": "bubblegum",
+                    "knowledge": { "name": "BubblegumStream" }
+                })),
+                "preset" => Some(json!({
+                    "kind": "stack", "slug": "preset",
+                    "knowledge": { "name": "PresetStream" }
+                })),
+                _ => None,
+            }
+        });
+        // Each stack slug once, in either `coverageVia` spelling; programs
+        // are never looked up.
+        assert_eq!(looked_up, ["bubblegum", "hosted", "preset", "unreachable"]);
+        let stacks = value["stacks"].as_array().unwrap();
+        assert_eq!(stacks[0]["slug"], "hosted");
+        assert_eq!(stacks[0]["live"], true);
+        assert_eq!(stacks[1]["slug"], "bubblegum");
+        assert_eq!(stacks[1]["live"], false);
+        // A failed lookup and a stack no coverage row names stay unknown.
+        assert!(stacks[2].get("live").is_none() && stacks[2].get("slug").is_none());
+        assert!(stacks[3].get("live").is_none() && stacks[3].get("slug").is_none());
+        // A `live` the server sent wins over the catalog.
+        assert_eq!(stacks[4]["live"], true);
+        assert_eq!(stacks[4]["slug"], "preset");
+        // Nothing else moves.
+        assert_eq!(stacks[0]["stack"], "HostedStream");
+        assert_eq!(stacks[0]["entities"], json!(["Pool"]));
+    }
+
+    #[test]
+    fn stack_hosting_skips_coverage_via_of_unexpected_shape() {
+        // `coverageVia` may be null or malformed on some rows; only
+        // well-formed stack entries are looked up, nothing panics, and a
+        // well-formed sibling row still annotates its stack.
+        let mut value = json!({
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"] },
+                { "stack": "OddStream", "entities": ["Row"] },
+                { "stack": 7 },
+                "not-a-stack"
+            ],
+            "coverage": [
+                { "concept": "swap", "coverageVia": null },
+                { "concept": "vesting", "coverageVia": "odd" },
+                { "concept": "mint", "coverageVia": { "kind": "stack", "slug": "odd" } },
+                { "concept": "burn", "coverageVia": [
+                    null, 7, "odd", [], {},
+                    { "kind": "stack" },
+                    { "slug": "odd" },
+                    { "kind": "stack", "slug": 7 },
+                    { "kind": "program", "slug": "odd" }
+                ] },
+                { "concept": "close", "coverageVia": [{ "kind": "stack", "slug": "hosted" }] },
+                "not-a-row",
+                null
+            ]
+        });
+        let mut looked_up = Vec::new();
+        annotate_stack_hosting(&mut value, |slug| {
+            looked_up.push(slug.to_owned());
+            (slug == "hosted").then(|| {
+                json!({
+                    "kind": "stack", "slug": "hosted",
+                    "knowledge": { "name": "HostedStream" },
+                    "delivery": { "kind": "deployed-stack" }
+                })
+            })
+        });
+        assert_eq!(looked_up, ["hosted"]);
+        let stacks = value["stacks"].as_array().unwrap();
+        assert_eq!(stacks[0]["slug"], "hosted");
+        assert_eq!(stacks[0]["live"], true);
+        assert!(stacks[1].get("slug").is_none() && stacks[1].get("live").is_none());
+        assert_eq!(stacks[2], json!({ "stack": 7 }));
+        assert_eq!(stacks[3], "not-a-stack");
+        assert_eq!(value["coverage"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn stack_hosting_skips_invalid_coverage_via_slugs() {
+        // `coverageVia` slugs come from the server and go into the catalog
+        // URL path, so only a bare slug is ever fetched: a path-shaped or
+        // empty one never reaches the lookup, and the stack it was the only
+        // lead for stays unknown, while a valid sibling slug on the same row
+        // still annotates its stack.
+        let mut value = json!({
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"] },
+                { "stack": "TraversalStream", "entities": ["Row"] }
+            ],
+            "coverage": [
+                { "concept": "swap", "coverageVia": [
+                    { "kind": "stack", "slug": "../.." },
+                    { "kind": "stack", "slug": "hosted" },
+                    { "kind": "stack", "slug": "?" }
+                ] },
+                { "concept": "vesting", "coverage_via": [
+                    { "kind": "stack", "slug": "#" },
+                    { "kind": "stack", "slug": "\\" },
+                    { "kind": "stack", "slug": ".." },
+                    { "kind": "stack", "slug": "" }
+                ] }
+            ]
+        });
+        let mut looked_up = Vec::new();
+        annotate_stack_hosting(&mut value, |slug| {
+            looked_up.push(slug.to_owned());
+            // Every slug resolves to a live entry, so an invalid one that
+            // reached the lookup would visibly annotate TraversalStream.
+            let name = if slug == "hosted" {
+                "HostedStream"
+            } else {
+                "TraversalStream"
+            };
+            Some(json!({
+                "kind": "stack", "slug": slug,
+                "knowledge": { "name": name },
+                "delivery": { "kind": "deployed-stack" }
+            }))
+        });
+        assert_eq!(looked_up, ["hosted"]);
+        let stacks = value["stacks"].as_array().unwrap();
+        assert_eq!(stacks[0]["slug"], "hosted");
+        assert_eq!(stacks[0]["live"], true);
+        assert!(stacks[1].get("slug").is_none() && stacks[1].get("live").is_none());
+    }
+
+    #[test]
+    fn protocol_rendering_survives_a_null_coverage_via() {
+        // A `coverageVia` the renderer does not model must not blank the
+        // whole protocol through the lenient parse.
+        colored::control::set_override(false);
+        let text = render_protocol(&json!({
+            "slug": "p",
+            "name": "P",
+            "programs": [{ "slug": "prog", "programId": "Prog111", "role": "core" }],
+            "stacks": [{ "stack": "MysteryStream", "entities": ["Row"] }],
+            "coverage": [
+                { "concept": "swap", "read": true, "build": true, "subscribe": false, "coverageVia": null },
+                { "concept": "vesting", "read": true, "coverageVia": "odd" }
+            ]
+        }));
+        assert!(text.contains("Protocol: P (p)"), "{text}");
+        assert!(text.contains("  prog  Prog111  [core]"), "{text}");
+        assert!(
+            text.contains(
+                "MysteryStream  entities: Row  [hosting status unknown: a4 explore catalog]"
+            ),
+            "{text}"
+        );
         assert!(text.contains("swap: read, build"), "{text}");
+        assert!(text.contains("vesting: read"), "{text}");
     }
 
     #[test]
