@@ -204,38 +204,31 @@ says how to find each one. See [Finding accounts](/sandboxes/accounts/).
 
 ## Swaps
 
-There is no separate swap action. A swap is an `invoke` of the instructions
-that make it, so it passes the same rules, limits and checks as any other
-instruction:
+There is no separate swap action. A swap goes through the venue itself, so
+it passes the same rules, limits and checks as any other action:
 
-1. **Resolve the venue.**
-   - **A venue's own instructions**, when you know the pool: for example
-     PumpSwap (pump-amm) `buy` and `sell` for a coin that has left its
-     Pump.fun bonding curve, Pump.fun `buy` and `sell` on the curve, or a
-     DEX's own swap instruction (Orca Whirlpool, Raydium, Meteora). This is
-     the simplest path. Arete picks the bin arrays of a Meteora DLMM swap and
-     the tick arrays of an Orca Whirlpool or Raydium CLMM swap itself, at
-     preview and invoke; leave them out.
-   - **A Jupiter route**, when you want the best route across venues. When
-     the rules allow a Jupiter route, `sandbox_rules` (and
-     `a4 sandbox rules show --json`) carries a `jupiterSwap` guide: call its
-     `buildUrl` (Jupiter Swap API v2 `/build`) with its `query`. The query
-     sets the sandbox wallet as taker and payer, `transactionVersion=1`,
-     `maxAccounts=50` so the route fits a v1 transaction, `wrapAndUnwrapSol=true`,
-     and `dexes` to the Jupiter labels of the venues the rules allow. The
-     guide also lists `routeInstructions`, `venues` and `steps`. If the
-     venue labels can't be fetched, the guide says so and leaves `dexes`
-     out. Every venue in the route must be in the rules.
-2. **Write the `invoke`.** Name each instruction as `sandbox_rules` lists it
-   (Jupiter's swap is one of the Jupiter instructions there, such as
-   `route_v2` or `shared_accounts_route_v2`), with its `args` decoded from
-   the instruction data by the IDL types `sandbox_rules` gives, its named
-   accounts, and any further accounts the route passes in
-   `remainingAccounts`. Setup Jupiter returns, such as creating a token
-   account or wrapping SOL, is baseline plumbing: put it in the same action,
-   in order.
-3. **`sandbox_preview`** with `action: "invoke"` until it passes, then
-   **`sandbox_invoke`** with the same arguments.
+1. **Resolve the venue.** The pool, pair or market you swap on. The venue,
+   and any other program the transaction touches beyond the baseline, must
+   be enabled in the rules; the baseline (`baseline` in `sandbox_rules`)
+   already allows the swap's plumbing: creating your own token accounts and
+   wrapping or unwrapping SOL.
+2. **Prefer a `call`.** When `sandbox_rules` lists a swap function under the
+   venue's program (`functions`) without `missingInstructions`, run it as a
+   `call`: Arete plans the whole instruction sequence, wrapping SOL and
+   account setup included. A function with `missingInstructions` is refused
+   before planning (see [call](#call)), so it does not count.
+3. **When no swap function is callable** and the rules allow the venue's
+   own instructions, write the `invoke` of them: for example PumpSwap
+   (pump-amm) `buy` and `sell` for a coin that has left its Pump.fun
+   bonding curve, Pump.fun `buy` and `sell` on the curve, or a
+   DEX's own swap instruction (Orca Whirlpool, Raydium, Meteora). Name each
+   instruction as `sandbox_rules` lists it, with its `args` and its named
+   accounts. Arete picks the bin arrays of a Meteora DLMM swap and the tick
+   arrays of an Orca Whirlpool or Raydium CLMM swap itself, at preview and
+   invoke; leave them out. Setup such as creating a token account or
+   wrapping SOL is baseline plumbing: put it in the same action, in order.
+4. **`sandbox_preview`** with the same `action` and `args` until it passes,
+   then **`sandbox_invoke`**.
 
 ```json
 {

@@ -1,7 +1,7 @@
 //! `a4 sandbox`: list the sandboxes the account has been granted and choose
 //! one, read a sandbox wallet's status (address, balances, granted actions),
 //! history, holdings and rules, list the programs it can read, find a
-//! program's accounts by the addresses they hold, and check a Rules v3
+//! program's accounts by the addresses they hold, and validate a Rules v3
 //! document before its owner signs it.
 //!
 //! The reads go to the Arete API's sandbox routes with a short-lived token
@@ -51,11 +51,11 @@ pub enum SandboxCommands {
     History(HistoryArgs),
     /// What the sandbox wallet holds now: SOL, tokens and program positions
     Holdings(HoldingsArgs),
-    /// The sandbox's rules: show them, or check a Rules v3 file
+    /// The sandbox's rules: show them, or validate a Rules v3 file
     ///
     /// Rules are built and signed in the dashboard (Sandboxes → Rules,
     /// https://app.arete.run/dashboard/sandboxes); the CLI only shows and
-    /// checks them.
+    /// validates them.
     #[command(subcommand)]
     Rules(RulesCommands),
     /// The programs the sandbox can read: their accounts with `a4 program
@@ -349,11 +349,12 @@ impl AccountsArgs {
 pub enum RulesCommands {
     /// The rules the sandbox runs under, as this agent sees them
     Show(SandboxTarget),
-    /// Check a Rules v3 JSON file (`-` for stdin) without sending it anywhere
+    /// Validate a Rules v3 JSON file (`-` for stdin) without sending it anywhere
     ///
     /// Rules are built and signed in the dashboard (Sandboxes → Rules,
     /// https://app.arete.run/dashboard/sandboxes); the CLI only shows and
-    /// checks them. Only version 3 is supported.
+    /// validates them. Only version 3 is supported.
+    #[command(alias = "check")]
     Validate {
         /// The rules file, or `-` for stdin
         file: PathBuf,

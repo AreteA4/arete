@@ -76,10 +76,13 @@ Full reference: <https://docs.arete.run/cli/commands/>. Agent setup guide:
 ## Building from source
 
 Only needed for unsupported platforms (anything other than
-darwin-arm64/x64, linux-x64/arm64, win32-x64):
+darwin-arm64/x64, linux-x64/arm64, win32-x64). Needs Rust 1.89 or newer
+(`rustup update`). This builds the published release from crates.io (for
+an unreleased revision, run `cargo install --locked --path cli` in a
+checkout of the repository instead of the first line):
 
 ```bash
-cargo install a4-cli
+cargo install --locked a4-cli
 a4 self install --source manual
 ```
 

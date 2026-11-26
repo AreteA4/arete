@@ -104,7 +104,7 @@ Understanding how the pieces fit together:
 
 ### Required
 
-- **Rust 1.70+** — Install via [rustup](https://rustup.rs/)
+- **Rust 1.89+** — Install via [rustup](https://rustup.rs/); inside this repository `rust-toolchain.toml` selects the toolchain CI builds with
 - **Node.js 18+** and npm — For TypeScript SDKs
 - **Python 3.9+** — For Python SDK
 

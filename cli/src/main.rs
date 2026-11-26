@@ -11,7 +11,9 @@
 //! npx @usearete/a4 install                          # via npm
 //! ```
 //!
-//! Update with `a4 self update`. Building from source: `cargo install a4-cli`.
+//! Update with `a4 self update`. Building from source needs Rust 1.89 or newer:
+//! `cargo install --locked a4-cli` builds the published release from crates.io,
+//! `cargo install --locked --path cli` an unreleased revision from a checkout.
 //!
 //! ## Commands
 //!
@@ -483,7 +485,7 @@ enum Commands {
     Squads(commands::squads::SquadsCommands),
 
     /// Read a sandbox wallet's history, holdings and rules, preview and run
-    /// its actions, and check a Rules v3 file (sandboxes are in alpha)
+    /// its actions, and validate a Rules v3 file (sandboxes are in alpha)
     #[command(subcommand)]
     Sandbox(commands::sandbox::SandboxCommands),
 
@@ -2722,6 +2724,39 @@ mod tests {
         // Hiding removes the tool's route (`AreteMcp::with_surface`): the
         // help must not say the group check leaves calls alone.
         assert!(!long.contains("affects listing only"), "{long}");
+    }
+
+    /// The subcommand is `validate`; `check` is an alias for the word the
+    /// help used to say, and the help says `validate` everywhere now.
+    #[test]
+    fn sandbox_rules_check_is_validate() {
+        use commands::sandbox::{RulesCommands, SandboxCommands};
+        let file = |argv: [&str; 5]| match Cli::try_parse_from(argv).expect("parses").command {
+            Some(Commands::Sandbox(SandboxCommands::Rules(RulesCommands::Validate { file }))) => {
+                file
+            }
+            _ => panic!("expected sandbox rules validate"),
+        };
+        assert_eq!(
+            file(["a4", "sandbox", "rules", "check", "rules.json"]),
+            file(["a4", "sandbox", "rules", "validate", "rules.json"])
+        );
+        let sandbox = Cli::command().find_subcommand("sandbox").unwrap().clone();
+        let rules = sandbox.find_subcommand("rules").unwrap().clone();
+        // The alias is not a second listed subcommand.
+        let (listed, _) = rendered_help(rules.clone());
+        assert!(listed.contains("  validate "), "{listed}");
+        assert!(!listed.contains("  check "), "{listed}");
+        for (name, cmd) in [("sandbox", sandbox), ("sandbox rules", rules)] {
+            let (short, long) = rendered_help(cmd);
+            for help in [short, long] {
+                assert!(help.contains("validate"), "{name}: {help}");
+                assert!(
+                    !help.to_lowercase().contains("check a rules v3"),
+                    "{name}: {help}"
+                );
+            }
+        }
     }
 
     fn surface(groups: &[arete_mcp::entitlements::Group]) -> arete_mcp::entitlements::Surface {

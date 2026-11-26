@@ -91,11 +91,13 @@ Full installer options: [CLI Command Reference → Installation](/cli/commands/#
 
 ### Building from source
 
-Only if you need an unreleased build. It requires a Rust toolchain and is not the supported install path:
+Not the supported install path. It requires a Rust toolchain (1.89 or newer; `rustup update`). This builds the published release from crates.io:
 
 ```bash
-cargo install a4-cli
+cargo install --locked a4-cli
 ```
+
+For an unreleased revision, build from a checkout of the repository with `cargo install --locked --path cli`. A Cargo-built `a4` cannot use `a4 self update`.
 
 ---
 

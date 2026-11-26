@@ -176,7 +176,7 @@ pub fn run(args: UpdateArgs, json: bool) -> Result<()> {
 pub fn not_installed_message() -> String {
     let mut message = "a4 was not installed by the Arete installer. Reinstall with: curl -fsSL https://arete.run/install.sh | sh".to_string();
     if running_from_cargo_bin() {
-        message.push_str(" (this binary is under ~/.cargo/bin; to update it instead run: cargo install a4-cli --force)");
+        message.push_str(" (this binary is under ~/.cargo/bin; to update it instead run: cargo install --locked a4-cli --force)");
     }
     message
 }

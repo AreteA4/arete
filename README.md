@@ -303,7 +303,7 @@ Tags follow the pattern `v{version}` (e.g., `v0.5.10`). Since all packages are v
 
 ### Prerequisites
 
-- **Rust**: 1.70+ (install via [rustup](https://rustup.rs/))
+- **Rust**: 1.89+ (install via [rustup](https://rustup.rs/); inside this repository `rust-toolchain.toml` selects the toolchain CI builds with)
 - **Node.js**: 16+ (for TypeScript SDK)
 - **Python**: 3.9+ (for Python SDK)
 
@@ -317,10 +317,12 @@ cd arete
 # Build all Rust packages
 cargo build --workspace
 
-# CLI from source (unreleased builds only; the supported install is the
-# installer above, and a Cargo-built binary cannot `a4 self update`)
-cargo install --path cli
-# or the published crate: cargo install a4-cli
+# CLI from source: this checkout (an unreleased revision). The supported
+# install is the installer above, and a Cargo-built binary cannot
+# `a4 self update`. Needs Rust 1.89 or newer (rustup update), the
+# workspace's rust-version.
+cargo install --locked --path cli
+# or the published release from crates.io: cargo install --locked a4-cli
 
 # Build TypeScript SDKs
 cd typescript/core && npm install && npm run build

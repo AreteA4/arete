@@ -1825,9 +1825,12 @@ pub fn new_idempotency_key() -> String {
 // ---- Tool arguments ----------------------------------------------------------
 
 /// An Action API action an agent may run, when the owner grants it. There
-/// is no swap action: a swap is one `invoke` of the instructions the route
-/// needs, from the Jupiter `/build` call that `sandbox_rules` describes in
-/// `jupiterSwap`, or from the venue's own program.
+/// is no swap action: a swap goes through the venue itself, as a `call` of
+/// a callable swap function (one its program lists in `sandbox_rules`
+/// without `missingInstructions`), or, when none is callable and the rules
+/// allow the venue's instructions, one `invoke` of them. The venue and any
+/// other program beyond the baseline must be enabled in the rules; the
+/// baseline already allows the plumbing (own token accounts, wrapping SOL).
 ///
 /// Both actions, previewed or run, report the wallet's SOL change as
 /// `walletLamportsChange` (signed: negative is SOL leaving the wallet,
