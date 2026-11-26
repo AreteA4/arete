@@ -203,7 +203,6 @@ from the protocol's quote, SDK or API, close to when you send the action.
 
 Tick arrays are not among them. Arete picks the tick arrays of an Orca
 Whirlpool or Raydium CLMM swap at preview and invoke, as it does the bin
-arrays of a Meteora DLMM swap, so leave them out. For a Jupiter-routed
-swap, the `jupiterSwap` guide in `sandbox_rules` gives the `buildUrl` and
-`query` that return every account of the route. See
-[Actions](/sandboxes/actions/#swaps).
+arrays of a Meteora DLMM swap, so leave them out. A swap function the venue
+lists in `sandbox_rules` needs none of this: run it as a `call` and Arete
+fills the accounts. See [Actions](/sandboxes/actions/#swaps).
