@@ -127,6 +127,40 @@ enum Commands {
     Upgrade(selfhost::UpdateArgs),
 
     /// Run the Arete stream MCP server over stdio
+    ///
+    /// Reads newline-delimited JSON-RPC from stdin (one message per line,
+    /// as the MCP stdio transport specifies) and writes one message per
+    /// line to stdout. LSP-style `Content-Length` framing is not supported:
+    /// header lines are not messages and are ignored, and a message is
+    /// only read once its line ends. Nothing but MCP frames is written to
+    /// stdout; logs go to stderr.
+    ///
+    /// The `sandbox_*` tools appear in `tools/list` under two visibility
+    /// conditions. First, an account API key that resolves for the
+    /// configured API (`--api-url` / `ARETE_API_URL`, default
+    /// `https://api.arete.run`), or `ARETE_SANDBOX_ID` set to a sandbox id
+    /// (a UUID; any other value is ignored with a warning on stderr). With
+    /// a profile selected (`--profile`, `ARETE_PROFILE`, or the project's
+    /// agent default) the key is only that profile's a4 login for that API
+    /// and `ARETE_API_KEY` is not read: the generated
+    /// `a4 --profile agent mcp` config uses the `agent` profile's login,
+    /// and a key set only in `ARETE_API_KEY` does not count there.
+    /// `ARETE_API_KEY` applies only without a selected profile, before the
+    /// a4 login for that API. A sandbox chosen earlier with
+    /// `sandbox_select` or `a4 sandbox use` (saved for the project) does
+    /// not list them. Second, their group is `sandboxes`: when
+    /// `GET /api/auth/me` reports a `commandGroups` list, they are listed
+    /// only if it names `sandboxes` (an empty list hides them); only a
+    /// missing list, or a lookup that fails or times out (3 seconds),
+    /// leaves the first condition to decide on its own.
+    ///
+    /// Listing is not access. A call needs the key, which mints the
+    /// sandbox token, and the API mints one only while the sandbox's owner
+    /// grants the account access; the group check affects listing only,
+    /// and the API refuses what the account may not do. With a sandbox id
+    /// alone the tools are listed but every call that needs the API is
+    /// refused (`sandbox-agent-key-required`). Setting an agent up with a
+    /// key and a sandbox: https://docs.arete.run/sandboxes/connect-agent/
     Mcp(commands::mcp::McpArgs),
 
     /// Run a protocol locally against a Surfpool fork and drive it (`a4 dev up`)
@@ -2600,6 +2634,58 @@ mod tests {
     #[test]
     fn clap_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn mcp_help_states_framing_and_sandbox_tool_listing() {
+        let mcp = Cli::command().find_subcommand("mcp").cloned().unwrap();
+        let (_, long) = rendered_help(mcp);
+        // Help wraps to the terminal width: compare on one line.
+        let long = long.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            // Newline-delimited JSON-RPC is the only framing.
+            "newline-delimited JSON-RPC",
+            "one message per line",
+            "`Content-Length` framing is not supported",
+            // Listing conditions: a key for the configured API or a
+            // sandbox id (a UUID; else warned and ignored). A saved choice
+            // lists nothing.
+            "visibility conditions",
+            "sandbox_*",
+            "resolves for the configured API (`--api-url` / `ARETE_API_URL`, default `https://api.arete.run`)",
+            "ARETE_SANDBOX_ID",
+            "a UUID; any other value is ignored with a warning",
+            "`sandbox_select` or `a4 sandbox use` (saved for the project) does not list them",
+            // A selected profile reads only its own login for that API;
+            // the environment key counts only without one. The generated
+            // config selects `agent`.
+            "the key is only that profile's a4 login for that API and `ARETE_API_KEY` is not read",
+            "`a4 --profile agent mcp` config uses the `agent` profile's login",
+            "`ARETE_API_KEY` applies only without a selected profile, before the a4 login for that API",
+            // Their own group rule: a reported list must name `sandboxes`;
+            // an empty list hides, a missing list does not.
+            "listed only if it names `sandboxes` (an empty list hides them)",
+            "only a missing list, or a lookup that fails or times out (3 seconds)",
+            // Listing is not access: a call needs the key and the owner's
+            // grant (the API's check); the group check only lists.
+            "Listing is not access",
+            "the API mints one only while the sandbox's owner grants the account access",
+            "the group check affects listing only",
+            "a sandbox id alone the tools are listed but every call that needs the API is refused (`sandbox-agent-key-required`)",
+            "docs.arete.run/sandboxes/connect-agent",
+        ] {
+            assert!(long.contains(needle), "{needle:?} missing:\n{long}");
+        }
+        // The only mention of Content-Length is the one saying it is not
+        // supported: no other sentence can claim it is accepted.
+        assert_eq!(long.matches("Content-Length").count(), 1, "{long}");
+        // `commandGroups: []` is a known empty set, not an absent one: the
+        // help must not fold the two into "no groups".
+        assert!(!long.contains("no groups"), "{long}");
+        // The sandbox tools' group rule is their own: account tools are
+        // always listed and `install` needs an explicit grant, so the help
+        // must not generalise it to every tool.
+        assert!(!long.to_lowercase().contains("every tool"), "{long}");
     }
 
     fn surface(groups: &[arete_mcp::entitlements::Group]) -> arete_mcp::entitlements::Surface {
