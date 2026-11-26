@@ -2,6 +2,7 @@
 name = "arete-solana-contracts"
 version = "0.3.0"
 edition.workspace = true
+rust-version.workspace = true
 license = "MIT"
 description = "Versioned managed Solana read and discovery contracts"
 repository.workspace = true

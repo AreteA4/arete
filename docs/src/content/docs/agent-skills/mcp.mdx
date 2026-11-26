@@ -412,7 +412,7 @@ returned.
 | `sandbox_list`          |                                                                                  | the granted sandboxes (id, name, wallet, cluster, status, actions) and the one in use          |
 | `sandbox_select`        | `sandbox` (id or name) or `clear: true`                                          | chooses the sandbox calls use from now on, saved for this project                              |
 | `sandbox_status`        |                                                                                  | the wallet, balances, actions this agent may run, which sandbox (`selection`), and `positions` |
-| `sandbox_rules`         |                                                                                  | allowed programs, instructions, `functions` (for `call`), limits, allowlist, `jupiterSwap`     |
+| `sandbox_rules`         |                                                                                  | allowed programs, instructions, `functions` (for `call`), limits, allowlist                    |
 | `sandbox_derive`        | `kind` (`ata`, `pda`), `mint?`, `owner?`, `programId?`, `seeds?`                 | an address: a PDA computed locally, an ATA under the mint's token program                      |
 | `sandbox_find_accounts` | `program`, `type`, `fields` (1 to 4 `{ field: address }`), `anyOrder?`, `limit?` | read-only: a program's accounts of that type holding those addresses, with decoded fields      |
 | `sandbox_preview`       | `action`, `args`                                                                 | a dry run: `pass` and what the wallet would lose, or the refusal                               |
@@ -456,10 +456,8 @@ protocol's own fees (history items don't carry it). `guardPipeline` (such as `ex
 pipeline that checked the action, null or absent on older actions and on
 actions that never reached the guard (a rejected one, for example).
 Previews, `sandbox_rules` and `sandbox_status` carry the API build's
-`commit`, the same one the `version` tool reports. `sandbox_rules` carries a
-`jupiterSwap` guide when the rules allow a Jupiter route; see
-[Swaps](/sandboxes/actions/#swaps). `sandbox_status` points to the holdings
-in `positions`.
+`commit`, the same one the `version` tool reports. `sandbox_status` points
+to the holdings in `positions`.
 
 A passing `sandbox_preview` also lists `newAccounts` and `closedAccounts`
 with their rent (a temporary account the transaction creates and closes is

@@ -8,9 +8,19 @@ primitives a human operator uses through `a4 explore`, `a4 know`, and
 `a4 stream`.
 
 **The server ships inside the `a4` CLI as `a4 mcp`.** It speaks MCP over
-stdio; stdout carries MCP frames only and logs go to stderr. This crate is a
-library (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not
-install it separately.
+stdio: newline-delimited JSON (one message per line), as the MCP stdio
+transport specifies, with LSP-style `Content-Length` framing also accepted
+for clients that use it, detected per message and mirrored in each reply;
+stdout carries MCP frames only and logs go to stderr. Input that is not a
+message is answered with a JSON-RPC parse error, and a `Content-Length`
+header block that cannot be used (so where the message ends is unknown) is
+answered with one and then the stream is closed. Requests awaiting a reply
+are capped; one past the cap is answered with a `Server busy` error
+(`-32000`) in its own framing, and one that repeats the id of a request
+awaiting a reply with a `Duplicate request id` error (`-32600`) rather
+than a place under the cap. This crate is a library
+(`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
+it separately.
 
 > **Removed:** the standalone `a4-mcp` binary no longer exists as of this
 > version, and the `@usearete/mcp` npm package is deprecated. Update any MCP
@@ -802,16 +812,18 @@ plans them. Preview it first:
 {"action":"call","args":{"program":"KLend2g3cP87fffoy8q1mQqGKjrxjC8boSyAYavgmjD","function":"transactions.obligation.deposit","input":{"reserve":"<reserve>","amount":"0.1"}}}
 ```
 
-There is no swap action. A swap is one `invoke` of the instructions that
-make it: a venue's own (for example PumpSwap `buy`/`sell` for a coin that
-has left its Pump.fun bonding curve), or a Jupiter route's. When the rules
-allow a Jupiter route, `sandbox_rules` carries a `jupiterSwap` guide: call
-its `buildUrl` (Jupiter Swap API v2 `/build`) with its `query` (taker and
-payer are the sandbox wallet, `transactionVersion=1`, `maxAccounts=50`,
-`wrapAndUnwrapSol=true`, `dexes` limited to the allowed venues), and send
-the route's instructions named and decoded as `sandbox_rules` lists them,
-with the route's extra accounts in `remainingAccounts`. Every venue in the
-route must still be in the rules. Preview it with `sandbox_preview` first.
+There is no swap action: a swap goes through the venue itself. Prefer a
+`call` of a callable swap function: one the venue's program lists in
+`sandbox_rules` without `missingInstructions` (Arete plans it; a function
+with `missingInstructions` is refused before planning). When no swap
+function is callable and the rules allow the venue's instructions, send one
+`invoke` of them (for example PumpSwap `buy`/`sell` for a coin that has
+left its Pump.fun bonding curve), named and with args and accounts as
+`sandbox_rules` lists them. The venue, and any other program the
+transaction touches beyond the baseline, must be enabled in the rules; the
+baseline (`baseline` in `sandbox_rules`) already allows the swap's
+plumbing: creating your own token accounts and wrapping or unwrapping SOL.
+Preview it with `sandbox_preview` first.
 
 Pass u64 amounts as decimal strings. Every `sandbox_invoke` has an
 idempotency key (yours, or generated); it is returned on success and on
