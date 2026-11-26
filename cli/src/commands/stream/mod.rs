@@ -272,7 +272,7 @@ fn check_tui_args(args: &StreamArgs) -> Result<()> {
     if cfg!(not(feature = "tui")) {
         bail!(
             "TUI mode requires the 'tui' feature.\n\
-             Install with: cargo install a4-cli --features tui"
+             Install with: cargo install --locked a4-cli --features tui"
         );
     }
     Ok(())
