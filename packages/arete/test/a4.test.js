@@ -189,6 +189,8 @@ test("isSelfInstall: only self-install options keep install on the bootstrap pat
     ["install", "--install-dir", "/opt/a4/bin", "--force"],
     ["install", "--install-dir=/opt/a4/bin", "-y"],
     ["install", "--help"],
+    ["install", "--force", "--no-modify-path", "--json", "--yes", "--non-interactive", "--source", "npm"],
+    ["install", "--source=npm"],
   ]) {
     assert.equal(a4.isSelfInstall(argv), true, argv.join(" "));
   }
@@ -257,6 +259,39 @@ test("install: downloads, verifies and hands over to a4 self install --source np
   assert.equal(receipt.source, "npm");
   assert.equal(receipt.binary, path.join(home, "bin", "a4"));
   assert.match(logs[0], new RegExp(`^Installing a4 0\\.0\\.0-test .* from ${base}/a4-cli-v`));
+});
+
+test("install: --source npm from the caller self-installs with exactly one --source", notWindows, async (t) => {
+  const home = tempHome(t);
+  const base = await serveRelease(t);
+  // The fake asset does not implement the global options (--yes,
+  // --non-interactive), so the argv it recorded is what is checked.
+  await a4.launch(["install", "--force", "--no-modify-path", "--json", "--yes", "--non-interactive", "--source", "npm"], {
+    env: installEnv(home, base), homedir: home, publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, stdio: "pipe", log() {},
+  });
+  const args = readArgs(home);
+  assert.equal(args.length, 1, "self install runs directly, without a silent install first");
+  assert.match(args[0], /^self install --checksums \S+ --signature \S+ --force --no-modify-path --json --yes --non-interactive --source npm$/);
+});
+
+test("install: a caller --source manual replaces the launcher's --source npm", notWindows, async (t) => {
+  const base = await serveRelease(t);
+  const options = { publicKey: TEST_PUBLIC_KEY, version: TEST_VERSION, stdio: "pipe", log() {} };
+
+  const home = tempHome(t);
+  const status = await a4.launch(["install", "--source", "manual", "--no-modify-path"], { env: installEnv(home, base), homedir: home, ...options });
+  assert.equal(status, 0);
+  let args = readArgs(home);
+  assert.equal(args.length, 1);
+  assert.match(args[0], /^self install --checksums \S+ --signature \S+ --source manual --no-modify-path$/);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, ".arete", "receipt.json"), "utf8")).source, "manual");
+
+  // `--source=manual` is detected too (the fake asset does not parse this form).
+  const eqHome = tempHome(t);
+  await a4.launch(["install", "--source=manual"], { env: installEnv(eqHome, base), homedir: eqHome, ...options });
+  args = readArgs(eqHome);
+  assert.equal(args.length, 1);
+  assert.match(args[0], /^self install --checksums \S+ --signature \S+ --source=manual$/);
 });
 
 test("install follows redirects", notWindows, async (t) => {
