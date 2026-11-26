@@ -1869,12 +1869,33 @@ impl ApiClient {
     /// One active catalog entry by kind and slug.
     pub fn catalog_entry(&self, kind: &str, slug: &str) -> Result<serde_json::Value> {
         let response = self
-            .with_optional_auth(self.client.get(format!(
-                "{}/api/registry/v1/catalog/entries/{}/{}",
-                self.base_url, kind, slug
-            )))
+            .catalog_entry_request(kind, slug)
             .send_api("catalog entry")?;
         Self::handle_response(response)
+    }
+
+    /// [`Self::catalog_entry`], abandoned after `request_timeout`
+    /// (connecting included) instead of the client default: for a
+    /// best-effort lookup that accompanies another command and must not
+    /// hold it up.
+    pub fn catalog_entry_with_timeout(
+        &self,
+        kind: &str,
+        slug: &str,
+        request_timeout: Duration,
+    ) -> Result<serde_json::Value> {
+        let response = self
+            .catalog_entry_request(kind, slug)
+            .timeout(request_timeout)
+            .send_api("catalog entry")?;
+        Self::handle_response(response)
+    }
+
+    fn catalog_entry_request(&self, kind: &str, slug: &str) -> reqwest::blocking::RequestBuilder {
+        self.with_optional_auth(self.client.get(format!(
+            "{}/api/registry/v1/catalog/entries/{}/{}",
+            self.base_url, kind, slug
+        )))
     }
 
     /// The knowledge document an active catalog entry publishes: for a

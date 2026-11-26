@@ -108,8 +108,12 @@ pub fn protocol(slug: &str, json: bool) -> Result<()> {
     let slug = validate_slug(slug, "protocol slug")?;
     let client = ApiClient::new()?;
     let mut value = client.knowledge_protocol(slug)?;
+    // Best-effort, one request per stack: bounded like the other catalog
+    // knowledge lookups so a slow registry cannot hold the command up.
     annotate_stack_hosting(&mut value, |stack| {
-        client.catalog_entry("stack", stack).ok()
+        client
+            .catalog_entry_with_timeout("stack", stack, arete_mcp::stack_knowledge::LOOKUP_TIMEOUT)
+            .ok()
     });
     emit(&value, json, render_protocol)
 }
@@ -448,7 +452,9 @@ fn coverage_flags(read: bool, build: bool, subscribe: bool) -> String {
 /// ([`catalog_view::is_live_stack`]). Each matched stack gains `slug` and
 /// `live`; a stack no entry names is left as is, so the renderer reports its
 /// status as unknown. A failed lookup (network, 404, signed out) only leaves
-/// that status unknown. Keys the server already sends are kept.
+/// that status unknown, as does a `coverageVia` slug that is not a bare slug
+/// ([`validate_slug`]): it is server-supplied and bound for the catalog URL
+/// path, so it is never fetched. Keys the server already sends are kept.
 fn annotate_stack_hosting(value: &mut Value, mut lookup: impl FnMut(&str) -> Option<Value>) {
     let slugs: BTreeSet<String> = value["coverage"]
         .as_array()
@@ -462,7 +468,8 @@ fn annotate_stack_hosting(value: &mut Value, mut lookup: impl FnMut(&str) -> Opt
                 .flatten()
         })
         .filter(|via| via["kind"].as_str() == Some("stack"))
-        .filter_map(|via| via["slug"].as_str().map(str::to_owned))
+        .filter_map(|via| validate_slug(via["slug"].as_str()?, "coverageVia slug").ok())
+        .map(str::to_owned)
         .collect();
     let mut by_name: BTreeMap<String, (String, bool)> = BTreeMap::new();
     for slug in slugs {
@@ -1209,6 +1216,55 @@ mod tests {
         assert_eq!(stacks[2], json!({ "stack": 7 }));
         assert_eq!(stacks[3], "not-a-stack");
         assert_eq!(value["coverage"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn stack_hosting_skips_invalid_coverage_via_slugs() {
+        // `coverageVia` slugs come from the server and go into the catalog
+        // URL path, so only a bare slug is ever fetched: a path-shaped or
+        // empty one never reaches the lookup, and the stack it was the only
+        // lead for stays unknown, while a valid sibling slug on the same row
+        // still annotates its stack.
+        let mut value = json!({
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"] },
+                { "stack": "TraversalStream", "entities": ["Row"] }
+            ],
+            "coverage": [
+                { "concept": "swap", "coverageVia": [
+                    { "kind": "stack", "slug": "../.." },
+                    { "kind": "stack", "slug": "hosted" },
+                    { "kind": "stack", "slug": "?" }
+                ] },
+                { "concept": "vesting", "coverage_via": [
+                    { "kind": "stack", "slug": "#" },
+                    { "kind": "stack", "slug": "\\" },
+                    { "kind": "stack", "slug": ".." },
+                    { "kind": "stack", "slug": "" }
+                ] }
+            ]
+        });
+        let mut looked_up = Vec::new();
+        annotate_stack_hosting(&mut value, |slug| {
+            looked_up.push(slug.to_owned());
+            // Every slug resolves to a live entry, so an invalid one that
+            // reached the lookup would visibly annotate TraversalStream.
+            let name = if slug == "hosted" {
+                "HostedStream"
+            } else {
+                "TraversalStream"
+            };
+            Some(json!({
+                "kind": "stack", "slug": slug,
+                "knowledge": { "name": name },
+                "delivery": { "kind": "deployed-stack" }
+            }))
+        });
+        assert_eq!(looked_up, ["hosted"]);
+        let stacks = value["stacks"].as_array().unwrap();
+        assert_eq!(stacks[0]["slug"], "hosted");
+        assert_eq!(stacks[0]["live"], true);
+        assert!(stacks[1].get("slug").is_none() && stacks[1].get("live").is_none());
     }
 
     #[test]
