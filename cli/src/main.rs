@@ -11,7 +11,7 @@
 //! npx @usearete/a4 install                          # via npm
 //! ```
 //!
-//! Update with `a4 self update`. Building from source: `cargo install a4-cli`.
+//! Update with `a4 self update`. Building from source: `cargo install a4-cli` (Rust 1.89 or newer).
 //!
 //! ## Commands
 //!

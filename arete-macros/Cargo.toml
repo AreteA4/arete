@@ -2,6 +2,7 @@
 name = "arete-macros"
 version = "0.62.1"
 edition.workspace = true
+rust-version.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
 authors.workspace = true

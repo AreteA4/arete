@@ -24,6 +24,11 @@ exclude = [
 
 [workspace.package]
 edition = "2021"
+# Minimum supported Rust version: the highest rust-version among the
+# published crates' dependencies, verified with
+# `cargo +1.89 check --locked --workspace`. rust-toolchain.toml pins the
+# newer toolchain that CI and release builds use.
+rust-version = "1.89"
 license = "Apache-2.0"
 repository = "https://github.com/AreteA4/arete.git"
 authors = ["Arete Team"]
