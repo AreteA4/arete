@@ -459,7 +459,7 @@ Removes the binary, the receipt, and the PATH lines `self install` added. Leaves
 
 ### a4 mcp
 
-Run the Arete stream MCP server over stdio (registry discovery, knowledge layer, live entity reads). Nothing but MCP frames is written to stdout; logs go to stderr.
+Run the Arete stream MCP server over stdio (registry discovery, knowledge layer, live entity reads). Messages on stdin are newline-delimited JSON (one per line), as the MCP stdio transport specifies; for clients that use LSP-style `Content-Length` framing instead, framed messages are accepted too, detected per message, and each reply uses the framing of its request. Input that is not a message is answered with a JSON-RPC parse error; a `Content-Length` header block that cannot be used (so where the message ends is unknown) is answered with one and then the stream is closed. Requests awaiting a reply are capped; one past the cap is answered with a `Server busy` error (`-32000`) in its own framing, and one that repeats the id of a request awaiting a reply with a `Duplicate request id` error (`-32600`) rather than a place under the cap. Nothing but MCP frames is written to stdout; logs go to stderr.
 
 ```bash
 a4 mcp
