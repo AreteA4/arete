@@ -33,17 +33,20 @@ pub mod signer;
 #[cfg(test)]
 mod signer_vectors;
 pub mod stack_knowledge;
+pub mod stdio_framing;
 mod subscriptions;
 
 pub use server::AreteMcp;
 
 use rmcp::{transport::stdio, ServiceExt};
+use stdio_framing::StdioTransport;
 
 /// Run the Arete MCP server over stdio until the client disconnects.
 ///
 /// Installs a `tracing` subscriber that writes to **stderr** (stdout carries
 /// MCP frames only), then serves [`AreteMcp`] on the process's stdin/stdout.
-/// Must be called inside a Tokio runtime.
+/// Messages may be newline-delimited or `Content-Length` framed; see
+/// [`stdio_framing`]. Must be called inside a Tokio runtime.
 pub async fn serve_stdio() -> anyhow::Result<()> {
     serve_stdio_with(None).await
 }
@@ -75,7 +78,8 @@ pub async fn serve_stdio_with(
         None => AreteMcp::new(),
     }
     .with_surface(&surface);
-    let service = server.serve(stdio()).await?;
+    let (stdin, stdout) = stdio();
+    let service = server.serve(StdioTransport::new(stdin, stdout)).await?;
     service.waiting().await?;
     Ok(())
 }

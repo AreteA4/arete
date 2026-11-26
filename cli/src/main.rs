@@ -127,6 +127,11 @@ enum Commands {
     Upgrade(selfhost::UpdateArgs),
 
     /// Run the Arete stream MCP server over stdio
+    ///
+    /// Reads JSON-RPC messages from stdin either newline-delimited (one
+    /// message per line) or `Content-Length` framed, detected per message,
+    /// and answers each request in the framing it arrived in. Nothing but
+    /// MCP frames is written to stdout; logs go to stderr.
     Mcp(commands::mcp::McpArgs),
 
     /// Run a protocol locally against a Surfpool fork and drive it (`a4 dev up`)

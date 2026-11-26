@@ -8,9 +8,11 @@ primitives a human operator uses through `a4 explore`, `a4 know`, and
 `a4 stream`.
 
 **The server ships inside the `a4` CLI as `a4 mcp`.** It speaks MCP over
-stdio; stdout carries MCP frames only and logs go to stderr. This crate is a
-library (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not
-install it separately.
+stdio, reading newline-delimited JSON (one message per line) or
+`Content-Length` framed messages, detected per message, and answering in the
+framing of the request; stdout carries MCP frames only and logs go to stderr.
+This crate is a library (`arete_mcp::serve_stdio()`) that the `a4` binary
+links; you do not install it separately.
 
 > **Removed:** the standalone `a4-mcp` binary no longer exists as of this
 > version, and the `@usearete/mcp` npm package is deprecated. Update any MCP

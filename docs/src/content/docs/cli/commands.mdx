@@ -459,7 +459,7 @@ Removes the binary, the receipt, and the PATH lines `self install` added. Leaves
 
 ### a4 mcp
 
-Run the Arete stream MCP server over stdio (registry discovery, knowledge layer, live entity reads). Nothing but MCP frames is written to stdout; logs go to stderr.
+Run the Arete stream MCP server over stdio (registry discovery, knowledge layer, live entity reads). Messages on stdin may be newline-delimited JSON (one per line) or `Content-Length` framed; the framing is detected per message and each reply uses the framing of its request. Nothing but MCP frames is written to stdout; logs go to stderr.
 
 ```bash
 a4 mcp
