@@ -2,6 +2,7 @@
 name = "arete-auth"
 version = "0.7.2"
 edition.workspace = true
+rust-version.workspace = true
 license-file = "LICENSE"
 repository.workspace = true
 authors.workspace = true

@@ -3,9 +3,10 @@
 
 // @usearete/a4 launcher. Scriptless bootstrapper for the Arete CLI (`a4`):
 //
-//   npx @usearete/a4 install [--install-dir DIR] [--no-modify-path] [--json]
+//   npx @usearete/a4 install [--install-dir DIR] [--no-modify-path] [--json] [--source SOURCE]
 //     Download the release asset for this package's version, verify sha256 +
-//     minisign signature, then run `<tmp>/a4 self install --source npm ...`.
+//     minisign signature, then run `<tmp>/a4 self install --source npm ...`
+//     (a caller-supplied --source replaces the launcher's `npm`).
 //   npx @usearete/a4 <anything else>
 //     Run the binary recorded in ~/.arete/receipt.json (installing silently
 //     first when there is no receipt) with the given argv. This includes
@@ -280,7 +281,10 @@ async function runInstall(passthrough = [], options = {}) {
   const { quiet = false, env = process.env, stdio = "inherit", log = (m) => process.stderr.write(`${m}\n`) } = options;
   const release = await downloadRelease({ ...options, log });
   try {
-    const args = ["self", "install", "--source", "npm", "--checksums", release.checksums, "--signature", release.signature, ...passthrough];
+    // The caller's --source (`--source manual`, `--source=manual`) replaces the
+    // launcher's default: `a4 self install` rejects the option given twice.
+    const callerSource = passthrough.some((arg) => arg === "--source" || arg.startsWith("--source="));
+    const args = ["self", "install", ...(callerSource ? [] : ["--source", "npm"]), "--checksums", release.checksums, "--signature", release.signature, ...passthrough];
     const result = spawnSync(release.binary, args, {
       stdio: quiet ? ["ignore", "pipe", "inherit"] : stdio,
       encoding: "utf8",
@@ -301,10 +305,11 @@ async function runInstall(passthrough = [], options = {}) {
 // ---------------------------------------------------------------------------
 // Launcher
 
-// Options `a4 self install` accepts from the caller (the launcher passes
-// --source, --checksums and --signature itself).
+// Options `a4 self install` accepts from the caller. `--source` overrides the
+// launcher's default (`npm`); --checksums and --signature are the launcher's
+// own and are not accepted from the caller.
 const SELF_INSTALL_FLAGS = new Set(["--no-modify-path", "--force", "--json", "--verbose", "-y", "--yes", "--non-interactive", "-h", "--help"]);
-const SELF_INSTALL_VALUE_OPTIONS = new Set(["--install-dir", "-c", "--config", "--api-url"]);
+const SELF_INSTALL_VALUE_OPTIONS = new Set(["--install-dir", "--source", "-c", "--config", "--api-url"]);
 
 // `install` installs the CLI itself only when every following argument is a
 // self-install option. Anything else (`install stack ore --ts`,

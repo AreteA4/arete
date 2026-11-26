@@ -49,10 +49,13 @@ a4 explore --json   # live data, no account needed
 
 ### Building from source
 
-Only for unreleased builds. A Cargo-built binary is not managed by the installer: `a4 self update` refuses it and tells you to run `cargo install a4-cli --force` instead.
+The prebuilt binary above is the supported install path. Building needs Rust 1.89 or newer (the crate's `rust-version`; run `rustup update`). A Cargo-built binary is not managed by the installer: `a4 self update` refuses it and tells you to run `cargo install --locked a4-cli --force` instead.
 
 ```bash
-cargo install a4-cli
+# the published release, built from crates.io
+cargo install --locked a4-cli
+# an unreleased revision, built from a checkout of the repository
+cargo install --locked --path cli
 ```
 
 ---
@@ -441,7 +444,7 @@ a4 self update --check --json     # {"current","latest","updateAvailable"}
 a4 self update --dry-run          # download and verify, print the plan, change nothing
 ```
 
-The download is verified (the minisign signature, for the release's tag, and the SHA-256; mandatory here) before the binary at the receipt path is swapped in place and the receipt updated. Requires the install receipt: a Cargo-built `a4` gets `a4 was not installed by the Arete installer` and must be rebuilt with `cargo install a4-cli --force`.
+The download is verified (the minisign signature, for the release's tag, and the SHA-256; mandatory here) before the binary at the receipt path is swapped in place and the receipt updated. Requires the install receipt: a Cargo-built `a4` gets `a4 was not installed by the Arete installer` and must be rebuilt with `cargo install --locked a4-cli --force`.
 
 Once a day, when stderr is a terminal, `a4` prints `a4 0.14.0 is available (you have 0.13.0). Run: a4 self update` after a command. Set `A4_NO_UPDATE_CHECK=1` to disable this notice; it is never shown under `CI`, with `--json`, or for `self`, `upgrade`, `mcp`, and `stream`. There is no background auto-update.
 
@@ -459,7 +462,7 @@ Removes the binary, the receipt, and the PATH lines `self install` added. Leaves
 
 ### a4 mcp
 
-Run the Arete stream MCP server over stdio (registry discovery, knowledge layer, live entity reads). Nothing but MCP frames is written to stdout; logs go to stderr.
+Run the Arete stream MCP server over stdio (registry discovery, knowledge layer, live entity reads). Messages on stdin are newline-delimited JSON (one per line), as the MCP stdio transport specifies; for clients that use LSP-style `Content-Length` framing instead, framed messages are accepted too, detected per message, and each reply uses the framing of its request. Input that is not a message is answered with a JSON-RPC parse error; a `Content-Length` header block that cannot be used (so where the message ends is unknown) is answered with one and then the stream is closed. Requests awaiting a reply are capped; one past the cap is answered with a `Server busy` error (`-32000`) in its own framing, and one that repeats the id of a request awaiting a reply with a `Duplicate request id` error (`-32600`) rather than a place under the cap. Nothing but MCP frames is written to stdout; logs go to stderr.
 
 ```bash
 a4 mcp
@@ -3068,7 +3071,7 @@ a4 telemetry disable
 | `verified-email-required`                     | A human account must verify its email before creating API keys: [app.arete.run/verify-email](https://app.arete.run/verify-email)   |
 | `Registry signature: ...`                     | A release is unsigned or its signature does not verify; see [Signed releases](#signed-releases)                                    |
 | `a4: command not found`                       | Run `export PATH="$HOME/.local/bin:$PATH"` or use the `A4_BIN=` path the installer printed; `a4 doctor` reports this as `cli.path` |
-| `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh`; Cargo builds must use `cargo install a4-cli --force`               |
+| `a4 was not installed by the Arete installer` | Reinstall with `curl -fsSL https://arete.run/install.sh \| sh`; Cargo builds must use `cargo install --locked a4-cli --force`      |
 | `Stack not found`                             | Check `a4 stack list` for available stacks                                                                                         |
 | `Stack file not found`                        | Run `cargo build` to generate stack spec                                                                                           |
 | `Build failed`                                | Try again                                                                                                                          |

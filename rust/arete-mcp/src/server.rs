@@ -2076,7 +2076,7 @@ impl AreteMcp {
     }
 
     #[tool(
-        description = "Run one action from the sandbox wallet. Name the `action` and pass its `args`; Arete builds the transaction, checks it like `sandbox_preview`, signs, sends and waits for confirmation. Actions (only those the owner granted; `sandbox_status` lists them): `call` — a function `sandbox_rules` lists under the program's `functions`, `args: { program, function, input, computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` (e.g. `function: \"transactions.obligation.deposit\", input: { reserve, amount: { ui: \"0.1\" } }`; the fields are the function's `input` in `sandbox_rules`); Arete plans the whole instruction sequence (account setup, refreshes, wrapping SOL) and fills the wallet and accounts, so prefer it to hand-assembling an `invoke` whenever the program lists one; granted with `invoke`; `invoke` — named program instructions, `args: { instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat?: \"v1\" | \"v0\" }`, 1 to 32 that fit one transaction, instructions named exactly as `sandbox_rules` lists them, the wallet the only signer, accounts with a `fill` optional. `program` is the base58 program id or a name `sandbox_rules` knows the program by: its IDL name (`kamino_lending`, `pump_amm`) or display name (`Kamino Lend`), ignoring case, spaces, `-` and `_`; an unknown or ambiguous name is refused with `sandbox-intent-invalid` and `candidates` (`{ programId, names }`); `withdraw` — SOL to the owner's withdraw address (the only destination), `args: { lamports, transactionFormat? }` (its `outflowLamports` is `lamports` plus the network fee). There is no swap action: a swap is one `invoke`. When the rules allow a Jupiter route, `sandbox_rules` carries a `jupiterSwap` guide: call its `buildUrl` (Jupiter Swap API v2 `/build`) with its `query` (taker and payer are the sandbox wallet, `dexes` limited to the allowed venues) and send the route's instructions as one `invoke`, named and with args and accounts as `sandbox_rules` lists them; the route's extra accounts go in `remainingAccounts`. Every venue in the route must be in the rules. Or use the venue's own instructions (e.g. PumpSwap (pump-amm) `buy`/`sell` for a Pump.fun coin that has left its bonding curve). Preview it first. Pass u64 amounts as decimal strings. Returns the action id, status (`landed`, `failed`, `sent`), signature, `guardPipeline` and the wallet's change as `sandbox_preview` reports it: SOL: `walletLamportsChange` is the signed change (negative: SOL left the wallet; positive: the wallet received SOL, e.g. selling a token for SOL or withdrawing SOL from a lending protocol; it counts wrapped SOL as SOL, so it matches `solDelta` in `sandbox_history` unless the action wraps or unwraps SOL, which can change the figure and even the sign) and `outflowLamports` everything that left it (0 when the wallet gained); both already include the network fee, and `networkFeeLamports` is that fee alone, not extra (null until the landed transaction is read); `tokenOutflow` (raw amount lost per mint) and `feeLamports` (the protocol's own fees, when given). The older `guardedWalletDeltaLamports` counts SOL lost as positive, so it has the opposite sign to `walletLamportsChange` (a withdraw that brings 44050078 lamports in reads `walletLamportsChange: 44050078`, `outflowLamports: 0`, `guardedWalletDeltaLamports: -44050078`). Transactions are Solana v1 by default (up to 4096 bytes and 64 accounts); `transactionFormat: \"v0\"` builds the 1232-byte v0 format. A refusal names the `code` and the `rule` that refused. Each call has an idempotency key (yours, or generated), returned on success and on error. A key never runs twice: retrying the same request with the same key is safe and returns the original result, success or refusal, with `replayed: true` (an action still in flight returns its current status). A replayed refusal also carries the record's `rejectCode`, which can differ: go by the replayed `code` and `retryable`, so a replayed outage (`retryable: true`) is not a permanent refusal; retry it with a new key, since the same key replays it. A different request under a used key is refused with the existing action's id. Older servers answer every repeat with `sandbox-duplicate-action`: then look the action up with `sandbox_action`. Never retry a timed-out call with a new key."
+        description = "Run one action from the sandbox wallet. Name the `action` and pass its `args`; Arete builds the transaction, checks it like `sandbox_preview`, signs, sends and waits for confirmation. Actions (only those the owner granted; `sandbox_status` lists them): `call` — a function `sandbox_rules` lists under the program's `functions`, `args: { program, function, input, computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat? }` (e.g. `function: \"transactions.obligation.deposit\", input: { reserve, amount: { ui: \"0.1\" } }`; the fields are the function's `input` in `sandbox_rules`); Arete plans the whole instruction sequence (account setup, refreshes, wrapping SOL) and fills the wallet and accounts, so prefer it to hand-assembling an `invoke` whenever the program lists one; granted with `invoke`; `invoke` — named program instructions, `args: { instructions: [{ program, instruction, args?, accounts?, remainingAccounts?: [{ address, writable? }] }], computeUnitLimit?, computeUnitPriceMicroLamports?, transactionFormat?: \"v1\" | \"v0\" }`, 1 to 32 that fit one transaction, instructions named exactly as `sandbox_rules` lists them, the wallet the only signer, accounts with a `fill` optional. `program` is the base58 program id or a name `sandbox_rules` knows the program by: its IDL name (`kamino_lending`, `pump_amm`) or display name (`Kamino Lend`), ignoring case, spaces, `-` and `_`; an unknown or ambiguous name is refused with `sandbox-intent-invalid` and `candidates` (`{ programId, names }`); `withdraw` — SOL to the owner's withdraw address (the only destination), `args: { lamports, transactionFormat? }` (its `outflowLamports` is `lamports` plus the network fee). There is no swap action: swap through the venue itself. Prefer a `call` of a callable swap function: one the venue's program lists in `sandbox_rules` without `missingInstructions` (Arete plans it; a function with `missingInstructions` is refused before planning). When no swap function is callable and the rules allow the venue's instructions, send one `invoke` of them (e.g. PumpSwap (pump-amm) `buy`/`sell` for a Pump.fun coin that has left its bonding curve), named and with args and accounts as `sandbox_rules` lists them. The venue, and any other program the transaction touches beyond the baseline, must be enabled in the rules; the baseline (`baseline` in `sandbox_rules`) already allows the swap's plumbing: creating your own token accounts and wrapping or unwrapping SOL. Preview it first. Pass u64 amounts as decimal strings. Returns the action id, status (`landed`, `failed`, `sent`), signature, `guardPipeline` and the wallet's change as `sandbox_preview` reports it: SOL: `walletLamportsChange` is the signed change (negative: SOL left the wallet; positive: the wallet received SOL, e.g. selling a token for SOL or withdrawing SOL from a lending protocol; it counts wrapped SOL as SOL, so it matches `solDelta` in `sandbox_history` unless the action wraps or unwraps SOL, which can change the figure and even the sign) and `outflowLamports` everything that left it (0 when the wallet gained); both already include the network fee, and `networkFeeLamports` is that fee alone, not extra (null until the landed transaction is read); `tokenOutflow` (raw amount lost per mint) and `feeLamports` (the protocol's own fees, when given). The older `guardedWalletDeltaLamports` counts SOL lost as positive, so it has the opposite sign to `walletLamportsChange` (a withdraw that brings 44050078 lamports in reads `walletLamportsChange: 44050078`, `outflowLamports: 0`, `guardedWalletDeltaLamports: -44050078`). Transactions are Solana v1 by default (up to 4096 bytes and 64 accounts); `transactionFormat: \"v0\"` builds the 1232-byte v0 format. A refusal names the `code` and the `rule` that refused. Each call has an idempotency key (yours, or generated), returned on success and on error. A key never runs twice: retrying the same request with the same key is safe and returns the original result, success or refusal, with `replayed: true` (an action still in flight returns its current status). A replayed refusal also carries the record's `rejectCode`, which can differ: go by the replayed `code` and `retryable`, so a replayed outage (`retryable: true`) is not a permanent refusal; retry it with a new key, since the same key replays it. A different request under a used key is refused with the existing action's id. Older servers answer every repeat with `sandbox-duplicate-action`: then look the action up with `sandbox_action`. Never retry a timed-out call with a new key."
     )]
     async fn sandbox_invoke(
         &self,
@@ -7951,6 +7951,59 @@ mod describe_sdk_tests {
         .tool_names();
         assert!(!without_key.iter().any(|name| name.starts_with("sandbox_")));
         assert!(without_key.iter().any(|name| name == "ping"));
+    }
+
+    /// Swaps go through the venue: a `call` of a function the program lists
+    /// without `missingInstructions`, else an `invoke` the rules allow, with
+    /// the baseline's plumbing already allowed. The description no longer
+    /// sends agents to build a Jupiter route.
+    #[test]
+    fn sandbox_invoke_describes_swaps_through_the_venue_not_a_jupiter_route() {
+        let tools = AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(None, Some("a4_ak_agent".into()), None),
+        )
+        .tools();
+        let description = tools
+            .iter()
+            .find(|tool| tool.name == "sandbox_invoke")
+            .and_then(|tool| tool.description.as_deref())
+            .expect("sandbox_invoke is described");
+        for stale in ["jupiterSwap", "/build", "buildUrl", "Jupiter"] {
+            assert!(!description.contains(stale), "{stale}: {description}");
+        }
+        assert!(
+            description.contains("There is no swap action"),
+            "{description}"
+        );
+        assert!(description.contains("Prefer a `call`"), "{description}");
+        assert!(
+            description.contains("prefer it to hand-assembling an `invoke`"),
+            "{description}"
+        );
+        assert!(
+            description.contains("PumpSwap (pump-amm) `buy`/`sell`"),
+            "{description}"
+        );
+        // The fallback turns on a callable function, not a listed one.
+        assert!(
+            description.contains("without `missingInstructions`"),
+            "{description}"
+        );
+        assert!(
+            description.contains("When no swap function is callable"),
+            "{description}"
+        );
+        assert!(!description.contains("lists none"), "{description}");
+        // The baseline's plumbing needs no rule of the owner's.
+        assert!(
+            description.contains("the baseline (`baseline` in `sandbox_rules`) already allows"),
+            "{description}"
+        );
+        assert!(
+            !description.contains("Every program the transaction touches must be in the rules"),
+            "{description}"
+        );
     }
 
     #[tokio::test]

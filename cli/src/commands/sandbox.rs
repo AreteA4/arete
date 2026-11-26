@@ -1,7 +1,7 @@
 //! `a4 sandbox`: list the sandboxes the account has been granted and choose
 //! one, read a sandbox wallet's status (address, balances, granted actions),
 //! history, holdings and rules, list the programs it can read, find a
-//! program's accounts by the addresses they hold, and check a Rules v3
+//! program's accounts by the addresses they hold, and validate a Rules v3
 //! document before its owner signs it.
 //!
 //! The reads go to the Arete API's sandbox routes with a short-lived token
@@ -51,11 +51,11 @@ pub enum SandboxCommands {
     History(HistoryArgs),
     /// What the sandbox wallet holds now: SOL, tokens and program positions
     Holdings(HoldingsArgs),
-    /// The sandbox's rules: show them, or check a Rules v3 file
+    /// The sandbox's rules: show them, or validate a Rules v3 file
     ///
     /// Rules are built and signed in the dashboard (Sandboxes → Rules,
     /// https://app.arete.run/dashboard/sandboxes); the CLI only shows and
-    /// checks them.
+    /// validates them.
     #[command(subcommand)]
     Rules(RulesCommands),
     /// The programs the sandbox can read: their accounts with `a4 program
@@ -349,11 +349,12 @@ impl AccountsArgs {
 pub enum RulesCommands {
     /// The rules the sandbox runs under, as this agent sees them
     Show(SandboxTarget),
-    /// Check a Rules v3 JSON file (`-` for stdin) without sending it anywhere
+    /// Validate a Rules v3 JSON file (`-` for stdin) without sending it anywhere
     ///
     /// Rules are built and signed in the dashboard (Sandboxes → Rules,
     /// https://app.arete.run/dashboard/sandboxes); the CLI only shows and
-    /// checks them. Only version 3 is supported.
+    /// validates them. Only version 3 is supported.
+    #[command(alias = "check")]
     Validate {
         /// The rules file, or `-` for stdin
         file: PathBuf,
@@ -2689,20 +2690,24 @@ mod tests {
         assert_eq!(cli_terms("sandbox_select."), "`a4 sandbox use`.");
 
         // Every hint the MCP server gives an action refusal is in CLI terms.
-        for code in [
-            "sandbox-action-not-granted",
-            "sandbox-intent-invalid",
-            "sandbox-function-input-invalid",
-            "sandbox-guard-insufficient-funds",
-            "sandbox-duplicate-action",
-            "sandbox-api-timeout",
-            "sandbox-response-too-large",
-            "sandbox-program-not-allowlisted",
+        for (code, error) in [
+            ("sandbox-action-not-granted", "refused"),
+            ("sandbox-intent-invalid", "refused"),
+            ("sandbox-function-input-invalid", "refused"),
+            ("sandbox-guard-insufficient-funds", "refused"),
+            ("sandbox-duplicate-action", "refused"),
+            ("sandbox-api-timeout", "refused"),
+            ("sandbox-response-too-large", "refused"),
+            ("sandbox-program-not-allowlisted", "refused"),
+            (
+                "sandbox-function-failed",
+                "Kamino obligation 7xKX was not found",
+            ),
         ] {
             for kind in [CallKind::Preview, CallKind::Action] {
                 let refusal = SandboxRefusal {
                     status: 403,
-                    body: json!({ "code": code, "error": "refused" }),
+                    body: json!({ "code": code, "error": error }),
                     kind,
                 };
                 let shown = shown_refusal(&refusal);
@@ -2713,6 +2718,27 @@ mod tests {
                 mcp["hint"] = shown["hint"].clone();
                 assert_eq!(shown, mcp);
             }
+        }
+        // The deposit-first hint tells an action to rerun under a new key,
+        // as the flag; a preview names no key.
+        for kind in [CallKind::Preview, CallKind::Action] {
+            let refusal = SandboxRefusal {
+                status: 403,
+                body: json!({
+                    "code": "sandbox-function-failed",
+                    "error": "Kamino obligation 7xKX was not found",
+                }),
+                kind,
+            };
+            let shown = shown_refusal(&refusal);
+            let hint = shown["hint"].as_str().unwrap();
+            assert!(hint.contains("`a4 sandbox rules show`"), "{kind:?}: {hint}");
+            assert!(!hint.contains("idempotencyKey"), "{kind:?}: {hint}");
+            assert_eq!(
+                hint.contains("a new --idempotency-key"),
+                kind == CallKind::Action,
+                "{kind:?}: {hint}"
+            );
         }
     }
 
