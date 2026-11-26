@@ -3908,10 +3908,17 @@ impl AreteMcp {
                           programs with roles (core/periphery/deprecated), related \
                           protocols (composes-with, wraps, graduates-to, ...), the stacks \
                           covering its entities, and per-concept coverage \
-                          (read/build/subscribe). A stack streams now only where its \
-                          `coverageVia` entry has `subscribe: true`; otherwise it is \
-                          definition-only (install its SDK to build and read, or deploy \
-                          it to stream).\n\n\
+                          (read/build/subscribe).\n\n\
+                          Stack hosting is read from the coverage, not from `stacks[]` \
+                          (which names each stack and lists its entities): group the \
+                          `kind: \"stack\"` entries of every `coverage[].coverageVia` row \
+                          by `slug`. A stack is live (a hosted stream exists now) if any \
+                          entry for that slug has `subscribe: true`; it is definition-only \
+                          (install its SDK to build and read, or deploy it to stream) if \
+                          every entry for that slug has `subscribe: false`; a stack with \
+                          no such entry has unknown hosting (do not assume it streams). \
+                          Judge the whole group, never one row: a live stack can be \
+                          `subscribe: false` for one concept and `true` for another.\n\n\
                           Use after search_knowledge to decide how to integrate a \
                           protocol; follow `programs[].slug` into get_program_knowledge \
                           for instruction-level detail.\n\n\
@@ -6790,6 +6797,37 @@ mod ergonomics_tests {
             .contains("raise `limit` above 1"));
         let full = search_shape(None, Some(true));
         assert_eq!(knowledge_search_body(body.clone(), &full, 10), body);
+    }
+
+    #[test]
+    fn get_protocol_tells_an_agent_to_judge_stack_hosting_by_slug_across_rows() {
+        // The raw payload lists a stack once per concept it covers, each
+        // entry with its own `subscribe`, so the served description must
+        // say to group the entries by slug rather than read any one row.
+        let tools = AreteMcp::new().tools();
+        let description = tools
+            .iter()
+            .find(|tool| tool.name == "get_protocol")
+            .and_then(|tool| tool.description.clone())
+            .expect("get_protocol is listed with a description");
+        assert!(
+            description.contains(
+                "group the `kind: \"stack\"` entries of every `coverage[].coverageVia` row by `slug`"
+            ),
+            "{description}"
+        );
+        assert!(
+            description.contains("if any entry for that slug has `subscribe: true`"),
+            "{description}"
+        );
+        assert!(
+            description.contains("no such entry has unknown hosting"),
+            "{description}"
+        );
+        assert!(
+            !description.contains("only where its `coverageVia` entry has `subscribe: true`"),
+            "{description}"
+        );
     }
 
     #[test]

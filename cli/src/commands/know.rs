@@ -1163,6 +1163,82 @@ mod tests {
     }
 
     #[test]
+    fn stack_hosting_skips_coverage_via_of_unexpected_shape() {
+        // `coverageVia` may be null or malformed on some rows; only
+        // well-formed stack entries are looked up, nothing panics, and a
+        // well-formed sibling row still annotates its stack.
+        let mut value = json!({
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"] },
+                { "stack": "OddStream", "entities": ["Row"] },
+                { "stack": 7 },
+                "not-a-stack"
+            ],
+            "coverage": [
+                { "concept": "swap", "coverageVia": null },
+                { "concept": "vesting", "coverageVia": "odd" },
+                { "concept": "mint", "coverageVia": { "kind": "stack", "slug": "odd" } },
+                { "concept": "burn", "coverageVia": [
+                    null, 7, "odd", [], {},
+                    { "kind": "stack" },
+                    { "slug": "odd" },
+                    { "kind": "stack", "slug": 7 },
+                    { "kind": "program", "slug": "odd" }
+                ] },
+                { "concept": "close", "coverageVia": [{ "kind": "stack", "slug": "hosted" }] },
+                "not-a-row",
+                null
+            ]
+        });
+        let mut looked_up = Vec::new();
+        annotate_stack_hosting(&mut value, |slug| {
+            looked_up.push(slug.to_owned());
+            (slug == "hosted").then(|| {
+                json!({
+                    "kind": "stack", "slug": "hosted",
+                    "knowledge": { "name": "HostedStream" },
+                    "delivery": { "kind": "deployed-stack" }
+                })
+            })
+        });
+        assert_eq!(looked_up, ["hosted"]);
+        let stacks = value["stacks"].as_array().unwrap();
+        assert_eq!(stacks[0]["slug"], "hosted");
+        assert_eq!(stacks[0]["live"], true);
+        assert!(stacks[1].get("slug").is_none() && stacks[1].get("live").is_none());
+        assert_eq!(stacks[2], json!({ "stack": 7 }));
+        assert_eq!(stacks[3], "not-a-stack");
+        assert_eq!(value["coverage"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn protocol_rendering_survives_a_null_coverage_via() {
+        // A `coverageVia` the renderer does not model must not blank the
+        // whole protocol through the lenient parse.
+        colored::control::set_override(false);
+        let text = render_protocol(&json!({
+            "slug": "p",
+            "name": "P",
+            "programs": [{ "slug": "prog", "programId": "Prog111", "role": "core" }],
+            "stacks": [{ "stack": "MysteryStream", "entities": ["Row"] }],
+            "coverage": [
+                { "concept": "swap", "read": true, "build": true, "subscribe": false, "coverageVia": null },
+                { "concept": "vesting", "read": true, "coverageVia": "odd" }
+            ]
+        }));
+        assert!(text.contains("Protocol: P (p)"), "{text}");
+        assert!(text.contains("  prog  Prog111  [core]"), "{text}");
+        assert!(
+            text.contains(
+                "MysteryStream  entities: Row  [hosting status unknown: a4 explore catalog]"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("swap: read, build"), "{text}");
+        assert!(text.contains("vesting: read"), "{text}");
+    }
+
+    #[test]
     fn protocol_rendering_accepts_camel_case_program_ids() {
         // §12 writes `program_id`; the authored YAML uses `programId`. Both
         // must render until the server pins one.
