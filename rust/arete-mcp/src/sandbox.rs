@@ -496,7 +496,7 @@ fn hint_for(
             "This Arete API cannot list the sandboxes granted to this agent. Pass `sandbox` with the sandbox id, or set ARETE_SANDBOX_ID to it."
         }
         "sandbox-agent-key-required" => {
-            "A sandbox token is minted with the agent account's secret API key: set ARETE_API_KEY to it (or log in as the agent)."
+            "A sandbox token is minted with the agent account's secret API key: log in as the agent (`a4 auth login --profile agent --key <a4_ak_...>`). ARETE_API_KEY counts only when no profile is selected, so not under the generated `a4 --profile agent mcp` config."
         }
         "sandbox-session-invalid" | "sandbox-session-revoked" | "sandbox-session-expired" => {
             "The sandbox token no longer works and could not be renewed. Ask the owner whether this agent's access was revoked."
@@ -986,7 +986,7 @@ impl SandboxClient {
         self.api_key.as_deref().ok_or_else(|| {
             SandboxRefusal::local(
                 "sandbox-agent-key-required",
-                "No API key: set ARETE_API_KEY to the agent account's secret key (or log in as the agent) to use a sandbox",
+                "No API key: log in as the agent (`a4 auth login --profile agent --key <a4_ak_...>`) to use a sandbox. ARETE_API_KEY counts only when no profile is selected, so not under the generated `a4 --profile agent mcp` config.",
             )
         })
     }
@@ -3017,7 +3017,16 @@ pub(crate) mod tests {
         )]);
         let shown = agent(&base).list().await.unwrap_err().to_json();
         assert_eq!(shown["code"], "sandbox-agent-key-required");
-        assert!(shown["hint"].as_str().unwrap().contains("ARETE_API_KEY"));
+        // Followed literally under the generated `a4 --profile agent mcp`
+        // config, "set ARETE_API_KEY" does nothing: the hint leads with the
+        // login and qualifies the environment key.
+        let hint = shown["hint"].as_str().unwrap();
+        assert!(hint.contains("a4 auth login --profile agent"), "{hint}");
+        assert!(
+            hint.contains("ARETE_API_KEY counts only when no profile is selected"),
+            "{hint}"
+        );
+        assert!(!hint.contains("set ARETE_API_KEY"), "{hint}");
 
         let (base, _) = stub(vec![("GET", GRANTS_PATH, 401, Value::Null)]);
         let shown = agent(&base).list().await.unwrap_err().to_json();
