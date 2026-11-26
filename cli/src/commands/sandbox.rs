@@ -2689,20 +2689,24 @@ mod tests {
         assert_eq!(cli_terms("sandbox_select."), "`a4 sandbox use`.");
 
         // Every hint the MCP server gives an action refusal is in CLI terms.
-        for code in [
-            "sandbox-action-not-granted",
-            "sandbox-intent-invalid",
-            "sandbox-function-input-invalid",
-            "sandbox-guard-insufficient-funds",
-            "sandbox-duplicate-action",
-            "sandbox-api-timeout",
-            "sandbox-response-too-large",
-            "sandbox-program-not-allowlisted",
+        for (code, error) in [
+            ("sandbox-action-not-granted", "refused"),
+            ("sandbox-intent-invalid", "refused"),
+            ("sandbox-function-input-invalid", "refused"),
+            ("sandbox-guard-insufficient-funds", "refused"),
+            ("sandbox-duplicate-action", "refused"),
+            ("sandbox-api-timeout", "refused"),
+            ("sandbox-response-too-large", "refused"),
+            ("sandbox-program-not-allowlisted", "refused"),
+            (
+                "sandbox-function-failed",
+                "Kamino obligation 7xKX was not found",
+            ),
         ] {
             for kind in [CallKind::Preview, CallKind::Action] {
                 let refusal = SandboxRefusal {
                     status: 403,
-                    body: json!({ "code": code, "error": "refused" }),
+                    body: json!({ "code": code, "error": error }),
                     kind,
                 };
                 let shown = shown_refusal(&refusal);

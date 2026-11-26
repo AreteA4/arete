@@ -290,10 +290,39 @@ fn generic_hint(retryable: bool, kind: CallKind) -> &'static str {
         }
         (true, CallKind::Action) => LOOK_UP_THE_ACTION,
         (false, CallKind::Action) => {
-            "Refused before anything was signed: the same call is refused again. Fix it and run it with a new idempotencyKey."
+            "Refused before anything was signed, and the same call would be refused the same way: change the request, then run it with a new idempotencyKey."
         }
-        (false, _) => "The same call is refused again: fix it before retrying.",
+        (false, _) => {
+            "This call was refused, and the same call would be refused the same way: change the request before sending it."
+        }
     }
+}
+
+/// The hint for a `call` a lending program refused because the wallet has
+/// no obligation (none opened yet, or a full withdraw closed it).
+const MISSING_OBLIGATION_HINT: &str = "The wallet has no open obligation in this lending program (none yet, or a full withdraw closed it), so the same call fails the same way. Deposit first with the program's deposit function (sandbox_rules lists it), which opens one, then run this call.";
+
+/// Whether a `sandbox-function-failed` refusal says the wallet's lending
+/// obligation does not exist: its text names an obligation as not found.
+fn missing_obligation(details: &Map<String, Value>) -> bool {
+    let text = refusal_text(details).to_ascii_lowercase();
+    text.contains("obligation") && text.contains("not found")
+}
+
+/// What a refusal says: its `error` (or `message`) and, for a `call`, the
+/// `reason` of the stage that refused it (the last of `stages`).
+fn refusal_text(details: &Map<String, Value>) -> String {
+    let failed_stage = details
+        .get("stages")
+        .and_then(Value::as_array)
+        .and_then(|stages| stages.last())
+        .and_then(|stage| stage.get("reason"));
+    [details.get("error"), details.get("message"), failed_stage]
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// What an agent can do about a refusal.
@@ -305,6 +334,9 @@ fn hint_for(
 ) -> Option<String> {
     if code == "sandbox-function-not-allowlisted" {
         return Some(function_not_allowlisted(details));
+    }
+    if code == "sandbox-function-failed" && missing_obligation(details) {
+        return Some(MISSING_OBLIGATION_HINT.to_string());
     }
     if transport_failure(code) {
         return Some(generic_hint(true, kind).to_string());
@@ -3898,6 +3930,116 @@ pub(crate) mod tests {
             .as_str()
             .unwrap()
             .contains("retry the same call"));
+    }
+
+    /// A refusal that will not pass is often the first attempt (a plan
+    /// that fails), so its hint never implies an earlier one: it says the
+    /// same call gets the same answer and what to change.
+    #[test]
+    fn final_refusals_are_hinted_right_on_a_first_failure() {
+        for kind in [CallKind::Read, CallKind::Preview, CallKind::Action] {
+            let hint = SandboxRefusal {
+                status: 403,
+                body: json!({ "code": "sandbox-plan-pool-no-liquidity", "retryable": false }),
+                kind,
+            }
+            .to_json()["hint"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            assert_eq!(hint, generic_hint(false, kind), "{kind:?}");
+            let lower = hint.to_ascii_lowercase();
+            for implied in ["again", "already", "retried", "retrying"] {
+                assert!(!lower.contains(implied), "{kind:?}: {hint}");
+            }
+            assert!(hint.contains("change the request"), "{kind:?}: {hint}");
+            assert!(hint.contains("the same call"), "{kind:?}: {hint}");
+            assert_eq!(
+                hint.contains("idempotencyKey"),
+                kind == CallKind::Action,
+                "{kind:?}: {hint}"
+            );
+        }
+    }
+
+    /// A `call` the lending program refused at plan time because the
+    /// wallet has no obligation says to deposit first, whichever field
+    /// carries the message; any other function failure keeps the generic
+    /// hint.
+    #[test]
+    fn a_call_with_no_obligation_is_told_to_deposit_first() {
+        let shown = |kind, body: Value| {
+            SandboxRefusal {
+                status: 403,
+                body,
+                kind,
+            }
+            .to_json()
+        };
+        let hint = |value: &Value| value["hint"].as_str().unwrap().to_string();
+        let missing = [
+            json!({
+                "code": "sandbox-function-failed",
+                "error": "Kamino obligation 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU was not found",
+                "retryable": false,
+                "failedStage": "plan",
+            }),
+            json!({
+                "code": "sandbox-function-failed",
+                "message": "Save obligation 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU not found",
+                "retryable": false,
+            }),
+            json!({
+                "code": "sandbox-function-failed",
+                "error": "The function failed to plan",
+                "retryable": false,
+                "failedStage": "plan",
+                "stages": [
+                    { "name": "request" },
+                    { "name": "plan", "code": "sandbox-function-failed", "reason": "Obligation 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU Not Found" },
+                ],
+            }),
+        ];
+        for body in missing {
+            for kind in [CallKind::Preview, CallKind::Action] {
+                let refusal = shown(kind, body.clone());
+                let hint = hint(&refusal);
+                assert!(hint.contains("no open obligation"), "{kind:?}: {hint}");
+                assert!(hint.contains("Deposit first"), "{kind:?}: {hint}");
+                assert!(hint.contains("sandbox_rules"), "{kind:?}: {hint}");
+                assert_ne!(hint, generic_hint(false, kind), "{kind:?}");
+                assert_eq!(refusal["retryable"], false);
+            }
+        }
+
+        // Another function failure, obligation or not, is not about a
+        // missing one.
+        for error in [
+            "Reserve 9abc is stale: refresh it first",
+            "Obligation 7xKX has an unhealthy loan-to-value",
+            "Pool not found",
+        ] {
+            let refusal = shown(
+                CallKind::Action,
+                json!({ "code": "sandbox-function-failed", "error": error, "retryable": false }),
+            );
+            assert_eq!(
+                hint(&refusal),
+                generic_hint(false, CallKind::Action),
+                "{error}"
+            );
+        }
+        // With a hint of its own from the API, that one stands.
+        let api = shown(
+            CallKind::Preview,
+            json!({
+                "code": "sandbox-function-failed",
+                "error": "Reserve 9abc is stale",
+                "retryable": false,
+                "hint": "Refresh the reserve first.",
+            }),
+        );
+        assert_eq!(hint(&api), "Refresh the reserve first.");
     }
 
     #[tokio::test]
