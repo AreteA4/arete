@@ -45,8 +45,9 @@ use stdio_framing::StdioTransport;
 ///
 /// Installs a `tracing` subscriber that writes to **stderr** (stdout carries
 /// MCP frames only), then serves [`AreteMcp`] on the process's stdin/stdout.
-/// Messages may be newline-delimited or `Content-Length` framed; see
-/// [`stdio_framing`]. Must be called inside a Tokio runtime.
+/// Messages are newline-delimited, or LSP-style `Content-Length` framed for
+/// clients that use that; see [`stdio_framing`]. Must be called inside a
+/// Tokio runtime.
 pub async fn serve_stdio() -> anyhow::Result<()> {
     serve_stdio_with(None).await
 }
