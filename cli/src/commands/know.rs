@@ -16,7 +16,7 @@
 //! CLI. Where the contract leaves casing open, both snake_case and camelCase
 //! are accepted via serde aliases.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 
 use anyhow::{bail, Result};
@@ -106,7 +106,11 @@ pub fn search(
 
 pub fn protocol(slug: &str, json: bool) -> Result<()> {
     let slug = validate_slug(slug, "protocol slug")?;
-    let value = ApiClient::new()?.knowledge_protocol(slug)?;
+    let client = ApiClient::new()?;
+    let mut value = client.knowledge_protocol(slug)?;
+    annotate_stack_hosting(&mut value, |stack| {
+        client.catalog_entry("stack", stack).ok()
+    });
     emit(&value, json, render_protocol)
 }
 
@@ -326,6 +330,12 @@ struct ProtocolStack {
     stack: String,
     #[serde(default)]
     entities: Vec<String>,
+    /// Catalog slug and hosting status, added by
+    /// [`annotate_stack_hosting`]; absent when the catalog could not say.
+    #[serde(default)]
+    slug: Option<String>,
+    #[serde(default)]
+    live: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -336,19 +346,6 @@ struct CoverageRow {
     read: bool,
     #[serde(default)]
     build: bool,
-    #[serde(default)]
-    subscribe: bool,
-    #[serde(default, alias = "coverageVia")]
-    coverage_via: Vec<CoverageVia>,
-}
-
-/// One program or stack behind a coverage row.
-#[derive(Debug, Default, Deserialize)]
-struct CoverageVia {
-    #[serde(default)]
-    kind: String,
-    #[serde(default)]
-    slug: String,
     #[serde(default)]
     subscribe: bool,
 }
@@ -441,25 +438,55 @@ fn coverage_flags(read: bool, build: bool, subscribe: bool) -> String {
     }
 }
 
-/// A protocol's stacks by catalog slug, each marked `[live]` or
-/// `[definition-only]`. The `stacks` list names a stack and its entities
-/// without its slug or hosting; `coverageVia` carries both, and a stack that
-/// can `subscribe` to any concept has a hosted stream now.
-fn stack_hosting(coverage: &[CoverageRow]) -> Vec<String> {
-    let mut live: BTreeMap<&str, bool> = BTreeMap::new();
-    for via in coverage
-        .iter()
-        .flat_map(|row| &row.coverage_via)
-        .filter(|via| via.kind == "stack" && !via.slug.is_empty())
-    {
-        *live.entry(&via.slug).or_default() |= via.subscribe;
-    }
-    live.into_iter()
-        .map(|(slug, live)| {
-            let mark = if live { "live" } else { "definition-only" };
-            format!("{slug} [{mark}]")
+/// Resolve each stack's hosting status through the catalog, best-effort.
+///
+/// The payload names a stack (`stacks[].stack`, e.g. `BubblegumStream`)
+/// without its catalog slug or hosting. Its `coverage[].coverageVia` rows
+/// carry the catalog slugs of the stacks behind each concept; `lookup`
+/// fetches one catalog entry by slug, whose `knowledge.name` is the stack
+/// name and whose delivery says whether it streams now
+/// ([`catalog_view::is_live_stack`]). Each matched stack gains `slug` and
+/// `live`; a stack no entry names is left as is, so the renderer reports its
+/// status as unknown. A failed lookup (network, 404, signed out) only leaves
+/// that status unknown. Keys the server already sends are kept.
+fn annotate_stack_hosting(value: &mut Value, mut lookup: impl FnMut(&str) -> Option<Value>) {
+    let slugs: BTreeSet<String> = value["coverage"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|row| {
+            row.get("coverageVia")
+                .or_else(|| row.get("coverage_via"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
         })
-        .collect()
+        .filter(|via| via["kind"].as_str() == Some("stack"))
+        .filter_map(|via| via["slug"].as_str().map(str::to_owned))
+        .collect();
+    let mut by_name: BTreeMap<String, (String, bool)> = BTreeMap::new();
+    for slug in slugs {
+        let Some(entry) = lookup(&slug) else { continue };
+        let Some(live) = catalog_view::is_live_stack(&entry) else {
+            continue;
+        };
+        if let Some(name) = entry.pointer("/knowledge/name").and_then(Value::as_str) {
+            by_name.entry(name.to_owned()).or_insert((slug, live));
+        }
+    }
+    let Some(stacks) = value.get_mut("stacks").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for stack in stacks {
+        let Some((slug, live)) = stack["stack"].as_str().and_then(|name| by_name.get(name)) else {
+            continue;
+        };
+        let (slug, live) = (slug.clone(), *live);
+        if let Value::Object(map) = stack {
+            map.entry("slug").or_insert(Value::String(slug));
+            map.entry("live").or_insert(Value::Bool(live));
+        }
+    }
 }
 
 fn parse_lenient<T: Default + for<'de> Deserialize<'de>>(value: &Value) -> T {
@@ -647,24 +674,24 @@ fn render_protocol(value: &Value) -> String {
             }
         }
     }
-    let hosting = stack_hosting(&parsed.coverage);
-    if !parsed.stacks.is_empty() || !hosting.is_empty() {
+    if !parsed.stacks.is_empty() {
         let _ = writeln!(text, "\n{}", "Stacks".bold());
         for stack in &parsed.stacks {
+            let status = match stack.live {
+                Some(true) => "live",
+                Some(false) => "definition-only: deploy with a4 up",
+                None => "hosting status unknown: a4 explore catalog",
+            };
+            let slug = stack
+                .slug
+                .as_deref()
+                .map(|slug| format!(" ({slug})"))
+                .unwrap_or_default();
             let _ = writeln!(
                 text,
-                "  {}  entities: {}",
+                "  {}{slug}  entities: {}  [{status}]",
                 stack.stack.green().bold(),
                 stack.entities.join(", ")
-            );
-        }
-        if !hosting.is_empty() {
-            let _ = writeln!(text, "  by slug: {}", hosting.join(", "));
-            let _ = writeln!(
-                text,
-                "  {}",
-                "live: a hosted stream to subscribe to now; definition-only: install its SDK to build and read, or deploy it to stream"
-                    .dimmed()
             );
         }
     }
@@ -1018,26 +1045,8 @@ mod tests {
                 "note": "Admin actions run through a Squads vault.",
                 "evidence": "recipes/execute-presale-purchase-via-squads"
             }],
-            "stacks": [
-                { "stack": "MeteoraDammStream", "entities": ["MeteoraPool"] },
-                { "stack": "MeteoraDammCandlesStream", "entities": ["Candle"] }
-            ],
-            "coverage": [
-                {
-                    "concept": "swap", "read": true, "build": true, "subscribe": true,
-                    "coverageVia": [
-                        { "kind": "program", "slug": "meteora-cp-amm", "read": true, "build": true, "subscribe": false },
-                        { "kind": "stack", "slug": "meteora-damm", "read": true, "build": true, "subscribe": true },
-                        { "kind": "stack", "slug": "meteora-damm-candles", "read": false, "build": false, "subscribe": false }
-                    ]
-                },
-                {
-                    "concept": "vesting", "read": true, "build": true, "subscribe": false,
-                    "coverageVia": [
-                        { "kind": "stack", "slug": "meteora-damm", "read": true, "build": true, "subscribe": false }
-                    ]
-                }
-            ]
+            "stacks": [{ "stack": "MeteoraDammStream", "entities": ["MeteoraPool"], "slug": "meteora-damm", "live": true }],
+            "coverage": [{ "concept": "swap", "read": true, "build": true, "subscribe": true }]
         }));
         assert!(text.contains("Meteora DAMM v2"), "{text}");
         assert!(text.contains("Categories: dex"), "{text}");
@@ -1049,36 +1058,108 @@ mod tests {
         assert!(text.contains("[core]"), "{text}");
         assert!(text.contains("squads-v4"), "{text}");
         assert!(text.contains("composes-with"), "{text}");
-        assert!(text.contains("Stacks"), "{text}");
-        assert!(!text.contains("Live stacks"), "{text}");
         assert!(
-            text.contains("MeteoraDammStream  entities: MeteoraPool"),
+            text.contains("MeteoraDammStream (meteora-damm)  entities: MeteoraPool  [live]"),
             "{text}"
         );
-        // Hosting comes from `coverageVia` by slug: a stack that can
-        // subscribe to any concept is live, one that never can is
-        // definition-only; programs are not stacks.
-        assert!(
-            text.contains("by slug: meteora-damm [live], meteora-damm-candles [definition-only]"),
-            "{text}"
-        );
-        assert!(!text.contains("meteora-cp-amm ["), "{text}");
         assert!(text.contains("swap: read, build, subscribe"), "{text}");
-        assert!(text.contains("vesting: read, build"), "{text}");
     }
 
     #[test]
-    fn protocol_rendering_claims_no_hosting_without_coverage_via() {
+    fn protocol_rendering_labels_each_stack_by_hosting_status() {
         colored::control::set_override(false);
         let text = render_protocol(&json!({
             "slug": "p",
             "name": "P",
-            "stacks": [{ "stack": "PStream", "entities": ["Row"] }],
-            "coverage": [{ "concept": "swap", "read": true, "build": true, "subscribe": false }]
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"], "slug": "hosted", "live": true },
+                { "stack": "BubblegumStream", "entities": ["CompressedTree"], "slug": "bubblegum", "live": false },
+                { "stack": "MysteryStream", "entities": ["Row"] }
+            ]
         }));
-        assert!(text.contains("PStream  entities: Row"), "{text}");
-        assert!(!text.contains("by slug"), "{text}");
-        assert!(!text.contains("live"), "{text}");
+        assert!(text.contains("\nStacks\n"), "{text}");
+        assert!(!text.contains("Live stacks"), "{text}");
+        assert!(
+            text.contains("HostedStream (hosted)  entities: Pool  [live]"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "BubblegumStream (bubblegum)  entities: CompressedTree  [definition-only: deploy with a4 up]"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "MysteryStream  entities: Row  [hosting status unknown: a4 explore catalog]"
+            ),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn stack_hosting_is_resolved_through_the_catalog_by_name() {
+        // The payload names stacks; `coverageVia` carries their catalog
+        // slugs. The catalog entry joins the two by `knowledge.name` and
+        // says whether the stack streams (a `deployed-stack` delivery).
+        let mut value = json!({
+            "stacks": [
+                { "stack": "HostedStream", "entities": ["Pool"] },
+                { "stack": "BubblegumStream", "entities": ["CompressedTree"] },
+                { "stack": "UnreachableStream", "entities": ["Row"] },
+                { "stack": "UncoveredStream", "entities": ["Row"] },
+                { "stack": "PresetStream", "entities": ["Row"], "live": true }
+            ],
+            "coverage": [
+                { "concept": "swap", "coverageVia": [
+                    { "kind": "program", "slug": "hosted" },
+                    { "kind": "stack", "slug": "hosted" },
+                    { "kind": "stack", "slug": "unreachable" },
+                    { "kind": "stack", "slug": "preset" }
+                ] },
+                { "concept": "mint-tokens", "coverage_via": [
+                    { "kind": "stack", "slug": "bubblegum" },
+                    { "kind": "stack", "slug": "hosted" }
+                ] }
+            ]
+        });
+        let mut looked_up = Vec::new();
+        annotate_stack_hosting(&mut value, |slug| {
+            looked_up.push(slug.to_owned());
+            match slug {
+                "hosted" => Some(json!({
+                    "kind": "stack", "slug": "hosted",
+                    "knowledge": { "name": "HostedStream" },
+                    "delivery": { "kind": "deployed-stack" }
+                })),
+                "bubblegum" => Some(json!({
+                    "kind": "stack", "slug": "bubblegum",
+                    "knowledge": { "name": "BubblegumStream" }
+                })),
+                "preset" => Some(json!({
+                    "kind": "stack", "slug": "preset",
+                    "knowledge": { "name": "PresetStream" }
+                })),
+                _ => None,
+            }
+        });
+        // Each stack slug once, in either `coverageVia` spelling; programs
+        // are never looked up.
+        assert_eq!(looked_up, ["bubblegum", "hosted", "preset", "unreachable"]);
+        let stacks = value["stacks"].as_array().unwrap();
+        assert_eq!(stacks[0]["slug"], "hosted");
+        assert_eq!(stacks[0]["live"], true);
+        assert_eq!(stacks[1]["slug"], "bubblegum");
+        assert_eq!(stacks[1]["live"], false);
+        // A failed lookup and a stack no coverage row names stay unknown.
+        assert!(stacks[2].get("live").is_none() && stacks[2].get("slug").is_none());
+        assert!(stacks[3].get("live").is_none() && stacks[3].get("slug").is_none());
+        // A `live` the server sent wins over the catalog.
+        assert_eq!(stacks[4]["live"], true);
+        assert_eq!(stacks[4]["slug"], "preset");
+        // Nothing else moves.
+        assert_eq!(stacks[0]["stack"], "HostedStream");
+        assert_eq!(stacks[0]["entities"], json!(["Pool"]));
     }
 
     #[test]

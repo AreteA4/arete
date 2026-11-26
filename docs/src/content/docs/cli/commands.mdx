@@ -1019,14 +1019,17 @@ recipes serve an intent, and what the platform can do for each (`read` account
 state, `build` transactions, `subscribe` to a hosted stack). Every subcommand
 requires an API key saved by `a4 auth login` and accepts `--json`. `search`
 and `concepts` are brief by default (see below); the other subcommands print
-the API response verbatim.
+the API response verbatim, except that `protocol` adds `slug` and `live` to
+each stack it can match in the catalog. The readable output marks each stack
+`[live]`, `[definition-only: deploy with a4 up]` or, when the catalog could
+not say, `[hosting status unknown: a4 explore catalog]`.
 
 ```bash
 # Search by intent; results carry read / build / subscribe coverage flags
 a4 know search --query "monitor swaps"
 a4 know search --concept swap --category dex --limit 10
 
-# One protocol: programs with roles, related protocols, stacks (live or definition-only by slug), coverage
+# One protocol: programs with roles, related protocols, stacks with hosting status, coverage
 a4 know protocol meteora-damm
 
 # One program's annotations, one section at a time
