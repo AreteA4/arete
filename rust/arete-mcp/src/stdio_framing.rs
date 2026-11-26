@@ -18,8 +18,18 @@
 //! stream, bytes that are not JSON may be a frame whose `Content-Length`
 //! was wrong: too long, so that the frames after it were swallowed as its
 //! body, or too short, so that its tail sits in front of the next header.
-//! When a `Content-Length` header line starts inside such bytes, decoding
-//! resumes there and only the bytes before it are dropped.
+//! When a `Content-Length` header line starts inside such bytes, or the
+//! end of a framed body cuts the start of one short, decoding resumes
+//! there and only the bytes before it are dropped, provided a usable
+//! header block follows; else those bytes are dropped too.
+//!
+//! Each request is tracked until its reply or cancellation, for the framing
+//! its reply must use, and the requests awaiting a reply are held to a
+//! budget: [`MAX_OUTSTANDING_REQUESTS`] of them, with
+//! [`MAX_OUTSTANDING_ID_BYTES`] of string ids between them. A request that
+//! would exceed it is not passed on but answered with a `Server busy` error
+//! (code -32000), with its id and in its framing, before any further input
+//! is read.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -39,7 +49,7 @@ use std::ops::Range;
 use std::sync::Arc;
 
 use rmcp::model::{
-    ClientJsonRpcMessage, ClientNotification, ErrorData, JsonRpcMessage, RequestId,
+    ClientJsonRpcMessage, ClientNotification, ErrorCode, ErrorData, JsonRpcMessage, RequestId,
     ServerJsonRpcMessage,
 };
 use rmcp::transport::Transport;
@@ -58,9 +68,23 @@ const MAX_MESSAGE_BYTES: usize = rmcp::transport::async_rw::DEFAULT_MAX_LINE_LEN
 /// generous.
 const MAX_HEADER_BYTES: usize = 8 * 1024;
 
-/// Cap on requests tracked for their framing. Past it the oldest entry goes,
-/// and that request's reply uses the framing last seen from the client.
-const MAX_TRACKED_REQUESTS: usize = 1024;
+/// Cap on requests awaiting a reply, each tracked for the framing its reply
+/// must use; a request past it is answered with a `Server busy` error. It
+/// is never evicted: a request is forgotten on its reply or cancellation.
+const MAX_OUTSTANDING_REQUESTS: usize = 1024;
+
+/// Cap on the string ids of the requests awaiting a reply, in bytes between
+/// them, as an id may be as long as a message. Ids are short in practice:
+/// this holds [`MAX_OUTSTANDING_REQUESTS`] UUIDs with room to spare.
+const MAX_OUTSTANDING_ID_BYTES: usize = 64 * 1024;
+
+/// The code of the error answering a request over the budget: one of the
+/// codes JSON-RPC leaves to the server.
+const SERVER_BUSY: ErrorCode = ErrorCode(-32000);
+
+/// The name of the header that frames a message, with its colon, as
+/// looked for in bytes that are not a message.
+const CONTENT_LENGTH: &[u8] = b"content-length:";
 
 /// UTF-8 byte order mark, which RFC 8259 lets a JSON parser ignore.
 const UTF8_BOM: &[u8] = b"\xEF\xBB\xBF";
@@ -86,7 +110,11 @@ pub struct StdioTransport<R, W> {
     cursor: Cursor,
     /// Bytes to drop from the stream before buffering again.
     skip: Option<Skip>,
-    write: Arc<Mutex<Option<W>>>,
+    /// Bytes at the front of `buf` kept from a message that was dropped,
+    /// from where the header of a frame seems to start; dropped too unless
+    /// a usable header block decodes there. See `reject`.
+    recovering: usize,
+    write: Arc<Mutex<Writer<W>>>,
     /// A reply of the transport's own not yet written; see `write_pending`.
     pending: Option<Pending>,
     /// Whether the stream is closed at a frame whose end is unknown:
@@ -94,6 +122,8 @@ pub struct StdioTransport<R, W> {
     closed: bool,
     /// The framing of every request still awaiting its reply, oldest first.
     requests: VecDeque<(RequestId, Framing)>,
+    /// What the ids in `requests` count toward [`MAX_OUTSTANDING_ID_BYTES`].
+    id_bytes: usize,
     last_seen: Framing,
 }
 
@@ -106,11 +136,63 @@ enum Skip {
     Bytes(usize),
 }
 
-/// A reply the transport sends on its own behalf, and how much of it is
-/// written so far.
-struct Pending {
+/// A reply the transport sends on its own behalf, until it is written.
+enum Pending {
+    /// Not handed to the writer yet.
+    Queued(Vec<u8>),
+    /// Handed to the writer, in flight there until written.
+    Writing,
+}
+
+/// The output stream, shared by `send` futures and `receive`, and the frame
+/// being written to it.
+struct Writer<W> {
+    /// `None` once closed.
+    stream: Option<W>,
+    /// The frame being written and how much of it is, until it is written
+    /// and flushed. A write dropped part way (`receive` is polled inside a
+    /// `select!`) leaves it here, and every write finishes it before
+    /// starting its own frame, so frames never interleave.
+    in_flight: Option<InFlight>,
+}
+
+struct InFlight {
     frame: Vec<u8>,
     written: usize,
+}
+
+impl<W: AsyncWrite + Unpin> Writer<W> {
+    /// Write `frame` after the one in flight, if any, and flush.
+    async fn write_frame(&mut self, frame: Vec<u8>) -> io::Result<()> {
+        self.finish().await?;
+        self.start(frame);
+        self.finish().await
+    }
+
+    fn start(&mut self, frame: Vec<u8>) {
+        debug_assert!(self.in_flight.is_none());
+        self.in_flight = Some(InFlight { frame, written: 0 });
+    }
+
+    /// Write the rest of the frame in flight, if any, and flush. Each
+    /// `write` either writes nothing or reports what it wrote, and `written`
+    /// moves on with no await in between, so a dropped call neither repeats
+    /// nor skips a byte: the next call carries on from where it stopped.
+    async fn finish(&mut self) -> io::Result<()> {
+        let stream = self.stream.as_mut().ok_or_else(closed)?;
+        let Some(in_flight) = &mut self.in_flight else {
+            return Ok(());
+        };
+        while in_flight.written < in_flight.frame.len() {
+            match stream.write(&in_flight.frame[in_flight.written..]).await? {
+                0 => return Err(io::ErrorKind::WriteZero.into()),
+                written => in_flight.written += written,
+            }
+        }
+        stream.flush().await?;
+        self.in_flight = None;
+        Ok(())
+    }
 }
 
 impl<R, W> StdioTransport<R, W>
@@ -124,10 +206,15 @@ where
             buf: Vec::new(),
             cursor: Cursor::START,
             skip: None,
-            write: Arc::new(Mutex::new(Some(write))),
+            recovering: 0,
+            write: Arc::new(Mutex::new(Writer {
+                stream: Some(write),
+                in_flight: None,
+            })),
             pending: None,
             closed: false,
             requests: VecDeque::new(),
+            id_bytes: 0,
             last_seen: Framing::Ndjson,
         }
     }
@@ -168,33 +255,31 @@ where
         Ok(true)
     }
 
-    /// Write the rest of the pending reply, then flush. Each `write` either
-    /// writes nothing or reports what it wrote, and `written` moves on with
-    /// no await in between, so a cancelled call resumes where it stopped.
+    /// Write the pending reply, after any frame in flight, and flush. The
+    /// reply moves to the writer in the poll that marks it `Writing`, so a
+    /// dropped call knows to wait for it rather than queue it again.
     async fn write_pending(&mut self) -> io::Result<()> {
-        let Some(pending) = &mut self.pending else {
+        if self.pending.is_none() {
             return Ok(());
-        };
-        let mut write = self.write.lock().await;
-        let write = write.as_mut().ok_or_else(closed)?;
-        while pending.written < pending.frame.len() {
-            match write.write(&pending.frame[pending.written..]).await? {
-                0 => return Err(io::ErrorKind::WriteZero.into()),
-                written => pending.written += written,
-            }
         }
-        write.flush().await?;
+        let mut writer = self.write.lock().await;
+        writer.finish().await?;
+        if let Some(Pending::Queued(frame)) = self.pending.replace(Pending::Writing) {
+            writer.start(frame);
+        }
+        writer.finish().await?;
         self.pending = None;
         Ok(())
     }
 
-    /// Queue an error reply with no id for input that is not a message. The
-    /// one before it was written before that input was decoded, so there is
-    /// never more than one.
-    fn fail(&mut self, framing: Framing, error: ErrorData) {
+    /// Queue an error reply: with no id, for input that is not a message, or
+    /// with the id of a request the transport answers itself. The one before
+    /// it was written before that input was decoded, so there is never more
+    /// than one.
+    fn fail(&mut self, framing: Framing, error: ErrorData, id: Option<RequestId>) {
         debug_assert!(self.pending.is_none());
-        match encode(&ServerJsonRpcMessage::error(error, None), framing) {
-            Ok(frame) => self.pending = Some(Pending { frame, written: 0 }),
+        match encode(&ServerJsonRpcMessage::error(error, id), framing) {
+            Ok(frame) => self.pending = Some(Pending::Queued(frame)),
             Err(error) => tracing::error!("cannot encode an error reply: {error}"),
         }
     }
@@ -211,7 +296,9 @@ where
         let (framing, drop, error) = match error.classify() {
             // Not JSON. A framed stream stays framed through it, and the bytes
             // may hold the header of the frame after one whose declared length
-            // was wrong: decoding resumes at that header.
+            // was wrong, whole or cut short by their end: decoding resumes at
+            // that header, and the bytes kept from there are dropped too unless
+            // a usable header block decodes; see `recovering`.
             Category::Syntax | Category::Eof => {
                 tracing::debug!("dropping input that is not JSON: {error}");
                 let framing = if self.last_seen == Framing::ContentLength {
@@ -233,19 +320,37 @@ where
                 (framing, end, invalid)
             }
         };
-        self.fail(framing, error);
+        self.fail(framing, error, None);
         self.buf.drain(..drop);
+        self.recovering = end - drop;
         self.last_seen = framing;
     }
 
     /// Remember the framing of a request, and forget a cancelled one: it is
-    /// never answered.
-    fn track(&mut self, message: &ClientJsonRpcMessage, framing: Framing) {
+    /// never answered. `false` for a request over the budget, which is not
+    /// passed on but answered here.
+    fn track(&mut self, message: &ClientJsonRpcMessage, framing: Framing) -> bool {
         match message {
             JsonRpcMessage::Request(request) => {
-                if self.requests.len() == MAX_TRACKED_REQUESTS {
-                    self.requests.pop_front();
+                let bytes = id_bytes(&request.id);
+                let over = if self.requests.len() == MAX_OUTSTANDING_REQUESTS {
+                    Some("too many requests awaiting a reply")
+                } else if self.id_bytes + bytes > MAX_OUTSTANDING_ID_BYTES {
+                    Some("the ids of the requests awaiting a reply are above the size limit")
+                } else {
+                    None
+                };
+                if let Some(reason) = over {
+                    tracing::warn!(
+                        outstanding = self.requests.len(),
+                        id_bytes = self.id_bytes,
+                        "answering a request over the budget with an error: {reason}"
+                    );
+                    let busy = ErrorData::new(SERVER_BUSY, "Server busy", Some(reason.into()));
+                    self.fail(framing, busy, Some(request.id.clone()));
+                    return false;
                 }
+                self.id_bytes += bytes;
                 self.requests.push_back((request.id.clone(), framing));
             }
             JsonRpcMessage::Notification(notification) => {
@@ -259,6 +364,7 @@ where
             }
             JsonRpcMessage::Response(_) | JsonRpcMessage::Error(_) => {}
         }
+        true
     }
 
     /// The framing of the request `id`, forgetting it.
@@ -267,6 +373,7 @@ where
             .requests
             .iter()
             .position(|(tracked, _)| tracked == id)?;
+        self.id_bytes -= id_bytes(id);
         self.requests.remove(at).map(|(_, framing)| framing)
     }
 }
@@ -291,10 +398,7 @@ where
         let write = Arc::clone(&self.write);
         async move {
             let frame = frame?;
-            let mut write = write.lock().await;
-            let write = write.as_mut().ok_or_else(closed)?;
-            write.write_all(&frame).await?;
-            write.flush().await
+            write.lock().await.write_frame(frame).await
         }
     }
 
@@ -307,15 +411,36 @@ where
             if self.closed {
                 return None;
             }
-            match decode(&self.buf, self.cursor) {
+            let decoded = decode(&self.buf, self.cursor);
+            if self.recovering > 0 {
+                match decoded {
+                    Decoded::Incomplete(_) => {}
+                    Decoded::Message {
+                        framing: Framing::ContentLength,
+                        ..
+                    }
+                    | Decoded::OversizedBody { .. } => self.recovering = 0,
+                    _ => {
+                        // No usable header block: the bytes kept belonged to
+                        // the dropped message after all.
+                        tracing::debug!("dropping input kept as a possible header");
+                        self.buf.drain(..self.recovering);
+                        self.recovering = 0;
+                        self.cursor = Cursor::START;
+                        continue;
+                    }
+                }
+            }
+            match decoded {
                 Decoded::Message { body, end, framing } => {
                     self.cursor = Cursor::START;
                     match parse(&self.buf[body.clone()]) {
                         Ok(message) => {
                             self.buf.drain(..end);
                             self.last_seen = framing;
-                            self.track(&message, framing);
-                            return Some(message);
+                            if self.track(&message, framing) {
+                                return Some(message);
+                            }
                         }
                         Err(error) => self.reject(body, end, framing, error),
                     }
@@ -356,7 +481,7 @@ where
                     tracing::error!(
                         "closing the stream at a header block that cannot be used: {reason}"
                     );
-                    self.fail(Framing::ContentLength, parse_error(reason));
+                    self.fail(Framing::ContentLength, parse_error(reason), None);
                     self.closed = true;
                 }
                 Decoded::Incomplete(cursor) => {
@@ -375,7 +500,7 @@ where
     }
 
     async fn close(&mut self) -> io::Result<()> {
-        drop(self.write.lock().await.take());
+        drop(self.write.lock().await.stream.take());
         Ok(())
     }
 }
@@ -439,10 +564,7 @@ enum Decoded {
 fn decode(buf: &[u8], cursor: Cursor) -> Decoded {
     let (mut at, mut scanned, mut length) = match cursor {
         Cursor::Line { scanned } => {
-            let blank = buf
-                .iter()
-                .take_while(|byte| matches!(byte, b'\r' | b'\n'))
-                .count();
+            let blank = blank_lines(buf);
             if blank > 0 {
                 return Decoded::Blank(blank);
             }
@@ -581,17 +703,37 @@ fn byte_count(value: &[u8]) -> Option<usize> {
     numeric.then(|| digits.parse().ok()).flatten()
 }
 
-/// Where a `Content-Length` header line starts in `bytes`, if one does: at
-/// their start, or after a byte that no header name holds.
+/// The empty lines at the start of `buf`: each a `\n` or a `\r\n`. Any other
+/// byte starts a line, a `\r` on its own included.
+fn blank_lines(buf: &[u8]) -> usize {
+    let mut at = 0;
+    loop {
+        at += match buf[at..] {
+            [b'\n', ..] => 1,
+            [b'\r', b'\n', ..] => 2,
+            _ => return at,
+        };
+    }
+}
+
+/// Where a `Content-Length` header line starts in `bytes`, if one does, or
+/// where the start of one is cut short by their end: at their start, or
+/// after a byte that no header name holds.
 fn header_start(bytes: &[u8]) -> Option<usize> {
-    const NAME: &[u8] = b"content-length:";
-    bytes
-        .windows(NAME.len())
-        .enumerate()
-        .find_map(|(at, window)| {
-            let starts = at == 0 || !token_byte(bytes[at - 1]);
-            (starts && window.eq_ignore_ascii_case(NAME)).then_some(at)
-        })
+    (0..bytes.len()).find(|&at| {
+        let starts = at == 0 || !token_byte(bytes[at - 1]);
+        let len = CONTENT_LENGTH.len().min(bytes.len() - at);
+        starts && bytes[at..at + len].eq_ignore_ascii_case(&CONTENT_LENGTH[..len])
+    })
+}
+
+/// What an id counts toward [`MAX_OUTSTANDING_ID_BYTES`]: the bytes of a
+/// string; a number takes no room beyond its entry.
+fn id_bytes(id: &RequestId) -> usize {
+    match id {
+        RequestId::String(id) => id.len(),
+        RequestId::Number(_) => 0,
+    }
 }
 
 fn parse(body: &[u8]) -> serde_json::Result<ClientJsonRpcMessage> {
@@ -686,7 +828,7 @@ mod tests {
         while let Some(message) = transport.receive().await {
             messages.push((transport.last_seen, message));
         }
-        let written = transport.write.lock().await.take().unwrap();
+        let written = transport.write.lock().await.stream.take().unwrap();
         (messages, written)
     }
 
@@ -1084,6 +1226,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_declared_length_that_cuts_into_the_next_header_loses_its_frame_but_not_the_frames_after_it(
+    ) {
+        // The declared length runs past the body into the next frame's
+        // header line, by fewer bytes than the header's name has: whether
+        // the rest of the name arrives with them or later, the frame is found.
+        for overrun in 1..CONTENT_LENGTH.len() {
+            let input = [
+                framed(&ping(1)),
+                framed_as(&ping(2), ping(2).len() + overrun),
+                framed(&ping(3)),
+                framed(&ping(4)),
+            ]
+            .concat();
+            let ids = [
+                (Framing::ContentLength, 1),
+                (Framing::ContentLength, 3),
+                (Framing::ContentLength, 4),
+            ];
+            // The whole stream in one read (it is shorter than the reader's
+            // buffer), then one byte at a time.
+            let (got, errors) = ids_and_errors(input.as_slice()).await;
+            assert_eq!(got, ids, "overrun {overrun}");
+            assert_eq!(
+                codes(&errors),
+                [(Framing::ContentLength, PARSE_ERROR)],
+                "overrun {overrun}"
+            );
+            let (got, errors) = ids_and_errors(ByteAtATime(&input)).await;
+            assert_eq!(got, ids, "overrun {overrun}");
+            assert_eq!(
+                codes(&errors),
+                [(Framing::ContentLength, PARSE_ERROR)],
+                "overrun {overrun}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn bytes_kept_as_a_possible_header_are_dropped_unless_a_usable_header_block_follows() {
+        // A body cut short right after `"c`: its last byte could start the
+        // name of the next frame's header, but the rest of the body follows
+        // it, not a header line. One error for the body, one for its tail.
+        let json = r#"{"jsonrpc":"2.0","id":2,"method":"ping","params":{"c":1}}"#;
+        let cut = json.find(r#""c""#).unwrap() + 2;
+        let input = [framed(&ping(1)), framed_as(json, cut), framed(&ping(3))].concat();
+        let ids = [(Framing::ContentLength, 1), (Framing::ContentLength, 3)];
+        let expected = [
+            (Framing::ContentLength, PARSE_ERROR),
+            (Framing::ContentLength, PARSE_ERROR),
+        ];
+        let (got, errors) = ids_and_errors(input.as_slice()).await;
+        assert_eq!(got, ids);
+        assert_eq!(codes(&errors), expected);
+        let (got, errors) = ids_and_errors(ByteAtATime(&input)).await;
+        assert_eq!(got, ids);
+        assert_eq!(codes(&errors), expected);
+
+        // A declared length that overruns by one byte into a header block
+        // without a `Content-Length`: the byte kept is dropped, and the block
+        // closes the stream as it would have without the overrun.
+        let input = [
+            framed(&ping(1)),
+            framed_as(&ping(2), ping(2).len() + 1),
+            b"Cache: 1\r\n\r\n".to_vec(),
+            framed(&ping(3)),
+        ]
+        .concat();
+        let (got, errors) = ids_and_errors(input.as_slice()).await;
+        assert_eq!(got, [(Framing::ContentLength, 1)]);
+        assert_eq!(errors.len(), 2, "{errors:?}");
+        assert_eq!(errors[1], parse_error_for("no Content-Length header"));
+    }
+
+    #[tokio::test]
     async fn input_that_is_not_json_is_answered_with_a_parse_error_and_the_stream_goes_on() {
         // A line, then a framed body, neither JSON; the body is last, so its
         // error is still pending when the stream ends.
@@ -1129,7 +1345,7 @@ mod tests {
             assert!(read < 4 * MAX_HEADER_BYTES, "{read} bytes read");
             assert!(transport.buf.len() <= 2 * MAX_HEADER_BYTES);
             assert!(elapsed < Duration::from_millis(500), "{elapsed:?}");
-            let written = transport.write.lock().await.take().unwrap();
+            let written = transport.write.lock().await.stream.take().unwrap();
             assert_eq!(errors_in(&written), [parse_error_for(HEADERS_TOO_LONG)]);
         }
     }
@@ -1206,6 +1422,26 @@ mod tests {
             .chain(&input[crossing - 100..crossing])
             .chain(&input[crossing..]);
         assert_eq!(ids_from(read).await, [(Framing::Ndjson, 2)]);
+    }
+
+    #[tokio::test]
+    async fn leading_carriage_returns_count_toward_the_line_limit() {
+        // A run of `\r` is not blank lines but part of the line after it,
+        // which is dropped past the limit and delivered under it. Blank
+        // lines, `\n` or `\r\n`, are skipped as ever.
+        let over = [b"\r".repeat(MAX_MESSAGE_BYTES), line(&ping(1))].concat();
+        let input = [
+            over,
+            b"\r\r".to_vec(),
+            line(&ping(2)),
+            b"\r\n\n".to_vec(),
+            line(&ping(3)),
+        ]
+        .concat();
+        assert_eq!(
+            received_ids(&input).await,
+            [(Framing::Ndjson, 2), (Framing::Ndjson, 3)]
+        );
     }
 
     #[tokio::test]
@@ -1330,6 +1566,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_response_sent_while_an_error_reply_is_part_written_follows_it_whole() {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let encode = |json: &str| match framing {
+                Framing::Ndjson => line(json),
+                Framing::ContentLength => framed(json),
+            };
+            let input = [encode(&ping(1)), encode("not json")].concat();
+            // Room for part of the error reply only, and nobody reading it yet.
+            let (mut client, server) = tokio::io::duplex(8);
+            let (_, write) = tokio::io::split(server);
+            let mut transport = StdioTransport::new(ByteAtATime(&input), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            // The error reply's write stalls part way, and `receive` is
+            // dropped there: the rest of the frame is left with the writer.
+            let stalled =
+                tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(stalled.is_err(), "{stalled:?}");
+            assert!(matches!(transport.pending, Some(Pending::Writing)));
+            assert!(transport.write.lock().await.in_flight.is_some());
+
+            // The response to request 1 finishes the error frame before
+            // writing its own, once the client reads.
+            let sent = transport.send(reply(1));
+            let server = async {
+                sent.await.unwrap();
+                assert!(transport.receive().await.is_none());
+                assert!(transport.pending.is_none());
+                transport.close().await.unwrap();
+            };
+            let drain = async {
+                let mut out = Vec::new();
+                client.read_to_end(&mut out).await.unwrap();
+                out
+            };
+            let (out, ()) = tokio::join!(drain, server);
+            let frames = messages_in(&out);
+            assert_eq!(frames.len(), 2, "{frames:?}");
+            assert_eq!(frames[0].0, framing, "{frames:?}");
+            assert_eq!(frames[0].1["id"], Value::Null, "{frames:?}");
+            assert_eq!(frames[0].1["error"]["code"], json!(PARSE_ERROR));
+            assert_eq!(frames[1].0, framing, "{frames:?}");
+            assert_eq!(frames[1].1["id"], json!(1), "{frames:?}");
+            assert_eq!(frames[1].1["result"], json!({}), "{frames:?}");
+        }
+    }
+
+    #[tokio::test]
     async fn a_cancelled_request_is_forgotten_and_later_replies_keep_their_framing() {
         let input = [
             framed(&ping(1)),
@@ -1372,32 +1655,95 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn requests_past_the_tracking_cap_are_answered_in_the_framing_last_seen() {
-        let mut input = line(&ping(1));
-        for id in 2..=MAX_TRACKED_REQUESTS as i64 + 1 {
-            input.extend(framed(&ping(id)));
+    async fn a_request_past_the_count_budget_is_answered_busy_until_a_reply_makes_room() {
+        // A framed request and newline-delimited ones fill the budget; one
+        // more, newline-delimited, is over it.
+        let last = MAX_OUTSTANDING_REQUESTS as i64;
+        let mut input = framed(&ping(1));
+        for id in 2..=last {
+            input.extend(line(&ping(id)));
         }
+        input.extend(line(&ping(last + 1)));
+        let (mut stdin, read) = tokio::io::duplex(input.len());
         let (mut client, server) = tokio::io::duplex(64 * 1024);
         let (_, write) = tokio::io::split(server);
-        let mut transport = StdioTransport::new(input.as_slice(), write);
-        while transport.receive().await.is_some() {}
-        assert_eq!(transport.requests.len(), MAX_TRACKED_REQUESTS);
-        assert_eq!(
-            transport.requests.front(),
-            Some(&(RequestId::Number(2), Framing::ContentLength))
-        );
+        let mut transport = StdioTransport::new(read, write);
+        stdin.write_all(&input).await.unwrap();
+        for id in 1..=last {
+            assert_eq!(request_id(&transport.receive().await.unwrap()), id);
+        }
+        // The request over the budget is answered in its framing, not
+        // delivered: `receive` waits for more input instead.
+        let waiting = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+        assert!(waiting.is_err(), "{waiting:?}");
+        assert_eq!(transport.requests.len(), MAX_OUTSTANDING_REQUESTS);
+        let replies = read_replies(&mut client, 1).await;
+        assert_eq!(replies[0].0, Framing::Ndjson);
+        assert_eq!(replies[0].1["id"], json!(last + 1));
+        assert_eq!(replies[0].1["error"]["code"], json!(SERVER_BUSY.0));
 
-        // Request 1, the oldest, is no longer tracked: its reply uses the
-        // framing last seen rather than its own.
+        // Request 1 is still tracked: its reply is in its own framing, not
+        // the one last seen, and makes room for a request.
         transport.send(reply(1)).await.unwrap();
-        transport.send(reply(2)).await.unwrap();
-        transport.close().await.unwrap();
-        let replies = read_replies(&mut client, 2).await;
+        let replies = read_replies(&mut client, 1).await;
         assert_eq!(replies[0].0, Framing::ContentLength);
         assert_eq!(replies[0].1["id"], json!(1));
-        assert_eq!(replies[1].0, Framing::ContentLength);
-        assert_eq!(replies[1].1["id"], json!(2));
-        assert_eq!(transport.requests.len(), MAX_TRACKED_REQUESTS - 1);
+        assert_eq!(transport.requests.len(), MAX_OUTSTANDING_REQUESTS - 1);
+        stdin.write_all(&framed(&ping(last + 2))).await.unwrap();
+        assert_eq!(request_id(&transport.receive().await.unwrap()), last + 2);
+        assert_eq!(transport.requests.len(), MAX_OUTSTANDING_REQUESTS);
+        assert_eq!(
+            transport.requests.back(),
+            Some(&(RequestId::Number(last + 2), Framing::ContentLength))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_request_past_the_id_byte_budget_is_answered_busy_until_a_reply_makes_room() {
+        // Four framed requests whose string ids fill the budget between
+        // them, then a newline-delimited one whose one-byte id is over it.
+        let quarter = MAX_OUTSTANDING_ID_BYTES / 4;
+        let big = |n: usize| format!("{n}{}", "x".repeat(quarter - 1));
+        let request = |id: &str| format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"ping"}}"#);
+        let mut input = Vec::new();
+        for n in 1..=4 {
+            input.extend(framed(&request(&big(n))));
+        }
+        input.extend(line(&request("5")));
+        let (mut stdin, read) = tokio::io::duplex(input.len());
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let (_, write) = tokio::io::split(server);
+        let mut transport = StdioTransport::new(read, write);
+        stdin.write_all(&input).await.unwrap();
+        for _ in 1..=4 {
+            transport.receive().await.unwrap();
+        }
+        assert_eq!(transport.id_bytes, MAX_OUTSTANDING_ID_BYTES);
+        let waiting = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+        assert!(waiting.is_err(), "{waiting:?}");
+        assert_eq!(transport.requests.len(), 4);
+        let replies = read_replies(&mut client, 1).await;
+        assert_eq!(replies[0].0, Framing::Ndjson);
+        assert_eq!(replies[0].1["id"], json!("5"));
+        assert_eq!(replies[0].1["error"]["code"], json!(SERVER_BUSY.0));
+
+        // The reply to the first request frees its id's bytes.
+        let answered = ServerJsonRpcMessage::response(
+            ServerResult::empty(()),
+            RequestId::String(big(1).into()),
+        );
+        transport.send(answered).await.unwrap();
+        let replies = read_replies(&mut client, 1).await;
+        assert_eq!(replies[0].0, Framing::ContentLength);
+        assert_eq!(replies[0].1["id"], json!(big(1)));
+        assert_eq!(transport.id_bytes, MAX_OUTSTANDING_ID_BYTES - quarter);
+        stdin.write_all(&line(&request("6"))).await.unwrap();
+        let JsonRpcMessage::Request(admitted) = transport.receive().await.unwrap() else {
+            panic!("not a request");
+        };
+        assert_eq!(admitted.id, RequestId::String("6".into()));
+        assert_eq!(transport.requests.len(), 4);
+        assert_eq!(transport.id_bytes, MAX_OUTSTANDING_ID_BYTES - quarter + 1);
     }
 
     const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"framing-test","version":"0"}}}"#;
@@ -1470,25 +1816,32 @@ mod tests {
 
     #[tokio::test]
     async fn a_session_answers_the_requests_after_a_frame_whose_length_overran_them() {
-        let input = [
-            framed(INITIALIZE),
-            framed(INITIALIZED),
-            framed_as(&ping(3), ping(3).len() + 30),
-            framed(TOOLS_LIST),
-        ]
-        .concat();
-        let replies = serve(&input, 3).await;
-        assert!(
-            replies
-                .iter()
-                .all(|(seen, _)| *seen == Framing::ContentLength),
-            "{replies:?}"
-        );
-        assert_eq!(replies[0].1["id"], json!(1));
-        assert_eq!(replies[1].1["id"], Value::Null);
-        assert_eq!(replies[1].1["error"]["code"], json!(PARSE_ERROR));
-        assert_eq!(replies[2].1["id"], json!(2));
-        assert!(replies[2].1["result"]["tools"].is_array(), "{replies:?}");
+        // Into the next frame's header line by fewer bytes than its name
+        // has, and well past it.
+        for overrun in (1..CONTENT_LENGTH.len()).chain([30]) {
+            let input = [
+                framed(INITIALIZE),
+                framed(INITIALIZED),
+                framed_as(&ping(3), ping(3).len() + overrun),
+                framed(TOOLS_LIST),
+            ]
+            .concat();
+            let replies = serve(&input, 3).await;
+            assert!(
+                replies
+                    .iter()
+                    .all(|(seen, _)| *seen == Framing::ContentLength),
+                "overrun {overrun}: {replies:?}"
+            );
+            assert_eq!(replies[0].1["id"], json!(1), "overrun {overrun}");
+            assert_eq!(replies[1].1["id"], Value::Null, "overrun {overrun}");
+            assert_eq!(replies[1].1["error"]["code"], json!(PARSE_ERROR));
+            assert_eq!(replies[2].1["id"], json!(2), "overrun {overrun}");
+            assert!(
+                replies[2].1["result"]["tools"].is_array(),
+                "overrun {overrun}: {replies:?}"
+            );
+        }
     }
 
     #[tokio::test]

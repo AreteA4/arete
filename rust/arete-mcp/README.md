@@ -14,7 +14,9 @@ for clients that use it, detected per message and mirrored in each reply;
 stdout carries MCP frames only and logs go to stderr. Input that is not a
 message is answered with a JSON-RPC parse error, and a `Content-Length`
 header block that cannot be used (so where the message ends is unknown) is
-answered with one and then the stream is closed. This crate is a library
+answered with one and then the stream is closed. Requests awaiting a reply
+are capped; one past the cap is answered with a `Server busy` error
+(`-32000`) in its own framing. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 
