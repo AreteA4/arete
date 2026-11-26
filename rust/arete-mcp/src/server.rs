@@ -105,9 +105,11 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::future::Future;
 use std::sync::Arc;
 
 use crate::connections::ConnectionRegistry;
+use crate::deadline;
 use crate::filter::{Filter, StructuredPredicate};
 use crate::recovery::{RecoveryApiError, RecoveryClient};
 use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
@@ -136,6 +138,10 @@ pub struct AreteMcp {
     /// The account key for direct program reads; `None` resolves it from
     /// the environment on each call (`ARETE_API_KEY`, else the a4 login).
     account_key: Option<crate::program_read::AccountKey>,
+    /// The bound on opening a stack connection (`connect`).
+    connect_timeout: std::time::Duration,
+    /// Replaces [`deadline::tool_call_timeout`] for every tool (tests).
+    tool_call_timeout: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -1634,6 +1640,8 @@ impl AreteMcp {
             sdk_references: None,
             protocols,
             account_key: None,
+            connect_timeout: deadline::REQUEST_TIMEOUT,
+            tool_call_timeout: None,
         }
     }
 
@@ -4091,11 +4099,10 @@ impl AreteMcp {
         {
             reject_url_token(&args.url)?;
             let auth = sandbox.stream_auth(&args.url, refused.clone());
-            let id = match self
-                .connections
-                .connect_with(args.url.clone(), Some(auth), Some(refused.clone()))
-                .await
-            {
+            let opening =
+                self.connections
+                    .connect_with(args.url.clone(), Some(auth), Some(refused.clone()));
+            let id = match self.open_within(&args.url, opening).await? {
                 Ok(id) => id,
                 Err(error) => return Err(self.sandbox_stream_error(error, &refused).await),
             };
@@ -4113,11 +4120,8 @@ impl AreteMcp {
         let resolved = credentials::resolve(args.api_key, &args.url)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
-        let id = match self
-            .connections
-            .connect(args.url.clone(), resolved.key)
-            .await
-        {
+        let opening = self.connections.connect(args.url.clone(), resolved.key);
+        let id = match self.open_within(&args.url, opening).await? {
             Ok(id) => id,
             Err(error) => return Err(self.direct_stream_error(error, &refused).await),
         };
@@ -4683,6 +4687,9 @@ fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, Mcp
 /// Classify a registry client failure: argument rejections are the caller's
 /// to fix (`invalid_params`); everything else is `internal_error`.
 fn registry_error(error: anyhow::Error) -> McpError {
+    if let Some(timeout) = error.downcast_ref::<deadline::TimedOut>() {
+        return timed_out_error(timeout);
+    }
     let message = error.to_string();
     let caller_fixable = message.contains("must not be empty")
         || message.contains("invalid character")
@@ -4695,6 +4702,15 @@ fn registry_error(error: anyhow::Error) -> McpError {
     } else {
         McpError::internal_error(message, None)
     }
+}
+
+/// A request that ran past its deadline: retryable, and naming the origin
+/// only.
+fn timed_out_error(timeout: &deadline::TimedOut) -> McpError {
+    McpError::internal_error(
+        timeout.to_string(),
+        Some(json!({ "code": "request-timeout", "retryable": true })),
+    )
 }
 
 /// Parse a registry descriptor for client-side shaping. Registry failures keep
@@ -5045,6 +5061,9 @@ impl AreteMcp {
     }
 
     async fn recovery_error(&self, error: anyhow::Error) -> McpError {
+        if let Some(timeout) = error.downcast_ref::<deadline::TimedOut>() {
+            return timed_out_error(timeout);
+        }
         if let Some(api_error) = error.downcast_ref::<RecoveryApiError>() {
             return self
                 .problem_error(&api_error.problem, Some(api_error.status.as_u16()), false)
@@ -5054,6 +5073,19 @@ impl AreteMcp {
             "Arete account request failed",
             Some(serde_json::json!({ "code": "account-request-failed" })),
         )
+    }
+
+    /// `opening` a stack connection, abandoned after the connect bound: a
+    /// stalled token request or WebSocket handshake fails the call, and
+    /// dropping `opening` stops the connection task.
+    async fn open_within(
+        &self,
+        url: &str,
+        opening: impl Future<Output = Result<String, AreteError>>,
+    ) -> Result<Result<String, AreteError>, McpError> {
+        tokio::time::timeout(self.connect_timeout, opening)
+            .await
+            .map_err(|_| timed_out_error(&deadline::TimedOut::new(url, self.connect_timeout)))
     }
 
     async fn problem_error(
@@ -5433,6 +5465,29 @@ impl ServerHandler for AreteMcp {
     // answering every handshake with 2024-11-05, as before.
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
         std::borrow::Cow::Borrowed(ProtocolVersion::known_up_to(&ProtocolVersion::V_2024_11_05))
+    }
+
+    /// Every tool call, abandoned after its deadline
+    /// ([`deadline::tool_call_timeout`]) so none can hold its request open:
+    /// tools that make several requests in a row are bounded as a whole.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let after = self
+            .tool_call_timeout
+            .unwrap_or_else(|| deadline::tool_call_timeout(&request.name));
+        let tool = request.name.to_string();
+        let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        tokio::time::timeout(after, self.tool_router.call(call))
+            .await
+            .unwrap_or_else(|_| {
+                Err(McpError::internal_error(
+                    format!("{tool} did not finish within {after:?}"),
+                    Some(json!({ "code": "tool-timeout", "retryable": true })),
+                ))
+            })
     }
 }
 
@@ -8302,5 +8357,188 @@ mod sandbox_result_tests {
         assert_eq!(body["actionId"], "a-1");
         assert_eq!(body["idempotencyKey"], "k-1");
         assert!(body["hint"].as_str().unwrap().contains("sandbox_action"));
+    }
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::*;
+    use crate::stdio_framing::StdioTransport;
+    use rmcp::ServiceExt;
+    use std::time::{Duration, Instant};
+    use tokio::io::{
+        AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf,
+    };
+
+    const SHORT: Duration = Duration::from_millis(300);
+    const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deadline-test","version":"0"}}}"#;
+    const INITIALIZED: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+
+    /// A server whose registry and stack connections go to `base`, with
+    /// requests bounded at [`SHORT`].
+    fn stalled(base: &str) -> AreteMcp {
+        AreteMcp {
+            registry: RegistryClient::with_base_url(base).with_request_timeout(SHORT),
+            connect_timeout: SHORT,
+            ..AreteMcp::with_agents(
+                crate::protocol_agent::ProtocolAgent::new(None),
+                crate::sandbox::SandboxClient::from_values(None, None, None),
+            )
+        }
+    }
+
+    struct Session {
+        input: WriteHalf<DuplexStream>,
+        replies: Lines<BufReader<ReadHalf<DuplexStream>>>,
+    }
+
+    impl Session {
+        /// `server` over the stdio transport, initialized.
+        async fn open(server: AreteMcp) -> Self {
+            let (client, server_end) = tokio::io::duplex(1 << 20);
+            let (output, input) = tokio::io::split(client);
+            let (read, write) = tokio::io::split(server_end);
+            let mut session = Self {
+                input,
+                replies: BufReader::new(output).lines(),
+            };
+            session.send(INITIALIZE).await;
+            session.send(INITIALIZED).await;
+            let running = server
+                .serve(StdioTransport::new(read, write))
+                .await
+                .unwrap();
+            tokio::spawn(running.waiting());
+            session.reply(1).await;
+            session
+        }
+
+        async fn send(&mut self, message: &str) {
+            self.input
+                .write_all(format!("{message}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+
+        async fn reply(&mut self, id: u64) -> Value {
+            loop {
+                let line = self
+                    .replies
+                    .next_line()
+                    .await
+                    .unwrap()
+                    .expect("session ended");
+                let message: Value = serde_json::from_str(&line).unwrap();
+                if message["id"] == json!(id) {
+                    return message;
+                }
+            }
+        }
+    }
+
+    fn call(id: u64, tool: &str) -> String {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool, "arguments": {}}})
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_stalled_explore_programs_answers_a_timeout_and_frees_its_request_slot() {
+        let base = deadline::blackhole();
+        let mut session = Session::open(stalled(&base)).await;
+        // The same id twice: had the first call kept its place among the
+        // requests awaiting a reply, the second would be refused as a
+        // duplicate instead of running.
+        for _ in 0..2 {
+            let started = Instant::now();
+            session.send(&call(7, "explore_programs")).await;
+            let answer = session.reply(7).await;
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{:?}",
+                started.elapsed()
+            );
+            assert_eq!(
+                answer["error"]["message"],
+                json!(format!("request to {base} timed out after 300ms")),
+                "{answer}"
+            );
+            assert_eq!(answer["error"]["data"]["code"], json!("request-timeout"));
+        }
+        session
+            .send(r#"{"jsonrpc":"2.0","id":8,"method":"tools/list"}"#)
+            .await;
+        let listed = session.reply(8).await;
+        assert!(listed["result"]["tools"].is_array(), "{listed}");
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_past_its_own_deadline_is_answered_with_a_tool_timeout() {
+        let base = deadline::blackhole();
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&base)
+                .with_request_timeout(Duration::from_secs(30)),
+            tool_call_timeout: Some(SHORT),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        let started = Instant::now();
+        session.send(&call(9, "explore_stacks")).await;
+        let answer = session.reply(9).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            answer["error"]["message"],
+            json!("explore_stacks did not finish within 300ms"),
+            "{answer}"
+        );
+        assert_eq!(answer["error"]["data"]["code"], json!("tool-timeout"));
+    }
+
+    #[tokio::test]
+    async fn connect_to_a_stalled_stack_times_out_without_naming_the_key() {
+        let base = deadline::blackhole();
+        let url = base.replacen("http://", "ws://", 1);
+        let args: ConnectArgs =
+            serde_json::from_value(json!({"url": url, "api_key": "a4_sk_do_not_print"})).unwrap();
+        let started = Instant::now();
+        let error = stalled(&base).connect(Parameters(args)).await.unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            error.message,
+            format!("request to {url} timed out after 300ms")
+        );
+        assert!(!format!("{error:?}").contains("a4_sk_"), "{error:?}");
+    }
+
+    #[test]
+    fn every_tool_given_its_own_deadline_exists() {
+        let tools: Vec<String> = AreteMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        for tool in [
+            "dev_capture",
+            "dev_scenario",
+            "protocol_submit",
+            "protocol_execute",
+            "read_view",
+        ] {
+            assert!(
+                tools.iter().any(|name| name == tool),
+                "{tool} is not a tool"
+            );
+            assert_ne!(
+                deadline::tool_call_timeout(tool),
+                deadline::TOOL_CALL_TIMEOUT
+            );
+        }
     }
 }

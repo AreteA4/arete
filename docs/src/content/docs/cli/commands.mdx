@@ -484,6 +484,19 @@ resolved from `~/.arete/credentials.toml` before any ambient `ARETE_API_KEY`, so
 a human key cannot accidentally override it. The npm package `@usearete/mcp` is
 deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
 
+No tool call waits on the network forever, so a stalled API or stack is
+answered with an error and the request gives back its place under the cap.
+Each registry, catalog, knowledge or account request, and opening a stack
+connection with `connect`, fails after 30 s (the CLI's default), connecting,
+TLS, headers and body counted together, with a JSON-RPC error that reads
+`request to <origin> timed out after 30s` and carries
+`{"code": "request-timeout", "retryable": true}`. Each tool call as a whole
+fails after 60 s with `<tool> did not finish within 60s` and
+`{"code": "tool-timeout", "retryable": true}`, except tools whose own waits
+are longer: `read_view` 90 s; `sandbox_*`, `protocol_*` and `squads_*` 120 s;
+`protocol_submit`, `protocol_execute` and other `dev_*` tools 300 s;
+`dev_capture` and `dev_scenario` 15 minutes.
+
 ### a4 config validate
 
 Validate your configuration.

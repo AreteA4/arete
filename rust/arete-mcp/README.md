@@ -18,9 +18,11 @@ answered with one and then the stream is closed. Requests awaiting a reply
 are capped; one past the cap is answered with a `Server busy` error
 (`-32000`) in its own framing, and one that repeats the id of a request
 awaiting a reply with a `Duplicate request id` error (`-32600`) rather
-than a place under the cap. This crate is a library
-(`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
-it separately.
+than a place under the cap. Every tool call has a deadline (see
+[Deadlines](#deadlines)), so a stalled API or stack is answered with an
+error and the request gives back its place under the cap. This crate is a
+library (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not
+install it separately.
 
 > **Removed:** the standalone `a4-mcp` binary no longer exists as of this
 > version, and the `@usearete/mcp` npm package is deprecated. Update any MCP
@@ -155,6 +157,29 @@ then `subscribe`, then queries the cache via `get_entity` / `list_entities` /
 | Protocols | `protocol_check`, `protocol_actions`, `protocol_instances`, `protocol_instance`, `protocol_prepare`, `protocol_submit`, `protocol_intent`, `protocol_receipt`, `protocol_squads_proposer`, `protocol_squads_status`, `squads_status`, `squads_attach`, `protocol_execute` (only with a configured signer) | Key resolved automatically; sent only to Arete origins |
 | Account | `account_status`, `rename_agent`, `create_claim_link` | Agent key resolved automatically; sent only to Arete origins |
 | Health | `ping` | None |
+
+### Deadlines
+
+No tool call waits on the network forever. Two bounds apply:
+
+- **Each request.** A registry, catalog, knowledge or account request, and
+  opening a stack connection with `connect`, fails after 30 s (the CLI's
+  default), with connecting, TLS, headers and the whole body counted
+  together. The error is a JSON-RPC error whose message reads
+  `request to <origin> timed out after 30s` (the origin only: no path,
+  query or key) and whose `data` is
+  `{"code": "request-timeout", "retryable": true}`. Lookups that only add
+  context keep their 2 s bound, and the other clients keep their own:
+  Program Read 30 s, sandbox reads 30 s and actions 90 s, protocol API
+  60 s, cloud dev environments 150 s, `read_view` its `timeout_secs`.
+- **Each tool call.** A call as a whole, however many requests it makes,
+  fails after its tool's bound with
+  `<tool> did not finish within <bound>` and
+  `{"code": "tool-timeout", "retryable": true}`. The bound is 60 s, except
+  where a tool's own waits are longer: `read_view` 90 s; `sandbox_*`,
+  `protocol_*` and `squads_*` 120 s; `protocol_submit`,
+  `protocol_execute` and the other `dev_*` tools 300 s; `dev_capture` and
+  `dev_scenario` 15 minutes (use `a4 dev capture` for larger captures).
 
 ### Which tools are listed
 
