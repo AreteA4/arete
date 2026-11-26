@@ -396,10 +396,13 @@ installed.
 
 ### Sandbox tools
 
-Listed when the server has an API key (or `ARETE_SANDBOX_ID` is set), for a
-[sandbox](/sandboxes/overview/) (alpha) whose owner granted this agent
-access. When the account's command groups (`commandGroups` on
-`GET /api/auth/me`) include `sandboxes`, `a4 mcp` also lists the live-view
+Listed when the server has an API key (see [Authentication](#authentication);
+the generated `a4 --profile agent mcp` config reads only the `agent` profile's
+login) or `ARETE_SANDBOX_ID` is set to a sandbox id, unless the account's
+command groups (`commandGroups` on `GET /api/auth/me`) are reported without
+`sandboxes`. They are for a [sandbox](/sandboxes/overview/) (alpha) whose owner
+granted this agent access. When the account's command groups include
+`sandboxes`, `a4 mcp` also lists the live-view
 and program-read tools (`connect`, `read_view`, `subscribe`, the cache tools
 such as `get_entity` and `query_entities`, and `program_read_account`), even
 without `streams`: a sandbox reads the programs in its rules through them

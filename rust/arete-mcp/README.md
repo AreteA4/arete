@@ -181,9 +181,10 @@ only their tools. `ping`, `account_status`, `rename_agent` and
 | `protocols` | `protocol_*`, `squads_*` |
 | `dev` | `dev_*` |
 
-With no key, when the API can't be reached, or when it reports no groups,
-every tool is listed except the `install` group's (`describe_sdk`), which
-needs the API to report `install`. Hiding is never the gate: the API refuses
+With no key, when the API can't be reached, or when it reports no
+`commandGroups` list, every tool is listed except the `install` group's
+(`describe_sdk`), which needs the API to report `install`; an empty list
+hides all but the always-listed tools. Hiding is never the gate: the API refuses
 calls the account may not make, whether the tool is listed or not.
 
 ### Discovery
@@ -293,8 +294,8 @@ platform can do for each: `read` (fetch on-chain account state), `build`
 stack).
 
 **Unlike the discovery tools, every knowledge tool requires an API key.** The
-key resolves through the same precedence as `connect` (`ARETE_API_KEY`, then
-the `a4` login), and when none resolves the call fails
+key resolves as `connect`'s does (see [Authentication](#authentication)),
+and when none resolves the call fails
 immediately with an error pointing at `a4 auth login` — there is no public
 subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
 `https://arete.run`, `https://*.arete.run`, or a loopback address.
@@ -592,9 +593,12 @@ transaction to sign or an RPC URL. Owner operations (rules, caps, grants,
 pause, revoke) live in the dashboard and are not reachable from these tools.
 
 **Auth.** Listed when there is an account API key (or `ARETE_SANDBOX_ID`
-is set). The agent uses its own account's secret API key (`ARETE_API_KEY`,
-or its a4 login) for two calls: `GET /api/agent/sandboxes` lists the
-sandboxes this key can mint a token for right now, and `POST /ws/sessions`
+is set to a sandbox id), unless `GET /api/auth/me` reports a
+`commandGroups` list without `sandboxes`. The agent uses its own account's
+secret API key (the selected profile's a4 login; without a profile,
+`ARETE_API_KEY`, else the a4 login) for two calls: `GET /api/agent/sandboxes`
+lists the sandboxes this key can mint a token for right now, and
+`POST /ws/sessions`
 with `{ "targetKind": "sandbox", "targetId": "<sandbox id>" }` mints a
 short-lived token for one of them. The mint succeeds only while the
 sandbox's owner grants this agent access; the token carries a

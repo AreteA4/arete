@@ -67,9 +67,9 @@ pub async fn serve_stdio_with(
 
     tracing::info!("starting arete mcp stdio server");
     // List only the account's entitlement groups. Without a key, or when the
-    // API can't be reached or reports no `commandGroups` list, every tool but
-    // the `install` group's is listed and the API refuses what the account
-    // may not use.
+    // API can't be reached or reports no `commandGroups` list, every tool is
+    // listed except those only the `install` group grants, and the API
+    // refuses what the account may not use.
     let api_url = std::env::var("ARETE_API_URL")
         .ok()
         .filter(|value| !value.trim().is_empty())

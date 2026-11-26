@@ -480,9 +480,9 @@ a4 mcp
 }
 ```
 
-Generated MCP config explicitly selects the `agent` profile. That profile is
-resolved from `~/.arete/credentials.toml` before any ambient `ARETE_API_KEY`, so
-a human key cannot accidentally override it. The npm package `@usearete/mcp` is
+Generated MCP config explicitly selects the `agent` profile. That profile's key
+is read from `~/.arete/credentials.toml` and an ambient `ARETE_API_KEY` is
+ignored, so a human key cannot accidentally override it. The npm package `@usearete/mcp` is
 deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
 
 ### a4 config validate

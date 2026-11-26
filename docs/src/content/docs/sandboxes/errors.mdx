@@ -148,7 +148,7 @@ the refusal names the failure where it can, with what it knows:
 | `sandbox-action-not-granted`                                                    | The owner hasn't granted this agent that action                                         |
 | `sandbox-unknown-action`                                                        | A grant lists an action that doesn't exist, such as `swap`. A swap is an `invoke`       |
 | `sandbox-grant-missing`, `sandbox-consent-unsigned`                             | The owner hasn't granted this agent access, or must grant it again                      |
-| `sandbox-agent-key-required`                                                    | Set `ARETE_API_KEY` to the agent account's secret key, or log in as the agent           |
+| `sandbox-agent-key-required`                                                    | Log in as the agent; `ARETE_API_KEY` counts only when no profile is selected            |
 | `sandbox-session-invalid`, `sandbox-session-revoked`, `sandbox-session-expired` | The sandbox token stopped working and couldn't be renewed; access may have been revoked |
 | `sandbox-unauthorized`, `sandbox-forbidden`, `sandbox-not-found`                | Authentication failed, access is refused, or the sandbox doesn't exist                  |
 

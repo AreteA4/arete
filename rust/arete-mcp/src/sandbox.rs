@@ -13,8 +13,9 @@
 //! then the one chosen with `sandbox_select` (saved per project), then
 //! `ARETE_SANDBOX_ID`, then the only active grant.
 //!
-//! Auth: the agent's own API key (`ARETE_API_KEY` or its a4 login) lists
-//! the grants and mints a short-lived token for the chosen sandbox at
+//! Auth: the agent's own API key (the selected profile's a4 login; without
+//! a profile, `ARETE_API_KEY`, else the a4 login) lists the grants and
+//! mints a short-lived token for the chosen sandbox at
 //! `POST /ws/sessions` (`targetKind: "sandbox"`). The mint succeeds only
 //! while the sandbox's owner grants this agent access, and the token carries
 //! one `sandbox:<action>` scope per granted action: the API refuses an
