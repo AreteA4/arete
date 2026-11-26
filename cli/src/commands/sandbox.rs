@@ -2718,6 +2718,27 @@ mod tests {
                 assert_eq!(shown, mcp);
             }
         }
+        // The deposit-first hint tells an action to rerun under a new key,
+        // as the flag; a preview names no key.
+        for kind in [CallKind::Preview, CallKind::Action] {
+            let refusal = SandboxRefusal {
+                status: 403,
+                body: json!({
+                    "code": "sandbox-function-failed",
+                    "error": "Kamino obligation 7xKX was not found",
+                }),
+                kind,
+            };
+            let shown = shown_refusal(&refusal);
+            let hint = shown["hint"].as_str().unwrap();
+            assert!(hint.contains("`a4 sandbox rules show`"), "{kind:?}: {hint}");
+            assert!(!hint.contains("idempotencyKey"), "{kind:?}: {hint}");
+            assert_eq!(
+                hint.contains("a new --idempotency-key"),
+                kind == CallKind::Action,
+                "{kind:?}: {hint}"
+            );
+        }
     }
 
     fn action_args(args: &[&str]) -> ActionArgs {

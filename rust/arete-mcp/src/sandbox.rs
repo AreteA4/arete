@@ -299,30 +299,81 @@ fn generic_hint(retryable: bool, kind: CallKind) -> &'static str {
 }
 
 /// The hint for a `call` a lending program refused because the wallet has
-/// no obligation (none opened yet, or a full withdraw closed it).
-const MISSING_OBLIGATION_HINT: &str = "The wallet has no open obligation in this lending program (none yet, or a full withdraw closed it), so the same call fails the same way. Deposit first with the program's deposit function (sandbox_rules lists it), which opens one, then run this call.";
-
-/// Whether a `sandbox-function-failed` refusal says the wallet's lending
-/// obligation does not exist: its text names an obligation as not found.
-fn missing_obligation(details: &Map<String, Value>) -> bool {
-    let text = refusal_text(details).to_ascii_lowercase();
-    text.contains("obligation") && text.contains("not found")
+/// no obligation in the market it targets (none opened yet, or a full
+/// withdraw closed it). The refusal does not name the market, so the hint
+/// points at the one the call targets. A refused action replays under its
+/// key, so the retry after depositing needs a new one.
+fn missing_obligation_hint(kind: CallKind) -> String {
+    const HINT: &str = "The wallet has no open obligation in the lending market this call targets (none yet, or a full withdraw closed it), so the same call fails the same way. An obligation is per wallet and lending market, so a deposit into a different market would not fix this call. Deposit first into this same market, if you mean to open a position there, with the program's deposit function (sandbox_rules lists it), which opens the obligation, then run this call.";
+    match kind {
+        CallKind::Action => format!(
+            "{HINT} After depositing, run it with a new idempotencyKey: this one is recorded as refused, and the same key only replays this refusal."
+        ),
+        CallKind::Read | CallKind::Preview => HINT.to_string(),
+    }
 }
 
-/// What a refusal says: its `error` (or `message`) and, for a `call`, the
-/// `reason` of the stage that refused it (the last of `stages`).
-fn refusal_text(details: &Map<String, Value>) -> String {
-    let failed_stage = details
+/// Whether a `sandbox-function-failed` refusal says the wallet's lending
+/// obligation does not exist: its `error`, its `message` or a stage's
+/// `reason` names an obligation as the thing not found. Each field is read
+/// on its own: "obligation" in one and "not found" in another is not it.
+fn missing_obligation(details: &Map<String, Value>) -> bool {
+    let stage_reasons = details
         .get("stages")
         .and_then(Value::as_array)
-        .and_then(|stages| stages.last())
-        .and_then(|stage| stage.get("reason"));
-    [details.get("error"), details.get("message"), failed_stage]
         .into_iter()
         .flatten()
+        .map(|stage| stage.get("reason"));
+    [details.get("error"), details.get("message")]
+        .into_iter()
+        .chain(stage_reasons)
+        .flatten()
         .filter_map(Value::as_str)
-        .collect::<Vec<_>>()
-        .join(" ")
+        .any(names_missing_obligation)
+}
+
+/// Whether `text` says an obligation is what was not found: right after
+/// the word "obligation", with at most its address (whole or abbreviated)
+/// and "was", "is" or "account" in between, comes "not found" or "does not
+/// exist". "Could not refresh obligation: reserve not found" names the
+/// reserve as missing, not the obligation.
+fn names_missing_obligation(text: &str) -> bool {
+    /// `token` without trailing punctuation: "found." is "found".
+    fn word(token: &str) -> &str {
+        token.trim_end_matches(|c: char| !c.is_ascii_alphanumeric())
+    }
+    let text = text.to_ascii_lowercase();
+    let tokens: Vec<&str> = text.split_whitespace().collect();
+    tokens
+        .iter()
+        .enumerate()
+        .filter(|(_, token)| **token == "obligation")
+        .any(|(at, _)| {
+            let mut rest = &tokens[at + 1..];
+            if rest.first().is_some_and(|token| address_like(token)) {
+                rest = &rest[1..];
+            }
+            while rest
+                .first()
+                .is_some_and(|token| matches!(*token, "was" | "is" | "account"))
+            {
+                rest = &rest[1..];
+            }
+            matches!(rest, ["not", found, ..] if word(found) == "found")
+                || matches!(rest, ["does", "not", exist, ..] if word(exist) == "exist")
+        })
+}
+
+/// A base58 address as a message writes it, whole or abbreviated (`7xKX`,
+/// `7xKX…gAsU`), possibly quoted: letters and digits with at least one
+/// digit, which no English word in these messages has.
+fn address_like(token: &str) -> bool {
+    let token = token.trim_matches(|c: char| !c.is_ascii_alphanumeric());
+    !token.is_empty()
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '…')
+        && token.chars().any(|c| c.is_ascii_digit())
 }
 
 /// What an agent can do about a refusal.
@@ -336,7 +387,7 @@ fn hint_for(
         return Some(function_not_allowlisted(details));
     }
     if code == "sandbox-function-failed" && missing_obligation(details) {
-        return Some(MISSING_OBLIGATION_HINT.to_string());
+        return Some(missing_obligation_hint(kind));
     }
     if transport_failure(code) {
         return Some(generic_hint(true, kind).to_string());
@@ -3962,84 +4013,119 @@ pub(crate) mod tests {
         }
     }
 
+    /// The hint for a `sandbox-function-failed` refusal (its code and
+    /// `retryable: false` added to `fields`) of a call of `kind`.
+    fn function_failed_hint(kind: CallKind, fields: Value) -> String {
+        let mut body = json!({ "code": "sandbox-function-failed", "retryable": false });
+        body.as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        SandboxRefusal {
+            status: 403,
+            body,
+            kind,
+        }
+        .to_json()["hint"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    }
+
     /// A `call` the lending program refused at plan time because the
-    /// wallet has no obligation says to deposit first, whichever field
-    /// carries the message; any other function failure keeps the generic
-    /// hint.
+    /// wallet has no obligation says to deposit into the market the call
+    /// targets first, whichever field carries the message.
     #[test]
     fn a_call_with_no_obligation_is_told_to_deposit_first() {
-        let shown = |kind, body: Value| {
-            SandboxRefusal {
-                status: 403,
-                body,
-                kind,
-            }
-            .to_json()
-        };
-        let hint = |value: &Value| value["hint"].as_str().unwrap().to_string();
         let missing = [
             json!({
-                "code": "sandbox-function-failed",
                 "error": "Kamino obligation 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU was not found",
-                "retryable": false,
                 "failedStage": "plan",
             }),
             json!({
-                "code": "sandbox-function-failed",
                 "message": "Save obligation 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU not found",
-                "retryable": false,
             }),
             json!({
-                "code": "sandbox-function-failed",
                 "error": "The function failed to plan",
-                "retryable": false,
                 "failedStage": "plan",
                 "stages": [
                     { "name": "request" },
                     { "name": "plan", "code": "sandbox-function-failed", "reason": "Obligation 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU Not Found" },
                 ],
             }),
+            json!({ "error": "obligation 7xKX… does not exist" }),
         ];
-        for body in missing {
+        for fields in missing {
             for kind in [CallKind::Preview, CallKind::Action] {
-                let refusal = shown(kind, body.clone());
-                let hint = hint(&refusal);
+                let hint = function_failed_hint(kind, fields.clone());
                 assert!(hint.contains("no open obligation"), "{kind:?}: {hint}");
+                assert!(
+                    hint.contains("lending market this call targets"),
+                    "{kind:?}: {hint}"
+                );
+                assert!(
+                    hint.contains("per wallet and lending market"),
+                    "{kind:?}: {hint}"
+                );
                 assert!(hint.contains("Deposit first"), "{kind:?}: {hint}");
                 assert!(hint.contains("sandbox_rules"), "{kind:?}: {hint}");
                 assert_ne!(hint, generic_hint(false, kind), "{kind:?}");
-                assert_eq!(refusal["retryable"], false);
             }
         }
+    }
 
-        // Another function failure, obligation or not, is not about a
-        // missing one.
-        for error in [
-            "Reserve 9abc is stale: refresh it first",
-            "Obligation 7xKX has an unhealthy loan-to-value",
-            "Pool not found",
-        ] {
-            let refusal = shown(
-                CallKind::Action,
-                json!({ "code": "sandbox-function-failed", "error": error, "retryable": false }),
-            );
-            assert_eq!(
-                hint(&refusal),
-                generic_hint(false, CallKind::Action),
-                "{error}"
-            );
-        }
-        // With a hint of its own from the API, that one stands.
-        let api = shown(
-            CallKind::Preview,
+    /// The refused action replays under its key, so the deposit-first
+    /// hint tells it to rerun under a new one after depositing; a preview
+    /// has no key, and gets the same hint without that.
+    #[test]
+    fn the_deposit_first_hint_gives_an_action_a_new_key() {
+        let fields = json!({ "error": "Kamino obligation 7xKX was not found" });
+        let action = function_failed_hint(CallKind::Action, fields.clone());
+        assert!(action.contains("a new idempotencyKey"), "{action}");
+        assert!(action.contains("recorded as refused"), "{action}");
+        let preview = function_failed_hint(CallKind::Preview, fields);
+        assert!(!preview.to_ascii_lowercase().contains("key"), "{preview}");
+        assert!(action.starts_with(&preview), "{action}");
+    }
+
+    /// Another function failure keeps the generic hint, or the API's own:
+    /// one that mentions an obligation without naming it as the thing not
+    /// found, or one with "obligation" in one field and "not found" in
+    /// another.
+    #[test]
+    fn a_function_failure_that_only_mentions_an_obligation_keeps_the_generic_hint() {
+        let unrelated = [
+            json!({ "error": "Reserve 9abc is stale: refresh it first" }),
+            json!({ "error": "Obligation 7xKX has an unhealthy loan-to-value" }),
+            json!({ "error": "Pool not found" }),
+            json!({ "error": "Could not refresh obligation: reserve not found" }),
+            json!({ "error": "obligation refresh failed: market not found" }),
+            json!({ "error": "Reserve not found while loading obligation" }),
             json!({
-                "code": "sandbox-function-failed",
-                "error": "Reserve 9abc is stale",
-                "retryable": false,
-                "hint": "Refresh the reserve first.",
+                "error": "Could not refresh the obligation",
+                "message": "Reserve 9abc not found",
             }),
-        );
-        assert_eq!(hint(&api), "Refresh the reserve first.");
+            json!({
+                "error": "Could not refresh the obligation",
+                "stages": [{ "name": "plan", "reason": "Reserve 9abc not found" }],
+            }),
+        ];
+        for fields in unrelated {
+            for kind in [CallKind::Preview, CallKind::Action] {
+                assert_eq!(
+                    function_failed_hint(kind, fields.clone()),
+                    generic_hint(false, kind),
+                    "{kind:?}: {fields}"
+                );
+                // With a hint of its own from the API, that one stands.
+                let mut with_hint = fields.clone();
+                with_hint["hint"] = json!("Refresh the reserve first.");
+                assert_eq!(
+                    function_failed_hint(kind, with_hint),
+                    "Refresh the reserve first.",
+                    "{kind:?}: {fields}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
