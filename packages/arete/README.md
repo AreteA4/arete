@@ -75,7 +75,8 @@ Full reference: <https://docs.arete.run/cli/commands/>. Agent setup guide:
 ## Building from source
 
 Only needed for unsupported platforms (anything other than
-darwin-arm64/x64, linux-x64/arm64, win32-x64). Needs Rust 1.89 or newer:
+darwin-arm64/x64, linux-x64/arm64, win32-x64). Needs Rust 1.89 or newer
+(`rustup update`):
 
 ```bash
 cargo install a4-cli

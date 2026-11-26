@@ -319,7 +319,7 @@ cargo build --workspace
 
 # CLI from source (unreleased builds only; the supported install is the
 # installer above, and a Cargo-built binary cannot `a4 self update`).
-# Needs Rust 1.89 or newer, the workspace's rust-version.
+# Needs Rust 1.89 or newer (rustup update), the workspace's rust-version.
 cargo install --path cli
 # or the published crate: cargo install a4-cli
 

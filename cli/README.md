@@ -31,8 +31,8 @@ a4 self uninstall         # remove the binary, receipt, and PATH lines
 ### Building from source
 
 Only for unreleased builds; the prebuilt binary above is the supported install
-path. Building needs Rust 1.89 or newer (the crate's `rust-version`). A
-Cargo-built binary cannot `a4 self update`; rebuild with
+path. Building needs Rust 1.89 or newer (the crate's `rust-version`; run
+`rustup update`). A Cargo-built binary cannot `a4 self update`; rebuild with
 `cargo install a4-cli --force` instead.
 
 ```bash
