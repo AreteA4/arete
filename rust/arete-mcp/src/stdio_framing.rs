@@ -29,7 +29,11 @@
 //! [`MAX_OUTSTANDING_ID_BYTES`] of string ids between them. A request that
 //! would exceed it is not passed on but answered with a `Server busy` error
 //! (code -32000), with its id and in its framing, before any further input
-//! is read.
+//! is read. A request whose id is already awaiting a reply is answered the
+//! same way with a `Duplicate request id` error (code -32600, an invalid
+//! request): it takes no room in the budget, and the request it repeats
+//! keeps its framing. The id is free again once that request is answered
+//! or cancelled.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -327,11 +331,23 @@ where
     }
 
     /// Remember the framing of a request, and forget a cancelled one: it is
-    /// never answered. `false` for a request over the budget, which is not
-    /// passed on but answered here.
+    /// never answered. `false` for a request that is not passed on but
+    /// answered here: one over the budget, or one whose id is already
+    /// awaiting a reply. JSON-RPC 2.0 wants an id unique among those, so
+    /// the repeat is an invalid request (code -32600) rather than a busy
+    /// server's; it takes no room in the budget, and the request it repeats
+    /// keeps its framing.
     fn track(&mut self, message: &ClientJsonRpcMessage, framing: Framing) -> bool {
         match message {
             JsonRpcMessage::Request(request) => {
+                if self.requests.iter().any(|(id, _)| *id == request.id) {
+                    tracing::debug!(
+                        "answering a request whose id is already awaiting a reply with an error"
+                    );
+                    let duplicate = ErrorData::invalid_request("Duplicate request id", None);
+                    self.fail(framing, duplicate, Some(request.id.clone()));
+                    return false;
+                }
                 let bytes = id_bytes(&request.id);
                 let over = if self.requests.len() == MAX_OUTSTANDING_REQUESTS {
                     Some("too many requests awaiting a reply")
@@ -1744,6 +1760,95 @@ mod tests {
         assert_eq!(admitted.id, RequestId::String("6".into()));
         assert_eq!(transport.requests.len(), 4);
         assert_eq!(transport.id_bytes, MAX_OUTSTANDING_ID_BYTES - quarter + 1);
+    }
+
+    #[tokio::test]
+    async fn a_request_repeating_an_outstanding_id_is_answered_invalid_and_takes_no_room() {
+        // A request in one framing, then more repeats of its id than the
+        // budget holds in the other, with a fresh request among them and
+        // one after them. The string id makes the budget's bytes visible.
+        let request = |id: &str| format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"ping"}}"#);
+        let answer = |id: &str| {
+            ServerJsonRpcMessage::response(ServerResult::empty(()), RequestId::String(id.into()))
+        };
+        for (original, other) in [
+            (Framing::ContentLength, Framing::Ndjson),
+            (Framing::Ndjson, Framing::ContentLength),
+        ] {
+            let encode = |json: &str, framing| match framing {
+                Framing::Ndjson => line(json),
+                Framing::ContentLength => framed(json),
+            };
+            let mut input = encode(&request("a"), original);
+            for n in 0..=MAX_OUTSTANDING_REQUESTS {
+                if n == MAX_OUTSTANDING_REQUESTS / 2 {
+                    input.extend(encode(&ping(2), other));
+                }
+                input.extend(encode(&request("a"), other));
+            }
+            input.extend(encode(&ping(3), other));
+            let (mut stdin, read) = tokio::io::duplex(input.len());
+            let (mut client, server) = tokio::io::duplex(1 << 20);
+            let (_, write) = tokio::io::split(server);
+            let mut transport = StdioTransport::new(read, write);
+            stdin.write_all(&input).await.unwrap();
+            transport.receive().await.unwrap();
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 3);
+            let waiting =
+                tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(waiting.is_err(), "{waiting:?}");
+            assert_eq!(
+                transport.requests,
+                [
+                    (RequestId::String("a".into()), original),
+                    (RequestId::Number(2), other),
+                    (RequestId::Number(3), other),
+                ]
+            );
+            assert_eq!(transport.id_bytes, 1);
+            let replies = read_replies(&mut client, MAX_OUTSTANDING_REQUESTS + 1).await;
+            for (framing, reply) in &replies {
+                assert_eq!(*framing, other, "{reply}");
+                assert_eq!(reply["id"], json!("a"), "{reply}");
+                assert_eq!(reply["error"]["code"], json!(INVALID_REQUEST), "{reply}");
+                assert_eq!(
+                    reply["error"]["message"],
+                    json!("Duplicate request id"),
+                    "{reply}"
+                );
+            }
+
+            // The repeats changed nothing: the original is answered in its
+            // own framing, not the one last seen, and so is the fresh one.
+            transport.send(reply(3)).await.unwrap();
+            transport.send(answer("a")).await.unwrap();
+            let replies = read_replies(&mut client, 2).await;
+            assert_eq!(replies[0].0, other);
+            assert_eq!(replies[0].1["id"], json!(3));
+            assert_eq!(replies[1].0, original);
+            assert_eq!(replies[1].1["id"], json!("a"));
+
+            // An id is free again once its request is answered or cancelled.
+            let reuse = [
+                encode(&request("a"), other),
+                encode(&cancel(2), other),
+                encode(&ping(2), original),
+            ]
+            .concat();
+            stdin.write_all(&reuse).await.unwrap();
+            transport.receive().await.unwrap();
+            transport.receive().await.unwrap();
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
+            assert_eq!(
+                transport.requests,
+                [
+                    (RequestId::String("a".into()), other),
+                    (RequestId::Number(2), original),
+                ]
+            );
+            assert_eq!(transport.id_bytes, 1);
+        }
     }
 
     const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"framing-test","version":"0"}}}"#;
