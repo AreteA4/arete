@@ -44,13 +44,13 @@ Update later with `a4 self update`. Full installer options: [CLI Command Referen
 
 ### Building from source
 
-Only if you need an unreleased build. It needs Rust 1.89 or newer (`rustup update`) and is not the supported install path:
+Not the supported install path. It needs Rust 1.89 or newer (`rustup update`). This builds the published release from crates.io:
 
 ```bash
-cargo install a4-cli
+cargo install --locked a4-cli
 ```
 
-A Cargo-built `a4` cannot use `a4 self update`; rebuild with `cargo install a4-cli --force` instead.
+For an unreleased revision, build from a checkout of the repository with `cargo install --locked --path cli`. A Cargo-built `a4` cannot use `a4 self update`; rebuild with `cargo install --locked a4-cli --force` instead.
 
 ---
 

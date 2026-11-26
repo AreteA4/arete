@@ -317,11 +317,12 @@ cd arete
 # Build all Rust packages
 cargo build --workspace
 
-# CLI from source (unreleased builds only; the supported install is the
-# installer above, and a Cargo-built binary cannot `a4 self update`).
-# Needs Rust 1.89 or newer (rustup update), the workspace's rust-version.
-cargo install --path cli
-# or the published crate: cargo install a4-cli
+# CLI from source: this checkout (an unreleased revision). The supported
+# install is the installer above, and a Cargo-built binary cannot
+# `a4 self update`. Needs Rust 1.89 or newer (rustup update), the
+# workspace's rust-version.
+cargo install --locked --path cli
+# or the published release from crates.io: cargo install --locked a4-cli
 
 # Build TypeScript SDKs
 cd typescript/core && npm install && npm run build

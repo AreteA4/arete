@@ -150,8 +150,8 @@ also available:
     npx @usearete/a4 install
 
 Update later with `a4 self update`. Do not substitute a Cargo install:
-`cargo install a4-cli` needs Rust 1.89 or newer, and the binary it builds
-cannot `a4 self update`.
+`cargo install --locked a4-cli` needs Rust 1.89 or newer, and the binary
+it builds cannot `a4 self update`.
 
 ### Initialise
 

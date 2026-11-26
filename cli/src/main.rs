@@ -11,7 +11,9 @@
 //! npx @usearete/a4 install                          # via npm
 //! ```
 //!
-//! Update with `a4 self update`. Building from source: `cargo install a4-cli` (Rust 1.89 or newer).
+//! Update with `a4 self update`. Building from source needs Rust 1.89 or newer:
+//! `cargo install --locked a4-cli` builds the published release from crates.io,
+//! `cargo install --locked --path cli` an unreleased revision from a checkout.
 //!
 //! ## Commands
 //!
