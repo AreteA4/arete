@@ -3906,9 +3906,12 @@ impl AreteMcp {
         description = "Fetch curated knowledge for one protocol by slug (e.g. \
                           `meteora-damm`): description, categories, links, its on-chain \
                           programs with roles (core/periphery/deprecated), related \
-                          protocols (composes-with, wraps, graduates-to, ...), the \
-                          public stacks streaming its entities, and per-concept coverage \
-                          (read/build/subscribe).\n\n\
+                          protocols (composes-with, wraps, graduates-to, ...), the stacks \
+                          covering its entities, and per-concept coverage \
+                          (read/build/subscribe). A stack streams now only where its \
+                          `coverageVia` entry has `subscribe: true`; otherwise it is \
+                          definition-only (install its SDK to build and read, or deploy \
+                          it to stream).\n\n\
                           Use after search_knowledge to decide how to integrate a \
                           protocol; follow `programs[].slug` into get_program_knowledge \
                           for instruction-level detail.\n\n\

@@ -16,6 +16,7 @@
 //! CLI. Where the contract leaves casing open, both snake_case and camelCase
 //! are accepted via serde aliases.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use anyhow::{bail, Result};
@@ -337,6 +338,19 @@ struct CoverageRow {
     build: bool,
     #[serde(default)]
     subscribe: bool,
+    #[serde(default, alias = "coverageVia")]
+    coverage_via: Vec<CoverageVia>,
+}
+
+/// One program or stack behind a coverage row.
+#[derive(Debug, Default, Deserialize)]
+struct CoverageVia {
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    slug: String,
+    #[serde(default)]
+    subscribe: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -425,6 +439,27 @@ fn coverage_flags(read: bool, build: bool, subscribe: bool) -> String {
     } else {
         flags.join(", ")
     }
+}
+
+/// A protocol's stacks by catalog slug, each marked `[live]` or
+/// `[definition-only]`. The `stacks` list names a stack and its entities
+/// without its slug or hosting; `coverageVia` carries both, and a stack that
+/// can `subscribe` to any concept has a hosted stream now.
+fn stack_hosting(coverage: &[CoverageRow]) -> Vec<String> {
+    let mut live: BTreeMap<&str, bool> = BTreeMap::new();
+    for via in coverage
+        .iter()
+        .flat_map(|row| &row.coverage_via)
+        .filter(|via| via.kind == "stack" && !via.slug.is_empty())
+    {
+        *live.entry(&via.slug).or_default() |= via.subscribe;
+    }
+    live.into_iter()
+        .map(|(slug, live)| {
+            let mark = if live { "live" } else { "definition-only" };
+            format!("{slug} [{mark}]")
+        })
+        .collect()
 }
 
 fn parse_lenient<T: Default + for<'de> Deserialize<'de>>(value: &Value) -> T {
@@ -612,14 +647,24 @@ fn render_protocol(value: &Value) -> String {
             }
         }
     }
-    if !parsed.stacks.is_empty() {
-        let _ = writeln!(text, "\n{}", "Live stacks".bold());
+    let hosting = stack_hosting(&parsed.coverage);
+    if !parsed.stacks.is_empty() || !hosting.is_empty() {
+        let _ = writeln!(text, "\n{}", "Stacks".bold());
         for stack in &parsed.stacks {
             let _ = writeln!(
                 text,
                 "  {}  entities: {}",
                 stack.stack.green().bold(),
                 stack.entities.join(", ")
+            );
+        }
+        if !hosting.is_empty() {
+            let _ = writeln!(text, "  by slug: {}", hosting.join(", "));
+            let _ = writeln!(
+                text,
+                "  {}",
+                "live: a hosted stream to subscribe to now; definition-only: install its SDK to build and read, or deploy it to stream"
+                    .dimmed()
             );
         }
     }
@@ -953,6 +998,7 @@ mod tests {
 
     #[test]
     fn protocol_rendering_covers_programs_relations_stacks_and_coverage() {
+        colored::control::set_override(false);
         let text = render_protocol(&json!({
             "slug": "meteora-damm",
             "name": "Meteora DAMM v2",
@@ -972,8 +1018,26 @@ mod tests {
                 "note": "Admin actions run through a Squads vault.",
                 "evidence": "recipes/execute-presale-purchase-via-squads"
             }],
-            "stacks": [{ "stack": "meteora-damm-stream", "entities": ["MeteoraPool"] }],
-            "coverage": [{ "concept": "swap", "read": true, "build": true, "subscribe": false }]
+            "stacks": [
+                { "stack": "MeteoraDammStream", "entities": ["MeteoraPool"] },
+                { "stack": "MeteoraDammCandlesStream", "entities": ["Candle"] }
+            ],
+            "coverage": [
+                {
+                    "concept": "swap", "read": true, "build": true, "subscribe": true,
+                    "coverageVia": [
+                        { "kind": "program", "slug": "meteora-cp-amm", "read": true, "build": true, "subscribe": false },
+                        { "kind": "stack", "slug": "meteora-damm", "read": true, "build": true, "subscribe": true },
+                        { "kind": "stack", "slug": "meteora-damm-candles", "read": false, "build": false, "subscribe": false }
+                    ]
+                },
+                {
+                    "concept": "vesting", "read": true, "build": true, "subscribe": false,
+                    "coverageVia": [
+                        { "kind": "stack", "slug": "meteora-damm", "read": true, "build": true, "subscribe": false }
+                    ]
+                }
+            ]
         }));
         assert!(text.contains("Meteora DAMM v2"), "{text}");
         assert!(text.contains("Categories: dex"), "{text}");
@@ -985,8 +1049,36 @@ mod tests {
         assert!(text.contains("[core]"), "{text}");
         assert!(text.contains("squads-v4"), "{text}");
         assert!(text.contains("composes-with"), "{text}");
-        assert!(text.contains("meteora-damm-stream"), "{text}");
-        assert!(text.contains("swap: read, build"), "{text}");
+        assert!(text.contains("Stacks"), "{text}");
+        assert!(!text.contains("Live stacks"), "{text}");
+        assert!(
+            text.contains("MeteoraDammStream  entities: MeteoraPool"),
+            "{text}"
+        );
+        // Hosting comes from `coverageVia` by slug: a stack that can
+        // subscribe to any concept is live, one that never can is
+        // definition-only; programs are not stacks.
+        assert!(
+            text.contains("by slug: meteora-damm [live], meteora-damm-candles [definition-only]"),
+            "{text}"
+        );
+        assert!(!text.contains("meteora-cp-amm ["), "{text}");
+        assert!(text.contains("swap: read, build, subscribe"), "{text}");
+        assert!(text.contains("vesting: read, build"), "{text}");
+    }
+
+    #[test]
+    fn protocol_rendering_claims_no_hosting_without_coverage_via() {
+        colored::control::set_override(false);
+        let text = render_protocol(&json!({
+            "slug": "p",
+            "name": "P",
+            "stacks": [{ "stack": "PStream", "entities": ["Row"] }],
+            "coverage": [{ "concept": "swap", "read": true, "build": true, "subscribe": false }]
+        }));
+        assert!(text.contains("PStream  entities: Row"), "{text}");
+        assert!(!text.contains("by slug"), "{text}");
+        assert!(!text.contains("live"), "{text}");
     }
 
     #[test]
