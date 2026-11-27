@@ -494,8 +494,10 @@ TLS, headers and body counted together, with a JSON-RPC error that reads
 fails after 60 s with `<tool> did not finish within 60s` and
 `{"code": "tool-timeout", "retryable": true}`, except tools whose own waits
 are longer: `read_view` 90 s; `sandbox_*`, `protocol_*` and `squads_*` 120 s;
-`protocol_submit`, `protocol_execute` and other `dev_*` tools 300 s;
-`dev_capture` and `dev_scenario` 15 minutes.
+`dev_*` 300 s; `dev_capture` and `dev_scenario` 15 minutes. Tools that sign or
+send a transaction (`sandbox_invoke`, `protocol_submit`, `protocol_execute`,
+`dev_step`) are never cut off mid-action: each of their requests and waits is
+bounded, and their own answer says whether the action ran or how to look it up.
 
 ### a4 config validate
 

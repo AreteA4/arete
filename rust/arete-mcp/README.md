@@ -18,7 +18,7 @@ answered with one and then the stream is closed. Requests awaiting a reply
 are capped; one past the cap is answered with a `Server busy` error
 (`-32000`) in its own framing, and one that repeats the id of a request
 awaiting a reply with a `Duplicate request id` error (`-32600`) rather
-than a place under the cap. Every tool call has a deadline (see
+than a place under the cap. No tool call waits on the network forever (see
 [Deadlines](#deadlines)), so a stalled API or stack is answered with an
 error and the request gives back its place under the cap. This crate is a
 library (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not
@@ -177,9 +177,14 @@ No tool call waits on the network forever. Two bounds apply:
   `<tool> did not finish within <bound>` and
   `{"code": "tool-timeout", "retryable": true}`. The bound is 60 s, except
   where a tool's own waits are longer: `read_view` 90 s; `sandbox_*`,
-  `protocol_*` and `squads_*` 120 s; `protocol_submit`,
-  `protocol_execute` and the other `dev_*` tools 300 s; `dev_capture` and
+  `protocol_*` and `squads_*` 120 s; `dev_*` 300 s; `dev_capture` and
   `dev_scenario` 15 minutes (use `a4 dev capture` for larger captures).
+  Tools that sign or send a transaction (`sandbox_invoke`,
+  `protocol_submit`, `protocol_execute`, `dev_step`) have no such bound,
+  so an action in flight is never cut off with a retryable error: each of
+  their requests and waits is bounded as above, and their own answer says
+  whether the action ran, or how to look it up (with the idempotency key
+  or execution id it returns), rather than run it again.
 
 ### Which tools are listed
 

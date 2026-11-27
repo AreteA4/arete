@@ -7,7 +7,10 @@
 //!   headers and the whole body included, and fails with [`TimedOut`].
 //!   Clients that already bound their own requests keep their bounds.
 //! - Each tool call as a whole is abandoned after [`tool_call_timeout`],
-//!   which covers tools that make several requests in a row.
+//!   which covers tools that make several requests in a row. Tools that
+//!   sign or send a transaction ([`SENDING_TOOLS`]) are never abandoned
+//!   partway: every request and wait they make is bounded already, and
+//!   their own errors say how to find out whether the action ran.
 //!
 //! A call that times out is answered with an error rather than holding its
 //! request open, so it also gives back its place under the stdio cap on
@@ -25,27 +28,40 @@ pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// lookup. A healthy call takes seconds; this only ends stalled ones.
 pub const TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long a call to `tool` may take. A tool whose own requests or waits
-/// may legitimately run longer than [`TOOL_CALL_TIMEOUT`] gets a bound above
-/// them, so its own, more specific error is the one an agent sees:
+/// Tools that may sign or send a transaction. Abandoning one partway would
+/// answer with a bare retryable error while the action may still land, and
+/// lose what the tool's own answer carries (the idempotency key it
+/// generated, the execution id, the hint to look the action up rather than
+/// run it again), so these get no tool deadline: each of their requests
+/// and waits is bounded by its client (sandbox actions 90 s, protocol API
+/// requests 60 s, a settle wait at most 120 s, a dev step's wait 90 s).
+pub const SENDING_TOOLS: [&str; 4] = [
+    "sandbox_invoke",
+    "protocol_submit",
+    "protocol_execute",
+    "dev_step",
+];
+
+/// How long a call to `tool` may take, or `None` for [`SENDING_TOOLS`]. A
+/// tool whose own requests or waits may legitimately run longer than
+/// [`TOOL_CALL_TIMEOUT`] gets a bound above them, so its own, more specific
+/// error is the one an agent sees:
 ///
 /// - `dev_capture` and `dev_scenario`: 15 minutes. A capture pages through
 ///   up to `max_transactions` transactions at a paced request rate, and a
 ///   scenario runs many steps; both are bounded per request already. Larger
 ///   captures belong to `a4 dev capture`.
-/// - `protocol_submit` and `protocol_execute`: 300 s. They prepare and
-///   submit (60 s per request) and then wait for the intent to settle (at
-///   most 120 s, plus the poll in flight).
 /// - Other `dev_*` tools: 300 s. Cloud dev environment requests are bounded
-///   at 150 s (a sleeping environment wakes first), and a step waits up to
-///   90 s for its intent.
-/// - `sandbox_*`, other `protocol_*` and `squads_*` tools: 120 s, above the
-///   sandbox's 90 s action bound and the protocol API's 60 s.
+///   at 150 s (a sleeping environment wakes first).
+/// - `sandbox_*`, `protocol_*` and `squads_*` tools: 120 s, above the
+///   sandbox's 90 s preview bound and the protocol API's 60 s.
 /// - `read_view`: 90 s, above its own `timeout_secs` (at most 60 s).
-pub fn tool_call_timeout(tool: &str) -> Duration {
-    match tool {
+pub fn tool_call_timeout(tool: &str) -> Option<Duration> {
+    if SENDING_TOOLS.contains(&tool) {
+        return None;
+    }
+    Some(match tool {
         "dev_capture" | "dev_scenario" => Duration::from_secs(15 * 60),
-        "protocol_submit" | "protocol_execute" => Duration::from_secs(300),
         "read_view" => Duration::from_secs(90),
         _ if tool.starts_with("dev_") => Duration::from_secs(300),
         _ if ["sandbox_", "protocol_", "squads_"]
@@ -55,7 +71,7 @@ pub fn tool_call_timeout(tool: &str) -> Duration {
             Duration::from_secs(120)
         }
         _ => TOOL_CALL_TIMEOUT,
-    }
+    })
 }
 
 /// A request that did not finish in time. It names the origin only, never
@@ -138,21 +154,15 @@ mod tests {
 
     #[test]
     fn long_running_tools_get_bounds_above_their_own_waits() {
-        assert_eq!(tool_call_timeout("explore_programs"), TOOL_CALL_TIMEOUT);
-        assert_eq!(tool_call_timeout("read_view"), Duration::from_secs(90));
+        let secs = |secs| Some(Duration::from_secs(secs));
         assert_eq!(
-            tool_call_timeout("sandbox_invoke"),
-            Duration::from_secs(120)
+            tool_call_timeout("explore_programs"),
+            Some(TOOL_CALL_TIMEOUT)
         );
-        assert_eq!(
-            tool_call_timeout("protocol_prepare"),
-            Duration::from_secs(120)
-        );
-        assert_eq!(
-            tool_call_timeout("protocol_submit"),
-            Duration::from_secs(300)
-        );
-        assert_eq!(tool_call_timeout("dev_wake"), Duration::from_secs(300));
-        assert_eq!(tool_call_timeout("dev_capture"), Duration::from_secs(900));
+        assert_eq!(tool_call_timeout("read_view"), secs(90));
+        assert_eq!(tool_call_timeout("sandbox_status"), secs(120));
+        assert_eq!(tool_call_timeout("protocol_prepare"), secs(120));
+        assert_eq!(tool_call_timeout("dev_wake"), secs(300));
+        assert_eq!(tool_call_timeout("dev_capture"), secs(900));
     }
 }

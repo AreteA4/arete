@@ -140,7 +140,8 @@ pub struct AreteMcp {
     account_key: Option<crate::program_read::AccountKey>,
     /// The bound on opening a stack connection (`connect`).
     connect_timeout: std::time::Duration,
-    /// Replaces [`deadline::tool_call_timeout`] for every tool (tests).
+    /// Replaces the bound of every tool [`deadline::tool_call_timeout`]
+    /// bounds (tests).
     tool_call_timeout: Option<std::time::Duration>,
 }
 
@@ -5470,16 +5471,20 @@ impl ServerHandler for AreteMcp {
     /// Every tool call, abandoned after its deadline
     /// ([`deadline::tool_call_timeout`]) so none can hold its request open:
     /// tools that make several requests in a row are bounded as a whole.
+    /// Tools that sign or send ([`deadline::SENDING_TOOLS`]) run to their
+    /// own, bounded answer.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::RoleServer>,
     ) -> Result<CallToolResponse, McpError> {
-        let after = self
-            .tool_call_timeout
-            .unwrap_or_else(|| deadline::tool_call_timeout(&request.name));
+        let after = deadline::tool_call_timeout(&request.name)
+            .map(|bound| self.tool_call_timeout.unwrap_or(bound));
         let tool = request.name.to_string();
         let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let Some(after) = after else {
+            return self.tool_router.call(call).await;
+        };
         tokio::time::timeout(after, self.tool_router.call(call))
             .await
             .unwrap_or_else(|_| {
@@ -8420,19 +8425,26 @@ mod deadline_tests {
                 .unwrap();
         }
 
+        /// The reply to `id`, failing the test rather than hanging when
+        /// none comes within 10 s.
         async fn reply(&mut self, id: u64) -> Value {
-            loop {
-                let line = self
-                    .replies
-                    .next_line()
-                    .await
-                    .unwrap()
-                    .expect("session ended");
-                let message: Value = serde_json::from_str(&line).unwrap();
-                if message["id"] == json!(id) {
-                    return message;
+            let waiting = async {
+                loop {
+                    let line = self
+                        .replies
+                        .next_line()
+                        .await
+                        .unwrap()
+                        .expect("session ended");
+                    let message: Value = serde_json::from_str(&line).unwrap();
+                    if message["id"] == json!(id) {
+                        return message;
+                    }
                 }
-            }
+            };
+            tokio::time::timeout(Duration::from_secs(10), waiting)
+                .await
+                .unwrap_or_else(|_| panic!("no reply to {id} within 10s"))
         }
     }
 
@@ -8500,7 +8512,8 @@ mod deadline_tests {
     #[tokio::test]
     async fn connect_to_a_stalled_stack_times_out_without_naming_the_key() {
         let base = deadline::blackhole();
-        let url = base.replacen("http://", "ws://", 1);
+        let origin = base.replacen("http://", "ws://", 1);
+        let url = format!("{origin}/stack?key=a4_sk_in_query");
         let args: ConnectArgs =
             serde_json::from_value(json!({"url": url, "api_key": "a4_sk_do_not_print"})).unwrap();
         let started = Instant::now();
@@ -8512,9 +8525,118 @@ mod deadline_tests {
         );
         assert_eq!(
             error.message,
-            format!("request to {url} timed out after 300ms")
+            format!("request to {origin} timed out after 300ms")
         );
         assert!(!format!("{error:?}").contains("a4_sk_"), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_account_request_answers_a_request_timeout_without_the_key() {
+        let base = deadline::blackhole();
+        let server = AreteMcp {
+            recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", SHORT),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        session.send(&call(11, "account_status")).await;
+        let answer = session.reply(11).await;
+        assert_eq!(
+            answer["error"]["message"],
+            json!(format!("request to {base} timed out after 300ms")),
+            "{answer}"
+        );
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "request-timeout", "retryable": true})
+        );
+        assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+    }
+
+    /// A sandbox API that mints a token at once and answers every other
+    /// request after `delay` with a landed action.
+    fn slow_sandbox_api(delay: Duration) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let mut request = Vec::new();
+                    let mut buffer = [0u8; 8192];
+                    let text = loop {
+                        match stream.read(&mut buffer) {
+                            Ok(0) | Err(_) => return,
+                            Ok(read) => request.extend_from_slice(&buffer[..read]),
+                        }
+                        let text = String::from_utf8_lossy(&request).to_string();
+                        let Some(end) = text.find("\r\n\r\n") else {
+                            continue;
+                        };
+                        let length = text
+                            .lines()
+                            .find_map(|line| {
+                                line.to_ascii_lowercase()
+                                    .strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + length {
+                            break text;
+                        }
+                    };
+                    let body = if text.starts_with("POST /ws/sessions ") {
+                        json!({
+                            "token": "tok-1",
+                            "expiresAt": crate::sandbox::tests::now() + 600,
+                            "tokenType": "Bearer",
+                            "scopes": ["sandbox:invoke", "sandbox:withdraw"],
+                        })
+                    } else {
+                        std::thread::sleep(delay);
+                        json!({ "actionId": "act-1", "status": "landed", "signature": "sig-1" })
+                    }
+                    .to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// A sandbox action still in flight when a tool deadline would have
+    /// passed is not abandoned: the agent gets the action's own answer and
+    /// the idempotency key it ran under, not a retryable timeout that would
+    /// invite running it again under a new key.
+    #[tokio::test]
+    async fn a_sandbox_action_runs_past_the_tool_deadline_to_its_own_answer() {
+        let base = slow_sandbox_api(SHORT * 3);
+        let server = AreteMcp {
+            tool_call_timeout: Some(SHORT),
+            ..AreteMcp::with_agents(
+                crate::protocol_agent::ProtocolAgent::new(None),
+                crate::sandbox::SandboxClient::from_values(
+                    Some(crate::sandbox::tests::SANDBOX.into()),
+                    Some("a4_sk_agent".into()),
+                    Some(base),
+                ),
+            )
+        };
+        let mut session = Session::open(server).await;
+        let invoke = json!({"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {
+            "name": "sandbox_invoke",
+            "arguments": {"action": "withdraw", "args": {"lamports": "5"}},
+        }});
+        session.send(&invoke.to_string()).await;
+        let answer = session.reply(10).await;
+        assert!(answer.get("error").is_none(), "{answer}");
+        let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["status"], json!("landed"), "{body}");
+        assert!(body["idempotencyKey"].is_string(), "{body}");
     }
 
     #[test]
@@ -8524,20 +8646,17 @@ mod deadline_tests {
             .into_iter()
             .map(|tool| tool.name.to_string())
             .collect();
-        for tool in [
-            "dev_capture",
-            "dev_scenario",
-            "protocol_submit",
-            "protocol_execute",
-            "read_view",
-        ] {
+        for tool in ["dev_capture", "dev_scenario", "read_view"]
+            .into_iter()
+            .chain(deadline::SENDING_TOOLS)
+        {
             assert!(
                 tools.iter().any(|name| name == tool),
                 "{tool} is not a tool"
             );
             assert_ne!(
                 deadline::tool_call_timeout(tool),
-                deadline::TOOL_CALL_TIMEOUT
+                Some(deadline::TOOL_CALL_TIMEOUT)
             );
         }
     }
