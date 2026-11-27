@@ -378,7 +378,9 @@ mod tests {
         let after = std::time::Duration::from_millis(300);
         let client = RecoveryClient::for_api(&base, "a4_sk_do_not_print", after);
         let started = std::time::Instant::now();
-        let error = client.account_status().await.unwrap_err();
+        let error = deadline::watchdog(std::time::Duration::from_secs(10), client.account_status())
+            .await
+            .unwrap_err();
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
             "{:?}",

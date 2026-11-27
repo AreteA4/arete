@@ -8592,7 +8592,12 @@ mod deadline_tests {
         let args: ConnectArgs =
             serde_json::from_value(json!({"url": url, "api_key": "a4_sk_do_not_print"})).unwrap();
         let started = Instant::now();
-        let error = stalled(&base).connect(Parameters(args)).await.unwrap_err();
+        let error = deadline::watchdog(
+            Duration::from_secs(10),
+            stalled(&base).connect(Parameters(args)),
+        )
+        .await
+        .unwrap_err();
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "{:?}",

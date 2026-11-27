@@ -1663,15 +1663,17 @@ mod tests {
         let base = deadline::blackhole();
         let client = RegistryClient::with_base_url(&base);
         let started = std::time::Instant::now();
-        let error = client
-            .send(
+        let error = deadline::watchdog(
+            Duration::from_secs(10),
+            client.send(
                 "/api/registry/v1/catalog/entries/stack/ore/knowledge",
                 None,
                 Some(Duration::from_millis(300)),
                 BodyCap::ToolResult,
-            )
-            .await
-            .unwrap_err();
+            ),
+        )
+        .await
+        .unwrap_err();
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "{:?}",
@@ -1689,7 +1691,11 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn the_default_deadline_bounds_a_request_to_a_server_that_never_answers() {
         let client = RegistryClient::with_base_url(&deadline::blackhole());
-        let error = client.list_programs().await.unwrap_err();
+        // The watchdog's limit is above the deadline, so the paused clock
+        // reaches the deadline first; without one it fails at the watchdog.
+        let error = deadline::watchdog(deadline::REQUEST_TIMEOUT * 2, client.list_programs())
+            .await
+            .unwrap_err();
         assert_eq!(timed_out(&error).after, deadline::REQUEST_TIMEOUT);
         assert!(
             error.to_string().ends_with("timed out after 30s"),
@@ -1706,7 +1712,9 @@ mod tests {
         let client =
             RegistryClient::with_base_url(&base).with_request_timeout(Duration::from_millis(300));
         let started = std::time::Instant::now();
-        let error = client.list_programs().await.unwrap_err();
+        let error = deadline::watchdog(Duration::from_secs(10), client.list_programs())
+            .await
+            .unwrap_err();
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "{:?}",
