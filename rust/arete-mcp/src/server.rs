@@ -5472,7 +5472,8 @@ impl ServerHandler for AreteMcp {
     /// ([`deadline::tool_call_timeout`]) so none can hold its request open:
     /// tools that make several requests in a row are bounded as a whole.
     /// Tools that sign or send ([`deadline::SENDING_TOOLS`]) run to their
-    /// own, bounded answer.
+    /// own, bounded answer; a timed-out tool that changes something
+    /// ([`deadline::CHANGING_TOOLS`]) is not called retryable.
     async fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -5488,9 +5489,18 @@ impl ServerHandler for AreteMcp {
         tokio::time::timeout(after, self.tool_router.call(call))
             .await
             .unwrap_or_else(|_| {
+                let changing = deadline::CHANGING_TOOLS.contains(&tool.as_str());
+                let message = if changing {
+                    format!(
+                        "{tool} did not finish within {after:?}; its change may have been \
+                         made, so check the state before running it again"
+                    )
+                } else {
+                    format!("{tool} did not finish within {after:?}")
+                };
                 Err(McpError::internal_error(
-                    format!("{tool} did not finish within {after:?}"),
-                    Some(json!({ "code": "tool-timeout", "retryable": true })),
+                    message,
+                    Some(json!({ "code": "tool-timeout", "retryable": !changing })),
                 ))
             })
     }
@@ -8506,7 +8516,42 @@ mod deadline_tests {
             json!("explore_stacks did not finish within 300ms"),
             "{answer}"
         );
-        assert_eq!(answer["error"]["data"]["code"], json!("tool-timeout"));
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "tool-timeout", "retryable": true})
+        );
+    }
+
+    /// A tool that changes something, abandoned by the tool deadline with
+    /// its request in flight, is not called retryable: the change may have
+    /// been made, and a blind retry would make it again.
+    #[tokio::test]
+    async fn a_changing_tool_past_its_deadline_is_not_called_retryable() {
+        let base = deadline::blackhole();
+        let server = AreteMcp {
+            recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", Duration::from_secs(30)),
+            tool_call_timeout: Some(SHORT),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        let rename = json!({"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {
+            "name": "rename_agent",
+            "arguments": {"display_name": "Renamed"},
+        }});
+        session.send(&rename.to_string()).await;
+        let answer = session.reply(12).await;
+        assert_eq!(
+            answer["error"]["message"],
+            json!(
+                "rename_agent did not finish within 300ms; its change may have been made, \
+                 so check the state before running it again"
+            ),
+            "{answer}"
+        );
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "tool-timeout", "retryable": false})
+        );
     }
 
     #[tokio::test]
@@ -8658,6 +8703,13 @@ mod deadline_tests {
                 deadline::tool_call_timeout(tool),
                 Some(deadline::TOOL_CALL_TIMEOUT)
             );
+        }
+        for tool in deadline::CHANGING_TOOLS {
+            assert!(
+                tools.iter().any(|name| name == tool),
+                "{tool} is not a tool"
+            );
+            assert!(!deadline::SENDING_TOOLS.contains(&tool), "{tool}");
         }
     }
 }

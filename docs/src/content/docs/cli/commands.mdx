@@ -498,6 +498,11 @@ are longer: `read_view` 90 s; `sandbox_*`, `protocol_*` and `squads_*` 120 s;
 send a transaction (`sandbox_invoke`, `protocol_submit`, `protocol_execute`,
 `dev_step`) are never cut off mid-action: each of their requests and waits is
 bounded, and their own answer says whether the action ran or how to look it up.
+Other tools that change something (the `dev_*` tools that change an
+environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
+`create_claim_link`) can still time out with their change in flight; their
+timeout carries `"retryable": false` and says to check the state before running
+them again.
 
 ### a4 config validate
 

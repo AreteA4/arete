@@ -10,7 +10,9 @@
 //!   which covers tools that make several requests in a row. Tools that
 //!   sign or send a transaction ([`SENDING_TOOLS`]) are never abandoned
 //!   partway: every request and wait they make is bounded already, and
-//!   their own errors say how to find out whether the action ran.
+//!   their own errors say how to find out whether the action ran. Other
+//!   tools that change something ([`CHANGING_TOOLS`]) may be abandoned, but
+//!   their timeout is not called retryable: the change may have been made.
 //!
 //! A call that times out is answered with an error rather than holding its
 //! request open, so it also gives back its place under the stdio cap on
@@ -40,6 +42,32 @@ pub const SENDING_TOOLS: [&str; 4] = [
     "protocol_submit",
     "protocol_execute",
     "dev_step",
+];
+
+/// Tools other than [`SENDING_TOOLS`] that change state on the API or in a
+/// dev environment. The tool deadline can abandon one with its change in
+/// flight (a relative `dev_warp`, a `dev_branch`), so its timeout is
+/// answered with `retryable: false` and asks for the state to be checked
+/// before the call is repeated.
+pub const CHANGING_TOOLS: [&str; 18] = [
+    "dev_wake",
+    "dev_sleep",
+    "dev_delete",
+    "dev_checkpoint",
+    "dev_branch",
+    "dev_restore",
+    "dev_rebase",
+    "dev_reset",
+    "dev_reset_account",
+    "dev_pin",
+    "dev_follow",
+    "dev_fund",
+    "dev_warp",
+    "dev_scenario",
+    "protocol_prepare",
+    "squads_attach",
+    "rename_agent",
+    "create_claim_link",
 ];
 
 /// How long a call to `tool` may take, or `None` for [`SENDING_TOOLS`]. A

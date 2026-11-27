@@ -185,6 +185,12 @@ No tool call waits on the network forever. Two bounds apply:
   their requests and waits is bounded as above, and their own answer says
   whether the action ran, or how to look it up (with the idempotency key
   or execution id it returns), rather than run it again.
+  A tool that changes something (the `dev_*` tools that change an
+  environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
+  `create_claim_link`) can still be cut off at its bound, with its change
+  in flight: its timeout reads `<tool> did not finish within <bound>; its
+  change may have been made, so check the state before running it again`
+  and carries `"retryable": false`.
 
 ### Which tools are listed
 
