@@ -685,9 +685,6 @@ async fn prepare_returns_unsigned_transactions_and_submit_takes_them_signed() {
 #[tokio::test]
 async fn execute_signs_within_policy_and_refuses_outside_it() {
     let (origin, state) = mock_api();
-    // Intents that have expired by the next run, so each run of the step is
-    // a new execution.
-    state.lock().unwrap().expires_at = Some(json!(1));
     let dir = tempfile::tempdir().unwrap();
     let mint = b58(&MINT);
     let (signer, key) = signer(
@@ -699,7 +696,10 @@ async fn execute_signs_within_policy_and_refuses_outside_it() {
         ),
     );
     let pubkey = signer.pubkey();
-    let agent = ProtocolAgent::new(Some(signer)).with_api(&origin, "a4_sk_test");
+    let mut agent = ProtocolAgent::new(Some(signer)).with_api(&origin, "a4_sk_test");
+    // No hold for completed runs, so each run of the step is a new
+    // execution.
+    agent.completed_hold = (0, 0);
     let call = StepCall {
         step: "tip",
         instance: Some("i-1"),
@@ -1370,13 +1370,193 @@ async fn exec(
     .await
 }
 
+/// The time (Unix seconds) a held run's `note` names: "Until <time> (this
+/// server's clock)".
+fn held_until(note: &Value) -> i64 {
+    let note = note.as_str().expect("a note");
+    let at = note
+        .split_once("Until ")
+        .and_then(|(_, rest)| rest.split_once(" (this server's clock)"))
+        .unwrap_or_else(|| panic!("no hold in {note}"))
+        .0;
+    chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp()
+}
+
+/// `at` is `from_now` seconds from now, give or take 5 s.
+fn assert_about(at: i64, from_now: i64, expires_at: &Value) {
+    let expected = crate::dev::unix_now() as i64 + from_now;
+    assert!(
+        (at - expected).abs() <= 5,
+        "held until {at}, not about {expected}, for expiresAt {expires_at}"
+    );
+}
+
+/// However missing, unreadable, past or absurd its `expiresAt`, a completed
+/// run is held for at least the minimum and at most the maximum after it
+/// completed; within that, until its `expiresAt` (seconds, milliseconds or
+/// RFC 3339).
+#[test]
+fn a_completed_run_is_held_between_the_minimum_and_the_maximum() {
+    let done = 1_900_000_000_i64;
+    let (floor, ceiling) = (done + 600, done + 3600);
+    let in_between = done + 1800;
+    let cases = [
+        (None, floor),
+        (Some(Value::Null), floor),
+        (Some(json!({})), floor),
+        (Some(json!([in_between])), floor),
+        (Some(json!(true)), floor),
+        (Some(json!("9999-12-31T23:59:59Z")), ceiling),
+        (Some(json!(i64::MAX)), ceiling),
+        (Some(json!(i64::MIN)), floor),
+        (Some(json!(u64::MAX)), floor),
+        (Some(json!(in_between as f64)), floor),
+        (Some(json!(f64::NAN)), floor),
+        (Some(json!("NaN")), floor),
+        (Some(json!("9".repeat(1 << 20))), floor),
+        (Some(json!(-5)), floor),
+        (Some(json!(done - 30)), floor),
+        (Some(json!(in_between)), in_between),
+        (Some(json!(in_between * 1000)), in_between),
+        (Some(json!(shown_time(in_between))), in_between),
+        (Some(json!("2030-03-17T19:16:40+01:00")), in_between),
+        // The largest number read as seconds, and the smallest read as
+        // milliseconds.
+        (Some(json!(100_000_000_000_i64)), ceiling),
+        (Some(json!(100_000_000_001_i64)), floor),
+    ];
+    for (expires_at, held) in cases {
+        let shown: String = format!("{expires_at:?}").chars().take(60).collect();
+        assert_eq!(
+            hold_until(expires_at.as_ref(), done, (600, 3600)),
+            held,
+            "{shown}"
+        );
+    }
+    assert_eq!(hold_until(None, i64::MAX - 10, (600, 3600)), i64::MAX);
+}
+
+/// A run with other args that fails before signing (here the policy
+/// refuses it) leaves the step's completed run held; one that signs and
+/// completes takes its place.
+#[tokio::test]
+async fn a_refused_run_with_other_args_keeps_the_completed_one() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let agent = signing_agent(dir.path(), &origin);
+    let args = json!({});
+    let call = tip_call(&args);
+    let other_args = json!({ "amount": "2" });
+    let other = tip_call(&other_args);
+    let held = |answer: &Value| {
+        answer["note"].as_str().is_some_and(|note| {
+            note.starts_with("This answers the last protocol_execute of step 'tip' with these args")
+        })
+    };
+
+    exec(&agent, &call, None).await.unwrap();
+    state.lock().unwrap().sol_out = 20_000_000;
+    let refused = exec(&agent, &other, None).await.unwrap();
+    assert_eq!(refused["state"], "refused", "{refused}");
+    state.lock().unwrap().sol_out = 0;
+    let again = exec(&agent, &call, None).await.unwrap();
+    assert!(held(&again), "{again}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 2);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+
+    let fresh = exec(&agent, &other, None).await.unwrap();
+    assert_eq!(fresh["state"], "completed", "{fresh}");
+    assert!(!held(&fresh), "{fresh}");
+    let anew = exec(&agent, &call, None).await.unwrap();
+    assert!(!held(&anew), "{anew}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 4);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 3);
+}
+
+/// A run answering for an unsettled execution names that execution to a
+/// call refused while it waits.
+#[tokio::test]
+async fn a_resumed_run_names_its_execution_while_it_waits() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = signing_agent(dir.path(), &origin);
+    // The stalled submit is cut off at 500 ms: an unknown outcome.
+    agent.http = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .unwrap();
+    {
+        let mut guard = state.lock().unwrap();
+        guard.stall = Some(("POST", "/api/execution-intents/e-1/submit"));
+        guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
+    }
+    let args = json!({});
+    let call = tip_call(&args);
+    let error = exec(&agent, &call, None).await.unwrap_err();
+    assert!(error.downcast_ref::<MaybeSubmitted>().is_some(), "{error}");
+
+    // Taken, not settled yet: the next run waits on it.
+    {
+        let mut guard = state.lock().unwrap();
+        guard.stall = None;
+        guard.intent_answer = Some(taken("submitting"));
+    }
+    let reads = sent(&state, "GET", "/execution-intents/e-1").len();
+    let (resumed, refused) = tokio::join!(
+        exec(&agent, &call, Some(Duration::from_secs(2))),
+        async {
+            eventually("the resumed run never read its execution", || {
+                sent(&state, "GET", "/execution-intents/e-1").len() > reads
+            })
+            .await;
+            exec(&agent, &call, None).await
+        }
+    );
+    let error = refused.unwrap_err();
+    let busy = error.downcast_ref::<StepBusy>().expect("busy");
+    assert_eq!(busy.code, "step-in-flight");
+    assert_eq!(busy.execution_id.as_deref(), Some("e-1"));
+    assert!(error.to_string().contains("as execution e-1;"), "{error}");
+    let resumed = resumed.unwrap();
+    assert_eq!(resumed["executionId"], "e-1", "{resumed}");
+    assert_eq!(resumed["settled"], false, "{resumed}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+}
+
+/// A running call whose execution id is missing or empty is refused
+/// without naming one.
+#[tokio::test]
+async fn a_running_call_without_an_execution_id_names_none() {
+    let (origin, _state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let agent = signing_agent(dir.path(), &origin);
+    let args = json!({});
+    let call = tip_call(&args);
+    exec(&agent, &call, None).await.unwrap();
+    let key = agent.steps.iter().next().unwrap().key().clone();
+    for running in [None, Some(String::new())] {
+        agent
+            .steps
+            .insert(key.clone(), StepRun::InFlight(running.clone()));
+        let error = exec(&agent, &call, None).await.unwrap_err();
+        let busy = error.downcast_ref::<StepBusy>().expect("busy");
+        assert_eq!(busy.code, "step-in-flight");
+        assert_eq!(busy.execution_id, None, "{running:?}");
+        let message = error.to_string();
+        assert!(message.contains("has not finished preparing;"), "{message}");
+        assert!(!message.contains("as execution"), "{message}");
+    }
+}
+
 /// Running `protocol_execute` again before its last execution settled (an
 /// unknown submit, or a wait that ended first) answers for that execution
 /// instead of preparing and signing a new one: the transactions are sent
 /// once, or, while the API has not taken them, the same signed bytes are
 /// sent again. Once it completed, the same args get its answer again until
-/// its `expiresAt` (a number or an RFC 3339 time), and other args, or the
-/// same args after then, run anew.
+/// its `expiresAt`, but for at least 10 minutes and at most an hour after
+/// it completed on this server's clock, whatever the `expiresAt` says; other
+/// args, or the same args after then, execute again.
 #[tokio::test]
 async fn running_protocol_execute_again_never_submits_a_step_twice() {
     let (origin, state) = mock_api();
@@ -1407,13 +1587,20 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
     let result = exec(&agent, &call, None).await.unwrap();
     assert_eq!(result["executionId"], "e-1", "{result}");
     assert_eq!(result["state"], "completed", "{result}");
+    let until = held_until(&result["note"]);
     assert_eq!(
         result["note"],
-        "This answers the previous protocol_execute of this step, which had not settled: \
-         nothing new was prepared or signed. Until its expiresAt (1900000000), running the \
-         step again with the same args answers for this execution; other args run anew.",
+        format!(
+            "This answers the previous protocol_execute of this step, which had not settled: \
+             nothing new was prepared or signed. Until {} (this server's clock), running the \
+             step again with the same args answers for this execution; other args, or the same \
+             args after then, execute again.",
+            shown_time(until)
+        ),
         "{result}"
     );
+    // An `expiresAt` years ahead holds for the hour at most.
+    assert_about(until, 3600, &json!(1_900_000_000));
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
@@ -1425,10 +1612,13 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
     assert_eq!(again["state"], "completed", "{again}");
     assert_eq!(
         again["note"],
-        "This answers the last protocol_execute of step 'tip' with these args, which \
-         completed: nothing new was prepared or signed. Until its expiresAt (1900000000), \
-         running the step with the same args answers this way; other args, or the same args \
-         after then, run anew.",
+        format!(
+            "This answers the last protocol_execute of step 'tip' with these args, which \
+             completed: nothing new was prepared or signed. Until {} (this server's clock), \
+             running the step with the same args answers this way; other args, or the same \
+             args after then, execute again.",
+            shown_time(until)
+        ),
         "{again}"
     );
     assert!(seen(&state).is_empty(), "{:?}", seen(&state));
@@ -1485,47 +1675,85 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
     assert_eq!(submits[0].body, submits[1].body);
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
-    // An RFC 3339 `expiresAt` holds the answer the same way; once it has
-    // passed, the same args run anew.
-    for (expires_at, prepares) in [(json!("2030-01-01T00:00:00Z"), 1), (json!(1), 2)] {
+    // Held until `expiresAt`, but for 10 minutes at least and an hour at
+    // most: one already past (a clock ahead of the API's), a missing one or
+    // one years ahead holds the run all the same.
+    let in_half_an_hour = crate::dev::unix_now() as i64 + 1800;
+    for (expires_at, held_for) in [
+        (json!(1), 600),
+        (Value::Null, 600),
+        (json!("9999-12-31T23:59:59Z"), 3600),
+        (json!(shown_time(in_half_an_hour)), 1800),
+    ] {
         restart(&state);
         state.lock().unwrap().expires_at = Some(expires_at.clone());
         let agent = signing_agent(dir.path(), &origin);
         exec(&agent, &call, None).await.unwrap();
         let again = exec(&agent, &call, None).await.unwrap();
         assert_eq!(again["state"], "completed", "{again}");
-        assert_eq!(
-            sent(&state, "POST", "/prepare").len(),
-            prepares,
-            "{expires_at}"
-        );
-        assert_eq!(sent(&state, "POST", "/submit").len(), prepares);
-        if prepares == 1 {
-            assert!(again["note"]
-                .as_str()
-                .unwrap()
-                .contains("Until its expiresAt (2030-01-01T00:00:00Z)"));
-        }
+        assert_eq!(sent(&state, "POST", "/prepare").len(), 1, "{expires_at}");
+        assert_eq!(sent(&state, "POST", "/submit").len(), 1, "{expires_at}");
+        assert_about(held_until(&again["note"]), held_for, &expires_at);
     }
 
-    // A completed run whose expiresAt passes is dropped once another step
-    // call runs (one that has expired by its own end keeps nothing), and
-    // the same args then run anew.
+    // Completed just before its expiresAt: still held once it passed.
     restart(&state);
-    // Whole seconds: 2 s ahead holds across a run, 3.1 s later it has passed.
-    let soon = crate::dev::unix_now() + 2;
-    state.lock().unwrap().expires_at = Some(json!(soon));
+    state.lock().unwrap().expires_at = Some(json!(crate::dev::unix_now() + 1));
     let agent = signing_agent(dir.path(), &origin);
     exec(&agent, &call, None).await.unwrap();
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let again = exec(&agent, &call, None).await.unwrap();
+    assert!(again["note"]
+        .as_str()
+        .unwrap()
+        .starts_with("This answers the last protocol_execute of step 'tip' with these args"));
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+
+    // First read as completed after its expiresAt passed (the wait ended
+    // first, and the run after it found the execution completed): held.
+    restart(&state);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.expires_at = Some(json!(crate::dev::unix_now() + 1));
+        guard.submit_answer = Some(taken("submitting"));
+        guard.intent_answer = Some(taken("submitting"));
+    }
+    let agent = signing_agent(dir.path(), &origin);
+    let pending = exec(&agent, &call, Some(Duration::from_millis(600)))
+        .await
+        .unwrap();
+    assert_eq!(pending["settled"], false, "{pending}");
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    state.lock().unwrap().intent_answer = Some(taken("completed"));
+    let done = exec(&agent, &call, None).await.unwrap();
+    assert_eq!(done["state"], "completed", "{done}");
+    assert_about(held_until(&done["note"]), 600, &json!("past"));
+    let again = exec(&agent, &call, None).await.unwrap();
+    assert!(again["note"]
+        .as_str()
+        .unwrap()
+        .starts_with("This answers the last protocol_execute of step 'tip' with these args"));
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+
+    // After its hold (1 s here) the same args execute again, and the run
+    // is dropped once another step call runs.
+    restart(&state);
+    let mut agent = signing_agent(dir.path(), &origin);
+    agent.completed_hold = (1, 1);
+    exec(&agent, &call, None).await.unwrap();
     assert_eq!(agent.steps.len(), 1);
-    tokio::time::sleep(Duration::from_millis(3100)).await;
+    tokio::time::sleep(Duration::from_millis(2100)).await;
     let elsewhere = StepCall {
         instance: Some("i-2"),
         ..tip_call(&args)
     };
     exec(&agent, &elsewhere, None).await.unwrap();
-    assert!(agent.steps.is_empty());
-    exec(&agent, &call, None).await.unwrap();
+    // Only the run just made is held.
+    assert_eq!(agent.steps.len(), 1);
+    let anew = exec(&agent, &call, None).await.unwrap();
+    assert!(anew.get("note").is_none(), "{anew}");
     assert_eq!(sent(&state, "POST", "/prepare").len(), 3);
 
     // Settled without completing (the chain failed it): nothing was done,
@@ -1744,9 +1972,9 @@ async fn a_step_in_flight_is_prepared_and_sent_once() {
     assert_eq!(
         busy[0].to_string(),
         "protocol_execute of step 'tip' is already running for this signer in this a4 mcp \
-         session and has not prepared its execution yet; nothing was prepared or signed for \
-         this call. Its answer goes to the call that started it. If your host gave up on that \
-         call, its answer is lost: call again shortly for its `executionId`, and read it with \
+         session and has not finished preparing; nothing was prepared or signed for this \
+         call. Its answer goes to the call that started it. If your host gave up on that call, \
+         its answer is lost: call again shortly for its `executionId`, and read it with \
          protocol_intent before re-running the step."
     );
     assert!(errors
@@ -1836,7 +2064,9 @@ async fn a_step_in_flight_is_prepared_and_sent_once() {
 async fn a_cancelled_execute_frees_its_step_until_it_signs() {
     let (origin, state) = mock_api();
     let dir = tempfile::tempdir().unwrap();
-    let agent = signing_agent(dir.path(), &origin);
+    let mut agent = signing_agent(dir.path(), &origin);
+    // No hold for completed runs, so the next run is a new execution.
+    agent.completed_hold = (0, 0);
     let call_args = json!({});
     let call = tip_call(&call_args);
     let target = hosted(Some("d-1"));
@@ -1848,8 +2078,6 @@ async fn a_cancelled_execute_frees_its_step_until_it_signs() {
         .await
         .expect_err("still running");
     restart(&state);
-    // Expired by the next run, so that run is a new execution.
-    state.lock().unwrap().expires_at = Some(json!(1));
     let done = agent.execute(&target, &call, None, None).await.unwrap();
     assert!(done.get("note").is_none(), "{done}");
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
@@ -1956,6 +2184,8 @@ async fn a_host_cancel_mid_wait_sends_the_step_once() {
             .starts_with("This answers the last protocol_execute of step 'tip' with these args"),
         "{body}"
     );
+    // A reply to 21 written after the one to 23 counts too.
+    session.drain(Duration::from_millis(500)).await;
     assert!(
         session
             .skipped
@@ -2062,9 +2292,6 @@ async fn rpc_failures_never_show_the_rpc_key_or_hang() {
 #[tokio::test]
 async fn execute_refuses_authority_changes_and_uncapped_outflows() {
     let (origin, state) = mock_api();
-    // Intents that have expired by the next run, so each run of the step is
-    // a new execution.
-    state.lock().unwrap().expires_at = Some(json!(1));
     let dir = tempfile::tempdir().unwrap();
     // No maxTokenAmounts and no programs allow-list.
     let (signer, _) = signer(
@@ -2073,7 +2300,10 @@ async fn execute_refuses_authority_changes_and_uncapped_outflows() {
         "deployments = [\"d-1\"]\nmaxSolPerTransaction = 0.0001\n",
     );
     let pubkey = signer.pubkey();
-    let agent = ProtocolAgent::new(Some(signer)).with_api(&origin, "a4_sk_test");
+    let mut agent = ProtocolAgent::new(Some(signer)).with_api(&origin, "a4_sk_test");
+    // No hold for completed runs, so each run of the step is a new
+    // execution.
+    agent.completed_hold = (0, 0);
     let args = json!({});
     let call = tip_call(&args);
     let target = hosted(Some("d-1"));

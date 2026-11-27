@@ -47,6 +47,12 @@ pub const API_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long simulating a prepared step may take as a whole, however many
 /// transactions it has: past it the rest are summarized unsimulated.
 pub const SIMULATION_BUDGET: Duration = Duration::from_secs(60);
+/// How long (seconds after it completed, on this server's clock) a
+/// completed `protocol_execute` answers the same args again: until its
+/// `expiresAt`, but at least the first and at most the second. Intents live
+/// about a minute while the settle wait runs up to two, so a run often
+/// completes near or after its `expiresAt`.
+const COMPLETED_HOLD: (i64, i64) = (10 * 60, 60 * 60);
 
 /// An argument the caller must fix.
 #[derive(Debug)]
@@ -172,13 +178,13 @@ enum StepRun {
     /// Its last execution has not settled: the submit's outcome was
     /// unknown, or the wait ended first.
     Unsettled(LastRun),
-    /// Its last execution completed. Until `until` (its `expiresAt`, Unix
-    /// seconds) the same args get `answer` again instead of a second
-    /// execution, since a host that gave up on the call never saw it.
+    /// Its last execution completed. Until `until` (Unix seconds, this
+    /// server's clock; see [`hold_until`]) the same args get `answer` again
+    /// instead of a second execution, since a host that gave up on the
+    /// call never saw it.
     Completed {
         args: Value,
         answer: Value,
-        expires_at: Value,
         until: i64,
     },
 }
@@ -246,6 +252,25 @@ fn unix_seconds(expires_at: &Value) -> Option<i64> {
     }
 }
 
+/// Until when a step call that completed at `completed_at` answers the
+/// same args again: its `expiresAt`, but at least `hold.0` and at most
+/// `hold.1` seconds after `completed_at`. An `expiresAt` that is missing,
+/// unreadable or already past holds the minimum; an absurd one the maximum.
+fn hold_until(expires_at: Option<&Value>, completed_at: i64, hold: (i64, i64)) -> i64 {
+    let floor = completed_at.saturating_add(hold.0);
+    expires_at
+        .and_then(unix_seconds)
+        .map_or(floor, |at| at.max(floor))
+        .min(completed_at.saturating_add(hold.1))
+}
+
+/// Unix seconds as an RFC 3339 time.
+fn shown_time(at: i64) -> String {
+    chrono::DateTime::from_timestamp(at, 0)
+        .map(|at| at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| at.to_string())
+}
+
 /// `expiresAt` as written in a message: a time without its quotes.
 fn shown(expires_at: &Value) -> String {
     match expires_at {
@@ -290,12 +315,15 @@ pub struct ProtocolAgent {
     executions: Arc<DashMap<String, Remembered>>,
     instances: Arc<DashMap<String, Remembered>>,
     /// What `protocol_execute` holds per step call in this session: one
-    /// running, or one whose last execution has not settled (its submit
-    /// had an unknown outcome, or the wait ended first). Running the call
-    /// again answers for that execution instead of preparing a new one.
+    /// running, one whose last execution has not settled (its submit had
+    /// an unknown outcome, or the wait ended first), or one that completed,
+    /// held for a while. Running the call again answers for that execution
+    /// instead of preparing a new one.
     steps: Arc<DashMap<String, StepRun>>,
     /// How long simulating a prepared step may take as a whole.
     simulation_budget: Duration,
+    /// [`COMPLETED_HOLD`], shorter in tests.
+    completed_hold: (i64, i64),
 }
 
 impl ProtocolAgent {
@@ -312,6 +340,7 @@ impl ProtocolAgent {
             instances: Arc::new(DashMap::new()),
             steps: Arc::new(DashMap::new()),
             simulation_budget: SIMULATION_BUDGET,
+            completed_hold: COMPLETED_HOLD,
         }
     }
 
@@ -846,7 +875,7 @@ impl ProtocolAgent {
             .await?;
         // Settled: a protocol_execute step left unsettled by this execution
         // (resent here, as its error says) is free to run anew, or, when it
-        // completed, answers the same args with it until its expiresAt.
+        // completed, answers the same args with it for its hold window.
         if result["settled"] == json!(true) {
             let held: Vec<(String, Value)> = self
                 .steps
@@ -878,19 +907,23 @@ impl ProtocolAgent {
     }
 
     /// What a step call keeps once its execution settled with `answer`: a
-    /// completed one with a known `expiresAt` still ahead, until then.
+    /// completed one, held from now until [`hold_until`].
     fn completed(&self, execution_id: &str, args: Value, answer: &Value) -> Option<StepRun> {
         if answer["state"] != "completed" {
             return None;
         }
-        let expires_at = self.executions.get(execution_id)?.expires_at.clone()?;
-        let until =
-            unix_seconds(&expires_at).filter(|until| *until > crate::dev::unix_now() as i64)?;
+        let expires_at = self
+            .executions
+            .get(execution_id)
+            .and_then(|entry| entry.expires_at.clone());
         Some(StepRun::Completed {
             args,
             answer: answer.clone(),
-            expires_at,
-            until,
+            until: hold_until(
+                expires_at.as_ref(),
+                crate::dev::unix_now() as i64,
+                self.completed_hold,
+            ),
         })
     }
 
@@ -1201,8 +1234,9 @@ impl ProtocolAgent {
     /// same args answers for that execution (the same signed bytes) instead
     /// of preparing and signing a new one, and a call with other args is
     /// refused. Once it completed, a call with the same args gets its
-    /// answer again until its `expiresAt`, since a host that gave up on the
-    /// first call never saw it. This lasts for this server's session only.
+    /// answer again for a while (see [`hold_until`]), since a host that gave
+    /// up on the first call never saw it; after then it executes again.
+    /// This lasts for this server's session only.
     pub async fn execute(
         &self,
         args: &TargetArgs,
@@ -1239,16 +1273,20 @@ impl ProtocolAgent {
             other => other.clone(),
         };
         let now = crate::dev::unix_now() as i64;
-        // A completed run past its expiresAt answers nothing any more.
+        // A completed run past its hold answers nothing any more.
         self.steps
             .retain(|_, run| !matches!(run, StepRun::Completed { until, .. } if *until <= now));
-        let resumed = match self.steps.entry(call_key.clone()) {
+        // `keep` is what the step returns to unless this call signs: an
+        // unsettled execution it answers for, or a completed run of other
+        // args, which a call that fails before signing must not erase.
+        let (resumed, keep) = match self.steps.entry(call_key.clone()) {
             dashmap::mapref::entry::Entry::Vacant(free) => {
                 free.insert(StepRun::InFlight(None));
-                None
+                (None, None)
             }
             dashmap::mapref::entry::Entry::Occupied(mut held) => match held.get().clone() {
                 StepRun::InFlight(execution_id) => {
+                    let execution_id = execution_id.filter(|id| !id.is_empty());
                     let message = match &execution_id {
                         Some(id) => format!(
                             "protocol_execute of step '{}' is already running for this signer \
@@ -1260,7 +1298,7 @@ impl ProtocolAgent {
                         ),
                         None => format!(
                             "protocol_execute of step '{}' is already running for this signer \
-                             in this a4 mcp session and has not prepared its execution yet; \
+                             in this a4 mcp session and has not finished preparing; \
                              nothing was prepared or signed for this call. Its answer goes to \
                              the call that started it. If your host gave up on that call, its \
                              answer is lost: call again shortly for its `executionId`, and read \
@@ -1293,35 +1331,34 @@ impl ProtocolAgent {
                 }
                 StepRun::Unsettled(previous) => {
                     held.insert(StepRun::InFlight(Some(previous.execution_id.clone())));
-                    Some(previous)
+                    (Some(previous.clone()), Some(StepRun::Unsettled(previous)))
                 }
-                // Unexpired: expired ones were pruned above.
+                // Still held: past ones were pruned above.
                 StepRun::Completed {
                     args,
                     mut answer,
-                    expires_at,
-                    ..
+                    until,
                 } if args == step_args => {
                     answer["note"] = json!(format!(
                         "This answers the last protocol_execute of step '{}' with these args, \
-                         which completed: nothing new was prepared or signed. Until its \
-                         expiresAt ({}), running the step with the same args answers this way; \
-                         other args, or the same args after then, run anew.",
+                         which completed: nothing new was prepared or signed. Until {} (this \
+                         server's clock), running the step with the same args answers this \
+                         way; other args, or the same args after then, execute again.",
                         call.step,
-                        shown(&expires_at)
+                        shown_time(until)
                     ));
                     return Ok(answer);
                 }
-                StepRun::Completed { .. } => {
+                completed @ StepRun::Completed { .. } => {
                     held.insert(StepRun::InFlight(None));
-                    None
+                    (None, Some(completed))
                 }
             },
         };
         let mut reservation = Reservation {
             steps: self.steps.clone(),
             key: call_key,
-            keep: resumed.clone().map(StepRun::Unsettled),
+            keep,
         };
         if let Some(previous) = resumed {
             let remembered = self
@@ -1350,12 +1387,12 @@ impl ProtocolAgent {
                 reservation.keep = self.completed(&previous.execution_id, step_args, &result);
             }
             result["note"] = json!(match &reservation.keep {
-                Some(StepRun::Completed { expires_at, .. }) => format!(
+                Some(StepRun::Completed { until, .. }) => format!(
                     "This answers the previous protocol_execute of this step, which had not \
-                     settled: nothing new was prepared or signed. Until its expiresAt ({}), \
-                     running the step again with the same args answers for this execution; \
-                     other args run anew.",
-                    shown(expires_at)
+                     settled: nothing new was prepared or signed. Until {} (this server's \
+                     clock), running the step again with the same args answers for this \
+                     execution; other args, or the same args after then, execute again.",
+                    shown_time(*until)
                 ),
                 _ if settled => "This answers the previous protocol_execute of this step, \
                                  which had not settled: nothing new was prepared or signed. \

@@ -171,7 +171,9 @@ and, within one `a4 mcp` session, runs one call per step at a time (another is
 refused with `step-in-flight` and the running call's `executionId` once
 prepared), answers for an unsettled execution when run again with the same
 args, and answers with a completed execution when run again with the same args
-before its `expiresAt`. A host that gives up on a call does not stop it, and its
+until its `expiresAt`, but for at least 10 minutes and at most 1 hour after it
+completed (this server's clock); a same-args run after that window executes
+again. A host that gives up on a call does not stop it, and its
 answer is lost: read the execution with `protocol_intent` before running the
 step again. A restarted server forgets all of this, so follow the error's
 guidance after a restart.

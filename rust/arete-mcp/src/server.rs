@@ -3713,7 +3713,9 @@ impl AreteMcp {
                           running it again with the same args answers for that execution \
                           (`note` says so) instead of preparing and signing a new one, and \
                           other args are refused with `step-unsettled`. Once it completed, the \
-                          same args before its `expiresAt` get that execution's answer again. \
+                          same args get that execution's answer again until its `expiresAt`, \
+                          but for at least 10 minutes and at most 1 hour after it completed \
+                          (this server's clock); a same-args run after then executes again. \
                           That holds only in this a4 mcp session: after a restart, resend the \
                           `signedTransactions` or wait until the execution is `expired`."
     )]
@@ -8540,6 +8542,16 @@ pub(crate) mod deadline_tests {
             tokio::time::timeout(Duration::from_secs(10), waiting)
                 .await
                 .unwrap_or_else(|_| panic!("no reply to {id} within 10s"))
+        }
+
+        /// Read what the server writes until it has been quiet for
+        /// `quiet`, into `skipped`.
+        pub(crate) async fn drain(&mut self, quiet: Duration) {
+            while let Ok(Ok(Some(line))) =
+                tokio::time::timeout(quiet, self.replies.next_line()).await
+            {
+                self.skipped.push(serde_json::from_str(&line).unwrap());
+            }
         }
     }
 
