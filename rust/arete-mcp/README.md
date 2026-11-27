@@ -20,17 +20,25 @@ written to stdout; one past the cap is answered with a `Server busy` error
 (`-32000`) in its own framing, and one that repeats the id of a request
 awaiting a reply with a `Duplicate request id` error (`-32600`) rather
 than a place under the cap. Output is backpressured: when the client does
-not read stdout, the server takes no more input once 1 MiB of output is
-waiting to be written or the cap is full (a `Server busy` answer is written
-before more input is read). It also takes no more input while 32 requests
-are running with no reply yet, so only their replies can still join the
-waiting output, and a reply larger than 16 MiB (the largest message the
-server reads) is answered with an `Internal error` (`-32603`, message
-`Reply too large`) instead. Unwritten output therefore stays within 1 MiB
-plus 32 replies, and once the server has read 64 KiB ahead the client's
-writes block until it reads again. That read-ahead lets the server see
-stdin close: if it closes while output waits on an unread stdout, the
-session ends without the input not yet taken. This crate is a library
+not read stdout, the server takes no more requests once 1 MiB of output is
+waiting to be written, and no more input once the cap is full (a
+`Server busy` answer is written before more input is read). It also takes
+no more requests while 32 requests are running with no reply yet, so only
+their replies can still join the waiting output, and a reply larger than
+16 MiB (the largest message the server reads) is answered with an
+`Internal error` (`-32603`, message `Reply too large`) instead. A request
+whose handler panics is answered with an `Internal error` (`-32603`)
+rather than left unanswered, so it does not keep its place. A
+notification or response at the front of the input, such as a
+cancellation, is still taken while requests are held back, as no reply
+answers it. Unwritten output therefore stays within 1 MiB plus 32
+replies, and once the server has read 64 KiB ahead the client's writes
+block until it reads again. That read-ahead lets the server see stdin
+close: if it closes within the read-ahead while more than 1 MiB of output
+waits on an unread stdout, the server drops the input it has not taken and
+exits after giving the replies 5 s to drain. Input past the read-ahead
+stays unread, and so does the close behind it, until the client reads
+stdout or ends the process. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 

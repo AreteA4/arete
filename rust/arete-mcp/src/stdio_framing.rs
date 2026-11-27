@@ -43,25 +43,32 @@
 //! requests after them are answered `Server busy`, an answer that is itself
 //! written before more input is read. While the frames handed to the writer
 //! but not yet written exceed [`MAX_BACKLOG_BYTES`], `receive` passes no
-//! input on, and so it does while [`MAX_RUNNING_REQUESTS`] requests are
+//! request on, and so it does while [`MAX_RUNNING_REQUESTS`] requests are
 //! passed on with no reply in the backlog yet: those are the only replies
-//! that can join the backlog once it is over its cap. A reply whose body is
-//! longer than [`MAX_MESSAGE_BYTES`], the limit on an incoming message, is
-//! not written but answered with an `Internal error` (code -32603) in its
-//! place, and any other message that long is not sent. The frames not yet
-//! written therefore stay within [`MAX_BACKLOG_BYTES`] plus
+//! that can join the backlog once it is over its cap. A running request
+//! must be answered or cancelled to free its place: [`AnswerPanics`]
+//! answers one whose handler panics, which rmcp would leave unanswered. A
+//! message at the front of the input that is not a request, such as a
+//! cancellation, is still passed on: no reply answers it, and a
+//! cancellation is how a client frees a running request. A reply whose
+//! body is longer than [`MAX_MESSAGE_BYTES`], the limit on an incoming
+//! message, is not written but answered with an `Internal error` (code
+//! -32603) in its place, and any other message that long is not sent. The
+//! frames not yet written therefore stay within [`MAX_BACKLOG_BYTES`] plus
 //! [`MAX_RUNNING_REQUESTS`] frames of at most that size (a header block
-//! more for a framed one). A stalled stdout so stops input being passed on,
-//! and stdin being read once [`MAX_READ_AHEAD_BYTES`] of it are buffered,
-//! and the client's writes block until stdout is read again.
+//! more for a framed one). A stalled stdout so stops requests being passed
+//! on, and stdin being read once [`MAX_READ_AHEAD_BYTES`] of it are
+//! buffered, and the client's writes block until stdout is read again.
 //!
 //! While held back, `receive` still reads up to [`MAX_READ_AHEAD_BYTES`] of
-//! input, decoding none of it, so it sees the stream end. If stdin ends
-//! while the backlog is over its cap, nothing more can be answered until the
-//! client reads, which it may never do: the transport reports the end of the
-//! stream then, dropping the input it holds that was not passed on, and the
-//! session shuts down as on any end of input. Held back only by the running
-//! requests, it passes the rest of the input on as they finish, then ends.
+//! input, decoding no more of it than the message at its front, so it sees
+//! the stream end if it ends within that; input past it stays unread, and so
+//! does the end, until room is made. If stdin ends while the backlog is over
+//! its cap, nothing more can be answered until the client reads, which it
+//! may never do: the transport reports the end of the stream then, dropping
+//! the input it holds that was not passed on, and the session shuts down as
+//! on any end of input. Held back only by the running requests, it passes
+//! the rest of the input on as they finish, then ends.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -74,18 +81,22 @@
 //! a block without a usable `Content-Length`: missing, repeated, or not a
 //! byte count, which is ASCII digits with at most spaces or tabs around them.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::ops::Range;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, MutexGuard, PoisonError};
+use std::task::Poll;
 
 use rmcp::model::{
-    ClientJsonRpcMessage, ClientNotification, ErrorCode, ErrorData, JsonRpcMessage, RequestId,
-    ServerJsonRpcMessage,
+    ClientJsonRpcMessage, ClientNotification, ErrorCode, ErrorData, JsonRpcMessage,
+    ProtocolVersion, RequestId, ServerJsonRpcMessage,
 };
+use rmcp::service::{MaybeSendFuture, NotificationContext, RequestContext, ServiceRole};
 use rmcp::transport::Transport;
-use rmcp::RoleServer;
+use rmcp::{RoleServer, Service};
 use serde_json::error::Category;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::futures::Notified;
@@ -119,13 +130,13 @@ const MAX_OUTSTANDING_ID_BYTES: usize = 64 * 1024;
 const SERVER_BUSY: ErrorCode = ErrorCode(-32000);
 
 /// Cap on the bytes of frames handed to the writer and not yet written.
-/// Over it, `receive` reads no input until enough is written. A single
+/// Over it, `receive` passes no request on until enough is written. A single
 /// frame larger than this is still written whole.
 const MAX_BACKLOG_BYTES: usize = 1024 * 1024;
 
 /// Cap on requests passed on with no reply in the backlog yet. At it,
-/// `receive` passes no input on until one is answered or cancelled. The
-/// backlog cap only holds back input, and requests passed on while the
+/// `receive` passes no request on until one is answered or cancelled. The
+/// backlog cap only holds back requests, and requests passed on while the
 /// backlog was within it still finish against a stalled stdout: this
 /// bounds them, so the frames not yet written stay within
 /// `MAX_BACKLOG_BYTES + MAX_RUNNING_REQUESTS * (MAX_MESSAGE_BYTES + header)`
@@ -138,8 +149,9 @@ const MAX_BACKLOG_BYTES: usize = 1024 * 1024;
 /// Far more than a client runs at once in practice.
 const MAX_RUNNING_REQUESTS: usize = 32;
 
-/// Input `receive` reads on while it holds input back, without decoding
-/// it, so that it still sees the end of the stream.
+/// Input `receive` reads on while it holds requests back, decoding no more
+/// of it than the message at its front, so that it still sees the end of
+/// the stream.
 const MAX_READ_AHEAD_BYTES: usize = 64 * 1024;
 
 /// The name of the header that frames a message, with its colon, as
@@ -183,6 +195,10 @@ pub struct StdioTransport<R, W> {
     /// Whether the end of the input has been read: once all of `buf` that
     /// can be is decoded, `receive` reports it.
     eof: bool,
+    /// Whether, while input is held back, the front of `buf` was found to
+    /// hold what must wait for room (a request, or input that is not a
+    /// message), so it is not decoded again until there is room.
+    front_held: bool,
     /// The requests awaiting a reply and the frames not yet written, shared
     /// with `send` futures, which release their share once written.
     budget: Arc<Budget>,
@@ -430,6 +446,7 @@ where
             pending: None,
             closed: false,
             eof: false,
+            front_held: false,
             budget: Arc::default(),
             last_seen: Framing::Ndjson,
         }
@@ -483,6 +500,48 @@ where
             self.eof = true;
         }
         Ok(())
+    }
+
+    /// While input is held back: the message at the front of `buf` if it is
+    /// not a request, such as a cancellation. No reply answers it, so passing
+    /// it on adds nothing to the output, and a cancellation is how a client
+    /// frees a running request. Anything else waits for room; see
+    /// `front_held`.
+    fn take_unanswered(&mut self) -> Option<ClientJsonRpcMessage> {
+        if self.front_held || self.recovering > 0 {
+            return None;
+        }
+        loop {
+            match decode(&self.buf, self.cursor) {
+                Decoded::Message { body, end, framing } => {
+                    let message = match parse(&self.buf[body]) {
+                        Ok(JsonRpcMessage::Request(_)) | Err(_) => None,
+                        Ok(message) => Some(message),
+                    };
+                    let Some(message) = message else {
+                        self.front_held = true;
+                        return None;
+                    };
+                    self.buf.drain(..end);
+                    self.cursor = Cursor::START;
+                    self.last_seen = framing;
+                    self.track(&message, framing);
+                    return Some(message);
+                }
+                Decoded::Blank(len) => {
+                    self.buf.drain(..len);
+                    self.cursor = Cursor::START;
+                }
+                Decoded::Incomplete(cursor) => {
+                    self.cursor = cursor;
+                    return None;
+                }
+                _ => {
+                    self.front_held = true;
+                    return None;
+                }
+            }
+        }
     }
 
     /// Write the pending reply, after any frame in flight, and flush. The
@@ -722,6 +781,9 @@ where
                     );
                     return None;
                 }
+                if let Some(message) = self.take_unanswered() {
+                    return Some(message);
+                }
                 tokio::select! {
                     () = released => {}
                     read = self.read_ahead() => {
@@ -733,6 +795,7 @@ where
                 }
                 continue;
             }
+            self.front_held = false;
             let decoded = decode(&self.buf, self.cursor);
             if self.recovering > 0 {
                 match decoded {
@@ -834,6 +897,54 @@ where
             Err(_) => tracing::debug!("not closing stdout under a write that is in progress"),
         }
         Ok(())
+    }
+}
+
+/// `S`, with a request whose handler panics answered with an `Internal
+/// error` (code -32603). rmcp runs each handler in a task of its own and
+/// sends nothing for one that panics, and the transport counts a request
+/// passed on as running until it is answered or cancelled: unanswered, it
+/// would hold its place under [`MAX_RUNNING_REQUESTS`] for good, and that
+/// many panics would stop requests being passed on at all.
+pub struct AnswerPanics<S>(pub S);
+
+impl<S: Service<RoleServer>> Service<RoleServer> for AnswerPanics<S> {
+    fn handle_request(
+        &self,
+        request: <RoleServer as ServiceRole>::PeerReq,
+        context: RequestContext<RoleServer>,
+    ) -> impl Future<Output = Result<<RoleServer as ServiceRole>::Resp, ErrorData>> + MaybeSendFuture + '_
+    {
+        let handling = self.0.handle_request(request, context);
+        async move {
+            let mut handling = std::pin::pin!(handling);
+            std::future::poll_fn(|cx| {
+                catch_unwind(AssertUnwindSafe(|| handling.as_mut().poll(cx))).unwrap_or_else(|_| {
+                    tracing::error!("a request handler panicked: answering with an internal error");
+                    Poll::Ready(Err(ErrorData::internal_error(
+                        "Internal error",
+                        Some("the request handler panicked".into()),
+                    )))
+                })
+            })
+            .await
+        }
+    }
+
+    fn handle_notification(
+        &self,
+        notification: <RoleServer as ServiceRole>::PeerNot,
+        context: NotificationContext<RoleServer>,
+    ) -> impl Future<Output = Result<(), ErrorData>> + MaybeSendFuture + '_ {
+        self.0.handle_notification(notification, context)
+    }
+
+    fn get_info(&self) -> <RoleServer as ServiceRole>::Info {
+        self.0.get_info()
+    }
+
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        self.0.supported_protocol_versions()
     }
 }
 
@@ -1526,6 +1637,77 @@ mod tests {
             ErrorData::internal_error("x".repeat(MAX_BACKLOG_BYTES), None),
             Some(RequestId::Number(id)),
         )
+    }
+
+    fn is_notification(message: Option<ClientJsonRpcMessage>) -> bool {
+        matches!(message, Some(JsonRpcMessage::Notification(_)))
+    }
+
+    #[tokio::test]
+    async fn a_message_no_reply_answers_is_passed_on_while_requests_are_held_back() {
+        let cap = MAX_RUNNING_REQUESTS as i64;
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            // At the running cap, a cancellation at the front of the input
+            // is passed on and frees its request's place for the next one,
+            // and so again once a request held in front of one is let in.
+            let mut input: Vec<u8> = (1..=cap)
+                .flat_map(|id| in_framing(&ping(id), framing))
+                .collect();
+            input.extend(in_framing(&cancel(1), framing));
+            input.extend(in_framing(&ping(cap + 1), framing));
+            input.extend(in_framing(&ping(cap + 2), framing));
+            input.extend(in_framing(&cancel(2), framing));
+            let (_stdin, read) = open_input(&input).await;
+            let (_client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(read, write);
+            for id in 1..=cap {
+                assert_eq!(request_id(&transport.receive().await.unwrap()), id);
+            }
+            let cancelled = tokio::time::timeout(Duration::from_secs(1), transport.receive()).await;
+            assert!(is_notification(cancelled.unwrap()), "{framing:?}");
+            assert_eq!(transport.tracked().len(), MAX_RUNNING_REQUESTS - 1);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), cap + 1);
+            let held = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(held.is_err(), "{framing:?}: {held:?}");
+            transport.send(reply(3)).await.unwrap();
+            assert_eq!(request_id(&transport.receive().await.unwrap()), cap + 2);
+            let cancelled = tokio::time::timeout(Duration::from_secs(1), transport.receive()).await;
+            assert!(is_notification(cancelled.unwrap()), "{framing:?}");
+            assert_eq!(transport.tracked().len(), MAX_RUNNING_REQUESTS - 1);
+
+            // Behind a held request it waits its turn: input is not reordered.
+            let mut input: Vec<u8> = (1..=cap + 1)
+                .flat_map(|id| in_framing(&ping(id), framing))
+                .collect();
+            input.extend(in_framing(&cancel(1), framing));
+            let (_stdin, read) = open_input(&input).await;
+            let (_client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(read, write);
+            for id in 1..=cap {
+                assert_eq!(request_id(&transport.receive().await.unwrap()), id);
+            }
+            let held = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(held.is_err(), "{framing:?}: {held:?}");
+            assert_eq!(transport.tracked().len(), MAX_RUNNING_REQUESTS);
+
+            // Over the backlog cap, a notification is passed on and the
+            // request after it is held.
+            let input = [
+                in_framing(&ping(1), framing),
+                in_framing(INITIALIZED, framing),
+                in_framing(&ping(2), framing),
+            ]
+            .concat();
+            let (_stdin, read) = open_input(&input).await;
+            let (_client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(read, write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            let _sending = tokio::spawn(transport.send(over_the_backlog_cap(1)));
+            let notified = tokio::time::timeout(Duration::from_secs(1), transport.receive()).await;
+            assert!(is_notification(notified.unwrap()), "{framing:?}");
+            let held = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(held.is_err(), "{framing:?}: {held:?}");
+        }
     }
 
     #[tokio::test]
@@ -2933,8 +3115,9 @@ mod tests {
             .await
             .unwrap();
         // The transport reports the end of the input, and the session shuts
-        // down once the service gives up on the unwritten replies (5 s).
-        let ended = tokio::time::timeout(Duration::from_secs(10), running.waiting()).await;
+        // down once the service gives up on the unwritten replies: rmcp's
+        // 5 s drain window, with a margin.
+        let ended = tokio::time::timeout(Duration::from_secs(7), running.waiting()).await;
         assert!(ended.is_ok(), "still running after {:?}", started.elapsed());
     }
 
@@ -3053,6 +3236,58 @@ mod tests {
         );
         assert!(ledger.requests.is_empty());
         assert_eq!((ledger.running, ledger.backlog, ledger.id_bytes), (0, 0, 0));
+    }
+
+    /// A server whose pings panic.
+    struct Panicking;
+
+    impl rmcp::ServerHandler for Panicking {
+        async fn ping(
+            &self,
+            _: rmcp::service::RequestContext<RoleServer>,
+        ) -> Result<(), ErrorData> {
+            panic!("ping handler panicked on purpose");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_request_whose_handler_panics_is_answered_and_frees_its_place() {
+        // More panicking requests than may run at once.
+        let count = MAX_RUNNING_REQUESTS + 8;
+        let ids = 2..count as i64 + 2;
+        let mut input = [line(INITIALIZE), line(INITIALIZED)].concat();
+        for id in ids.clone() {
+            input.extend(line(&ping(id)));
+        }
+        let (mut client, server_end) = tokio::io::duplex(1 << 20);
+        let (read, write) = tokio::io::split(server_end);
+        client.write_all(&input).await.unwrap();
+        let transport = StdioTransport::new(read, write);
+        let budget = Arc::clone(&transport.budget);
+        let running = AnswerPanics(Panicking).serve(transport).await.unwrap();
+
+        // Each is answered with an internal error, so none keeps its place
+        // and the ones past the running cap are passed on too.
+        let replies = tokio::time::timeout(
+            Duration::from_secs(10),
+            read_replies(&mut client, count + 1),
+        )
+        .await
+        .expect("every panicking request is answered");
+        let mut answered: Vec<i64> = replies[1..]
+            .iter()
+            .map(|(_, reply)| {
+                assert_eq!(reply["error"]["code"], json!(-32603), "{reply}");
+                reply["id"].as_i64().unwrap()
+            })
+            .collect();
+        answered.sort_unstable();
+        assert_eq!(answered, ids.collect::<Vec<_>>());
+        drop(client);
+        running.waiting().await.unwrap();
+        let ledger = budget.ledger();
+        assert!(ledger.requests.is_empty());
+        assert_eq!((ledger.running, ledger.backlog), (0, 0));
     }
 
     #[tokio::test]

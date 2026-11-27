@@ -39,7 +39,7 @@ mod subscriptions;
 pub use server::AreteMcp;
 
 use rmcp::{transport::stdio, ServiceExt};
-use stdio_framing::StdioTransport;
+use stdio_framing::{AnswerPanics, StdioTransport};
 
 /// Run the Arete MCP server over stdio until the client disconnects.
 ///
@@ -80,7 +80,9 @@ pub async fn serve_stdio_with(
     }
     .with_surface(&surface);
     let (stdin, stdout) = stdio();
-    let service = server.serve(StdioTransport::new(stdin, stdout)).await?;
+    let service = AnswerPanics(server)
+        .serve(StdioTransport::new(stdin, stdout))
+        .await?;
     service.waiting().await?;
     Ok(())
 }
