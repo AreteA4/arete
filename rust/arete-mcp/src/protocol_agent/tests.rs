@@ -1379,7 +1379,9 @@ fn held_until(note: &Value) -> i64 {
         .and_then(|(_, rest)| rest.split_once(" (this server's clock)"))
         .unwrap_or_else(|| panic!("no hold in {note}"))
         .0;
-    chrono::DateTime::parse_from_rfc3339(at).unwrap().timestamp()
+    chrono::DateTime::parse_from_rfc3339(at)
+        .unwrap()
+        .timestamp()
 }
 
 /// `at` is `from_now` seconds from now, give or take 5 s.
@@ -1502,16 +1504,14 @@ async fn a_resumed_run_names_its_execution_while_it_waits() {
         guard.intent_answer = Some(taken("submitting"));
     }
     let reads = sent(&state, "GET", "/execution-intents/e-1").len();
-    let (resumed, refused) = tokio::join!(
-        exec(&agent, &call, Some(Duration::from_secs(2))),
-        async {
+    let (resumed, refused) =
+        tokio::join!(exec(&agent, &call, Some(Duration::from_secs(2))), async {
             eventually("the resumed run never read its execution", || {
                 sent(&state, "GET", "/execution-intents/e-1").len() > reads
             })
             .await;
             exec(&agent, &call, None).await
-        }
-    );
+        });
     let error = refused.unwrap_err();
     let busy = error.downcast_ref::<StepBusy>().expect("busy");
     assert_eq!(busy.code, "step-in-flight");
