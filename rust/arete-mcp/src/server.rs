@@ -3715,7 +3715,9 @@ impl AreteMcp {
                           other args are refused with `step-unsettled`. Once it completed, the \
                           same args get that execution's answer again until its `expiresAt`, \
                           but for at least 10 minutes and at most 1 hour after it completed \
-                          (this server's clock); a same-args run after then executes again. \
+                          (this server's clock), unless a run with other args signs first \
+                          (even one the API then refuses), which ends that answer; a same-args \
+                          run after then executes again. \
                           That holds only in this a4 mcp session: after a restart, resend the \
                           `signedTransactions` or wait until the execution is `expired`."
     )]
@@ -9183,6 +9185,25 @@ pub(crate) mod deadline_tests {
             );
             assert!(!deadline::SENDING_TOOLS.contains(&tool), "{tool}");
         }
+    }
+
+    /// The description says a run with other args that signs ends a
+    /// completed run's held answer, not only that it executes itself.
+    #[test]
+    fn protocol_execute_says_a_signed_run_with_other_args_ends_the_held_answer() {
+        let tool = AreteMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name == "protocol_execute")
+            .expect("protocol_execute is a tool");
+        let description = tool.description.as_deref().expect("described");
+        assert!(
+            description.contains(
+                "unless a run with other args signs first (even one the API then refuses), \
+                 which ends that answer; a same-args run after then executes again."
+            ),
+            "{description}"
+        );
     }
 
     /// How a tool's bound relates to the requests it can make in a row.

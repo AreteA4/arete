@@ -1235,7 +1235,9 @@ impl ProtocolAgent {
     /// of preparing and signing a new one, and a call with other args is
     /// refused. Once it completed, a call with the same args gets its
     /// answer again for a while (see [`hold_until`]), since a host that gave
-    /// up on the first call never saw it; after then it executes again.
+    /// up on the first call never saw it, unless a call with other args
+    /// signs first (even one the API then refuses), which ends that answer;
+    /// after then it executes again.
     /// This lasts for this server's session only.
     pub async fn execute(
         &self,
@@ -1343,7 +1345,9 @@ impl ProtocolAgent {
                         "This answers the last protocol_execute of step '{}' with these args, \
                          which completed: nothing new was prepared or signed. Until {} (this \
                          server's clock), running the step with the same args answers this \
-                         way; other args, or the same args after then, execute again.",
+                         way, unless a run with other args signs first (even one the API then \
+                         refuses), which ends this answer. Other args, or the same args after \
+                         then, execute again.",
                         call.step,
                         shown_time(until)
                     ));
@@ -1391,7 +1395,9 @@ impl ProtocolAgent {
                     "This answers the previous protocol_execute of this step, which had not \
                      settled: nothing new was prepared or signed. Until {} (this server's \
                      clock), running the step again with the same args answers for this \
-                     execution; other args, or the same args after then, execute again.",
+                     execution, unless a run with other args signs first (even one the API \
+                     then refuses), which ends this answer. Other args, or the same args \
+                     after then, execute again.",
                     shown_time(*until)
                 ),
                 _ if settled => "This answers the previous protocol_execute of this step, \

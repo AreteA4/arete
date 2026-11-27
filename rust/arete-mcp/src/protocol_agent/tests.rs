@@ -1478,6 +1478,52 @@ async fn a_refused_run_with_other_args_keeps_the_completed_one() {
     assert_eq!(sent(&state, "POST", "/submit").len(), 3);
 }
 
+/// A run with other args that signs ends the step's held answer, even
+/// when the API then refuses its submit (a 400): the same args run inside
+/// the hold prepare and send again. The held note says so.
+#[tokio::test]
+async fn a_run_with_other_args_that_signs_ends_the_held_answer() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let agent = signing_agent(dir.path(), &origin);
+    let args = json!({});
+    let call = tip_call(&args);
+    let other_args = json!({ "amount": "2" });
+    let other = tip_call(&other_args);
+
+    let done = exec(&agent, &call, None).await.unwrap();
+    assert_eq!(done["state"], "completed", "{done}");
+    let held = exec(&agent, &call, None).await.unwrap();
+    let note = held["note"].as_str().expect("a held note");
+    assert!(
+        note.contains(
+            "unless a run with other args signs first (even one the API then refuses), which \
+             ends this answer."
+        ),
+        "{note}"
+    );
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+
+    state.lock().unwrap().submit_answer = Some((
+        400,
+        json!({ "error": "bad signature", "code": "intent-invalid" }),
+    ));
+    let error = exec(&agent, &other, None).await.unwrap_err();
+    assert!(error.downcast_ref::<MaybeSubmitted>().is_none(), "{error}");
+    assert!(error.downcast_ref::<StepBusy>().is_none(), "{error}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 2);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 2);
+
+    // Inside the hold, but the signed run with other args ended it.
+    state.lock().unwrap().submit_answer = None;
+    let again = exec(&agent, &call, None).await.unwrap();
+    assert_eq!(again["state"], "completed", "{again}");
+    assert!(again.get("note").is_none(), "{again}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 3);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 3);
+}
+
 /// A run answering for an unsettled execution names that execution to a
 /// call refused while it waits.
 #[tokio::test]
@@ -1558,8 +1604,9 @@ async fn a_running_call_without_an_execution_id_names_none() {
 /// once, or, while the API has not taken them, the same signed bytes are
 /// sent again. Once it completed, the same args get its answer again until
 /// its `expiresAt`, but for at least 10 minutes and at most an hour after
-/// it completed on this server's clock, whatever the `expiresAt` says; other
-/// args, or the same args after then, execute again.
+/// it completed on this server's clock, whatever the `expiresAt` says,
+/// unless a run with other args signs first; other args, or the same args
+/// after then, execute again.
 #[tokio::test]
 async fn running_protocol_execute_again_never_submits_a_step_twice() {
     let (origin, state) = mock_api();
@@ -1596,8 +1643,9 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
         format!(
             "This answers the previous protocol_execute of this step, which had not settled: \
              nothing new was prepared or signed. Until {} (this server's clock), running the \
-             step again with the same args answers for this execution; other args, or the same \
-             args after then, execute again.",
+             step again with the same args answers for this execution, unless a run with other \
+             args signs first (even one the API then refuses), which ends this answer. Other \
+             args, or the same args after then, execute again.",
             shown_time(until)
         ),
         "{result}"
@@ -1618,8 +1666,9 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
         format!(
             "This answers the last protocol_execute of step 'tip' with these args, which \
              completed: nothing new was prepared or signed. Until {} (this server's clock), \
-             running the step with the same args answers this way; other args, or the same \
-             args after then, execute again.",
+             running the step with the same args answers this way, unless a run with other \
+             args signs first (even one the API then refuses), which ends this answer. Other \
+             args, or the same args after then, execute again.",
             shown_time(until)
         ),
         "{again}"

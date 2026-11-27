@@ -242,8 +242,10 @@ No tool call waits on the network forever. Two bounds apply:
   it completed, running the step with the same args answers with that
   execution (`note` says so) instead of sending a second one, until its
   `expiresAt` but for at least 10 minutes and at most 1 hour after it
-  completed (this server's clock); other args, or a same-args run after
-  that window, execute again. Restarting `a4 mcp` clears all of this. Once
+  completed (this server's clock), unless a run with other args signs
+  first (even one the API then refuses), which ends that answer; other
+  args, or a same-args run after that window, execute again. Restarting
+  `a4 mcp` clears all of this. Once
   submitted, the settle wait (`timeoutSeconds`) gives each
   status read only the time left; a read that fails, times out or is
   refused (its status and a short body) ends the wait with `executionId`,
