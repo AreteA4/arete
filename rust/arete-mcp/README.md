@@ -174,40 +174,61 @@ No tool call waits on the network forever. Two bounds apply:
   to check with `account_status` (`displayName`, `claimState`) before
   running them again. Every other request these bounds cover is safe to
   repeat: a read, or the short-lived stream token `connect` mints.
-  Lookups that only add context keep their 2 s bound, and the other
-  clients keep their own: Program Read 30 s, sandbox reads 30 s and
-  actions 90 s, protocol API 60 s, cloud dev environments 150 s,
-  `read_view` its `timeout_secs`.
+  Lookups that only add context keep their 2 s bound, including the claim
+  link a read tool mints when the API asks for one. The other clients keep
+  their own: Program Read 30 s, sandbox reads 30 s and actions 90 s,
+  protocol API and RPC 60 s each (simulating a prepared step 60 s as a
+  whole), cloud dev environments 150 s, `read_view` its `timeout_secs`.
 - **Each tool call.** A call as a whole, however many requests it makes,
   fails after its tool's bound (tools that sign or send have none, see
   below) with `<tool> did not finish within <bound>` and
   `{"code": "tool-timeout", "retryable": true}` (`false` for tools that
   change something, see below). The bound is 60 s, except
-  where a tool's own waits are longer: `read_view` 90 s; `sandbox_*`,
-  `protocol_*` and `squads_*` 120 s; `dev_*` 300 s; `dev_capture` and
-  `dev_scenario` 15 minutes (use `a4 dev capture` for larger captures).
-  Tools that sign or send a transaction (`sandbox_invoke`,
-  `protocol_submit`, `protocol_execute`, `dev_step`) have no such bound,
-  so an action in flight is never cut off with a retryable error; each of
-  their requests and waits is bounded as above. `sandbox_invoke` answers
-  with the idempotency key it ran under, and a timed-out action says to
-  look it up with `sandbox_action` rather than run it under a new key.
-  Once `protocol_submit` or `protocol_execute` has submitted, a status
-  read that fails or stalls ends the wait with `executionId`,
-  `settled: false`, the failure in `pollError` and a `next` that says to
-  read it with `protocol_intent` and not resubmit; a submit request that
-  fails in transit may still have been taken, and its error names the
-  execution to read before running the step again. `dev_step` reports a
-  failed status read after its submit with the execution id and "do not
-  resubmit"; a submit request it loses in transit is reported as
-  `Submit of '<step>' failed`, so check the environment's state before
-  running that step again.
+  where a tool's own waits are longer: `read_view` 90 s; `sandbox_preview`
+  300 s and `protocol_prepare` 240 s (each above the requests it can make
+  in a row); other `sandbox_*`, `protocol_*` and `squads_*` tools 120 s;
+  `dev_*` 300 s; `dev_capture` and `dev_scenario` 15 minutes (use
+  `a4 dev capture` for larger captures).
   A tool that changes something (the `dev_*` tools that change an
   environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
   `create_claim_link`) can still be cut off at its bound, with its change
   in flight: its timeout reads `<tool> did not finish within <bound>; its
   change may have been made, so check the state before running it again`
   and carries `"retryable": false`.
+- **Tools that sign or send.** `sandbox_invoke`, `protocol_submit`,
+  `protocol_execute` and `dev_step` have no tool bound, so an action in
+  flight is never cut off with a retryable error; each of their requests
+  and waits is bounded as above. `sandbox_invoke` answers with the
+  idempotency key it ran under (one is generated when the call gives
+  none); a timed-out action, or one a gateway answered with a 5xx, 408 or
+  429, is retryable only under that key, and says to look it up with
+  `sandbox_action` rather than run it under a new key.
+  A `protocol_submit` or `protocol_execute` submit that fails in transit,
+  times out, or is answered 5xx, 408 or 429 without the API's refusal (a
+  `code`) may still have been taken, so one read settles it: if the API
+  took the transactions, the call goes on as submitted; otherwise it fails
+  with `{"code": "submit-outcome-unknown", "retryable": false,
+  "executionId": ...}` and says to read the execution with
+  `protocol_intent` before submitting it or running the step again.
+  Running `protocol_submit` again for that execution, or
+  `protocol_execute` again for that step (same deployment, instance, step
+  and signer), in the same `a4 mcp` session reads the execution first: if
+  the API took it, the call waits on it and sends nothing; while it cannot
+  be read, nothing is sent; only while it is still `prepared` are its
+  transactions sent again (`protocol_execute` resends the same signed
+  transactions and prepares nothing new). Once submitted, the settle wait
+  (`timeoutSeconds`) gives each status read only the time left; a read
+  that fails, times out or is refused (its status and a short body)
+  ends the wait with `executionId`, `settled: false`, the failure in
+  `pollError` and a `next` that says to read it with `protocol_intent`
+  and not resubmit, while a 5xx, 408 or 429 is read again until the wait
+  ends. `dev_step` settles a submit a gateway answered the same way: taken,
+  the step completes; otherwise its error names the execution to read with
+  `protocol_intent` (`dev: true`) before running the step again. It
+  reports a failed status read after its submit with the execution id and
+  "do not resubmit"; a submit request it loses in transit is reported as
+  `Submit of '<step>' failed`, so check the environment's state before
+  running that step again.
 
 ### Which tools are listed
 

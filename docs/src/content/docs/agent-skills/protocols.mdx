@@ -158,7 +158,10 @@ at once). The result has `state` (`completed`, `chain_failed`, `expired`,
 instance) and each transaction's signature. If it has not settled, read it
 later with `protocol_intent`. Do not submit it again. When reading its state
 failed after the submit, `pollError` says why; the transactions were still
-submitted.
+submitted. When the submit's own answer was lost (it failed in transit, or a
+gateway answered it) and one read cannot show the API took it, the error has
+code `submit-outcome-unknown` and the `executionId`: read it with
+`protocol_intent` before submitting it or running the step again.
 
 ## Receipts
 
