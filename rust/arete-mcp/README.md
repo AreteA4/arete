@@ -18,7 +18,14 @@ answered with one and then the stream is closed. Requests awaiting a reply
 are capped; one past the cap is answered with a `Server busy` error
 (`-32000`) in its own framing, and one that repeats the id of a request
 awaiting a reply with a `Duplicate request id` error (`-32600`) rather
-than a place under the cap. This crate is a library
+than a place under the cap. A cancelled request (`notifications/cancelled`)
+gives back its place under that cap at once, but its handler is not
+stopped: it runs to its end and its reply is dropped. So the handlers
+running at once are capped too, at 1024, cancelled requests' included
+until their handler finishes, and a request past that cap is answered with
+the same `Server busy` error without being run. Cancelling calls to a slow
+tool so never piles up running handlers, or the tasks and memory they
+hold. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 

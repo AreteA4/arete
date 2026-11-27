@@ -17,6 +17,7 @@ pub mod entitlements;
 pub mod extension_reads;
 pub mod field_amounts;
 mod filter;
+mod handler_budget;
 pub mod oneshot;
 pub mod prepared_summary;
 pub mod program_read;
@@ -38,8 +39,10 @@ mod subscriptions;
 
 pub use server::AreteMcp;
 
-use rmcp::{transport::stdio, ServiceExt};
+use handler_budget::HandlerBudget;
+use rmcp::{transport::stdio, RoleServer, Service, ServiceExt};
 use stdio_framing::StdioTransport;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 /// Run the Arete MCP server over stdio until the client disconnects.
 ///
@@ -80,7 +83,21 @@ pub async fn serve_stdio_with(
     }
     .with_surface(&surface);
     let (stdin, stdout) = stdio();
-    let service = server.serve(StdioTransport::new(stdin, stdout)).await?;
+    serve_streams(server, stdin, stdout).await
+}
+
+/// Serve `server` on a byte stream pair until the input ends: over the
+/// stdio transport, with the request handlers running at once capped,
+/// cancelled requests' included; see [`handler_budget`].
+async fn serve_streams<S, R, W>(server: S, read: R, write: W) -> anyhow::Result<()>
+where
+    S: Service<RoleServer>,
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+{
+    let service = HandlerBudget::new(server)
+        .serve(StdioTransport::new(read, write))
+        .await?;
     service.waiting().await?;
     Ok(())
 }

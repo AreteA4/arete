@@ -92,7 +92,7 @@ The server is built into the `a4` binary; there is nothing separate to install:
 a4 mcp
 ```
 
-It speaks MCP over stdio and writes logs to stderr only. Install `a4` with `curl -fsSL https://arete.run/install.sh | sh` (see [Installation](/cli/commands/#installation)). `a4 init` writes the config for the selected agents, using the absolute binary path so GUI hosts that do not inherit your shell PATH still find it. The npm package `@usearete/mcp` is deprecated; replace `npx -y @usearete/mcp` with `a4 mcp` in any existing config.
+It speaks MCP over stdio and writes logs to stderr only. Requests awaiting a reply are capped, and so are the request handlers running at once, cancelled requests' included until their handler finishes (a cancelled call is not stopped, only its reply dropped); a request past either cap is answered with a `Server busy` error (`-32000`), so no client can pile up running handlers (see [`a4 mcp`](/cli/commands/#a4-mcp)). Install `a4` with `curl -fsSL https://arete.run/install.sh | sh` (see [Installation](/cli/commands/#installation)). `a4 init` writes the config for the selected agents, using the absolute binary path so GUI hosts that do not inherit your shell PATH still find it. The npm package `@usearete/mcp` is deprecated; replace `npx -y @usearete/mcp` with `a4 mcp` in any existing config.
 
 ### Discovery tools
 
