@@ -168,10 +168,16 @@ No tool call waits on the network forever. Two bounds apply:
   together. The error is a JSON-RPC error whose message reads
   `request to <origin> timed out after 30s` (the origin only: no path,
   query or key) and whose `data` is
-  `{"code": "request-timeout", "retryable": true}`. Lookups that only add
-  context keep their 2 s bound, and the other clients keep their own:
-  Program Read 30 s, sandbox reads 30 s and actions 90 s, protocol API
-  60 s, cloud dev environments 150 s, `read_view` its `timeout_secs`.
+  `{"code": "request-timeout", "retryable": true}`. The account writes
+  `rename_agent` and `create_claim_link` may have been applied before
+  their reply stalled, so theirs carries `"retryable": false` and adds what
+  to check with `account_status` (`displayName`, `claimState`) before
+  running them again. Every other request these bounds cover is safe to
+  repeat: a read, or the short-lived stream token `connect` mints.
+  Lookups that only add context keep their 2 s bound, and the other
+  clients keep their own: Program Read 30 s, sandbox reads 30 s and
+  actions 90 s, protocol API 60 s, cloud dev environments 150 s,
+  `read_view` its `timeout_secs`.
 - **Each tool call.** A call as a whole, however many requests it makes,
   fails after its tool's bound (tools that sign or send have none, see
   below) with `<tool> did not finish within <bound>` and

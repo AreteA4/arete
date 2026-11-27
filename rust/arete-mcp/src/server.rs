@@ -4017,7 +4017,7 @@ impl AreteMcp {
             Ok(status) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&status).unwrap_or_default(),
             )])),
-            Err(error) => Err(self.recovery_error(error).await),
+            Err(error) => Err(self.recovery_error(error, None).await),
         }
     }
 
@@ -4038,7 +4038,15 @@ impl AreteMcp {
             Ok(renamed) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&renamed).unwrap_or_default(),
             )])),
-            Err(error) => Err(self.recovery_error(error).await),
+            Err(error) => Err(self
+                .recovery_error(
+                    error,
+                    Some(
+                        "the rename may have been applied, so check `displayName` with \
+                         account_status before renaming again",
+                    ),
+                )
+                .await),
         }
     }
 
@@ -4048,7 +4056,15 @@ impl AreteMcp {
     async fn create_claim_link(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.create_claim_link().await {
             Ok(ready) => Err(claim_url_elicitation(&ready.action)),
-            Err(error) => Err(self.recovery_error(error).await),
+            Err(error) => Err(self
+                .recovery_error(
+                    error,
+                    Some(
+                        "a claim link may have been created, so check `claimState` with \
+                         account_status before creating another",
+                    ),
+                )
+                .await),
         }
     }
 
@@ -4689,7 +4705,7 @@ fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, Mcp
 /// to fix (`invalid_params`); everything else is `internal_error`.
 fn registry_error(error: anyhow::Error) -> McpError {
     if let Some(timeout) = error.downcast_ref::<deadline::TimedOut>() {
-        return timed_out_error(timeout);
+        return timed_out_error(timeout, None);
     }
     let message = error.to_string();
     let caller_fixable = message.contains("must not be empty")
@@ -4705,13 +4721,21 @@ fn registry_error(error: anyhow::Error) -> McpError {
     }
 }
 
-/// A request that ran past its deadline: retryable, and naming the origin
-/// only.
-fn timed_out_error(timeout: &deadline::TimedOut) -> McpError {
-    McpError::internal_error(
-        timeout.to_string(),
-        Some(json!({ "code": "request-timeout", "retryable": true })),
-    )
+/// A request that ran past its deadline, naming the origin only. A read is
+/// retryable. A write (`write`: what may have changed and how to check it)
+/// may have been applied before its reply stalled, so its timeout is not
+/// retryable and says to check the state first.
+fn timed_out_error(timeout: &deadline::TimedOut, write: Option<&str>) -> McpError {
+    match write {
+        None => McpError::internal_error(
+            timeout.to_string(),
+            Some(json!({ "code": "request-timeout", "retryable": true })),
+        ),
+        Some(check) => McpError::internal_error(
+            format!("{timeout}; {check}"),
+            Some(json!({ "code": "request-timeout", "retryable": false })),
+        ),
+    }
 }
 
 /// Parse a registry descriptor for client-side shaping. Registry failures keep
@@ -5061,9 +5085,12 @@ impl AreteMcp {
         bounded_result(catalog_view::shape_body(body, shape, search))
     }
 
-    async fn recovery_error(&self, error: anyhow::Error) -> McpError {
+    /// `error` from an account request. `write` is `None` for a read, and
+    /// for a write says what may have changed and how to check it: a write
+    /// that timed out may have been applied, so it is not called retryable.
+    async fn recovery_error(&self, error: anyhow::Error, write: Option<&str>) -> McpError {
         if let Some(timeout) = error.downcast_ref::<deadline::TimedOut>() {
-            return timed_out_error(timeout);
+            return timed_out_error(timeout, write);
         }
         if let Some(api_error) = error.downcast_ref::<RecoveryApiError>() {
             return self
@@ -5086,7 +5113,7 @@ impl AreteMcp {
     ) -> Result<Result<String, AreteError>, McpError> {
         tokio::time::timeout(self.connect_timeout, opening)
             .await
-            .map_err(|_| timed_out_error(&deadline::TimedOut::new(url, self.connect_timeout)))
+            .map_err(|_| timed_out_error(&deadline::TimedOut::new(url, self.connect_timeout), None))
     }
 
     async fn problem_error(
@@ -8597,37 +8624,124 @@ mod deadline_tests {
         assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
     }
 
+    /// The whole of one HTTP request from `stream` (head and body as text),
+    /// or `None` when the client closes first.
+    fn read_request(stream: &mut std::net::TcpStream) -> Option<String> {
+        use std::io::Read;
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => return None,
+                Ok(read) => request.extend_from_slice(&buffer[..read]),
+            }
+            let text = String::from_utf8_lossy(&request).to_string();
+            let Some(end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            if request.len() >= end + 4 + length {
+                return Some(text);
+            }
+        }
+    }
+
+    /// An API that reads each request whole, records it, and never answers.
+    fn stalling_api() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let recorded = recorded.clone();
+                std::thread::spawn(move || {
+                    let Some(request) = read_request(&mut stream) else {
+                        return;
+                    };
+                    recorded.lock().unwrap().push(request);
+                    let mut buffer = [0u8; 64];
+                    while stream.read(&mut buffer).is_ok_and(|read| read > 0) {}
+                });
+            }
+        });
+        (format!("http://{address}"), seen)
+    }
+
+    /// A write that reached the API and whose reply stalled until the
+    /// request deadline may have been applied: its timeout is not called
+    /// retryable and says how to check before running it again.
+    #[tokio::test]
+    async fn a_write_whose_reply_stalls_is_not_called_retryable() {
+        let cases = [
+            (
+                "rename_agent",
+                json!({"display_name": "Renamed"}),
+                "PATCH /api/agents/me ",
+                "the rename may have been applied, so check `displayName` with \
+                 account_status before renaming again",
+            ),
+            (
+                "create_claim_link",
+                json!({}),
+                "POST /api/agents/me/claim-links ",
+                "a claim link may have been created, so check `claimState` with \
+                 account_status before creating another",
+            ),
+        ];
+        for (tool, arguments, request_line, check) in cases {
+            let (base, seen) = stalling_api();
+            let server = AreteMcp {
+                recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", SHORT),
+                ..stalled(&base)
+            };
+            let mut session = Session::open(server).await;
+            let write = json!({"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {
+                "name": tool,
+                "arguments": arguments,
+            }});
+            session.send(&write.to_string()).await;
+            let answer = session.reply(13).await;
+            assert!(
+                seen.lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.starts_with(request_line)),
+                "{tool}: the write never reached the API"
+            );
+            assert_eq!(
+                answer["error"]["message"],
+                json!(format!("request to {base} timed out after 300ms; {check}")),
+                "{answer}"
+            );
+            assert_eq!(
+                answer["error"]["data"],
+                json!({"code": "request-timeout", "retryable": false}),
+                "{tool}"
+            );
+            assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+        }
+    }
+
     /// A sandbox API that mints a token at once and answers every other
     /// request after `delay` with a landed action.
     fn slow_sandbox_api(delay: Duration) -> String {
-        use std::io::{Read, Write};
+        use std::io::Write;
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
             for mut stream in listener.incoming().flatten() {
                 std::thread::spawn(move || {
-                    let mut request = Vec::new();
-                    let mut buffer = [0u8; 8192];
-                    let text = loop {
-                        match stream.read(&mut buffer) {
-                            Ok(0) | Err(_) => return,
-                            Ok(read) => request.extend_from_slice(&buffer[..read]),
-                        }
-                        let text = String::from_utf8_lossy(&request).to_string();
-                        let Some(end) = text.find("\r\n\r\n") else {
-                            continue;
-                        };
-                        let length = text
-                            .lines()
-                            .find_map(|line| {
-                                line.to_ascii_lowercase()
-                                    .strip_prefix("content-length:")
-                                    .map(|value| value.trim().parse::<usize>().unwrap_or(0))
-                            })
-                            .unwrap_or(0);
-                        if request.len() >= end + 4 + length {
-                            break text;
-                        }
+                    let Some(text) = read_request(&mut stream) else {
+                        return;
                     };
                     let body = if text.starts_with("POST /ws/sessions ") {
                         json!({
