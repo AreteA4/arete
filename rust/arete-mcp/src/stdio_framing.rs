@@ -164,9 +164,9 @@ const MAX_BACKLOG_BYTES: usize = 1024 * 1024;
 /// Far more than a client runs at once in practice.
 const MAX_RUNNING_REQUESTS: usize = 32;
 
-/// Input `receive` reads on while it holds requests back, decoding no more
-/// of it than the message at its front, so that it still sees the end of
-/// the stream.
+/// Input `receive` reads on while it holds requests back, or a reply of its
+/// own waits on stdout, decoding no more of it than the message at its
+/// front, so that it still sees the end of the stream.
 const MAX_READ_AHEAD_BYTES: usize = 64 * 1024;
 
 /// How long `receive` waits for a stdout that makes no progress once stdin
@@ -175,6 +175,17 @@ const MAX_READ_AHEAD_BYTES: usize = 64 * 1024;
 /// slowly still gets every reply; one that never reads is given up on
 /// after this.
 const EOF_STDOUT_GRACE: Duration = Duration::from_secs(5);
+
+/// Most bytes handed to the output stream in one write. tokio's stdout
+/// takes all of a write (up to 2 MiB) into a buffer of its own at once,
+/// writes it out on a thread, and takes the next write only once that one
+/// is out. One write per frame would so show no progress until the client
+/// had read all of the frame, and a client that reads a large frame slowly
+/// would see the grace run out while it reads; in writes this small, each
+/// part of the frame it reads counts. A client must so read at least this
+/// much per [`EOF_STDOUT_GRACE`] to be waited for. It is the pipe's atomic
+/// write size.
+const MAX_WRITE_BYTES: usize = 4 * 1024;
 
 /// The name of the header that frames a message, with its colon, as
 /// looked for in bytes that are not a message.
@@ -426,12 +437,14 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
         });
     }
 
-    /// Write the rest of the frame in flight, if any, and flush. Each
-    /// `write` either writes nothing or reports what it wrote, and `written`
-    /// moves on with no await in between, so a dropped call neither repeats
-    /// nor skips a byte: the next call carries on from where it stopped.
-    /// A failed write closes the stream: the frame it cut short can be
-    /// neither finished nor followed, so it is discarded.
+    /// Write the rest of the frame in flight, if any, and flush, in writes
+    /// of at most [`MAX_WRITE_BYTES`], noting the time of each one taken and
+    /// of the flush as progress. Each `write` either writes nothing or
+    /// reports what it wrote, and `written` moves on with no await in
+    /// between, so a dropped call neither repeats nor skips a byte: the next
+    /// call carries on from where it stopped. A failed write closes the
+    /// stream: the frame it cut short can be neither finished nor followed,
+    /// so it is discarded.
     async fn finish(&mut self) -> io::Result<()> {
         let written = self.write_in_flight().await;
         if written.is_err() {
@@ -446,7 +459,9 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
             return Ok(());
         };
         while in_flight.written < in_flight.frame.len() {
-            match stream.write(&in_flight.frame[in_flight.written..]).await? {
+            let rest = &in_flight.frame[in_flight.written..];
+            let chunk = &rest[..rest.len().min(MAX_WRITE_BYTES)];
+            match stream.write(chunk).await? {
                 0 => return Err(io::ErrorKind::WriteZero.into()),
                 written => {
                     in_flight.written += written;
@@ -455,6 +470,7 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
             }
         }
         stream.flush().await?;
+        *self.budget.last_write() = Some(Instant::now());
         self.in_flight = None;
         Ok(())
     }
@@ -1967,6 +1983,95 @@ mod tests {
         }
     }
 
+    /// `W` written to as tokio's stdout writes: each write is taken whole
+    /// into a buffer at once and reported as written, while the next write,
+    /// or a flush, waits until that buffer is written out to `W`.
+    struct TakesWritesWhole<W> {
+        inner: W,
+        buf: Vec<u8>,
+    }
+
+    impl<W: AsyncWrite + Unpin> TakesWritesWhole<W> {
+        fn poll_write_out(&mut self, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            while !self.buf.is_empty() {
+                let written =
+                    std::task::ready!(Pin::new(&mut self.inner).poll_write(cx, &self.buf))?;
+                self.buf.drain(..written);
+            }
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl<W: AsyncWrite + Unpin> AsyncWrite for TakesWritesWhole<W> {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            src: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            let this = self.get_mut();
+            std::task::ready!(this.poll_write_out(cx))?;
+            this.buf.extend_from_slice(src);
+            Poll::Ready(Ok(src.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            std::task::ready!(this.poll_write_out(cx))?;
+            Pin::new(&mut this.inner).poll_flush(cx)
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            let this = self.get_mut();
+            std::task::ready!(this.poll_write_out(cx))?;
+            Pin::new(&mut this.inner).poll_shutdown(cx)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_end_of_input_waits_while_a_stdout_that_takes_writes_whole_is_read_slowly() {
+        // A 64 KiB reply, the end of the input after its request, and the
+        // client reading 8 KiB every 4 s: within the grace between reads,
+        // though the frame takes far longer than it to read. Written to as
+        // tokio's stdout is, the frame must still be seen to make progress.
+        let input = line(&ping(1));
+        let (mut client, pipe) = tokio::io::duplex(8 * 1024);
+        let write = TakesWritesWhole {
+            inner: pipe,
+            buf: Vec::new(),
+        };
+        let mut transport = StdioTransport::new(input.as_slice(), write);
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+        let reply = ServerJsonRpcMessage::error(
+            ErrorData::internal_error("x".repeat(64 * 1024), None),
+            Some(RequestId::Number(1)),
+        );
+        let frame = encode(&reply, Framing::Ndjson).unwrap().len();
+        let sending = tokio::spawn(transport.send(reply));
+        let started = tokio::time::Instant::now();
+        let read_slowly = async {
+            let mut out = Vec::new();
+            let mut chunk = [0; 8 * 1024];
+            while out.len() < frame {
+                let read = client.read(&mut chunk).await.unwrap();
+                assert!(read > 0);
+                out.extend_from_slice(&chunk[..read]);
+                tokio::time::sleep(Duration::from_secs(4)).await;
+            }
+            out
+        };
+        let ended = async {
+            let ended = transport.receive().await;
+            (ended.is_none(), started.elapsed())
+        };
+        let (out, (ended, after)) = tokio::join!(read_slowly, ended);
+        assert!(ended);
+        // The stream ends only once the reply is written, not a grace after
+        // the frame was taken.
+        assert!(after > 4 * EOF_STDOUT_GRACE, "ended after {after:?}");
+        assert_eq!(messages_in(&out)[0].1["id"], json!(1));
+        sending.await.unwrap().unwrap();
+    }
+
     /// Ping 1 in `framing`, passed on, then `tail`, input the transport
     /// answers itself, then the end of the input. The reply to ping 1 is
     /// larger than the pipe to the client, though within the backlog cap,
@@ -3441,7 +3546,9 @@ mod tests {
 
     /// Serve `count` tool list requests in `framing` over a stdin closed
     /// once they are written, with stdout read by `read`: the ids of the
-    /// initialize and tool list requests answered, sorted.
+    /// initialize and tool list requests answered, sorted. However slowly
+    /// stdout is read, the frames not yet written stay within their bound
+    /// throughout, and the budget is back to nothing at the end.
     async fn answered_after_stdin_closes<F: Future<Output = Vec<u8>>>(
         count: usize,
         framing: Framing,
@@ -3452,12 +3559,27 @@ mod tests {
         stdin.write_all(&input).await.unwrap();
         drop(stdin);
         let (client, write) = tokio::io::duplex(64 * 1024);
-        let running = server()
-            .serve(StdioTransport::new(read_end, write))
-            .await
-            .unwrap();
+        let transport = StdioTransport::new(read_end, write);
+        let budget = Arc::clone(&transport.budget);
+        let running = server().serve(transport).await.unwrap();
         let (out, ended) = tokio::join!(read(client), running.waiting());
         ended.unwrap();
+        let mut largest = 0;
+        let mut frames = out.as_slice();
+        while let Decoded::Message { end, .. } = decode(frames, Cursor::START) {
+            largest = largest.max(end);
+            frames = &frames[end..];
+        }
+        let ledger = budget.ledger();
+        let (most_running, most_backlog) = ledger.peaks;
+        assert!(most_running <= MAX_RUNNING_REQUESTS, "{most_running}");
+        assert!(
+            most_backlog <= MAX_BACKLOG_BYTES + MAX_RUNNING_REQUESTS * largest,
+            "{most_backlog}"
+        );
+        assert!(ledger.requests.is_empty());
+        assert_eq!((ledger.running, ledger.backlog, ledger.id_bytes), (0, 0, 0));
+        drop(ledger);
         let mut ids: Vec<i64> = messages_in(&out)
             .into_iter()
             .map(|(seen, reply)| {
@@ -3623,6 +3745,37 @@ mod tests {
         );
         assert!(ledger.requests.is_empty());
         assert_eq!((ledger.running, ledger.backlog, ledger.id_bytes), (0, 0, 0));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_ends_after_its_input_ends_with_a_request_that_never_finishes() {
+        // A ping whose handler never finishes, then the end of the input:
+        // with nothing left to write, stdout makes no progress, so the
+        // transport reports the end once the grace is up, and the service
+        // cancels the handler after its drain window.
+        let input = [line(INITIALIZE), line(INITIALIZED), line(&ping(2))].concat();
+        let (mut stdin, read) = tokio::io::duplex(input.len());
+        stdin.write_all(&input).await.unwrap();
+        drop(stdin);
+        let (_client, write) = tokio::io::duplex(64 * 1024);
+        let started = Arc::new(AtomicUsize::new(0));
+        let (_never_opened, gate) = tokio::sync::watch::channel(false);
+        let server = Gated {
+            started: Arc::clone(&started),
+            open: gate,
+            reply_bytes: 0,
+        };
+        let begun = tokio::time::Instant::now();
+        let running = server
+            .serve(StdioTransport::new(read, write))
+            .await
+            .unwrap();
+        let ended =
+            tokio::time::timeout(EOF_STDOUT_GRACE + Duration::from_secs(7), running.waiting())
+                .await;
+        assert!(ended.is_ok(), "still running after {:?}", begun.elapsed());
+        assert!(begun.elapsed() >= EOF_STDOUT_GRACE, "{:?}", begun.elapsed());
+        assert_eq!(started.load(Ordering::SeqCst), 1);
     }
 
     /// A server whose pings panic.
