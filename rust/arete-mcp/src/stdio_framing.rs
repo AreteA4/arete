@@ -1213,6 +1213,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn input_is_read_with_the_backlog_at_the_cap_and_held_back_one_byte_over() {
+        let sized = |len: usize| {
+            ServerJsonRpcMessage::error(
+                ErrorData::internal_error("x".repeat(len), None),
+                Some(RequestId::Number(1)),
+            )
+        };
+        let base = encode(&sized(0), Framing::Ndjson).unwrap().len();
+        for over in [0, 1] {
+            let input = [line(&ping(1)), line(&ping(2))].concat();
+            // Room for part of the reply only, and nobody reading it.
+            let (_client, write) = tokio::io::duplex(8);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            let _sending = tokio::spawn(transport.send(sized(MAX_BACKLOG_BYTES - base + over)));
+            assert_eq!(transport.backlog(), MAX_BACKLOG_BYTES + over);
+            let next = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            match next {
+                Ok(message) if over == 0 => assert_eq!(request_id(&message.unwrap()), 2),
+                Err(_) if over == 1 => {}
+                other => panic!("{over} byte(s) over the cap: {other:?}"),
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn a_dropped_send_releases_its_request_and_bytes() {
         let input = [line(&ping(1)), line(&ping(2))].concat();
         // Room for part of a reply only, and nobody reading it.

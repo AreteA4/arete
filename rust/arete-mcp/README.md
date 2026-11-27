@@ -22,8 +22,8 @@ awaiting a reply with a `Duplicate request id` error (`-32600`) rather
 than a place under the cap. Output is backpressured: when the client does
 not read stdout, the server stops reading stdin once 1 MiB of output is
 waiting to be written or the cap is full (a `Server busy` answer is written
-before more input is read), so memory stays bounded and the client's writes
-block until it reads again. This crate is a library
+before more input is read), so unwritten output stays bounded and the
+client's writes block until it reads again. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 
