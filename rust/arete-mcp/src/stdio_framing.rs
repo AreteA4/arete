@@ -65,10 +65,18 @@
 //! the stream end if it ends within that; input past it stays unread, and so
 //! does the end, until room is made. If stdin ends while the backlog is over
 //! its cap, nothing more can be answered until the client reads, which it
-//! may never do: the transport reports the end of the stream then, dropping
-//! the input it holds that was not passed on, and the session shuts down as
-//! on any end of input. Held back only by the running requests, it passes
-//! the rest of the input on as they finish, then ends.
+//! may do late, slowly, or never: the transport keeps waiting for room as
+//! long as stdout makes progress, giving it [`EOF_STDOUT_GRACE`] afresh
+//! whenever bytes are written, and passes the held input on as room comes
+//! back. Only once stdout writes nothing for that long does it report the
+//! end of the stream, dropping the input it holds that was not passed on,
+//! and the session shuts down as on any end of input. Held back only by the
+//! running requests, it passes the rest of the input on as they finish.
+//! Once all of the input is passed on, it reports the end when every
+//! request passed on has its reply written and no other frame is left
+//! unwritten, or stdout writes nothing for that grace: the service gives
+//! the replies left after the end only a fixed time, too short for a
+//! client that reads slowly.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -89,6 +97,7 @@ use std::ops::Range;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::{Arc, MutexGuard, PoisonError};
 use std::task::Poll;
+use std::time::Duration;
 
 use rmcp::model::{
     ClientJsonRpcMessage, ClientNotification, ErrorCode, ErrorData, JsonRpcMessage,
@@ -101,6 +110,7 @@ use serde_json::error::Category;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::futures::Notified;
 use tokio::sync::{Mutex, Notify};
+use tokio::time::Instant;
 
 /// Cap on one message: a line, newline included, or a framed body. It is
 /// the cap `rmcp`'s own newline-delimited transport applies to what it
@@ -154,6 +164,13 @@ const MAX_RUNNING_REQUESTS: usize = 32;
 /// the stream.
 const MAX_READ_AHEAD_BYTES: usize = 64 * 1024;
 
+/// How long `receive` waits for a stdout that makes no progress once stdin
+/// has ended with requests held back or replies still to write. The wait
+/// restarts whenever bytes are written, so a client that reads late or
+/// slowly still gets every reply; one that never reads is given up on
+/// after this.
+const EOF_STDOUT_GRACE: Duration = Duration::from_secs(5);
+
 /// The name of the header that frames a message, with its colon, as
 /// looked for in bytes that are not a message.
 const CONTENT_LENGTH: &[u8] = b"content-length:";
@@ -199,6 +216,9 @@ pub struct StdioTransport<R, W> {
     /// hold what must wait for room (a request, or input that is not a
     /// message), so it is not decoded again until there is room.
     front_held: bool,
+    /// When `receive` first waited on stdout once stdin had ended; see
+    /// [`EOF_STDOUT_GRACE`].
+    eof_wait_since: Option<Instant>,
     /// The requests awaiting a reply and the frames not yet written, shared
     /// with `send` futures, which release their share once written.
     budget: Arc<Budget>,
@@ -212,6 +232,9 @@ struct Budget {
     /// Signalled whenever a request's reply joins the backlog or a frame
     /// leaves it.
     released: Notify,
+    /// When bytes were last written to stdout, which `receive` watches for
+    /// progress once stdin has ended; see [`EOF_STDOUT_GRACE`].
+    last_written: std::sync::Mutex<Option<Instant>>,
     /// Run once right after the next check for room, so a test can release
     /// budget between that check and the wait on `released`.
     #[cfg(test)]
@@ -247,6 +270,13 @@ impl Budget {
     /// Never poisoned in practice: nothing panics while holding the lock.
     fn ledger(&self) -> MutexGuard<'_, Ledger> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// When bytes were last written to stdout; never poisoned either.
+    fn last_write(&self) -> MutexGuard<'_, Option<Instant>> {
+        self.last_written
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     /// `None` while the backlog is within [`MAX_BACKLOG_BYTES`] and fewer
@@ -363,6 +393,8 @@ struct Writer<W> {
     /// every write finishes it before starting its own frame, so frames
     /// never interleave; `receive` finishes it too if the writer is idle.
     in_flight: Option<InFlight>,
+    /// Stamped at each write; see `Budget::last_written`.
+    budget: Arc<Budget>,
 }
 
 struct InFlight {
@@ -411,7 +443,10 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
         while in_flight.written < in_flight.frame.len() {
             match stream.write(&in_flight.frame[in_flight.written..]).await? {
                 0 => return Err(io::ErrorKind::WriteZero.into()),
-                written => in_flight.written += written,
+                written => {
+                    in_flight.written += written;
+                    *self.budget.last_write() = Some(Instant::now());
+                }
             }
         }
         stream.flush().await?;
@@ -433,6 +468,7 @@ where
     W: AsyncWrite + Send + Unpin + 'static,
 {
     pub fn new(read: R, write: W) -> Self {
+        let budget = Arc::<Budget>::default();
         Self {
             read: BufReader::new(read),
             buf: Vec::new(),
@@ -442,12 +478,14 @@ where
             write: Arc::new(Mutex::new(Writer {
                 stream: Some(write),
                 in_flight: None,
+                budget: Arc::clone(&budget),
             })),
             pending: None,
             closed: false,
             eof: false,
             front_held: false,
-            budget: Arc::default(),
+            eof_wait_since: None,
+            budget,
             last_seen: Framing::Ndjson,
         }
     }
@@ -500,6 +538,25 @@ where
             self.eof = true;
         }
         Ok(())
+    }
+
+    /// Once stdin has ended, with output unwritten: wait for `released`, or
+    /// until stdout has written nothing for [`EOF_STDOUT_GRACE`] since the
+    /// first such wait began, or since its last write if later. `false`, at
+    /// once, if that time has come. Cancel safe: what it waits on is kept
+    /// in `self`.
+    async fn wait_on_stdout(&mut self, released: Notified<'_>) -> bool {
+        let since = *self.eof_wait_since.get_or_insert_with(Instant::now);
+        let last_written = *self.budget.last_write();
+        let stalls_at = last_written.map_or(since, |at| at.max(since)) + EOF_STDOUT_GRACE;
+        if Instant::now() >= stalls_at {
+            return false;
+        }
+        tokio::select! {
+            () = released => {}
+            () = tokio::time::sleep_until(stalls_at) => {}
+        }
+        true
     }
 
     /// While input is held back: the message at the front of `buf` if it is
@@ -773,16 +830,19 @@ where
             }
             let budget = Arc::clone(&self.budget);
             if let Some(released) = budget.room() {
-                if self.eof && budget.ledger().backlog > MAX_BACKLOG_BYTES {
-                    tracing::warn!(
-                        unread_bytes = self.buf.len(),
-                        "stdin ended while stdout is not read: ending the session without \
-                         the input held back"
-                    );
-                    return None;
-                }
                 if let Some(message) = self.take_unanswered() {
                     return Some(message);
+                }
+                if self.eof && budget.ledger().backlog > MAX_BACKLOG_BYTES {
+                    if !self.wait_on_stdout(released).await {
+                        tracing::warn!(
+                            unread_bytes = self.buf.len(),
+                            "stdin ended and stdout made no progress for {EOF_STDOUT_GRACE:?}: \
+                             ending the session without the input held back"
+                        );
+                        return None;
+                    }
+                    continue;
                 }
                 tokio::select! {
                     () = released => {}
@@ -872,11 +932,34 @@ where
                 Decoded::Incomplete(cursor) => {
                     self.cursor = cursor;
                     if self.eof {
-                        return None;
+                        // The input is exhausted. Once its end is reported,
+                        // the service gives the replies still to come or to
+                        // be written a fixed time, too short for a client
+                        // that reads slowly: wait for them while stdout
+                        // takes them.
+                        let released = budget.released.notified();
+                        let (awaiting, unwritten) = {
+                            let ledger = budget.ledger();
+                            (ledger.requests.len(), ledger.backlog)
+                        };
+                        if awaiting == 0 && unwritten == 0 {
+                            return None;
+                        }
+                        if !self.wait_on_stdout(released).await {
+                            tracing::warn!(
+                                awaiting,
+                                unwritten_bytes = unwritten,
+                                "stdin ended and stdout made no progress for \
+                                 {EOF_STDOUT_GRACE:?}: ending the session with replies \
+                                 unwritten"
+                            );
+                            return None;
+                        }
+                        continue;
                     }
                     match self.fill().await {
                         Ok(true) => {}
-                        Ok(false) => return None,
+                        Ok(false) => self.eof = true,
                         Err(error) => {
                             tracing::error!("error reading the stream: {error}");
                             return None;
@@ -1312,13 +1395,18 @@ mod tests {
 
     /// Drive the transport over `read` to the end of the stream: every
     /// message with the framing it arrived in, and what the transport wrote
-    /// on its own.
+    /// on its own. Each request is forgotten as it is passed on, as if its
+    /// reply were written at once, so the end is not held for replies that
+    /// never come.
     async fn drive<R: AsyncRead + Send + Unpin>(
         read: R,
     ) -> (Vec<(Framing, ClientJsonRpcMessage)>, Vec<u8>) {
         let mut transport = StdioTransport::new(read, Vec::new());
         let mut messages = Vec::new();
         while let Some(message) = transport.receive().await {
+            if let JsonRpcMessage::Request(request) = &message {
+                transport.budget.ledger().forget(&request.id);
+            }
             messages.push((transport.last_seen, message));
         }
         let written = transport.write.lock().await.stream.take().unwrap();
@@ -1745,7 +1833,7 @@ mod tests {
         );
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn the_end_of_input_held_back_by_an_unread_stdout_ends_the_stream() {
         for framing in [Framing::Ndjson, Framing::ContentLength] {
             let input: Vec<u8> = (1..=100)
@@ -1757,10 +1845,51 @@ mod tests {
             assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
             let _sending = tokio::spawn(transport.send(over_the_backlog_cap(1)));
             // The input ends while held back: nothing more can be answered
-            // until stdout is read, so the stream ends without the rest.
-            let ended = tokio::time::timeout(Duration::from_secs(1), transport.receive()).await;
+            // until stdout is read, so once it has written nothing for the
+            // grace the stream ends without the rest.
+            let started = tokio::time::Instant::now();
+            let ended = tokio::time::timeout(
+                EOF_STDOUT_GRACE + Duration::from_secs(1),
+                transport.receive(),
+            )
+            .await;
             assert!(matches!(ended, Ok(None)), "{framing:?}: {ended:?}");
+            assert!(started.elapsed() >= EOF_STDOUT_GRACE, "{framing:?}");
             assert_eq!(transport.tracked(), [(RequestId::Number(1), framing)]);
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_end_of_input_held_back_by_a_stdout_read_slowly_waits_while_bytes_are_written() {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let input = [in_framing(&ping(1), framing), in_framing(&ping(2), framing)].concat();
+            let (mut client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            let reply = over_the_backlog_cap(1);
+            let frame = encode(&reply, framing).unwrap().len();
+            let sending = tokio::spawn(transport.send(reply));
+            // One frame over the cap, read 8 KiB a second: it takes far
+            // longer than the grace to write, and the backlog falls only
+            // once it is written whole, but bytes keep being written.
+            let read_slowly = async {
+                let mut out = Vec::new();
+                let mut chunk = [0; 8 * 1024];
+                while out.len() < frame {
+                    let read = client.read(&mut chunk).await.unwrap();
+                    assert!(read > 0, "{framing:?}");
+                    out.extend_from_slice(&chunk[..read]);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+                out
+            };
+            let started = tokio::time::Instant::now();
+            let (out, next) = tokio::join!(read_slowly, transport.receive());
+            assert_eq!(request_id(&next.unwrap()), 2, "{framing:?}");
+            assert!(started.elapsed() > 4 * EOF_STDOUT_GRACE, "{framing:?}");
+            assert_eq!(messages_in(&out)[0].1["id"], json!(1));
+            sending.await.unwrap().unwrap();
+            assert!(transport.receive().await.is_none(), "{framing:?}");
         }
     }
 
@@ -1783,16 +1912,18 @@ mod tests {
             assert!(transport.eof, "{framing:?}");
 
             // The running requests finish on their own: the rest of the
-            // input is passed on, and only then does the stream end.
+            // input is passed on as they do, and with every reply written
+            // the stream ends.
             let mut passed_on = Vec::new();
             for id in 1..=cap + 3 {
                 transport.send(reply(id)).await.unwrap();
-                if let Some(message) = transport.receive().await {
-                    passed_on.push(request_id(&message));
+                if passed_on.len() < 3 {
+                    passed_on.push(request_id(&transport.receive().await.unwrap()));
                 }
             }
             assert_eq!(passed_on, [cap + 1, cap + 2, cap + 3]);
             assert!(transport.tracked().is_empty());
+            assert!(transport.receive().await.is_none(), "{framing:?}");
             let replies = read_replies(&mut client, (cap + 3) as usize).await;
             assert!(replies.iter().all(|(seen, _)| *seen == framing));
         }
@@ -3032,14 +3163,21 @@ mod tests {
     }
 
     /// A session that asks for the tool list once per id in `ids`, each
-    /// request padded with `pad` bytes.
-    fn tools_lists(ids: Range<i64>, pad: usize) -> Vec<u8> {
-        let mut input = [line(INITIALIZE), line(INITIALIZED)].concat();
+    /// request padded with `pad` bytes, in `framing`.
+    fn tools_lists(ids: Range<i64>, pad: usize, framing: Framing) -> Vec<u8> {
+        let mut input = [
+            in_framing(INITIALIZE, framing),
+            in_framing(INITIALIZED, framing),
+        ]
+        .concat();
         let pad = "x".repeat(pad);
         for id in ids {
-            input.extend(line(&format!(
-                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list","params":{{"_meta":{{"pad":"{pad}"}}}}}}"#
-            )));
+            input.extend(in_framing(
+                &format!(
+                    r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list","params":{{"_meta":{{"pad":"{pad}"}}}}}}"#
+                ),
+                framing,
+            ));
         }
         input
     }
@@ -3050,7 +3188,7 @@ mod tests {
         // backlog holds, though too few to fill the request budget. The
         // requests come to several times what is read ahead.
         let count = 300;
-        let input = tools_lists(2..count as i64 + 2, 1024);
+        let input = tools_lists(2..count as i64 + 2, 1024, Framing::Ndjson);
         let total = input.len();
         assert!(total > 4 * MAX_READ_AHEAD_BYTES);
         // Small pipes, so what they buffer is small beside the input.
@@ -3099,26 +3237,119 @@ mod tests {
         running.waiting().await.unwrap();
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn a_session_ends_soon_after_its_input_ends_while_its_replies_go_unread() {
         // Far more replies than the backlog holds, none of them read, and
         // stdin closed once the requests are written.
         let count = 300;
-        let input = tools_lists(2..count as i64 + 2, 0);
+        let input = tools_lists(2..count as i64 + 2, 0, Framing::Ndjson);
         let (mut stdin, read) = tokio::io::duplex(input.len());
         stdin.write_all(&input).await.unwrap();
         drop(stdin);
         let (_client, write) = tokio::io::duplex(1024);
-        let started = Instant::now();
+        let started = tokio::time::Instant::now();
         let running = server()
             .serve(StdioTransport::new(read, write))
             .await
             .unwrap();
-        // The transport reports the end of the input, and the session shuts
-        // down once the service gives up on the unwritten replies: rmcp's
-        // 5 s drain window, with a margin.
-        let ended = tokio::time::timeout(Duration::from_secs(7), running.waiting()).await;
+        // The transport reports the end of the input once stdout has written
+        // nothing for the grace, and the session shuts down once the service
+        // gives up on the unwritten replies: rmcp's 5 s drain window, with a
+        // margin.
+        let ended =
+            tokio::time::timeout(EOF_STDOUT_GRACE + Duration::from_secs(7), running.waiting())
+                .await;
         assert!(ended.is_ok(), "still running after {:?}", started.elapsed());
+    }
+
+    /// Every byte on `client` until the server closes it, read `chunk`
+    /// bytes at a time with `pause` after each read.
+    async fn read_until_closed(
+        client: &mut tokio::io::DuplexStream,
+        chunk: usize,
+        pause: Duration,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        let mut buf = vec![0; chunk];
+        loop {
+            let read = client.read(&mut buf).await.unwrap();
+            if read == 0 {
+                return out;
+            }
+            out.extend_from_slice(&buf[..read]);
+            if !pause.is_zero() {
+                tokio::time::sleep(pause).await;
+            }
+        }
+    }
+
+    /// Serve `count` tool list requests in `framing` over a stdin closed
+    /// once they are written, with stdout read by `read`: the ids of the
+    /// initialize and tool list requests answered, sorted.
+    async fn answered_after_stdin_closes<F: Future<Output = Vec<u8>>>(
+        count: usize,
+        framing: Framing,
+        read: impl FnOnce(tokio::io::DuplexStream) -> F,
+    ) -> Vec<i64> {
+        let input = tools_lists(2..count as i64 + 2, 0, framing);
+        let (mut stdin, read_end) = tokio::io::duplex(input.len());
+        stdin.write_all(&input).await.unwrap();
+        drop(stdin);
+        let (client, write) = tokio::io::duplex(64 * 1024);
+        let running = server()
+            .serve(StdioTransport::new(read_end, write))
+            .await
+            .unwrap();
+        let (out, ended) = tokio::join!(read(client), running.waiting());
+        ended.unwrap();
+        let mut ids: Vec<i64> = messages_in(&out)
+            .into_iter()
+            .map(|(seen, reply)| {
+                assert_eq!(seen, framing);
+                let id = reply["id"].as_i64().unwrap();
+                let result = &reply["result"];
+                assert!(
+                    result["tools"].is_array() || (id == 1 && result["serverInfo"].is_object()),
+                    "{reply}"
+                );
+                id
+            })
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_whose_input_ends_answers_every_request_to_a_client_that_reads_late() {
+        // Replies to far more than the backlog holds, read from a second
+        // after stdin closed.
+        let count = 200;
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let ids = answered_after_stdin_closes(count, framing, |mut client| async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                read_until_closed(&mut client, 64 * 1024, Duration::ZERO).await
+            })
+            .await;
+            assert_eq!(
+                ids,
+                (1..=count as i64 + 1).collect::<Vec<_>>(),
+                "{framing:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_session_whose_input_ends_answers_every_request_to_a_client_that_reads_slowly() {
+        // 16 KiB every 50 ms: from just over what the backlog holds to far
+        // more, taking far longer to read than the grace.
+        for count in [20, 300] {
+            let ids =
+                answered_after_stdin_closes(count, Framing::Ndjson, |mut client| async move {
+                    read_until_closed(&mut client, 16 * 1024, Duration::from_millis(50)).await
+                })
+                .await;
+            assert_eq!(ids, (1..=count as i64 + 1).collect::<Vec<_>>(), "{count}");
+        }
     }
 
     /// A server whose pings each wait until `open` is set, then answer with

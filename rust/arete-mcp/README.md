@@ -34,11 +34,14 @@ cancellation, is still taken while requests are held back, as no reply
 answers it. Unwritten output therefore stays within 1 MiB plus 32
 replies, and once the server has read 64 KiB ahead the client's writes
 block until it reads again. That read-ahead lets the server see stdin
-close: if it closes within the read-ahead while more than 1 MiB of output
-waits on an unread stdout, the server drops the input it has not taken and
-exits after giving the replies 5 s to drain. Input past the read-ahead
-stays unread, and so does the close behind it, until the client reads
-stdout or ends the process. This crate is a library
+close. Once stdin closes, the server still answers the requests it holds
+and writes their replies as long as the client keeps reading stdout,
+however late or slowly: it waits on stdout with a 5 s grace that restarts
+whenever stdout takes more output. Only if stdout takes nothing for 5 s
+does the server drop the input it has not taken and the replies not yet
+written, and exit after giving the replies 5 s more to drain. Input past
+the read-ahead stays unread, and so does the close behind it, until the
+client reads stdout or ends the process. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 
