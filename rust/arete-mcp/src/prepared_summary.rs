@@ -1205,6 +1205,36 @@ pub(crate) mod tests {
         );
     }
 
+    /// A budgeted RPC bounds every call of a summary together: against a
+    /// stalled RPC, a two-transaction step is summarized within the budget,
+    /// both simulations unknown, the second never sent.
+    #[tokio::test]
+    async fn an_rpc_budget_bounds_the_whole_simulation() {
+        let budget = std::time::Duration::from_millis(300);
+        let rpc = Rpc::new(reqwest::Client::new(), &crate::deadline::blackhole()).within(budget);
+        let transaction = json!({ "transactionBase64": base64::engine::general_purpose::STANDARD.encode(lookup_transaction()) });
+        let prepared = json!({ "transactions": [transaction.clone(), transaction] });
+        let started = std::time::Instant::now();
+        let result = crate::deadline::watchdog(
+            std::time::Duration::from_secs(10),
+            summarize(&prepared, &base58(&[1; 32]), Some(&rpc)),
+        )
+        .await
+        .unwrap();
+        assert!(started.elapsed() < budget * 3, "{:?}", started.elapsed());
+        let effects: Vec<&Value> = result["transactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| &entry["signerEffect"])
+            .collect();
+        assert!(effects.iter().all(|effect| effect["known"] == false));
+        assert!(effects[1]["error"]
+            .as_str()
+            .unwrap()
+            .contains("was not sent"));
+    }
+
     #[tokio::test]
     async fn summaries_include_lookup_writes_even_when_simulation_fails() {
         use std::io::{BufRead, BufReader, Read, Write};
