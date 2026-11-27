@@ -160,7 +160,8 @@ later with `protocol_intent`. Do not submit it again. When reading its state
 failed after the submit, `pollError` says why; the transactions were still
 submitted. When the submit's own answer was lost (it failed in transit, or was
 answered 5xx, 408 or 429) and one read cannot show the API took it, the error
-has code `submit-outcome-unknown`, the `executionId` and its `expiresAt`. A
+has code `submit-outcome-unknown`, the `executionId`, its `deploymentId` (for
+`protocol_submit`) and its `expiresAt`. A
 read that shows it `prepared` does not mean it was not taken, so never prepare
 and sign the step again: resend the same signed transactions with
 `protocol_submit` (the chain takes a signed transaction once), or wait until

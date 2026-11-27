@@ -513,7 +513,8 @@ without) is settled with one read: if the API took it, the call goes on as
 submitted; if the answer said `"submissionState": "not_submitted"`, it is a
 refusal; otherwise it fails with
 `{"code": "submit-outcome-unknown", "retryable": false}`, the `executionId`, its
-`expiresAt` and, from `protocol_execute`, the `signedTransactions`. A `prepared`
+`deploymentId` and `expiresAt` and, from `protocol_execute`, the
+`signedTransactions`. A `prepared`
 read does not rule out that it was taken: resend the same signed transactions
 with `protocol_submit`, which cannot land twice, or wait until `protocol_intent`
 shows the execution settled or `expired`, but never prepare and sign the step

@@ -213,7 +213,8 @@ No tool call waits on the network forever. Two bounds apply:
   API took the transactions, the call goes on as submitted; if the answer
   said `"submissionState": "not_submitted"`, it is a refusal; otherwise it
   fails with `{"code": "submit-outcome-unknown", "retryable": false,
-  "executionId": ..., "expiresAt": ...}` (`protocol_execute` adds the
+  "executionId": ..., "deploymentId": ..., "expiresAt": ...}`
+  (`protocol_execute` adds the
   `signedTransactions` it signed). A read that shows the execution
   `prepared` does not rule out that it was taken, so do not prepare and
   sign the step again: resend the same signed transactions with

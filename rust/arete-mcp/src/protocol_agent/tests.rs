@@ -1532,16 +1532,15 @@ async fn after_a_restart_the_safe_way_on_sends_no_second_transaction() {
         .execute(&target, &call, None, None)
         .await
         .unwrap_err();
-    let signed = error
-        .downcast_ref::<MaybeSubmitted>()
-        .unwrap()
-        .signed
-        .clone()
-        .unwrap();
+    let unknown = error.downcast_ref::<MaybeSubmitted>().unwrap();
+    let signed = unknown.signed.clone().unwrap();
+    // The error names the deployment protocol_submit needs after a restart.
+    let resend = hosted(unknown.deployment_id.as_deref());
+    assert_eq!(resend.deployment.as_deref(), Some("d-1"));
     state.lock().unwrap().submit_answer = None;
     let fresh = signing_agent(dir.path(), &origin);
     let result = fresh
-        .submit(&target, "e-1", &signed, None, None)
+        .submit(&resend, "e-1", &signed, None, None)
         .await
         .unwrap();
     assert_eq!(result["state"], "completed", "{result}");

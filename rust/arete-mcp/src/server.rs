@@ -703,6 +703,7 @@ fn protocol_error(error: anyhow::Error) -> McpError {
             "retryable": false,
             "executionId": unknown.execution_id,
             "expiresAt": unknown.expires_at,
+            "deploymentId": unknown.deployment_id,
         });
         if let Some(signed) = &unknown.signed {
             data["signedTransactions"] = json!(signed);
@@ -3602,8 +3603,8 @@ impl AreteMcp {
                           `pollError` then says why, when reading its state failed after \
                           the submit. A submit whose answer was lost (in transit, or any \
                           5xx, 408 or 429) and that one read cannot show taken fails with \
-                          code `submit-outcome-unknown`, the `executionId` and its \
-                          `expiresAt`. A read showing it `prepared` does not rule out that it \
+                          code `submit-outcome-unknown`, the `executionId`, its `deploymentId` \
+                          and `expiresAt`. A read showing it `prepared` does not rule out that it \
                           was taken: never prepare and sign the step again; resend these same \
                           signed transactions here (the chain takes a signed transaction \
                           once), or wait until protocol_intent shows it settled or `expired`. \
@@ -8958,7 +8959,7 @@ mod deadline_tests {
 
     /// A submit a gateway answered, whose settling read failed too, reaches
     /// the agent as an unknown outcome: not retryable, with the execution
-    /// to read and its `expiresAt` (unknown to a server that did not
+    /// to read, its deployment and its `expiresAt` (unknown to a server that did not
     /// prepare it), the safe ways on, and without the key or the session
     /// token.
     #[tokio::test]
@@ -8970,7 +8971,7 @@ mod deadline_tests {
         assert_eq!(
             answer["error"]["data"],
             json!({"code": "submit-outcome-unknown", "retryable": false, "executionId": "e-gw",
-                "expiresAt": null}),
+                "expiresAt": null, "deploymentId": "d-1"}),
             "{answer}"
         );
         let message = answer["error"]["message"].as_str().unwrap();

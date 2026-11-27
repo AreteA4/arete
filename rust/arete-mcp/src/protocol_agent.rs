@@ -101,6 +101,9 @@ pub struct MaybeSubmitted {
     cause: String,
     /// The intent's `expiresAt`, when known.
     pub expires_at: Option<Value>,
+    /// The deployment it was submitted to, for protocol_submit after a
+    /// restart.
+    pub deployment_id: Option<String>,
     /// The signed transactions, when the agent did not pass them itself
     /// (`protocol_execute` signed them).
     pub signed: Option<Vec<String>>,
@@ -920,16 +923,15 @@ impl ProtocolAgent {
         }
     }
 
-    /// [`MaybeSubmitted`] for `execution_id`, with its `expiresAt` when
-    /// this server prepared it.
+    /// [`MaybeSubmitted`] for `execution_id`, with its deployment and, when
+    /// this server prepared it, its `expiresAt`.
     fn maybe_submitted(&self, execution_id: &str, cause: &anyhow::Error) -> anyhow::Error {
+        let remembered = self.executions.get(execution_id).map(|entry| entry.clone());
         anyhow!(MaybeSubmitted {
             execution_id: execution_id.to_string(),
             cause: format!("{cause:#}"),
-            expires_at: self
-                .executions
-                .get(execution_id)
-                .and_then(|entry| entry.expires_at.clone()),
+            deployment_id: remembered.as_ref().map(|entry| entry.deployment.clone()),
+            expires_at: remembered.and_then(|entry| entry.expires_at),
             signed: None,
         })
     }
