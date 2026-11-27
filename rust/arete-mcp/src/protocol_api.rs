@@ -66,6 +66,9 @@ pub struct Settled {
     pub state: Value,
     /// False when the wait ended before the intent reached a final state.
     pub settled: bool,
+    /// Why the wait ended early: reading the intent's state failed (the
+    /// request failed or timed out). `state` is the last one read.
+    pub poll_error: Option<String>,
 }
 
 /// One prepare request.
@@ -378,6 +381,9 @@ impl ProtocolApi {
     }
 
     /// Poll the intent from `state` until it settles or `timeout` passes.
+    /// The transactions are already submitted, so a failed read ends the
+    /// wait with the last state read and the failure in `poll_error`
+    /// instead of an error that would lose the execution id.
     pub async fn wait_intent(
         &self,
         token: &str,
@@ -385,31 +391,37 @@ impl ProtocolApi {
         mut state: Value,
         timeout: Duration,
     ) -> Result<Settled> {
+        let path = format!("/execution-intents/{}", path_segment(execution_id)?);
         let deadline = Instant::now() + timeout;
         loop {
             if is_final(&state) {
                 return Ok(Settled {
                     state,
                     settled: true,
+                    poll_error: None,
                 });
             }
             if Instant::now() >= deadline {
                 return Ok(Settled {
                     state,
                     settled: false,
+                    poll_error: None,
                 });
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
-            let (status, body) = self
-                .api_json(
-                    reqwest::Method::GET,
-                    &format!("/execution-intents/{}", path_segment(execution_id)?),
-                    token,
-                    None,
-                )
-                .await?;
-            if status.is_success() {
-                state = body;
+            match self
+                .api_json(reqwest::Method::GET, &path, token, None)
+                .await
+            {
+                Ok((status, body)) if status.is_success() => state = body,
+                Ok(_) => {}
+                Err(error) => {
+                    return Ok(Settled {
+                        state,
+                        settled: false,
+                        poll_error: Some(format!("{error:#}")),
+                    })
+                }
             }
         }
     }

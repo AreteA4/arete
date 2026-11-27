@@ -3574,7 +3574,10 @@ impl AreteMcp {
                           step's new instance), `state` (`completed`, `chain_failed`, \
                           `expired`, `rejected`, or a pending state), `settled` and \
                           per-transaction states with signatures. When `settled` is false, \
-                          read it later with protocol_intent and do not resubmit."
+                          read it later with protocol_intent and do not resubmit; \
+                          `pollError` then says why, when reading its state failed after \
+                          the submit. A submit request that fails in transit may still have \
+                          been taken: its error names the execution to read first."
     )]
     async fn protocol_submit(
         &self,

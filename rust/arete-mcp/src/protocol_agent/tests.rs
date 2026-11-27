@@ -47,6 +47,8 @@ struct MockState {
     /// Whether the simulated transaction hands the token account to
     /// another owner.
     handover: bool,
+    /// A request (method, path) the mock reads and never answers.
+    stall: Option<(&'static str, &'static str)>,
 }
 
 type Shared = Arc<Mutex<MockState>>;
@@ -382,6 +384,8 @@ fn mock_api() -> (String, Shared) {
     let state: Shared = Arc::default();
     let shared = state.clone();
     std::thread::spawn(move || {
+        // Stalled requests' connections, open until the mock ends.
+        let mut held = Vec::new();
         for stream in listener.incoming() {
             let Ok(mut stream) = stream else { break };
             let mut reader = BufReader::new(stream.try_clone().unwrap());
@@ -408,6 +412,14 @@ fn mock_api() -> (String, Shared) {
             let mut body = vec![0u8; length];
             reader.read_exact(&mut body).unwrap();
             let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+            {
+                let mut guard = shared.lock().unwrap();
+                if guard.stall == Some((method.as_str(), path.as_str())) {
+                    guard.seen.push(Seen { method, path, body });
+                    held.push(stream);
+                    continue;
+                }
+            }
             let (status, response) = respond(&shared, &method, &path, &body);
             let text = response.to_string();
             let _ = std::io::Write::write_all(
@@ -976,6 +988,77 @@ fn reset(state: &Shared) {
         seen,
         ..MockState::default()
     };
+}
+
+/// Once the signed transactions are sent, a stalled API never costs the
+/// agent the execution id: a stalled status poll returns the execution,
+/// unsettled, with `pollError` and the do-not-resubmit hint, and a submit
+/// that stalls says to read the execution before running the step again.
+#[tokio::test]
+async fn execute_keeps_the_execution_id_when_the_api_stalls_after_sending() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let (signer, _) = signer(
+        dir.path(),
+        &origin,
+        &format!(
+            "deployments = [\"d-1\"]\nmaxSolPerTransaction = 0.01\nprograms = [\"{}\"]\n",
+            b58(&PROGRAM)
+        ),
+    );
+    let mut agent = ProtocolAgent::new(Some(signer)).with_api(&origin, "a4_sk_test");
+    agent.http = reqwest::Client::builder()
+        .timeout(Duration::from_millis(300))
+        .build()
+        .unwrap();
+    let call = StepCall {
+        step: "tip",
+        instance: Some("i-1"),
+        args: &json!({}),
+        transaction_format: None,
+    };
+    let target = hosted(Some("d-1"));
+    let execute = || {
+        crate::deadline::watchdog(
+            Duration::from_secs(10),
+            agent.execute(&target, &call, None, None),
+        )
+    };
+
+    state.lock().unwrap().stall = Some(("GET", "/api/execution-intents/e-1"));
+    let result = execute().await.unwrap();
+    assert!(
+        seen(&state)
+            .iter()
+            .any(|seen| seen.method == "POST" && seen.path.ends_with("/e-1/submit")),
+        "{result}"
+    );
+    assert_eq!(result["executionId"], "e-1", "{result}");
+    assert_eq!(result["settled"], false, "{result}");
+    assert_eq!(result["state"], "submitting", "{result}");
+    assert_eq!(
+        result["next"],
+        "Not settled yet: read it with protocol_intent later. Do not resubmit."
+    );
+    let poll_error = result["pollError"].as_str().unwrap();
+    assert!(
+        poll_error.contains(&format!("{origin}/api/execution-intents/e-1")),
+        "{poll_error}"
+    );
+    assert!(!result.to_string().contains("a4_sk_test"), "{result}");
+    assert!(!result.to_string().contains("session-token"), "{result}");
+
+    state.lock().unwrap().stall = Some(("POST", "/api/execution-intents/e-1/submit"));
+    let error = execute().await.unwrap_err().to_string();
+    assert!(
+        error.ends_with(
+            "Execution e-1 may have been submitted: read it with protocol_intent before \
+             submitting it or running the step again."
+        ),
+        "{error}"
+    );
+    assert!(!error.contains("a4_sk_test"), "{error}");
+    assert!(!error.contains("session-token"), "{error}");
 }
 
 #[tokio::test]

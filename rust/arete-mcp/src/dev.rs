@@ -1622,6 +1622,11 @@ impl DevClient {
         let waited = api
             .wait_intent(&prepared.token, execution_id, submitted, INTENT_TIMEOUT)
             .await?;
+        if let Some(error) = &waited.poll_error {
+            bail!(
+                "Execution {execution_id} was submitted, but reading its state failed ({error}); read it again later and do not resubmit"
+            );
+        }
         if !waited.settled {
             bail!(
                 "Execution {execution_id} is still '{}' after {}s; read it again later and do not resubmit",

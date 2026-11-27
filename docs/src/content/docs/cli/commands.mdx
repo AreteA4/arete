@@ -490,17 +490,28 @@ Each registry, catalog, knowledge or account request, and opening a stack
 connection with `connect`, fails after 30 s (the CLI's default), connecting,
 TLS, headers and body counted together, with a JSON-RPC error that reads
 `request to <origin> timed out after 30s` and carries
-`{"code": "request-timeout", "retryable": true}`. Each tool call as a whole
+`{"code": "request-timeout", "retryable": true}`, except the account writes
+`rename_agent` and `create_claim_link`: they may have been applied before the
+reply stalled, so theirs carries `"retryable": false` and says what to check
+with `account_status` before running them again. Each tool call as a whole
 fails after 60 s with `<tool> did not finish within 60s` and
 `{"code": "tool-timeout", "retryable": true}` (`false` for tools that change
 something, below), except tools whose own waits are longer: `read_view` 90 s;
 `sandbox_*`, `protocol_*` and `squads_*` 120 s; `dev_*` 300 s; `dev_capture`
-and `dev_scenario` 15 minutes. Tools that sign or
-send a transaction (`sandbox_invoke`, `protocol_submit`, `protocol_execute`,
-`dev_step`) are never cut off mid-action: each of their requests and waits is
-bounded, and their own answer says whether the action ran or how to look it up.
-Other tools that change something (the `dev_*` tools that change an
-environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
+and `dev_scenario` 15 minutes. Tools that sign or send a transaction
+(`sandbox_invoke`, `protocol_submit`, `protocol_execute`, `dev_step`) are never
+cut off mid-action, and each of their requests and waits is bounded.
+`sandbox_invoke` returns its idempotency key and says to look a timed-out
+action up with `sandbox_action`. Once `protocol_submit` or `protocol_execute`
+has submitted, a failed or stalled status read returns `executionId`,
+`settled: false` and `pollError`, with a `next` that says to read it with
+`protocol_intent` and not resubmit; a submit request that fails in transit
+names the execution to read before running the step again. `dev_step` reports
+a failed status read after its submit with the execution id and "do not
+resubmit", but a submit request it loses in transit only as
+`Submit of '<step>' failed`, so check the environment's state before running
+that step again. Other tools that change something (the `dev_*` tools that
+change an environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
 `create_claim_link`) can still time out with their change in flight; their
 timeout carries `"retryable": false` and says to check the state before running
 them again.

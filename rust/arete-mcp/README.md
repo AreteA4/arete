@@ -188,10 +188,20 @@ No tool call waits on the network forever. Two bounds apply:
   `dev_scenario` 15 minutes (use `a4 dev capture` for larger captures).
   Tools that sign or send a transaction (`sandbox_invoke`,
   `protocol_submit`, `protocol_execute`, `dev_step`) have no such bound,
-  so an action in flight is never cut off with a retryable error: each of
-  their requests and waits is bounded as above, and their own answer says
-  whether the action ran, or how to look it up (with the idempotency key
-  or execution id it returns), rather than run it again.
+  so an action in flight is never cut off with a retryable error; each of
+  their requests and waits is bounded as above. `sandbox_invoke` answers
+  with the idempotency key it ran under, and a timed-out action says to
+  look it up with `sandbox_action` rather than run it under a new key.
+  Once `protocol_submit` or `protocol_execute` has submitted, a status
+  read that fails or stalls ends the wait with `executionId`,
+  `settled: false`, the failure in `pollError` and a `next` that says to
+  read it with `protocol_intent` and not resubmit; a submit request that
+  fails in transit may still have been taken, and its error names the
+  execution to read before running the step again. `dev_step` reports a
+  failed status read after its submit with the execution id and "do not
+  resubmit"; a submit request it loses in transit is reported as
+  `Submit of '<step>' failed`, so check the environment's state before
+  running that step again.
   A tool that changes something (the `dev_*` tools that change an
   environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
   `create_claim_link`) can still be cut off at its bound, with its change

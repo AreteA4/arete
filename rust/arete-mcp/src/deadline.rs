@@ -166,6 +166,16 @@ pub(crate) fn blackhole() -> String {
     format!("http://{address}")
 }
 
+/// `test`, failing it once `limit` passes: a deadline test whose deadline
+/// regresses fails instead of hanging the suite. Under a paused clock pick
+/// a `limit` above the deadline under test, so the clock reaches that first.
+#[cfg(test)]
+pub(crate) async fn watchdog<T>(limit: Duration, test: impl Future<Output = T>) -> T {
+    tokio::time::timeout(limit, test)
+        .await
+        .unwrap_or_else(|_| panic!("no answer within {limit:?}: the deadline did not fire"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

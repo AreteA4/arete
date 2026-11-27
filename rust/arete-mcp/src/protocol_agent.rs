@@ -670,7 +670,21 @@ impl ProtocolAgent {
         timeout: Option<Duration>,
     ) -> Result<Value> {
         let token = target.api.token(deployment, &TRANSACTION_SCOPES).await?;
-        let submitted = target.api.submit(&token, execution_id, signed).await?;
+        let submitted = target
+            .api
+            .submit(&token, execution_id, signed)
+            .await
+            .map_err(|error| {
+                // A refusal is the API's answer; a request that failed in
+                // transit may still have been taken.
+                if error.downcast_ref::<reqwest::Error>().is_none() {
+                    return error;
+                }
+                anyhow!(
+                    "{error:#}. Execution {execution_id} may have been submitted: read it with \
+                     protocol_intent before submitting it or running the step again."
+                )
+            })?;
         let waited = if wait.unwrap_or(true) {
             target
                 .api
@@ -685,6 +699,7 @@ impl ProtocolAgent {
             crate::protocol_api::Settled {
                 settled: crate::protocol_api::is_final(&submitted),
                 state: submitted,
+                poll_error: None,
             }
         };
         let intent = waited.state;
@@ -702,6 +717,9 @@ impl ProtocolAgent {
         });
         if let Some(url) = intent.get("receiptUrl").filter(|url| url.is_string()) {
             result["receiptUrl"] = url.clone();
+        }
+        if let Some(error) = waited.poll_error {
+            result["pollError"] = json!(error);
         }
         if !waited.settled {
             result["next"] =
