@@ -35,7 +35,7 @@ Or without Node at all:
 
 ```bash
 curl -fsSL https://arete.run/install.sh | sh          # macOS, Linux
-irm https://arete.run/install.ps1 | iex                # Windows PowerShell
+irm https://docs.arete.run/install.ps1 | iex           # Windows PowerShell
 ```
 
 Flags and environment:

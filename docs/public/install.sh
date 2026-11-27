@@ -28,7 +28,7 @@ case "$os" in
   Darwin) os=darwin ;;
   Linux) os=linux ;;
   MINGW*|MSYS*|CYGWIN*|Windows_NT)
-    die "Windows shell detected. Run in PowerShell instead: irm https://arete.run/install.ps1 | iex" ;;
+    die "Windows shell detected. Run in PowerShell instead: irm https://docs.arete.run/install.ps1 | iex" ;;
   *) die "unsupported OS '$os' (supported: darwin, linux). Build from source: https://github.com/AreteA4/arete" ;;
 esac
 case "$arch" in

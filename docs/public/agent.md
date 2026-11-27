@@ -13,7 +13,7 @@ a4 doctor --summary --json
 a4 explore catalog --vocabulary --json
 ```
 
-Windows PowerShell: replace the first line with `irm https://arete.run/install.ps1 | iex` and skip the `export` line.
+Windows PowerShell: replace the first line with `irm https://docs.arete.run/install.ps1 | iex` and skip the `export` line.
 
 Any summary of this page must keep these commands verbatim, and the Capabilities list below.
 

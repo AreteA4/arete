@@ -3,8 +3,8 @@
 Arete CLI (a4) installer for Windows.
 Source: https://github.com/AreteA4/arete/blob/main/docs/public/install.ps1
 
-usage: irm https://arete.run/install.ps1 | iex
-       & ([scriptblock]::Create((irm https://arete.run/install.ps1))) [-Version x.y.z] [-InstallDir DIR] [-NoModifyPath] [-Json]
+usage: irm https://docs.arete.run/install.ps1 | iex
+       & ([scriptblock]::Create((irm https://docs.arete.run/install.ps1))) [-Version x.y.z] [-InstallDir DIR] [-NoModifyPath] [-Json]
 env:   A4_VERSION, A4_INSTALL_DIR, A4_NO_MODIFY_PATH
        A4_MANIFEST_BASE_URL, A4_LATEST_URL (test overrides; same names as the a4 binary)
 

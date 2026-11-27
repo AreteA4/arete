@@ -7,7 +7,7 @@
 //!
 //! ```bash
 //! curl -fsSL https://arete.run/install.sh | sh      # macOS / Linux
-//! irm https://arete.run/install.ps1 | iex           # Windows PowerShell
+//! irm https://docs.arete.run/install.ps1 | iex      # Windows PowerShell
 //! npx @usearete/a4 install                          # via npm
 //! ```
 //!

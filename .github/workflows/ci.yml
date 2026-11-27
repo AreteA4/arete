@@ -156,6 +156,9 @@ jobs:
       - name: Syntax-check install.sh (POSIX sh)
         run: sh -n docs/public/install.sh
 
+      - name: Check PowerShell install commands use the final URL (PowerShell 5.1 does not follow 308)
+        run: node --test ./scripts/check-powershell-install-urls.test.mjs
+
       - name: Test install.sh signature verification
         run: bash ./scripts/test-install-sh-verify.sh
 

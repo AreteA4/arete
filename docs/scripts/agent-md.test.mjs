@@ -48,7 +48,7 @@ test("agent.md setup commands are the first code block, verbatim", () => {
 
 test("agent.md keeps the Windows installer next to the setup block", () => {
   const block = text.indexOf("```sh");
-  const ps = text.indexOf("irm https://arete.run/install.ps1 | iex");
+  const ps = text.indexOf("irm https://docs.arete.run/install.ps1 | iex");
   assert.ok(ps > block && ps < SETUP_BUDGET + 200);
 });
 
