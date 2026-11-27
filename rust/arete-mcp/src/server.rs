@@ -3704,13 +3704,17 @@ impl AreteMcp {
                           `summary`. Guard and access rejections come back as `state: \
                           \"rejected\"` like protocol_prepare. One call per step (deployment, \
                           instance, step, signer) runs at a time: another is refused with \
-                          `step-in-flight`. While this step's last execution has not settled \
+                          `step-in-flight` (with the running call's `executionId` once \
+                          prepared). A call your host gave up on still runs, and its answer is \
+                          lost: read its execution with protocol_intent before running the step \
+                          again. While this step's last execution has not settled \
                           (`settled: false`, or a `submit-outcome-unknown` error, which \
                           carries the `signedTransactions` to resend with protocol_submit), \
                           running it again with the same args answers for that execution \
                           (`note` says so) instead of preparing and signing a new one, and \
-                          other args are refused with `step-unsettled`. That holds only in \
-                          this a4 mcp session: after a restart, resend the \
+                          other args are refused with `step-unsettled`. Once it completed, the \
+                          same args before its `expiresAt` get that execution's answer again. \
+                          That holds only in this a4 mcp session: after a restart, resend the \
                           `signedTransactions` or wait until the execution is `expired`."
     )]
     async fn protocol_execute(
@@ -8452,7 +8456,7 @@ mod sandbox_result_tests {
 }
 
 #[cfg(test)]
-mod deadline_tests {
+pub(crate) mod deadline_tests {
     use super::*;
     use crate::stdio_framing::StdioTransport;
     use rmcp::ServiceExt;
@@ -8478,20 +8482,24 @@ mod deadline_tests {
         }
     }
 
-    struct Session {
+    /// A client of an `a4 mcp` server over its stdio transport.
+    pub(crate) struct Session {
         input: WriteHalf<DuplexStream>,
         replies: Lines<BufReader<ReadHalf<DuplexStream>>>,
+        /// Messages read while waiting for another id's reply.
+        pub(crate) skipped: Vec<Value>,
     }
 
     impl Session {
         /// `server` over the stdio transport, initialized.
-        async fn open(server: AreteMcp) -> Self {
+        pub(crate) async fn open(server: AreteMcp) -> Self {
             let (client, server_end) = tokio::io::duplex(1 << 20);
             let (output, input) = tokio::io::split(client);
             let (read, write) = tokio::io::split(server_end);
             let mut session = Self {
                 input,
                 replies: BufReader::new(output).lines(),
+                skipped: Vec::new(),
             };
             session.send(INITIALIZE).await;
             session.send(INITIALIZED).await;
@@ -8504,7 +8512,7 @@ mod deadline_tests {
             session
         }
 
-        async fn send(&mut self, message: &str) {
+        pub(crate) async fn send(&mut self, message: &str) {
             self.input
                 .write_all(format!("{message}\n").as_bytes())
                 .await
@@ -8513,7 +8521,7 @@ mod deadline_tests {
 
         /// The reply to `id`, failing the test rather than hanging when
         /// none comes within 10 s.
-        async fn reply(&mut self, id: u64) -> Value {
+        pub(crate) async fn reply(&mut self, id: u64) -> Value {
             let waiting = async {
                 loop {
                     let line = self
@@ -8526,6 +8534,7 @@ mod deadline_tests {
                     if message["id"] == json!(id) {
                         return message;
                     }
+                    self.skipped.push(message);
                 }
             };
             tokio::time::timeout(Duration::from_secs(10), waiting)

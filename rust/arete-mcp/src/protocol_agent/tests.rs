@@ -53,6 +53,8 @@ struct MockState {
     submit_answer: Option<(u16, Value)>,
     /// What reading an execution intent answers instead of `completed`.
     intent_answer: Option<(u16, Value)>,
+    /// The `expiresAt` a prepare answers (default: 1_900_000_000).
+    expires_at: Option<Value>,
 }
 
 type Shared = Arc<Mutex<MockState>>;
@@ -325,7 +327,8 @@ fn respond(state: &Shared, method: &str, path: &str, body: &Value) -> (u16, Valu
             json!({
                 "ok": true,
                 "status": "prepared",
-                "intent": { "executionId": "e-1", "instanceId": instance, "expiresAt": 1_900_000_000,
+                "intent": { "executionId": "e-1", "instanceId": instance,
+                    "expiresAt": guard.expires_at.clone().unwrap_or(json!(1_900_000_000)),
                     "deployment": { "deploymentId": "d-1" } },
                 "intentHash": "h",
                 "transactions": [{ "index": 0, "transactionBase64": b64(&tx), "messageSha256": "m",
@@ -682,6 +685,9 @@ async fn prepare_returns_unsigned_transactions_and_submit_takes_them_signed() {
 #[tokio::test]
 async fn execute_signs_within_policy_and_refuses_outside_it() {
     let (origin, state) = mock_api();
+    // Intents that have expired by the next run, so each run of the step is
+    // a new execution.
+    state.lock().unwrap().expires_at = Some(json!(1));
     let dir = tempfile::tempdir().unwrap();
     let mint = b58(&MINT);
     let (signer, key) = signer(
@@ -997,11 +1003,14 @@ fn tip_call(args: &Value) -> StepCall<'_> {
     }
 }
 
+/// The mock's answers as new, keeping what it saw and its `expiresAt`.
 fn reset(state: &Shared) {
     let mut guard = state.lock().unwrap();
     let seen = std::mem::take(&mut guard.seen);
+    let expires_at = guard.expires_at.take();
     *guard = MockState {
         seen,
+        expires_at,
         ..MockState::default()
     };
 }
@@ -1138,8 +1147,9 @@ fn unknown_guidance(execution: &str, expires_at: &str, execute: bool) -> String 
     );
     if execute {
         text.push_str(
-            " Running protocol_execute again for this step resends them itself, but only in \
-             this a4 mcp session: a restarted server does not remember the execution.",
+            " Running protocol_execute again for this step with the same args resends them \
+             itself, but restarting a4 mcp clears that guard: after a restart, a run would \
+             prepare and sign a new execution.",
         );
     }
     text
@@ -1296,7 +1306,6 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
     // completes the step; a coded unknown outcome is remembered, and
     // running the step again prepares nothing new.
     let dir = tempfile::tempdir().unwrap();
-    let agent = signing_agent(dir.path(), &origin);
     let call_args = json!({});
     let call = tip_call(&call_args);
     let target = hosted(Some("d-1"));
@@ -1309,7 +1318,11 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
         ));
         guard.intent_answer = Some(taken("completed"));
     }
-    let done = agent.execute(&target, &call, None, None).await.unwrap();
+    let done = signing_agent(dir.path(), &origin)
+        .execute(&target, &call, None, None)
+        .await
+        .unwrap();
+    let agent = signing_agent(dir.path(), &origin);
     assert_eq!(done["state"], "completed", "{done}");
     assert_eq!(sent(&state, "GET", "/execution-intents/e-1").len(), 1);
     restart(&state);
@@ -1344,11 +1357,26 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
 }
 
+/// `protocol_execute` on the mock, failing the test rather than hanging.
+async fn exec(
+    agent: &ProtocolAgent,
+    call: &StepCall<'_>,
+    timeout: Option<Duration>,
+) -> Result<Value> {
+    crate::deadline::watchdog(
+        Duration::from_secs(10),
+        agent.execute(&hosted(Some("d-1")), call, None, timeout),
+    )
+    .await
+}
+
 /// Running `protocol_execute` again before its last execution settled (an
 /// unknown submit, or a wait that ended first) answers for that execution
 /// instead of preparing and signing a new one: the transactions are sent
 /// once, or, while the API has not taken them, the same signed bytes are
-/// sent again. Once settled, the step runs anew.
+/// sent again. Once it completed, the same args get its answer again until
+/// its `expiresAt` (a number or an RFC 3339 time), and other args, or the
+/// same args after then, run anew.
 #[tokio::test]
 async fn running_protocol_execute_again_never_submits_a_step_twice() {
     let (origin, state) = mock_api();
@@ -1356,13 +1384,8 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
     let agent = signing_agent(dir.path(), &origin);
     let args = json!({});
     let call = tip_call(&args);
-    let target = hosted(Some("d-1"));
-    let run = || {
-        crate::deadline::watchdog(
-            Duration::from_secs(10),
-            agent.execute(&target, &call, None, None),
-        )
-    };
+    let other_args = json!({ "amount": "2" });
+    let other = tip_call(&other_args);
 
     // A gateway answers the submit, and the read that would settle it
     // fails too.
@@ -1371,82 +1394,119 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
         guard.submit_answer = Some((504, Value::Null));
         guard.intent_answer = Some((502, Value::Null));
     }
-    let error = run().await.unwrap_err();
+    let error = exec(&agent, &call, None).await.unwrap_err();
     assert!(error.downcast_ref::<MaybeSubmitted>().is_some(), "{error}");
     // Run again while the API is still unreadable: nothing is sent.
-    let error = run().await.unwrap_err();
+    let error = exec(&agent, &call, None).await.unwrap_err();
     assert!(error.downcast_ref::<MaybeSubmitted>().is_some(), "{error}");
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
     // The API had taken them: running again reports that execution.
     state.lock().unwrap().intent_answer = Some(taken("completed"));
-    let result = run().await.unwrap();
+    let result = exec(&agent, &call, None).await.unwrap();
     assert_eq!(result["executionId"], "e-1", "{result}");
     assert_eq!(result["state"], "completed", "{result}");
-    assert!(result["note"]
-        .as_str()
-        .unwrap()
-        .contains("nothing new was prepared or signed. Run the step again"));
+    assert_eq!(
+        result["note"],
+        "This answers the previous protocol_execute of this step, which had not settled: \
+         nothing new was prepared or signed. Until its expiresAt (1900000000), running the \
+         step again with the same args answers for this execution; other args run anew.",
+        "{result}"
+    );
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
-    // Settled, so the next run is a new execution.
+    // Completed: the same args get that answer again, and nothing is
+    // read, prepared or sent.
     restart(&state);
-    let result = run().await.unwrap();
-    assert!(result.get("note").is_none(), "{result}");
+    let again = exec(&agent, &call, None).await.unwrap();
+    assert_eq!(again["executionId"], "e-1", "{again}");
+    assert_eq!(again["state"], "completed", "{again}");
+    assert_eq!(
+        again["note"],
+        "This answers the last protocol_execute of step 'tip' with these args, which \
+         completed: nothing new was prepared or signed. Until its expiresAt (1900000000), \
+         running the step with the same args answers this way; other args, or the same args \
+         after then, run anew.",
+        "{again}"
+    );
+    assert!(seen(&state).is_empty(), "{:?}", seen(&state));
+    // Other args are a new execution.
+    let fresh = exec(&agent, &other, None).await.unwrap();
+    assert!(fresh.get("note").is_none(), "{fresh}");
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
 
     // The wait ends before the execution settles: running again answers
     // for it until it settles, and never says to run the step again.
     restart(&state);
+    let agent = signing_agent(dir.path(), &origin);
     {
         let mut guard = state.lock().unwrap();
         guard.submit_answer = Some(taken("submitting"));
         guard.intent_answer = Some(taken("submitting"));
     }
-    let short = || {
-        crate::deadline::watchdog(
-            Duration::from_secs(10),
-            agent.execute(&target, &call, None, Some(Duration::from_millis(600))),
-        )
-    };
-    let pending = short().await.unwrap();
+    let short = Some(Duration::from_millis(600));
+    let pending = exec(&agent, &call, short).await.unwrap();
     assert_eq!(pending["settled"], false, "{pending}");
-    let again = short().await.unwrap();
+    let again = exec(&agent, &call, short).await.unwrap();
     assert_eq!(again["settled"], false, "{again}");
     assert_eq!(again["executionId"], "e-1", "{again}");
     let note = again["note"].as_str().unwrap();
     assert!(note.contains("until it settles"), "{note}");
     assert!(!note.contains("Run the step again"), "{note}");
     state.lock().unwrap().intent_answer = Some(taken("completed"));
-    let done = run().await.unwrap();
+    let done = exec(&agent, &call, None).await.unwrap();
     assert_eq!(done["state"], "completed", "{done}");
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
     restart(&state);
-    run().await.unwrap();
-    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    exec(&agent, &call, None).await.unwrap();
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 0);
 
     // Still `prepared` after the unknown submit: running again sends the
     // same signed bytes, not a new prepare.
     restart(&state);
+    let agent = signing_agent(dir.path(), &origin);
     {
         let mut guard = state.lock().unwrap();
         guard.submit_answer = Some((502, Value::Null));
         guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
     }
-    run().await.unwrap_err();
+    exec(&agent, &call, None).await.unwrap_err();
     // The API answers again; the intent stays `prepared` until it takes
     // the transactions.
     state.lock().unwrap().submit_answer = None;
-    let result = run().await.unwrap();
+    let result = exec(&agent, &call, None).await.unwrap();
     assert_eq!(result["state"], "completed", "{result}");
     let submits = sent(&state, "POST", "/submit");
     assert_eq!(submits.len(), 2);
     assert_eq!(submits[0].body, submits[1].body);
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+
+    // An RFC 3339 `expiresAt` holds the answer the same way; once it has
+    // passed, the same args run anew.
+    for (expires_at, prepares) in [(json!("2030-01-01T00:00:00Z"), 1), (json!(1), 2)] {
+        restart(&state);
+        state.lock().unwrap().expires_at = Some(expires_at.clone());
+        let agent = signing_agent(dir.path(), &origin);
+        exec(&agent, &call, None).await.unwrap();
+        let again = exec(&agent, &call, None).await.unwrap();
+        assert_eq!(again["state"], "completed", "{again}");
+        assert_eq!(
+            sent(&state, "POST", "/prepare").len(),
+            prepares,
+            "{expires_at}"
+        );
+        assert_eq!(sent(&state, "POST", "/submit").len(), prepares);
+        if prepares == 1 {
+            assert!(again["note"]
+                .as_str()
+                .unwrap()
+                .contains("Until its expiresAt (2030-01-01T00:00:00Z)"));
+        }
+    }
 }
 
 /// Running `protocol_submit` again for an execution whose submit had an
@@ -1644,9 +1704,16 @@ async fn a_step_in_flight_is_prepared_and_sent_once() {
         .collect();
     assert_eq!(busy.len(), 1, "{errors:?}");
     assert_eq!(busy[0].code, "step-in-flight");
-    assert!(busy[0]
-        .to_string()
-        .contains("nothing was prepared or signed for this call"));
+    // Refused before the first call prepared: no execution to name yet.
+    assert_eq!(busy[0].execution_id, None);
+    assert_eq!(
+        busy[0].to_string(),
+        "protocol_execute of step 'tip' is already running for this signer in this a4 mcp \
+         session and has not prepared its execution yet; nothing was prepared or signed for \
+         this call. Its answer goes to the call that started it. If your host gave up on that \
+         call, its answer is lost: call again shortly for its `executionId`, and read it with \
+         protocol_intent before re-running the step."
+    );
     assert!(errors
         .iter()
         .any(|error| error.downcast_ref::<MaybeSubmitted>().is_some()));
@@ -1657,7 +1724,15 @@ async fn a_step_in_flight_is_prepared_and_sent_once() {
     let busy = error.downcast_ref::<StepBusy>().expect("busy");
     assert_eq!(busy.code, "step-unsettled");
     assert_eq!(busy.execution_id.as_deref(), Some("e-1"));
-    assert!(error.to_string().contains("previous args ({})"), "{error}");
+    assert_eq!(
+        error.to_string(),
+        "Step 'tip' was last run with other args, and its execution e-1 has not settled; \
+         nothing was prepared or signed for this call. Run the step again with its previous \
+         args ({}) to answer for that execution; once that answer, or protocol_submit with its \
+         signed transactions, shows it settled, the step runs with new args. Restarting a4 mcp \
+         clears this guard, so after a restart do not run the step until protocol_intent shows \
+         execution e-1 settled or `expired`."
+    );
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
     {
@@ -1730,6 +1805,8 @@ async fn a_cancelled_execute_frees_its_step_until_it_signs() {
         .await
         .expect_err("still running");
     restart(&state);
+    // Expired by the next run, so that run is a new execution.
+    state.lock().unwrap().expires_at = Some(json!(1));
     let done = agent.execute(&target, &call, None, None).await.unwrap();
     assert!(done.get("note").is_none(), "{done}");
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
@@ -1744,6 +1821,106 @@ async fn a_cancelled_execute_frees_its_step_until_it_signs() {
     let again = agent.execute(&target, &call, None, None).await.unwrap();
     assert_eq!(again["state"], "completed", "{again}");
     assert!(again["note"].is_string(), "{again}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+}
+
+/// Wait until `done`, failing the test after 10 s.
+async fn eventually(what: &str, done: impl Fn() -> bool) {
+    let started = std::time::Instant::now();
+    while !done() {
+        assert!(started.elapsed() < Duration::from_secs(10), "{what}");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// A host that cancels protocol_execute mid-wait (`notifications/cancelled`)
+/// does not stop it: the call runs on and its answer is dropped. A retry
+/// while it runs is refused `step-in-flight` with the execution to read,
+/// and a retry after it completed gets that execution's answer: one
+/// prepare and one submit in all.
+#[tokio::test]
+async fn a_host_cancel_mid_wait_sends_the_step_once() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let agent = signing_agent(dir.path(), &origin);
+    let mut session =
+        crate::server::deadline_tests::Session::open(crate::server::AreteMcp::with_agents(
+            agent.clone(),
+            crate::sandbox::SandboxClient::from_values(None, None, None),
+        ))
+        .await;
+    let execute = |id: u64| {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+            "name": "protocol_execute",
+            "arguments": {"step": "tip", "instance": "i-1", "deployment": "d-1", "args": {}},
+        }})
+        .to_string()
+    };
+    {
+        let mut guard = state.lock().unwrap();
+        guard.submit_answer = Some(taken("submitting"));
+        guard.intent_answer = Some(taken("submitting"));
+    }
+    session.send(&execute(21)).await;
+    eventually("the first call never waited on its execution", || {
+        !sent(&state, "GET", "/execution-intents/e-1").is_empty()
+    })
+    .await;
+    session
+        .send(r#"{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":21,"reason":"host timeout"}}"#)
+        .await;
+
+    // Retried while the first call runs on.
+    session.send(&execute(22)).await;
+    let busy = session.reply(22).await;
+    assert_eq!(
+        busy["error"]["data"],
+        json!({"code": "step-in-flight", "retryable": false, "executionId": "e-1"}),
+        "{busy}"
+    );
+    assert_eq!(
+        busy["error"]["message"],
+        "protocol_execute of step 'tip' is already running for this signer in this a4 mcp \
+         session, as execution e-1; nothing was prepared or signed for this call. Its answer \
+         goes to the call that started it. If your host gave up on that call, its answer is \
+         lost: read execution e-1 with protocol_intent before re-running the step.",
+        "{busy}"
+    );
+
+    // The first call completes; its answer goes nowhere.
+    state.lock().unwrap().intent_answer = Some(taken("completed"));
+    eventually("the first call never completed", || {
+        agent
+            .steps
+            .iter()
+            .any(|run| matches!(run.value(), StepRun::Completed { .. }))
+    })
+    .await;
+
+    // Retried after that: its answer, nothing prepared or sent again.
+    session.send(&execute(23)).await;
+    let answer = session.reply(23).await;
+    assert!(answer.get("error").is_none(), "{answer}");
+    let body: Value =
+        serde_json::from_str(answer["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(body["executionId"], "e-1", "{body}");
+    assert_eq!(body["state"], "completed", "{body}");
+    assert!(
+        body["note"]
+            .as_str()
+            .unwrap()
+            .starts_with("This answers the last protocol_execute of step 'tip' with these args"),
+        "{body}"
+    );
+    assert!(
+        session
+            .skipped
+            .iter()
+            .all(|message| message["id"] != json!(21)),
+        "{:?}",
+        session.skipped
+    );
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
 }
@@ -1842,6 +2019,9 @@ async fn rpc_failures_never_show_the_rpc_key_or_hang() {
 #[tokio::test]
 async fn execute_refuses_authority_changes_and_uncapped_outflows() {
     let (origin, state) = mock_api();
+    // Intents that have expired by the next run, so each run of the step is
+    // a new execution.
+    state.lock().unwrap().expires_at = Some(json!(1));
     let dir = tempfile::tempdir().unwrap();
     // No maxTokenAmounts and no programs allow-list.
     let (signer, _) = signer(

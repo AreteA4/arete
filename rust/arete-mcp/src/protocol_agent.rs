@@ -126,16 +126,16 @@ impl std::fmt::Display for MaybeSubmitted {
                 ""
             },
             match &self.expires_at {
-                Some(Value::String(at)) => format!(" (expiresAt {at})"),
-                Some(at) => format!(" (expiresAt {at})"),
+                Some(at) => format!(" (expiresAt {})", shown(at)),
                 None => String::new(),
             }
         )?;
         if self.signed.is_some() {
             write!(
                 f,
-                " Running protocol_execute again for this step resends them itself, but only \
-                 in this a4 mcp session: a restarted server does not remember the execution."
+                " Running protocol_execute again for this step with the same args resends them \
+                 itself, but restarting a4 mcp clears that guard: after a restart, a run would \
+                 prepare and sign a new execution."
             )?;
         }
         Ok(())
@@ -166,41 +166,91 @@ impl std::error::Error for StepBusy {}
 /// step and signer) in this session.
 #[derive(Debug, Clone)]
 enum StepRun {
-    /// A call is preparing, signing or sending it.
-    InFlight,
+    /// A call is preparing, signing or sending it: its execution, once
+    /// prepared.
+    InFlight(Option<String>),
     /// Its last execution has not settled: the submit's outcome was
     /// unknown, or the wait ended first.
-    Unsettled(Unsettled),
+    Unsettled(LastRun),
+    /// Its last execution completed. Until `until` (its `expiresAt`, Unix
+    /// seconds) the same args get `answer` again instead of a second
+    /// execution, since a host that gave up on the call never saw it.
+    Completed {
+        args: Value,
+        answer: Value,
+        expires_at: Value,
+        until: i64,
+    },
 }
 
 #[derive(Debug, Clone)]
-struct Unsettled {
+struct LastRun {
     execution_id: String,
     signed: Vec<String>,
     /// The step args it was prepared with.
     args: Value,
 }
 
+impl StepRun {
+    fn unsettled_by(&self, execution_id: &str) -> bool {
+        matches!(self, Self::Unsettled(last) if last.execution_id == execution_id)
+    }
+}
+
 /// A step call reserved as [`StepRun::InFlight`]. Dropped, it leaves the
-/// step [`StepRun::Unsettled`] while `keep` holds a signed execution (it
-/// may have been sent), and free otherwise.
+/// step as `keep` (unsettled while it holds a signed execution that may
+/// have been sent, or completed), and free when that is `None`.
 struct Reservation {
     steps: Arc<DashMap<String, StepRun>>,
     key: String,
-    keep: Option<Unsettled>,
+    keep: Option<StepRun>,
+}
+
+impl Reservation {
+    /// Name the execution the call prepared, for a call refused while
+    /// this one runs.
+    fn prepared(&self, execution_id: &str) {
+        self.steps.insert(
+            self.key.clone(),
+            StepRun::InFlight(Some(execution_id.to_string())),
+        );
+    }
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
         match self.keep.take() {
-            Some(unsettled) => {
-                self.steps
-                    .insert(self.key.clone(), StepRun::Unsettled(unsettled));
+            Some(run) => {
+                self.steps.insert(self.key.clone(), run);
             }
             None => {
                 self.steps.remove(&self.key);
             }
         }
+    }
+}
+
+/// `expiresAt` as Unix seconds: an RFC 3339 time, or a number of seconds
+/// (or milliseconds, when it is that large).
+fn unix_seconds(expires_at: &Value) -> Option<i64> {
+    match expires_at {
+        Value::Number(number) => {
+            number
+                .as_i64()
+                .map(|n| if n > 100_000_000_000 { n / 1000 } else { n })
+        }
+        Value::String(at) => chrono::DateTime::parse_from_rfc3339(at)
+            .ok()
+            .map(|at| at.timestamp()),
+        _ => None,
+    }
+}
+
+/// `expiresAt` as written in a message: a time without its quotes.
+fn shown(expires_at: &Value) -> String {
+    match expires_at {
+        Value::String(at) => at.clone(),
+        other => other.to_string(),
     }
 }
 
@@ -795,13 +845,52 @@ impl ProtocolAgent {
             )
             .await?;
         // Settled: a protocol_execute step left unsettled by this execution
-        // (resent here, as its error says) is free to run anew.
+        // (resent here, as its error says) is free to run anew, or, when it
+        // completed, answers the same args with it until its expiresAt.
         if result["settled"] == json!(true) {
-            self.steps.retain(|_, run| {
-                !matches!(run, StepRun::Unsettled(unsettled) if unsettled.execution_id == execution_id)
-            });
+            let held: Vec<(String, Value)> = self
+                .steps
+                .iter()
+                .filter_map(|run| match run.value() {
+                    StepRun::Unsettled(last) if last.execution_id == execution_id => {
+                        Some((run.key().clone(), last.args.clone()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            for (key, args) in held {
+                match self.completed(execution_id, args, &result) {
+                    Some(done) => {
+                        if let Some(mut run) = self.steps.get_mut(&key) {
+                            if run.unsettled_by(execution_id) {
+                                *run = done;
+                            }
+                        }
+                    }
+                    None => {
+                        self.steps
+                            .remove_if(&key, |_, run| run.unsettled_by(execution_id));
+                    }
+                }
+            }
         }
         Ok(result)
+    }
+
+    /// What a step call keeps once its execution settled with `answer`: a
+    /// completed one with a known `expiresAt`, until then.
+    fn completed(&self, execution_id: &str, args: Value, answer: &Value) -> Option<StepRun> {
+        if answer["state"] != "completed" {
+            return None;
+        }
+        let expires_at = self.executions.get(execution_id)?.expires_at.clone()?;
+        let until = unix_seconds(&expires_at)?;
+        Some(StepRun::Completed {
+            args,
+            answer: answer.clone(),
+            expires_at,
+            until,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1105,12 +1194,14 @@ impl ProtocolAgent {
     /// `protocol_execute`: prepare for the signer, check the policy, sign,
     /// submit and wait. The step call (deployment, instance, step, signer)
     /// is reserved before anything is funded, prepared or signed, so a
-    /// second call while one runs is refused with [`StepBusy`]. While its
-    /// last execution has not settled (an unknown submit, or a wait that
-    /// ended first), a call with the same args answers for that execution
-    /// (the same signed bytes) instead of preparing and signing a new one,
-    /// and a call with other args is refused. This lasts for this server's
-    /// session only.
+    /// second call while one runs is refused with [`StepBusy`], naming its
+    /// execution once prepared. While its last execution has not settled
+    /// (an unknown submit, or a wait that ended first), a call with the
+    /// same args answers for that execution (the same signed bytes) instead
+    /// of preparing and signing a new one, and a call with other args is
+    /// refused. Once it completed, a call with the same args gets its
+    /// answer again until its `expiresAt`, since a host that gave up on the
+    /// first call never saw it. This lasts for this server's session only.
     pub async fn execute(
         &self,
         args: &TargetArgs,
@@ -1146,24 +1237,38 @@ impl ProtocolAgent {
             Value::Null => json!({}),
             other => other.clone(),
         };
+        let now = crate::dev::unix_now() as i64;
         let resumed = match self.steps.entry(call_key.clone()) {
             dashmap::mapref::entry::Entry::Vacant(free) => {
-                free.insert(StepRun::InFlight);
+                free.insert(StepRun::InFlight(None));
                 None
             }
             dashmap::mapref::entry::Entry::Occupied(mut held) => match held.get().clone() {
-                StepRun::InFlight => {
-                    return Err(anyhow!(StepBusy {
-                        code: "step-in-flight",
-                        execution_id: None,
-                        message: format!(
+                StepRun::InFlight(execution_id) => {
+                    let message = match &execution_id {
+                        Some(id) => format!(
                             "protocol_execute of step '{}' is already running for this signer \
-                             in this a4 mcp session; nothing was prepared or signed for this \
-                             call. Wait for that call's answer instead of running the step \
-                             again.",
+                             in this a4 mcp session, as execution {id}; nothing was prepared or \
+                             signed for this call. Its answer goes to the call that started it. \
+                             If your host gave up on that call, its answer is lost: read \
+                             execution {id} with protocol_intent before re-running the step.",
                             call.step
                         ),
-                    }))
+                        None => format!(
+                            "protocol_execute of step '{}' is already running for this signer \
+                             in this a4 mcp session and has not prepared its execution yet; \
+                             nothing was prepared or signed for this call. Its answer goes to \
+                             the call that started it. If your host gave up on that call, its \
+                             answer is lost: call again shortly for its `executionId`, and read \
+                             it with protocol_intent before re-running the step.",
+                            call.step
+                        ),
+                    };
+                    return Err(anyhow!(StepBusy {
+                        code: "step-in-flight",
+                        execution_id,
+                        message,
+                    }));
                 }
                 StepRun::Unsettled(previous) if previous.args != step_args => {
                     return Err(anyhow!(StepBusy {
@@ -1173,22 +1278,45 @@ impl ProtocolAgent {
                              not settled; nothing was prepared or signed for this call. Run \
                              the step again with its previous args ({}) to answer for that \
                              execution; once that answer, or protocol_submit with its signed \
-                             transactions, shows it settled, the step runs with new args.",
-                            call.step, previous.execution_id, previous.args
+                             transactions, shows it settled, the step runs with new args. \
+                             Restarting a4 mcp clears this guard, so after a restart do not \
+                             run the step until protocol_intent shows execution {} settled or \
+                             `expired`.",
+                            call.step, previous.execution_id, previous.args, previous.execution_id
                         ),
                         execution_id: Some(previous.execution_id),
                     }))
                 }
                 StepRun::Unsettled(previous) => {
-                    held.insert(StepRun::InFlight);
+                    held.insert(StepRun::InFlight(Some(previous.execution_id.clone())));
                     Some(previous)
+                }
+                StepRun::Completed {
+                    args,
+                    mut answer,
+                    expires_at,
+                    until,
+                } if args == step_args && until > now => {
+                    answer["note"] = json!(format!(
+                        "This answers the last protocol_execute of step '{}' with these args, \
+                         which completed: nothing new was prepared or signed. Until its \
+                         expiresAt ({}), running the step with the same args answers this way; \
+                         other args, or the same args after then, run anew.",
+                        call.step,
+                        shown(&expires_at)
+                    ));
+                    return Ok(answer);
+                }
+                StepRun::Completed { .. } => {
+                    held.insert(StepRun::InFlight(None));
+                    None
                 }
             },
         };
         let mut reservation = Reservation {
             steps: self.steps.clone(),
             key: call_key,
-            keep: resumed.clone(),
+            keep: resumed.clone().map(StepRun::Unsettled),
         };
         if let Some(previous) = resumed {
             let remembered = self
@@ -1214,16 +1342,24 @@ impl ProtocolAgent {
                 })?;
             let settled = result["settled"] == json!(true);
             if settled {
-                reservation.keep = None;
+                reservation.keep = self.completed(&previous.execution_id, step_args, &result);
             }
-            result["note"] = json!(if settled {
-                "This answers the previous protocol_execute of this step, which had not \
-                 settled: nothing new was prepared or signed. Run the step again for a new \
-                 execution."
-            } else {
-                "This answers the previous protocol_execute of this step, which has not \
-                 settled: nothing new was prepared or signed, and running the step again \
-                 in this a4 mcp session answers for this execution until it settles."
+            result["note"] = json!(match &reservation.keep {
+                Some(StepRun::Completed { expires_at, .. }) => format!(
+                    "This answers the previous protocol_execute of this step, which had not \
+                     settled: nothing new was prepared or signed. Until its expiresAt ({}), \
+                     running the step again with the same args answers for this execution; \
+                     other args run anew.",
+                    shown(expires_at)
+                ),
+                _ if settled => "This answers the previous protocol_execute of this step, \
+                                 which had not settled: nothing new was prepared or signed. \
+                                 Run the step again for a new execution."
+                    .to_string(),
+                _ => "This answers the previous protocol_execute of this step, which has not \
+                      settled: nothing new was prepared or signed, and running the step again \
+                      in this a4 mcp session answers for this execution until it settles."
+                    .to_string(),
             });
             return Ok(result);
         }
@@ -1241,6 +1377,7 @@ impl ProtocolAgent {
             .as_str()
             .unwrap_or_default()
             .to_string();
+        reservation.prepared(&execution_id);
         if let Err(refusal) = signer.check_prepared(&deployment, &prepared, &summary) {
             return Ok(refused(
                 &refusal,
@@ -1253,11 +1390,11 @@ impl ProtocolAgent {
         let signed = signer.sign_all(&prepared)?;
         // Signed: from here on it may be sent, so the step stays unsettled
         // unless it settles or the API refuses it.
-        reservation.keep = Some(Unsettled {
+        reservation.keep = Some(StepRun::Unsettled(LastRun {
             execution_id: execution_id.clone(),
             signed: signed.clone(),
-            args: step_args,
-        });
+            args: step_args.clone(),
+        }));
         let remembered = self
             .executions
             .get(&execution_id)
@@ -1284,10 +1421,10 @@ impl ProtocolAgent {
                 return Err(error);
             }
         };
-        if result["settled"] == json!(true) {
-            reservation.keep = None;
-        }
         result["summary"] = summary;
+        if result["settled"] == json!(true) {
+            reservation.keep = self.completed(&execution_id, step_args, &result);
+        }
         Ok(result)
     }
 }
