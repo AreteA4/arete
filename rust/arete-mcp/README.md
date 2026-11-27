@@ -216,7 +216,10 @@ No tool call waits on the network forever. Two bounds apply:
   the API took it, the call waits on it and sends nothing; while it cannot
   be read, nothing is sent; only while it is still `prepared` are its
   transactions sent again (`protocol_execute` resends the same signed
-  transactions and prepares nothing new). Once submitted, the settle wait
+  transactions and prepares nothing new). `protocol_execute` run again for
+  a step whose last execution has not settled, because the wait ended
+  first, likewise answers for that execution (`note` says so) until it
+  settles. Once submitted, the settle wait
   (`timeoutSeconds`) gives each status read only the time left; a read
   that fails, times out or is refused (its status and a short body)
   ends the wait with `executionId`, `settled: false`, the failure in

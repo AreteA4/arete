@@ -151,9 +151,10 @@ pub struct ProtocolAgent {
     hosted: Option<HostedOverride>,
     executions: Arc<DashMap<String, Remembered>>,
     instances: Arc<DashMap<String, Remembered>>,
-    /// Step calls whose last `protocol_execute` submit has an unknown
-    /// outcome: the execution and its signed transactions. Running the call
-    /// again settles that execution instead of preparing a new one.
+    /// Step calls whose last `protocol_execute` has not settled (its submit
+    /// had an unknown outcome, or the wait ended first): the execution and
+    /// its signed transactions. Running the call again answers for that
+    /// execution instead of preparing a new one, until it settles.
     unsettled: Arc<DashMap<String, (String, Vec<String>)>>,
 }
 
@@ -978,9 +979,10 @@ impl ProtocolAgent {
     }
 
     /// `protocol_execute`: prepare for the signer, check the policy, sign,
-    /// submit and wait. When this step call's last submit had an unknown
-    /// outcome, it settles that execution (the same signed bytes) instead
-    /// of preparing and signing a new one.
+    /// submit and wait. While this step call's last execution has not
+    /// settled (an unknown submit, or a wait that ended first), it answers
+    /// for that execution (the same signed bytes) instead of preparing and
+    /// signing a new one.
     pub async fn execute(
         &self,
         args: &TargetArgs,
@@ -1025,12 +1027,19 @@ impl ProtocolAgent {
                     timeout,
                 )
                 .await?;
-            self.unsettled.remove(&call_key);
-            result["note"] = json!(
-                "This answers the previous protocol_execute of this step, whose submit had an \
-                 unknown outcome: nothing new was prepared or signed. Run the step again for a \
-                 new execution."
-            );
+            let settled = result["settled"] == json!(true);
+            if settled {
+                self.unsettled.remove(&call_key);
+            }
+            result["note"] = json!(if settled {
+                "This answers the previous protocol_execute of this step, which had not \
+                 settled: nothing new was prepared or signed. Run the step again for a new \
+                 execution."
+            } else {
+                "This answers the previous protocol_execute of this step, which has not \
+                 settled: nothing new was prepared or signed, and running the step again \
+                 answers for this execution until it settles."
+            });
             return Ok(result);
         }
         if let Some(dev) = &target.dev {
@@ -1081,6 +1090,9 @@ impl ProtocolAgent {
                 return Err(error);
             }
         };
+        if result["settled"] != json!(true) {
+            self.unsettled.insert(call_key, (execution_id, signed));
+        }
         result["summary"] = summary;
         Ok(result)
     }

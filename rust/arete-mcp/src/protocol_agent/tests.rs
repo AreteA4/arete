@@ -1227,10 +1227,11 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
     assert!(sent(&state, "GET", "/execution-intents/e-1").is_empty());
 }
 
-/// Running `protocol_execute` again after a submit with an unknown outcome
-/// settles that execution instead of preparing and signing a new one: the
-/// transactions are sent once, or, while the API has not taken them, the
-/// same signed bytes are sent again. Once settled, the step runs anew.
+/// Running `protocol_execute` again before its last execution settled (an
+/// unknown submit, or a wait that ended first) answers for that execution
+/// instead of preparing and signing a new one: the transactions are sent
+/// once, or, while the API has not taken them, the same signed bytes are
+/// sent again. Once settled, the step runs anew.
 #[tokio::test]
 async fn running_protocol_execute_again_never_submits_a_step_twice() {
     let (origin, state) = mock_api();
@@ -1269,7 +1270,7 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
     assert!(result["note"]
         .as_str()
         .unwrap()
-        .contains("nothing new was prepared or signed"));
+        .contains("nothing new was prepared or signed. Run the step again"));
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
@@ -1279,6 +1280,37 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
     assert!(result.get("note").is_none(), "{result}");
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+
+    // The wait ends before the execution settles: running again answers
+    // for it until it settles, and never says to run the step again.
+    restart(&state);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.submit_answer = Some(taken("submitting"));
+        guard.intent_answer = Some(taken("submitting"));
+    }
+    let short = || {
+        crate::deadline::watchdog(
+            Duration::from_secs(10),
+            agent.execute(&target, &call, None, Some(Duration::from_millis(600))),
+        )
+    };
+    let pending = short().await.unwrap();
+    assert_eq!(pending["settled"], false, "{pending}");
+    let again = short().await.unwrap();
+    assert_eq!(again["settled"], false, "{again}");
+    assert_eq!(again["executionId"], "e-1", "{again}");
+    let note = again["note"].as_str().unwrap();
+    assert!(note.contains("until it settles"), "{note}");
+    assert!(!note.contains("Run the step again"), "{note}");
+    state.lock().unwrap().intent_answer = Some(taken("completed"));
+    let done = run().await.unwrap();
+    assert_eq!(done["state"], "completed", "{done}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+    restart(&state);
+    run().await.unwrap();
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
     // Still `prepared` after the unknown submit: running again sends the
     // same signed bytes, not a new prepare.

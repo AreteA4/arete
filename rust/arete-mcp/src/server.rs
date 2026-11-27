@@ -3684,10 +3684,11 @@ impl AreteMcp {
                           broke and why, and nothing is signed or sent.\n\n\
                           Otherwise returns what protocol_submit returns plus the prepare \
                           `summary`. Guard and access rejections come back as `state: \
-                          \"rejected\"` like protocol_prepare. After a submit with an \
-                          unknown outcome (`submit-outcome-unknown`), running the same step \
-                          again settles that execution (`note` says so) instead of \
-                          preparing and signing a new one."
+                          \"rejected\"` like protocol_prepare. While this step's last \
+                          execution has not settled (`settled: false`, or a \
+                          `submit-outcome-unknown` error), running it again answers for that \
+                          execution (`note` says so) instead of preparing and signing a new \
+                          one."
     )]
     async fn protocol_execute(
         &self,
