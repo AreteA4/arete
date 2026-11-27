@@ -157,7 +157,8 @@ enum Commands {
     /// conditions. First, an account API key that resolves for the
     /// configured API (`--api-url` / `ARETE_API_URL`, default
     /// `https://api.arete.run`), or `ARETE_SANDBOX_ID` set to a sandbox id
-    /// (a UUID; any other value is ignored with a warning on stderr). With
+    /// (a UUID; any other non-blank value is ignored with a warning on
+    /// stderr). With
     /// a profile selected (`--profile`, else the project's `agent` default,
     /// else `ARETE_PROFILE`) the key is only that profile's a4 login for
     /// that API and `ARETE_API_KEY` is not read: the generated
@@ -2686,7 +2687,7 @@ mod tests {
             "sandbox_*",
             "resolves for the configured API (`--api-url` / `ARETE_API_URL`, default `https://api.arete.run`)",
             "ARETE_SANDBOX_ID",
-            "a UUID; any other value is ignored with a warning",
+            "a UUID; any other non-blank value is ignored with a warning",
             "`sandbox_select` or `a4 sandbox use` (saved for the project) does not list them",
             // A selected profile reads only its own login for that API;
             // the environment key counts only without one. The project's
