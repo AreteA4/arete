@@ -42,17 +42,26 @@
 //! fails, or the stream is closed), so unread replies fill it and the
 //! requests after them are answered `Server busy`, an answer that is itself
 //! written before more input is read. While the frames handed to the writer
-//! but not yet written exceed [`MAX_BACKLOG_BYTES`], `receive` reads no
-//! input at all, and so it does while [`MAX_RUNNING_REQUESTS`] requests are
-//! passed on with no reply produced yet: those are the only replies that can
-//! join the backlog once it is over its cap. A reply whose body is longer
-//! than [`MAX_MESSAGE_BYTES`], the limit on an incoming message, is not
-//! written but answered with an `Internal error` (code -32603) in its place,
-//! and any other message that long is not sent. The frames not yet written
-//! therefore stay under [`MAX_BACKLOG_BYTES`] plus
-//! [`MAX_RUNNING_REQUESTS`] frames of at most that size, and a stalled
-//! stdout stops stdin being read, and the client's writes block, until
-//! stdout is read again.
+//! but not yet written exceed [`MAX_BACKLOG_BYTES`], `receive` passes no
+//! input on, and so it does while [`MAX_RUNNING_REQUESTS`] requests are
+//! passed on with no reply in the backlog yet: those are the only replies
+//! that can join the backlog once it is over its cap. A reply whose body is
+//! longer than [`MAX_MESSAGE_BYTES`], the limit on an incoming message, is
+//! not written but answered with an `Internal error` (code -32603) in its
+//! place, and any other message that long is not sent. The frames not yet
+//! written therefore stay within [`MAX_BACKLOG_BYTES`] plus
+//! [`MAX_RUNNING_REQUESTS`] frames of at most that size (a header block
+//! more for a framed one). A stalled stdout so stops input being passed on,
+//! and stdin being read once [`MAX_READ_AHEAD_BYTES`] of it are buffered,
+//! and the client's writes block until stdout is read again.
+//!
+//! While held back, `receive` still reads up to [`MAX_READ_AHEAD_BYTES`] of
+//! input, decoding none of it, so it sees the stream end. If stdin ends
+//! while the backlog is over its cap, nothing more can be answered until the
+//! client reads, which it may never do: the transport reports the end of the
+//! stream then, dropping the input it holds that was not passed on, and the
+//! session shuts down as on any end of input. Held back only by the running
+//! requests, it passes the rest of the input on as they finish, then ends.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -79,6 +88,7 @@ use rmcp::transport::Transport;
 use rmcp::RoleServer;
 use serde_json::error::Category;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::sync::futures::Notified;
 use tokio::sync::{Mutex, Notify};
 
 /// Cap on one message: a line, newline included, or a framed body. It is
@@ -113,12 +123,24 @@ const SERVER_BUSY: ErrorCode = ErrorCode(-32000);
 /// frame larger than this is still written whole.
 const MAX_BACKLOG_BYTES: usize = 1024 * 1024;
 
-/// Cap on requests passed on with no reply produced yet. At it, `receive`
-/// reads no input until one is answered or cancelled: their replies are the
-/// only ones that can join the backlog once it is over [`MAX_BACKLOG_BYTES`],
-/// so this bounds what is written into a stalled stdout. Far more than a
-/// client runs at once in practice.
+/// Cap on requests passed on with no reply in the backlog yet. At it,
+/// `receive` passes no input on until one is answered or cancelled. The
+/// backlog cap only holds back input, and requests passed on while the
+/// backlog was within it still finish against a stalled stdout: this
+/// bounds them, so the frames not yet written stay within
+/// `MAX_BACKLOG_BYTES + MAX_RUNNING_REQUESTS * (MAX_MESSAGE_BYTES + header)`
+/// (about 513 MiB at the extreme, 4 MiB for replies the size of a
+/// `tools/list`). A held request waits rather than being answered
+/// `Server busy`: a client that pipelines requests would otherwise see
+/// errors whenever the service loop takes requests faster than it hands
+/// over replies. Reserving backlog bytes for a request as it is passed on
+/// would bound nothing, as a reply's size is only known once it exists.
+/// Far more than a client runs at once in practice.
 const MAX_RUNNING_REQUESTS: usize = 32;
+
+/// Input `receive` reads on while it holds input back, without decoding
+/// it, so that it still sees the end of the stream.
+const MAX_READ_AHEAD_BYTES: usize = 64 * 1024;
 
 /// The name of the header that frames a message, with its colon, as
 /// looked for in bytes that are not a message.
@@ -158,6 +180,9 @@ pub struct StdioTransport<R, W> {
     /// Whether the stream is closed at a frame whose end is unknown:
     /// `receive` reports its end once `pending` is written.
     closed: bool,
+    /// Whether the end of the input has been read: once all of `buf` that
+    /// can be is decoded, `receive` reports it.
+    eof: bool,
     /// The requests awaiting a reply and the frames not yet written, shared
     /// with `send` futures, which release their share once written.
     budget: Arc<Budget>,
@@ -168,9 +193,13 @@ pub struct StdioTransport<R, W> {
 #[derive(Default)]
 struct Budget {
     state: std::sync::Mutex<Ledger>,
-    /// Signalled whenever a request is answered or a frame leaves the
-    /// backlog.
+    /// Signalled whenever a request's reply joins the backlog or a frame
+    /// leaves it.
     released: Notify,
+    /// Run once right after the next check for room, so a test can release
+    /// budget between that check and the wait on `released`.
+    #[cfg(test)]
+    after_check: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[derive(Default)]
@@ -179,11 +208,14 @@ struct Ledger {
     requests: VecDeque<Tracked>,
     /// What the ids in `requests` count toward [`MAX_OUTSTANDING_ID_BYTES`].
     id_bytes: usize,
-    /// How many of `requests` are not answered yet; see
-    /// [`MAX_RUNNING_REQUESTS`].
+    /// How many of `requests` are passed on with no reply in the backlog
+    /// yet; see [`MAX_RUNNING_REQUESTS`].
     running: usize,
     /// Bytes of the frames handed to the writer and not yet written.
     backlog: usize,
+    /// The most `running` and `backlog` have been, for tests of the bound.
+    #[cfg(test)]
+    peaks: (usize, usize),
 }
 
 struct Tracked {
@@ -201,20 +233,28 @@ impl Budget {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Whether the backlog is within [`MAX_BACKLOG_BYTES`] and fewer than
-    /// [`MAX_RUNNING_REQUESTS`] requests await their reply's production.
-    /// If not, it reports so once the budget may have changed: a request
-    /// answered, a frame written or discarded, a `send` dropped. Cancel
-    /// safe: a dropped wait has taken nothing.
-    async fn room(&self) -> bool {
-        // Created before the check, so a release between the check and the
-        // await still wakes it.
+    /// `None` while the backlog is within [`MAX_BACKLOG_BYTES`] and fewer
+    /// than [`MAX_RUNNING_REQUESTS`] requests run; else a wait that ends
+    /// once that may have changed: a reply joining the backlog, a frame
+    /// written or discarded, a `send` dropped. The wait is created before
+    /// the check, so a release between the check and its first poll still
+    /// ends it, and dropping it takes nothing.
+    fn room(&self) -> Option<Notified<'_>> {
         let released = self.released.notified();
-        if self.ledger().has_room() {
-            return true;
+        if self.has_room() {
+            None
+        } else {
+            Some(released)
         }
-        released.await;
-        false
+    }
+
+    fn has_room(&self) -> bool {
+        let room = self.ledger().has_room();
+        #[cfg(test)]
+        if let Some(hook) = self.after_check.lock().unwrap().take() {
+            hook();
+        }
+        room
     }
 }
 
@@ -223,7 +263,15 @@ impl Ledger {
         self.backlog <= MAX_BACKLOG_BYTES && self.running < MAX_RUNNING_REQUESTS
     }
 
-    /// Forget the request `id`, freeing its place in the budget.
+    #[cfg(test)]
+    fn note_peaks(&mut self) {
+        self.peaks.0 = self.peaks.0.max(self.running);
+        self.peaks.1 = self.peaks.1.max(self.backlog);
+    }
+
+    /// Forget the request `id`, freeing its place in the budget. A request
+    /// marked answered is no longer running: `send` takes it off the count
+    /// in the same call as it marks it.
     fn forget(&mut self, id: &RequestId) {
         if let Some(at) = self.requests.iter().position(|tracked| tracked.id == *id) {
             self.id_bytes -= id_bytes(id);
@@ -381,6 +429,7 @@ where
             })),
             pending: None,
             closed: false,
+            eof: false,
             budget: Arc::default(),
             last_seen: Framing::Ndjson,
         }
@@ -420,6 +469,20 @@ where
         };
         self.read.consume(taken);
         Ok(true)
+    }
+
+    /// While input is held back: read on, decoding nothing, until `buf`
+    /// holds [`MAX_READ_AHEAD_BYTES`] (plus at most one read's chunk), so
+    /// that the end of the stream is still seen; then, or once it is seen,
+    /// wait for good. Cancel safe, as `fill` is.
+    async fn read_ahead(&mut self) -> io::Result<()> {
+        if self.eof || self.buf.len() >= MAX_READ_AHEAD_BYTES {
+            return std::future::pending().await;
+        }
+        if !self.fill().await? {
+            self.eof = true;
+        }
+        Ok(())
     }
 
     /// Write the pending reply, after any frame in flight, and flush. The
@@ -544,6 +607,8 @@ where
                 } else {
                     ledger.id_bytes += bytes;
                     ledger.running += 1;
+                    #[cfg(test)]
+                    ledger.note_peaks();
                     ledger.requests.push_back(Tracked {
                         id: request.id.clone(),
                         framing,
@@ -593,9 +658,15 @@ where
         item: ServerJsonRpcMessage,
     ) -> impl Future<Output = io::Result<()>> + Send + 'static {
         // A reply takes its request's framing, and holds the request's place
-        // in the budget until it is written; see `Queued`.
-        let mut ledger = self.budget.ledger();
+        // in the budget until it is written; see `Queued`. It is marked
+        // answered under the lock and encoded outside it. The request counts
+        // as running until its bytes join the backlog, under the lock again,
+        // so `receive` admits nothing in its place in between. Nothing can
+        // forget the request in between either: a cancellation is read by
+        // `receive`, which `&mut self` keeps out, and its `Queued` does not
+        // exist yet.
         let answered = reply_id(&item).and_then(|id| {
+            let mut ledger = self.budget.ledger();
             let tracked = ledger
                 .requests
                 .iter_mut()
@@ -603,14 +674,18 @@ where
             tracked.answered = true;
             Some((id.clone(), tracked.framing))
         });
-        if answered.is_some() {
-            ledger.running -= 1;
-        }
         let framing = answered.as_ref().map_or(self.last_seen, |(_, f)| *f);
         let frame = encode_within_limit(&item, framing);
         let bytes = frame.as_ref().map_or(0, Vec::len);
-        ledger.backlog += bytes;
-        drop(ledger);
+        {
+            let mut ledger = self.budget.ledger();
+            ledger.backlog += bytes;
+            #[cfg(test)]
+            ledger.note_peaks();
+            if answered.is_some() {
+                ledger.running -= 1;
+            }
+        }
         if answered.is_some() {
             self.budget.released.notify_waiters();
         }
@@ -637,7 +712,25 @@ where
             if self.closed {
                 return None;
             }
-            if !self.budget.room().await {
+            let budget = Arc::clone(&self.budget);
+            if let Some(released) = budget.room() {
+                if self.eof && budget.ledger().backlog > MAX_BACKLOG_BYTES {
+                    tracing::warn!(
+                        unread_bytes = self.buf.len(),
+                        "stdin ended while stdout is not read: ending the session without \
+                         the input held back"
+                    );
+                    return None;
+                }
+                tokio::select! {
+                    () = released => {}
+                    read = self.read_ahead() => {
+                        if let Err(error) = read {
+                            tracing::error!("error reading the stream: {error}");
+                            return None;
+                        }
+                    }
+                }
                 continue;
             }
             let decoded = decode(&self.buf, self.cursor);
@@ -715,6 +808,9 @@ where
                 }
                 Decoded::Incomplete(cursor) => {
                     self.cursor = cursor;
+                    if self.eof {
+                        return None;
+                    }
                     match self.fill().await {
                         Ok(true) => {}
                         Ok(false) => return None,
@@ -728,8 +824,15 @@ where
         }
     }
 
+    /// Close the stream unless a write holds it. That write may be stalled
+    /// on a stdout nobody reads, and closing must not wait for it: the
+    /// service has already given its replies their time to drain, and drops
+    /// the sends still writing once this returns, the stream with the last.
     async fn close(&mut self) -> io::Result<()> {
-        self.write.lock().await.close();
+        match self.write.try_lock() {
+            Ok(mut writer) => writer.close(),
+            Err(_) => tracing::debug!("not closing stdout under a write that is in progress"),
+        }
         Ok(())
     }
 }
@@ -1321,13 +1424,22 @@ mod tests {
         }
     }
 
+    /// `input` on a stream that stays open while the first half is kept,
+    /// so that its end is not seen.
+    async fn open_input(input: &[u8]) -> (tokio::io::DuplexStream, tokio::io::DuplexStream) {
+        let (mut stdin, read) = tokio::io::duplex(input.len());
+        stdin.write_all(input).await.unwrap();
+        (stdin, read)
+    }
+
     #[tokio::test]
     async fn a_backlog_over_the_cap_holds_back_input_until_it_is_written() {
         for framing in [Framing::Ndjson, Framing::ContentLength] {
             let input = [in_framing(&ping(1), framing), in_framing(&ping(2), framing)].concat();
+            let (_stdin, read) = open_input(&input).await;
             // A pipe far smaller than the reply, so its write stalls.
             let (mut client, write) = tokio::io::duplex(64 * 1024);
-            let mut transport = StdioTransport::new(input.as_slice(), write);
+            let mut transport = StdioTransport::new(read, write);
             assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
             // One reply larger than the cap, which nobody reads yet.
             let large = ServerJsonRpcMessage::error(
@@ -1363,9 +1475,10 @@ mod tests {
         let base = encode(&sized(0), Framing::Ndjson).unwrap().len();
         for over in [0, 1] {
             let input = [line(&ping(1)), line(&ping(2))].concat();
+            let (_stdin, read) = open_input(&input).await;
             // Room for part of the reply only, and nobody reading it.
             let (_client, write) = tokio::io::duplex(8);
-            let mut transport = StdioTransport::new(input.as_slice(), write);
+            let mut transport = StdioTransport::new(read, write);
             assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
             let _sending = tokio::spawn(transport.send(sized(MAX_BACKLOG_BYTES - base + over)));
             assert_eq!(transport.backlog(), MAX_BACKLOG_BYTES + over);
@@ -1405,6 +1518,121 @@ mod tests {
             assert_eq!(replies[0].0, framing);
             assert_eq!(replies[0].1["id"], json!(cap));
         }
+    }
+
+    /// A reply larger than the backlog cap, for request `id`.
+    fn over_the_backlog_cap(id: i64) -> ServerJsonRpcMessage {
+        ServerJsonRpcMessage::error(
+            ErrorData::internal_error("x".repeat(MAX_BACKLOG_BYTES), None),
+            Some(RequestId::Number(id)),
+        )
+    }
+
+    #[tokio::test]
+    async fn held_back_input_is_read_ahead_up_to_its_bound_and_no_further() {
+        // Far more input than the read-ahead takes, through a small pipe.
+        let input: Vec<u8> = (1..=10_000).flat_map(|id| line(&ping(id))).collect();
+        let total = input.len();
+        let (mut stdin, read) = tokio::io::duplex(1024);
+        let fed = Arc::new(AtomicUsize::new(0));
+        let _feeder = tokio::spawn({
+            let fed = Arc::clone(&fed);
+            async move {
+                for chunk in input.chunks(64) {
+                    stdin.write_all(chunk).await.unwrap();
+                    fed.fetch_add(chunk.len(), Ordering::SeqCst);
+                }
+            }
+        });
+        let (_client, write) = tokio::io::duplex(64 * 1024);
+        let mut transport = StdioTransport::new(read, write);
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+        let _sending = tokio::spawn(transport.send(over_the_backlog_cap(1)));
+
+        let held = tokio::time::timeout(Duration::from_millis(200), transport.receive()).await;
+        assert!(held.is_err(), "{held:?}");
+        assert_eq!(transport.tracked().len(), 1);
+        // At most one read's chunk past the bound, and the rest left unread.
+        let buffered = transport.buf.len();
+        assert!(buffered >= MAX_READ_AHEAD_BYTES, "{buffered}");
+        assert!(buffered <= MAX_READ_AHEAD_BYTES + 8 * 1024, "{buffered}");
+        let taken = fed.load(Ordering::SeqCst);
+        assert!(
+            taken < MAX_READ_AHEAD_BYTES + 16 * 1024,
+            "{taken} of {total}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_end_of_input_held_back_by_an_unread_stdout_ends_the_stream() {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let input: Vec<u8> = (1..=100)
+                .flat_map(|id| in_framing(&ping(id), framing))
+                .collect();
+            // Nobody reads stdout.
+            let (_client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            let _sending = tokio::spawn(transport.send(over_the_backlog_cap(1)));
+            // The input ends while held back: nothing more can be answered
+            // until stdout is read, so the stream ends without the rest.
+            let ended = tokio::time::timeout(Duration::from_secs(1), transport.receive()).await;
+            assert!(matches!(ended, Ok(None)), "{framing:?}: {ended:?}");
+            assert_eq!(transport.tracked(), [(RequestId::Number(1), framing)]);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_end_of_input_held_back_by_running_requests_waits_for_them_and_passes_the_rest_on()
+    {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let cap = MAX_RUNNING_REQUESTS as i64;
+            let input: Vec<u8> = (1..=cap + 3)
+                .flat_map(|id| in_framing(&ping(id), framing))
+                .collect();
+            let (mut client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            for id in 1..=cap {
+                assert_eq!(request_id(&transport.receive().await.unwrap()), id);
+            }
+            // Held back with the end of the input read ahead.
+            let held = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(held.is_err(), "{framing:?}: {held:?}");
+            assert!(transport.eof, "{framing:?}");
+
+            // The running requests finish on their own: the rest of the
+            // input is passed on, and only then does the stream end.
+            let mut passed_on = Vec::new();
+            for id in 1..=cap + 3 {
+                transport.send(reply(id)).await.unwrap();
+                if let Some(message) = transport.receive().await {
+                    passed_on.push(request_id(&message));
+                }
+            }
+            assert_eq!(passed_on, [cap + 1, cap + 2, cap + 3]);
+            assert!(transport.tracked().is_empty());
+            let replies = read_replies(&mut client, (cap + 3) as usize).await;
+            assert!(replies.iter().all(|(seen, _)| *seen == framing));
+        }
+    }
+
+    #[test]
+    fn a_release_between_the_room_check_and_its_wait_ends_the_wait() {
+        let budget = Arc::new(Budget::default());
+        budget.ledger().backlog = MAX_BACKLOG_BYTES + 1;
+        let queued = Queued {
+            budget: Arc::clone(&budget),
+            bytes: MAX_BACKLOG_BYTES + 1,
+            answers: None,
+        };
+        // The frame is written right after the check finds no room, before
+        // anything waits.
+        *budget.after_check.lock().unwrap() = Some(Box::new(move || drop(queued)));
+        let released = budget.room().expect("the backlog is over its cap");
+        let mut released = std::pin::pin!(released);
+        let mut context = Context::from_waker(std::task::Waker::noop());
+        assert!(released.as_mut().poll(&mut context).is_ready());
+        assert!(budget.room().is_none());
     }
 
     #[tokio::test]
@@ -1510,7 +1738,8 @@ mod tests {
             let input = [in_framing(&ping(1), framing), in_framing(&ping(2), framing)].concat();
             // A pipe far smaller than the reply, which nobody reads yet.
             let (mut client, write) = tokio::io::duplex(64 * 1024);
-            let mut transport = StdioTransport::new(input.as_slice(), write);
+            let (_stdin, read) = open_input(&input).await;
+            let mut transport = StdioTransport::new(read, write);
             assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
             // A reply over the backlog cap, so `receive` waits for room, its
             // send dropped once it has started writing.
@@ -2620,18 +2849,28 @@ mod tests {
         }
     }
 
+    /// A session that asks for the tool list once per id in `ids`, each
+    /// request padded with `pad` bytes.
+    fn tools_lists(ids: Range<i64>, pad: usize) -> Vec<u8> {
+        let mut input = [line(INITIALIZE), line(INITIALIZED)].concat();
+        let pad = "x".repeat(pad);
+        for id in ids {
+            input.extend(line(&format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list","params":{{"_meta":{{"pad":"{pad}"}}}}}}"#
+            )));
+        }
+        input
+    }
+
     #[tokio::test]
     async fn a_session_stops_reading_a_client_that_does_not_read_its_replies() {
         // Each tools/list reply is tens of KiB: far more of them than the
-        // backlog holds, though too few to fill the request budget.
+        // backlog holds, though too few to fill the request budget. The
+        // requests come to several times what is read ahead.
         let count = 300;
-        let mut input = [line(INITIALIZE), line(INITIALIZED)].concat();
-        for id in 2..count as i64 + 2 {
-            input.extend(line(&format!(
-                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
-            )));
-        }
+        let input = tools_lists(2..count as i64 + 2, 1024);
         let total = input.len();
+        assert!(total > 4 * MAX_READ_AHEAD_BYTES);
         // Small pipes, so what they buffer is small beside the input.
         let (mut stdin, read) = tokio::io::duplex(256);
         let (mut client, write) = tokio::io::duplex(1024);
@@ -2676,6 +2915,27 @@ mod tests {
         );
         drop(feeder.await.unwrap());
         running.waiting().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_session_ends_soon_after_its_input_ends_while_its_replies_go_unread() {
+        // Far more replies than the backlog holds, none of them read, and
+        // stdin closed once the requests are written.
+        let count = 300;
+        let input = tools_lists(2..count as i64 + 2, 0);
+        let (mut stdin, read) = tokio::io::duplex(input.len());
+        stdin.write_all(&input).await.unwrap();
+        drop(stdin);
+        let (_client, write) = tokio::io::duplex(1024);
+        let started = Instant::now();
+        let running = server()
+            .serve(StdioTransport::new(read, write))
+            .await
+            .unwrap();
+        // The transport reports the end of the input, and the session shuts
+        // down once the service gives up on the unwritten replies (5 s).
+        let ended = tokio::time::timeout(Duration::from_secs(10), running.waiting()).await;
+        assert!(ended.is_ok(), "still running after {:?}", started.elapsed());
     }
 
     /// A server whose pings each wait until `open` is set, then answer with
@@ -2747,29 +3007,18 @@ mod tests {
         assert_eq!(passed_on, MAX_RUNNING_REQUESTS);
         assert_eq!(budget.ledger().backlog, 0);
 
-        // Released together into the stalled stdout, their replies hold the
-        // backlog within its cap plus one reply per request that ran.
+        // Released together into the stalled stdout, they all reply at once.
         open.send(true).unwrap();
         let (passed_on, backlog) = settled(|| {
             let backlog = budget.ledger().backlog;
             (started.load(Ordering::SeqCst), backlog)
         })
         .await;
-        let error = ErrorData::internal_error("x".repeat(reply_bytes), None);
-        let frame = encode(
-            &ServerJsonRpcMessage::error(error, Some(RequestId::Number(ids.end))),
-            Framing::Ndjson,
-        )
-        .unwrap()
-        .len();
         assert!(backlog > MAX_BACKLOG_BYTES, "{backlog}");
-        assert!(
-            backlog <= MAX_BACKLOG_BYTES + MAX_RUNNING_REQUESTS * frame,
-            "{backlog} bytes from {passed_on} requests"
-        );
         assert!(passed_on < count, "{passed_on}");
 
-        // Reading the replies lets the rest through, each answered once.
+        // Reading the replies lets the rest through, each answered once and
+        // whole.
         let replies = read_replies(&mut client, count + 1).await;
         assert_eq!(replies[0].1["id"], json!(1));
         let mut answered: Vec<i64> = replies[1..]
@@ -2781,9 +3030,29 @@ mod tests {
             })
             .collect();
         answered.sort_unstable();
-        assert_eq!(answered, ids.collect::<Vec<_>>());
+        assert_eq!(answered, ids.clone().collect::<Vec<_>>());
         drop(stdin);
         running.waiting().await.unwrap();
+
+        // At no point did more requests run than the cap, nor more wait for
+        // the writer than the backlog cap plus one reply per request that
+        // may run; and the budget is back to nothing.
+        let error = ErrorData::internal_error("x".repeat(reply_bytes), None);
+        let frame = encode(
+            &ServerJsonRpcMessage::error(error, Some(RequestId::Number(ids.end))),
+            Framing::Ndjson,
+        )
+        .unwrap()
+        .len();
+        let ledger = budget.ledger();
+        let (most_running, most_backlog) = ledger.peaks;
+        assert_eq!(most_running, MAX_RUNNING_REQUESTS);
+        assert!(
+            most_backlog <= MAX_BACKLOG_BYTES + MAX_RUNNING_REQUESTS * frame,
+            "{most_backlog}"
+        );
+        assert!(ledger.requests.is_empty());
+        assert_eq!((ledger.running, ledger.backlog, ledger.id_bytes), (0, 0, 0));
     }
 
     #[tokio::test]
