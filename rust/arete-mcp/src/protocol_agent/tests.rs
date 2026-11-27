@@ -1189,6 +1189,22 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
     assert_eq!(result["state"], "submitting", "{result}");
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
 
+    // A read that names no state (a proxy's page) shows nothing either way.
+    restart(&state);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.submit_answer = Some((504, Value::Null));
+        guard.intent_answer = Some((200, json!("<html>ok</html>")));
+    }
+    let (agent, signed) =
+        prepare_signed(ProtocolAgent::new(None).with_api(&origin, "a4_sk_test")).await;
+    let error = agent
+        .submit(&TargetArgs::default(), "e-1", &[signed], Some(false), None)
+        .await
+        .unwrap_err();
+    assert!(error.downcast_ref::<MaybeSubmitted>().is_some(), "{error}");
+    assert!(error.to_string().contains("returned no state"), "{error}");
+
     // The API's own refusal, even with a 5xx, is a refusal.
     restart(&state);
     state.lock().unwrap().submit_answer = Some((

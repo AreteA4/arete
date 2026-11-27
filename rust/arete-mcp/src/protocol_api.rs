@@ -395,10 +395,18 @@ impl ProtocolApi {
 
     /// One read after a submit whose outcome is unknown: the intent's state
     /// when the API took the transactions (any state but `prepared`), `None`
-    /// while it is still `prepared`.
+    /// while it is still `prepared`. An answer without a state is an error:
+    /// it shows neither.
     pub async fn taken_state(&self, token: &str, execution_id: &str) -> Result<Option<Value>> {
         let state = self.intent(token, execution_id).await?;
-        Ok((state["state"].as_str() != Some("prepared")).then_some(state))
+        match state["state"].as_str() {
+            Some("prepared") => Ok(None),
+            Some(_) => Ok(Some(state)),
+            None => bail!(
+                "Reading execution {execution_id} returned no state: {}",
+                bounded_body(&state)
+            ),
+        }
     }
 
     /// Poll the intent from `state` until it settles or `timeout` passes;

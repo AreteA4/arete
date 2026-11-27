@@ -808,7 +808,11 @@ impl ProtocolAgent {
         }
         match target.api.taken_state(token, execution_id).await {
             Ok(Some(state)) => Ok(state),
-            _ => Err(maybe_submitted(execution_id, &error)),
+            Ok(None) => Err(maybe_submitted(execution_id, &error)),
+            Err(read) => Err(maybe_submitted(
+                execution_id,
+                &anyhow!("{error:#}; then {read:#}"),
+            )),
         }
     }
 
