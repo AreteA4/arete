@@ -1418,6 +1418,9 @@ fn a_completed_run_is_held_between_the_minimum_and_the_maximum() {
         (Some(json!("9".repeat(1 << 20))), floor),
         (Some(json!(-5)), floor),
         (Some(json!(done - 30)), floor),
+        // Ahead, but sooner than the minimum, or later than the maximum.
+        (Some(json!(done + 1)), floor),
+        (Some(json!(done + 3601)), ceiling),
         (Some(json!(in_between)), in_between),
         (Some(json!(in_between * 1000)), in_between),
         (Some(json!(shown_time(in_between))), in_between),
