@@ -156,7 +156,9 @@ waits up to 60 seconds (`timeoutSeconds`, at most 120; `wait: false` returns
 at once). The result has `state` (`completed`, `chain_failed`, `expired`,
 `rejected`, or a pending state), `settled`, `instanceId` (a create step's new
 instance) and each transaction's signature. If it has not settled, read it
-later with `protocol_intent`. Do not submit it again.
+later with `protocol_intent`. Do not submit it again. When reading its state
+failed after the submit, `pollError` says why; the transactions were still
+submitted.
 
 ## Receipts
 
