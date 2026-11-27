@@ -1527,6 +1527,21 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
     assert!(agent.steps.is_empty());
     exec(&agent, &call, None).await.unwrap();
     assert_eq!(sent(&state, "POST", "/prepare").len(), 3);
+
+    // Settled without completing (the chain failed it): nothing was done,
+    // so the same args run anew.
+    restart(&state);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.submit_answer = Some(taken("submitting"));
+        guard.intent_answer = Some(taken("chain_failed"));
+    }
+    let agent = signing_agent(dir.path(), &origin);
+    exec(&agent, &call, None).await.unwrap();
+    let again = exec(&agent, &call, None).await.unwrap();
+    assert_eq!(again["state"], "chain_failed", "{again}");
+    assert!(again.get("note").is_none(), "{again}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 2);
 }
 
 /// Running `protocol_submit` again for an execution whose submit had an
