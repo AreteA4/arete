@@ -39,12 +39,20 @@
 //! Output is held to a budget too, so a client that does not read stdout
 //! cannot make the server buffer replies without end. A reply keeps its
 //! request's place in the budget above until it is written (or its write
-//! fails or is dropped), so unread replies fill it and the requests after
-//! them are answered `Server busy`, an answer that is itself written before
-//! more input is read. And while the frames handed to the writer but not
-//! yet written exceed [`MAX_BACKLOG_BYTES`], `receive` reads no input at
-//! all. Either way a stalled stdout stops stdin being read, and the client's
-//! writes block, until stdout is read again.
+//! fails, or the stream is closed), so unread replies fill it and the
+//! requests after them are answered `Server busy`, an answer that is itself
+//! written before more input is read. While the frames handed to the writer
+//! but not yet written exceed [`MAX_BACKLOG_BYTES`], `receive` reads no
+//! input at all, and so it does while [`MAX_RUNNING_REQUESTS`] requests are
+//! passed on with no reply produced yet: those are the only replies that can
+//! join the backlog once it is over its cap. A reply whose body is longer
+//! than [`MAX_MESSAGE_BYTES`], the limit on an incoming message, is not
+//! written but answered with an `Internal error` (code -32603) in its place,
+//! and any other message that long is not sent. The frames not yet written
+//! therefore stay under [`MAX_BACKLOG_BYTES`] plus
+//! [`MAX_RUNNING_REQUESTS`] frames of at most that size, and a stalled
+//! stdout stops stdin being read, and the client's writes block, until
+//! stdout is read again.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -73,9 +81,11 @@ use serde_json::error::Category;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::{Mutex, Notify};
 
-/// Cap on one incoming message: a line, newline included, or a framed body.
-/// It is the cap `rmcp`'s own newline-delimited transport applies, so a
-/// client faces the same limit on either transport.
+/// Cap on one message: a line, newline included, or a framed body. It is
+/// the cap `rmcp`'s own newline-delimited transport applies to what it
+/// reads, so a client faces the same limit on either transport, and a reply
+/// over it, which such a client could not read either, is answered with an
+/// error instead.
 const MAX_MESSAGE_BYTES: usize = rmcp::transport::async_rw::DEFAULT_MAX_LINE_LENGTH;
 
 /// Cap on a header block, its blank line included, and so on each of its
@@ -102,6 +112,13 @@ const SERVER_BUSY: ErrorCode = ErrorCode(-32000);
 /// Over it, `receive` reads no input until enough is written. A single
 /// frame larger than this is still written whole.
 const MAX_BACKLOG_BYTES: usize = 1024 * 1024;
+
+/// Cap on requests passed on with no reply produced yet. At it, `receive`
+/// reads no input until one is answered or cancelled: their replies are the
+/// only ones that can join the backlog once it is over [`MAX_BACKLOG_BYTES`],
+/// so this bounds what is written into a stalled stdout. Far more than a
+/// client runs at once in practice.
+const MAX_RUNNING_REQUESTS: usize = 32;
 
 /// The name of the header that frames a message, with its colon, as
 /// looked for in bytes that are not a message.
@@ -151,7 +168,8 @@ pub struct StdioTransport<R, W> {
 #[derive(Default)]
 struct Budget {
     state: std::sync::Mutex<Ledger>,
-    /// Signalled whenever a frame leaves the backlog.
+    /// Signalled whenever a request is answered or a frame leaves the
+    /// backlog.
     released: Notify,
 }
 
@@ -161,6 +179,9 @@ struct Ledger {
     requests: VecDeque<Tracked>,
     /// What the ids in `requests` count toward [`MAX_OUTSTANDING_ID_BYTES`].
     id_bytes: usize,
+    /// How many of `requests` are not answered yet; see
+    /// [`MAX_RUNNING_REQUESTS`].
+    running: usize,
     /// Bytes of the frames handed to the writer and not yet written.
     backlog: usize,
 }
@@ -180,26 +201,35 @@ impl Budget {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Wait until the backlog is within [`MAX_BACKLOG_BYTES`]. Cancel safe:
-    /// a dropped wait has taken nothing.
-    async fn room(&self) {
-        loop {
-            // Created before the check, so a release between the check and
-            // the await still wakes it.
-            let released = self.released.notified();
-            if self.ledger().backlog <= MAX_BACKLOG_BYTES {
-                return;
-            }
-            released.await;
+    /// Whether the backlog is within [`MAX_BACKLOG_BYTES`] and fewer than
+    /// [`MAX_RUNNING_REQUESTS`] requests await their reply's production.
+    /// If not, it reports so once the budget may have changed: a request
+    /// answered, a frame written or discarded, a `send` dropped. Cancel
+    /// safe: a dropped wait has taken nothing.
+    async fn room(&self) -> bool {
+        // Created before the check, so a release between the check and the
+        // await still wakes it.
+        let released = self.released.notified();
+        if self.ledger().has_room() {
+            return true;
         }
+        released.await;
+        false
     }
 }
 
 impl Ledger {
+    fn has_room(&self) -> bool {
+        self.backlog <= MAX_BACKLOG_BYTES && self.running < MAX_RUNNING_REQUESTS
+    }
+
     /// Forget the request `id`, freeing its place in the budget.
     fn forget(&mut self, id: &RequestId) {
         if let Some(at) = self.requests.iter().position(|tracked| tracked.id == *id) {
             self.id_bytes -= id_bytes(id);
+            if !self.requests[at].answered {
+                self.running -= 1;
+            }
             self.requests.remove(at);
         }
     }
@@ -207,8 +237,11 @@ impl Ledger {
 
 /// A frame's share of the output budget: its bytes in the backlog and, for
 /// a reply, its request's place among those awaiting one. Released when it
-/// is dropped: once the frame is written, its write fails, or the `send`
-/// future holding it is dropped, so none of those leaks budget.
+/// is dropped: once the frame is written, or discarded with a stream whose
+/// write failed or that was closed, or when the `send` future holding it is
+/// dropped before the frame reaches the writer. Once there, the frame takes
+/// its share along: a `send` dropped part way through the write leaves both
+/// in flight until the frame is written or discarded.
 struct Queued {
     budget: Arc<Budget>,
     bytes: usize,
@@ -224,6 +257,17 @@ impl Drop for Queued {
         }
         drop(ledger);
         self.budget.released.notify_waiters();
+    }
+}
+
+/// Wakes `receive` when a `send` future ends, finished or dropped: one
+/// dropped part way through its write leaves its frame for `receive` to
+/// finish if no other write does.
+struct WakeOnDrop(Arc<Budget>);
+
+impl Drop for WakeOnDrop {
+    fn drop(&mut self) {
+        self.0.released.notify_waiters();
     }
 }
 
@@ -247,38 +291,55 @@ enum Pending {
 /// The output stream, shared by `send` futures and `receive`, and the frame
 /// being written to it.
 struct Writer<W> {
-    /// `None` once closed.
+    /// `None` once closed, by `close` or by a write that failed.
     stream: Option<W>,
     /// The frame being written and how much of it is, until it is written
     /// and flushed. A write dropped part way (`receive` is polled inside a
-    /// `select!`) leaves it here, and every write finishes it before
-    /// starting its own frame, so frames never interleave.
+    /// `select!`, and a `send` future may be dropped) leaves it here, and
+    /// every write finishes it before starting its own frame, so frames
+    /// never interleave; `receive` finishes it too if the writer is idle.
     in_flight: Option<InFlight>,
 }
 
 struct InFlight {
     frame: Vec<u8>,
     written: usize,
+    /// The frame's share of the budget, for one a `send` hands over.
+    _queued: Option<Queued>,
 }
 
 impl<W: AsyncWrite + Unpin> Writer<W> {
     /// Write `frame` after the one in flight, if any, and flush.
-    async fn write_frame(&mut self, frame: Vec<u8>) -> io::Result<()> {
+    async fn write_frame(&mut self, frame: Vec<u8>, queued: Queued) -> io::Result<()> {
         self.finish().await?;
-        self.start(frame);
+        self.start(frame, Some(queued));
         self.finish().await
     }
 
-    fn start(&mut self, frame: Vec<u8>) {
+    fn start(&mut self, frame: Vec<u8>, queued: Option<Queued>) {
         debug_assert!(self.in_flight.is_none());
-        self.in_flight = Some(InFlight { frame, written: 0 });
+        self.in_flight = Some(InFlight {
+            frame,
+            written: 0,
+            _queued: queued,
+        });
     }
 
     /// Write the rest of the frame in flight, if any, and flush. Each
     /// `write` either writes nothing or reports what it wrote, and `written`
     /// moves on with no await in between, so a dropped call neither repeats
     /// nor skips a byte: the next call carries on from where it stopped.
+    /// A failed write closes the stream: the frame it cut short can be
+    /// neither finished nor followed, so it is discarded.
     async fn finish(&mut self) -> io::Result<()> {
+        let written = self.write_in_flight().await;
+        if written.is_err() {
+            self.close();
+        }
+        written
+    }
+
+    async fn write_in_flight(&mut self) -> io::Result<()> {
         let stream = self.stream.as_mut().ok_or_else(closed)?;
         let Some(in_flight) = &mut self.in_flight else {
             return Ok(());
@@ -292,6 +353,13 @@ impl<W: AsyncWrite + Unpin> Writer<W> {
         stream.flush().await?;
         self.in_flight = None;
         Ok(())
+    }
+
+    /// Close the stream, discarding the frame in flight and its share of
+    /// the budget.
+    fn close(&mut self) {
+        self.stream = None;
+        self.in_flight = None;
     }
 }
 
@@ -357,14 +425,25 @@ where
     /// Write the pending reply, after any frame in flight, and flush. The
     /// reply moves to the writer in the poll that marks it `Writing`, so a
     /// dropped call knows to wait for it rather than queue it again.
+    ///
+    /// With no reply pending, it still finishes a frame left in flight by a
+    /// dropped `send` if no write holds the writer, so that frame does not
+    /// wait for the next `send` to be written.
     async fn write_pending(&mut self) -> io::Result<()> {
+        let mut writer = if self.pending.is_some() {
+            self.write.lock().await
+        } else {
+            match self.write.try_lock() {
+                Ok(writer) if writer.in_flight.is_some() => writer,
+                _ => return Ok(()),
+            }
+        };
+        writer.finish().await?;
         if self.pending.is_none() {
             return Ok(());
         }
-        let mut writer = self.write.lock().await;
-        writer.finish().await?;
         if let Some(Pending::Queued(frame)) = self.pending.replace(Pending::Writing) {
-            writer.start(frame);
+            writer.start(frame, None);
         }
         writer.finish().await?;
         self.pending = None;
@@ -464,6 +543,7 @@ where
                     Some((busy, request.id.clone()))
                 } else {
                     ledger.id_bytes += bytes;
+                    ledger.running += 1;
                     ledger.requests.push_back(Tracked {
                         id: request.id.clone(),
                         framing,
@@ -512,15 +592,10 @@ where
         &mut self,
         item: ServerJsonRpcMessage,
     ) -> impl Future<Output = io::Result<()>> + Send + 'static {
-        let replied_to = match &item {
-            JsonRpcMessage::Response(response) => Some(&response.id),
-            JsonRpcMessage::Error(error) => error.id.as_ref(),
-            JsonRpcMessage::Request(_) | JsonRpcMessage::Notification(_) => None,
-        };
         // A reply takes its request's framing, and holds the request's place
         // in the budget until it is written; see `Queued`.
         let mut ledger = self.budget.ledger();
-        let answered = replied_to.and_then(|id| {
+        let answered = reply_id(&item).and_then(|id| {
             let tracked = ledger
                 .requests
                 .iter_mut()
@@ -528,20 +603,28 @@ where
             tracked.answered = true;
             Some((id.clone(), tracked.framing))
         });
-        let frame = encode(&item, answered.as_ref().map_or(self.last_seen, |(_, f)| *f));
+        if answered.is_some() {
+            ledger.running -= 1;
+        }
+        let framing = answered.as_ref().map_or(self.last_seen, |(_, f)| *f);
+        let frame = encode_within_limit(&item, framing);
         let bytes = frame.as_ref().map_or(0, Vec::len);
         ledger.backlog += bytes;
         drop(ledger);
+        if answered.is_some() {
+            self.budget.released.notify_waiters();
+        }
         let queued = Queued {
             budget: Arc::clone(&self.budget),
             bytes,
             answers: answered.map(|(id, _)| id),
         };
+        let wake = WakeOnDrop(Arc::clone(&self.budget));
         let write = Arc::clone(&self.write);
         async move {
-            let _queued = queued;
+            let _wake = wake;
             let frame = frame?;
-            write.lock().await.write_frame(frame).await
+            write.lock().await.write_frame(frame, queued).await
         }
     }
 
@@ -554,7 +637,9 @@ where
             if self.closed {
                 return None;
             }
-            self.budget.room().await;
+            if !self.budget.room().await {
+                continue;
+            }
             let decoded = decode(&self.buf, self.cursor);
             if self.recovering > 0 {
                 match decoded {
@@ -644,7 +729,7 @@ where
     }
 
     async fn close(&mut self) -> io::Result<()> {
-        drop(self.write.lock().await.stream.take());
+        self.write.lock().await.close();
         Ok(())
     }
 }
@@ -884,9 +969,55 @@ fn parse(body: &[u8]) -> serde_json::Result<ClientJsonRpcMessage> {
     serde_json::from_slice(body.strip_prefix(UTF8_BOM).unwrap_or(body))
 }
 
+/// The id of the request `message` answers, if it is a reply.
+fn reply_id(message: &ServerJsonRpcMessage) -> Option<&RequestId> {
+    match message {
+        JsonRpcMessage::Response(response) => Some(&response.id),
+        JsonRpcMessage::Error(error) => error.id.as_ref(),
+        JsonRpcMessage::Request(_) | JsonRpcMessage::Notification(_) => None,
+    }
+}
+
+/// `message` in `framing`, unless it is longer than [`MAX_MESSAGE_BYTES`]
+/// allows: a reply is then answered with an `Internal error` in its place,
+/// and anything else is not sent.
+fn encode_within_limit(message: &ServerJsonRpcMessage, framing: Framing) -> io::Result<Vec<u8>> {
+    let body = serde_json::to_vec(message)?;
+    // As `decode` counts it: a line with its newline, a framed body alone.
+    let counted = body.len() + usize::from(framing == Framing::Ndjson);
+    if counted <= MAX_MESSAGE_BYTES {
+        return Ok(frame(body, framing));
+    }
+    let Some(id) = reply_id(message) else {
+        tracing::error!(
+            bytes = counted,
+            max_bytes = MAX_MESSAGE_BYTES,
+            "not sending a message longer than the limit"
+        );
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the message is above the size limit",
+        ));
+    };
+    tracing::error!(
+        bytes = counted,
+        max_bytes = MAX_MESSAGE_BYTES,
+        "answering with an error in place of a reply longer than the limit"
+    );
+    let data = serde_json::json!({ "bytes": counted, "maxBytes": MAX_MESSAGE_BYTES });
+    let error = ErrorData::internal_error("Reply too large", Some(data));
+    Ok(encode(
+        &ServerJsonRpcMessage::error(error, Some(id.clone())),
+        framing,
+    )?)
+}
+
 fn encode(message: &ServerJsonRpcMessage, framing: Framing) -> serde_json::Result<Vec<u8>> {
-    let mut body = serde_json::to_vec(message)?;
-    Ok(match framing {
+    Ok(frame(serde_json::to_vec(message)?, framing))
+}
+
+fn frame(mut body: Vec<u8>, framing: Framing) -> Vec<u8> {
+    match framing {
         Framing::Ndjson => {
             body.push(b'\n');
             body
@@ -896,16 +1027,20 @@ fn encode(message: &ServerJsonRpcMessage, framing: Framing) -> serde_json::Resul
             frame.extend_from_slice(&body);
             frame
         }
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use std::pin::Pin;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::task::{Context, Poll};
     use std::time::{Duration, Instant};
 
-    use rmcp::model::{JsonRpcMessage, RequestId, ServerResult};
+    use rmcp::model::{
+        JsonRpcMessage, NumberOrString, ProgressNotification, ProgressNotificationParam,
+        ProgressToken, RequestId, ServerNotification, ServerResult,
+    };
     use rmcp::ServiceExt;
     use serde_json::{json, Value};
     use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
@@ -1149,10 +1284,10 @@ mod tests {
                 .sum();
             assert_eq!(transport.backlog(), queued, "{framing:?}");
 
-            // Reading the replies writes each whole, the spawned ones in the
-            // order they were sent, and lets the transport go on. The busy
-            // answer is the transport's own, written whenever it gets the
-            // writer.
+            // Reading the replies writes each whole and lets the transport
+            // go on. The sends race for the writer, and the busy answer is
+            // the transport's own, written whenever it gets the writer, so
+            // the order is not fixed: each reply must come exactly once.
             let (replies, message) = tokio::join!(
                 read_replies(&mut client, MAX_OUTSTANDING_REQUESTS + 1),
                 transport.receive()
@@ -1166,10 +1301,15 @@ mod tests {
             assert_eq!(busy.len(), 1, "{busy:?}");
             assert_eq!(busy[0]["id"], json!(last + 1), "{}", busy[0]);
             assert_eq!(busy[0]["error"]["code"], json!(SERVER_BUSY.0));
-            for (at, reply) in answered.iter().enumerate() {
-                assert_eq!(reply["id"], json!(at + 1), "{reply}");
-                assert_eq!(reply["result"], json!({}), "{reply}");
-            }
+            let mut ids: Vec<i64> = answered
+                .iter()
+                .map(|reply| {
+                    assert_eq!(reply["result"], json!({}), "{reply}");
+                    reply["id"].as_i64().unwrap()
+                })
+                .collect();
+            ids.sort_unstable();
+            assert_eq!(ids, (1..=last).collect::<Vec<_>>(), "{framing:?}");
             while let Some(sent) = sends.join_next().await {
                 sent.unwrap().unwrap();
             }
@@ -1239,8 +1379,92 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_dropped_send_releases_its_request_and_bytes() {
-        let input = [line(&ping(1)), line(&ping(2))].concat();
+    async fn input_is_held_back_while_the_running_cap_is_full_until_a_request_is_answered() {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let cap = MAX_RUNNING_REQUESTS as i64;
+            let input: Vec<u8> = (1..=cap + 1)
+                .flat_map(|id| in_framing(&ping(id), framing))
+                .collect();
+            let (mut client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            for id in 1..=cap {
+                assert_eq!(request_id(&transport.receive().await.unwrap()), id);
+            }
+            // Nothing waits to be written, but none of them is answered yet.
+            let held = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(held.is_err(), "{framing:?}: {held:?}");
+            assert_eq!(transport.backlog(), 0);
+            assert_eq!(transport.tracked().len(), MAX_RUNNING_REQUESTS);
+
+            // An answer frees a place, written or not.
+            let sending = transport.send(reply(cap));
+            assert_eq!(request_id(&transport.receive().await.unwrap()), cap + 1);
+            assert_eq!(transport.tracked().len(), MAX_RUNNING_REQUESTS + 1);
+            sending.await.unwrap();
+            let replies = read_replies(&mut client, 1).await;
+            assert_eq!(replies[0].0, framing);
+            assert_eq!(replies[0].1["id"], json!(cap));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_reply_longer_than_the_message_limit_is_answered_with_an_error_in_its_place() {
+        let sized = |id: i64, len: usize| {
+            ServerJsonRpcMessage::error(
+                ErrorData::internal_error("x".repeat(len), None),
+                Some(RequestId::Number(id)),
+            )
+        };
+        let base = serde_json::to_vec(&sized(1, 0)).unwrap().len();
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            // The longest reply a reader takes, as `decode` counts it: a
+            // line with its newline, or a framed body.
+            let longest = MAX_MESSAGE_BYTES - base - usize::from(framing == Framing::Ndjson);
+            let input = [in_framing(&ping(1), framing), in_framing(&ping(2), framing)].concat();
+            let mut transport = StdioTransport::new(input.as_slice(), Vec::new());
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
+            transport.send(sized(1, longest)).await.unwrap();
+            transport.send(sized(2, longest + 1)).await.unwrap();
+            // Anything else that long is not sent at all.
+            let progress =
+                ProgressNotificationParam::new(ProgressToken(NumberOrString::Number(1)), 0.0)
+                    .with_message("x".repeat(MAX_MESSAGE_BYTES));
+            let notification = ServerJsonRpcMessage::notification(
+                ServerNotification::ProgressNotification(ProgressNotification::new(progress)),
+            );
+            let refused = transport.send(notification).await.unwrap_err();
+            assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+            assert!(transport.tracked().is_empty());
+            assert_eq!(transport.backlog(), 0);
+
+            let written = transport.write.lock().await.stream.take().unwrap();
+            let replies = messages_in(&written);
+            assert_eq!(replies.len(), 2, "{framing:?}");
+            assert!(replies.iter().all(|(seen, _)| *seen == framing));
+            assert_eq!(replies[0].1["id"], json!(1));
+            assert_eq!(
+                replies[0].1["error"]["message"].as_str().map(str::len),
+                Some(longest)
+            );
+            assert_eq!(
+                replies[1].1,
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "error": {
+                        "code": -32603,
+                        "message": "Reply too large",
+                        "data": { "bytes": MAX_MESSAGE_BYTES + 1, "maxBytes": MAX_MESSAGE_BYTES },
+                    },
+                })
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_send_dropped_before_its_frame_reaches_the_writer_releases_its_request_and_bytes() {
+        let input = [line(&ping(1)), line(&ping(2)), line(&ping(3))].concat();
         // Room for part of a reply only, and nobody reading it.
         let (_client, write) = tokio::io::duplex(8);
         let mut transport = StdioTransport::new(input.as_slice(), write);
@@ -1256,17 +1480,114 @@ mod tests {
         assert!(transport.tracked().is_empty());
         assert_eq!(transport.backlog(), 0);
 
-        // Dropped part way through a stalled write.
+        // Dropped while it waits for the writer, which a stalled write holds.
         assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
-        let sending = transport.send(reply(2));
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 3);
+        let _stalled = tokio::spawn(transport.send(reply(2)));
+        while transport.write.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        let held = transport.backlog();
+        let waiting =
+            tokio::time::timeout(Duration::from_millis(50), transport.send(reply(3))).await;
+        assert!(waiting.is_err(), "{waiting:?}");
         assert_eq!(
             transport.tracked(),
             [(RequestId::Number(2), Framing::Ndjson)]
         );
-        let stalled = tokio::time::timeout(Duration::from_millis(50), sending).await;
-        assert!(stalled.is_err(), "{stalled:?}");
-        assert!(transport.tracked().is_empty());
-        assert_eq!(transport.backlog(), 0);
+        assert_eq!(transport.backlog(), held);
+    }
+
+    #[tokio::test]
+    async fn a_send_dropped_part_way_through_its_write_leaves_its_frame_counted_until_written() {
+        let large = |id: i64| {
+            ServerJsonRpcMessage::error(
+                ErrorData::internal_error("x".repeat(MAX_BACKLOG_BYTES), None),
+                Some(RequestId::Number(id)),
+            )
+        };
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let input = [in_framing(&ping(1), framing), in_framing(&ping(2), framing)].concat();
+            // A pipe far smaller than the reply, which nobody reads yet.
+            let (mut client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            // A reply over the backlog cap, so `receive` waits for room, its
+            // send dropped once it has started writing.
+            let bytes = encode(&large(1), framing).unwrap().len();
+            let budget = Arc::clone(&transport.budget);
+            let sending = tokio::time::timeout(Duration::from_millis(50), transport.send(large(1)));
+            let reader = async {
+                // Well after the drop the frame is still being written: it
+                // stays in the backlog and its request keeps its place.
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                let (backlog, tracked) = {
+                    let ledger = budget.ledger();
+                    (ledger.backlog, ledger.requests.len())
+                };
+                assert_eq!((backlog, tracked), (bytes, 1), "{framing:?}");
+                read_replies(&mut client, 1).await
+            };
+            // With no other send to finish it, `receive` does, whole, and
+            // then reads on.
+            let (stalled, replies, message) =
+                tokio::time::timeout(Duration::from_secs(10), async {
+                    tokio::join!(sending, reader, transport.receive())
+                })
+                .await
+                .expect("the frame left in flight is finished");
+            assert!(stalled.is_err(), "{framing:?}: {stalled:?}");
+            assert_eq!(request_id(&message.unwrap()), 2);
+            assert_eq!(replies[0].0, framing);
+            assert_eq!(replies[0].1["id"], json!(1));
+            assert_eq!(
+                replies[0].1["error"]["message"].as_str().map(str::len),
+                Some(MAX_BACKLOG_BYTES)
+            );
+            assert_eq!(transport.backlog(), 0);
+            assert_eq!(transport.tracked(), [(RequestId::Number(2), framing)]);
+
+            // Closing the transport discards a frame left part written, and
+            // its share of the budget with it.
+            let sending = transport.send(large(2));
+            let stalled = tokio::time::timeout(Duration::from_millis(50), sending).await;
+            assert!(stalled.is_err(), "{framing:?}: {stalled:?}");
+            assert_eq!(transport.backlog(), bytes, "{framing:?}");
+            transport.close().await.unwrap();
+            assert_eq!(transport.backlog(), 0);
+            assert!(transport.tracked().is_empty());
+            assert!(transport.send(reply(3)).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_send_after_one_dropped_part_way_writes_both_frames_whole() {
+        let large = ServerJsonRpcMessage::error(
+            ErrorData::internal_error("x".repeat(64 * 1024), None),
+            Some(RequestId::Number(1)),
+        );
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let input = [in_framing(&ping(1), framing), in_framing(&ping(2), framing)].concat();
+            let (mut client, write) = tokio::io::duplex(8);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
+            let sending = transport.send(large.clone());
+            let stalled = tokio::time::timeout(Duration::from_millis(50), sending).await;
+            assert!(stalled.is_err(), "{framing:?}: {stalled:?}");
+            let (replies, sent) =
+                tokio::join!(read_replies(&mut client, 2), transport.send(reply(2)));
+            sent.unwrap();
+            assert!(replies.iter().all(|(seen, _)| *seen == framing));
+            assert_eq!(replies[0].1["id"], json!(1));
+            assert_eq!(
+                replies[0].1["error"]["message"].as_str().map(str::len),
+                Some(64 * 1024)
+            );
+            assert_eq!(replies[1].1, serde_json::to_value(reply(2)).unwrap());
+            assert_eq!(transport.backlog(), 0);
+            assert!(transport.tracked().is_empty());
+        }
     }
 
     #[tokio::test]
@@ -2059,50 +2380,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_request_past_the_count_budget_is_answered_busy_until_a_reply_makes_room() {
-        // A framed request and newline-delimited ones fill the budget; one
-        // more, newline-delimited, is over it.
-        let last = MAX_OUTSTANDING_REQUESTS as i64;
-        let mut input = framed(&ping(1));
-        for id in 2..=last {
-            input.extend(line(&ping(id)));
-        }
-        input.extend(line(&ping(last + 1)));
-        let (mut stdin, read) = tokio::io::duplex(input.len());
-        let (mut client, server) = tokio::io::duplex(64 * 1024);
-        let (_, write) = tokio::io::split(server);
-        let mut transport = StdioTransport::new(read, write);
-        stdin.write_all(&input).await.unwrap();
-        for id in 1..=last {
-            assert_eq!(request_id(&transport.receive().await.unwrap()), id);
-        }
-        // The request over the budget is answered in its framing, not
-        // delivered: `receive` waits for more input instead.
-        let waiting = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
-        assert!(waiting.is_err(), "{waiting:?}");
-        assert_eq!(transport.tracked().len(), MAX_OUTSTANDING_REQUESTS);
-        let replies = read_replies(&mut client, 1).await;
-        assert_eq!(replies[0].0, Framing::Ndjson);
-        assert_eq!(replies[0].1["id"], json!(last + 1));
-        assert_eq!(replies[0].1["error"]["code"], json!(SERVER_BUSY.0));
-
-        // Request 1 is still tracked: its reply is in its own framing, not
-        // the one last seen, and makes room for a request.
-        transport.send(reply(1)).await.unwrap();
-        let replies = read_replies(&mut client, 1).await;
-        assert_eq!(replies[0].0, Framing::ContentLength);
-        assert_eq!(replies[0].1["id"], json!(1));
-        assert_eq!(transport.tracked().len(), MAX_OUTSTANDING_REQUESTS - 1);
-        stdin.write_all(&framed(&ping(last + 2))).await.unwrap();
-        assert_eq!(request_id(&transport.receive().await.unwrap()), last + 2);
-        assert_eq!(transport.tracked().len(), MAX_OUTSTANDING_REQUESTS);
-        assert_eq!(
-            transport.tracked().last(),
-            Some(&(RequestId::Number(last + 2), Framing::ContentLength))
-        );
-    }
-
-    #[tokio::test]
     async fn a_request_past_the_id_byte_budget_is_answered_busy_until_a_reply_makes_room() {
         // Four framed requests whose string ids fill the budget between
         // them, then a newline-delimited one whose one-byte id is over it.
@@ -2398,6 +2675,114 @@ mod tests {
                 .find(|(_, reply)| !reply["result"]["tools"].is_array())
         );
         drop(feeder.await.unwrap());
+        running.waiting().await.unwrap();
+    }
+
+    /// A server whose pings each wait until `open` is set, then answer with
+    /// an error whose message is `reply_bytes` long.
+    struct Gated {
+        started: Arc<AtomicUsize>,
+        open: tokio::sync::watch::Receiver<bool>,
+        reply_bytes: usize,
+    }
+
+    impl rmcp::ServerHandler for Gated {
+        async fn ping(
+            &self,
+            _: rmcp::service::RequestContext<RoleServer>,
+        ) -> Result<(), ErrorData> {
+            self.started.fetch_add(1, Ordering::SeqCst);
+            let mut open = self.open.clone();
+            open.wait_for(|open| *open).await.unwrap();
+            Err(ErrorData::internal_error(
+                "x".repeat(self.reply_bytes),
+                None,
+            ))
+        }
+    }
+
+    /// What `read` reports once it has not changed for a while.
+    async fn settled<T: PartialEq + Copy>(read: impl Fn() -> T) -> T {
+        let mut last = read();
+        loop {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let now = read();
+            if now == last {
+                return now;
+            }
+            last = now;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_bounds_the_replies_of_slow_requests_released_together_into_a_stalled_stdout()
+    {
+        // Slow requests, far more than may run at once, whose replies come
+        // to far more than the backlog holds.
+        let count = 4 * MAX_RUNNING_REQUESTS;
+        let reply_bytes = 64 * 1024;
+        let ids = 2..count as i64 + 2;
+        let mut input = [line(INITIALIZE), line(INITIALIZED)].concat();
+        for id in ids.clone() {
+            input.extend(line(&ping(id)));
+        }
+        let (mut stdin, read) = tokio::io::duplex(input.len());
+        stdin.write_all(&input).await.unwrap();
+        // A small pipe nobody reads, which the replies stall in.
+        let (mut client, write) = tokio::io::duplex(1024);
+        let transport = StdioTransport::new(read, write);
+        let budget = Arc::clone(&transport.budget);
+        let started = Arc::new(AtomicUsize::new(0));
+        let (open, gate) = tokio::sync::watch::channel(false);
+        let server = Gated {
+            started: Arc::clone(&started),
+            open: gate,
+            reply_bytes,
+        };
+        let running = server.serve(transport).await.unwrap();
+
+        // Only the running cap's worth of them is passed on, though nothing
+        // waits to be written.
+        let passed_on = settled(|| started.load(Ordering::SeqCst)).await;
+        assert_eq!(passed_on, MAX_RUNNING_REQUESTS);
+        assert_eq!(budget.ledger().backlog, 0);
+
+        // Released together into the stalled stdout, their replies hold the
+        // backlog within its cap plus one reply per request that ran.
+        open.send(true).unwrap();
+        let (passed_on, backlog) = settled(|| {
+            let backlog = budget.ledger().backlog;
+            (started.load(Ordering::SeqCst), backlog)
+        })
+        .await;
+        let error = ErrorData::internal_error("x".repeat(reply_bytes), None);
+        let frame = encode(
+            &ServerJsonRpcMessage::error(error, Some(RequestId::Number(ids.end))),
+            Framing::Ndjson,
+        )
+        .unwrap()
+        .len();
+        assert!(backlog > MAX_BACKLOG_BYTES, "{backlog}");
+        assert!(
+            backlog <= MAX_BACKLOG_BYTES + MAX_RUNNING_REQUESTS * frame,
+            "{backlog} bytes from {passed_on} requests"
+        );
+        assert!(passed_on < count, "{passed_on}");
+
+        // Reading the replies lets the rest through, each answered once.
+        let replies = read_replies(&mut client, count + 1).await;
+        assert_eq!(replies[0].1["id"], json!(1));
+        let mut answered: Vec<i64> = replies[1..]
+            .iter()
+            .map(|(_, reply)| {
+                let message = reply["error"]["message"].as_str().map(str::len);
+                assert_eq!(message, Some(reply_bytes), "{}", reply["id"]);
+                reply["id"].as_i64().unwrap()
+            })
+            .collect();
+        answered.sort_unstable();
+        assert_eq!(answered, ids.collect::<Vec<_>>());
+        drop(stdin);
         running.waiting().await.unwrap();
     }
 
