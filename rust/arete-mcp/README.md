@@ -185,10 +185,14 @@ No tool call waits on the network forever. Two bounds apply:
   `{"code": "tool-timeout", "retryable": true}` (`false` for tools that
   change something, see below). The bound is 60 s, except
   where a tool's own waits are longer: `read_view` 90 s; `sandbox_preview`
-  300 s and `protocol_prepare` 240 s (each above the requests it can make
-  in a row); other `sandbox_*`, `protocol_*` and `squads_*` tools 120 s;
-  `dev_*` 300 s; `dev_capture` and `dev_scenario` 15 minutes (use
-  `a4 dev capture` for larger captures).
+  300 s, `protocol_prepare` 240 s and `squads_attach` 150 s (each above the
+  requests it can make in a row); other `sandbox_*`, `protocol_*` and
+  `squads_*` tools 120 s; `dev_*` 300 s; `dev_capture` and `dev_scenario`
+  15 minutes (use `a4 dev capture` for larger captures). For some tools the
+  bound is only a backstop: a read that pages, or is tried again through a
+  sandbox, and a dev environment request that renews its token and waits
+  for the environment to wake can together outlast it, and are then cut
+  off by it.
   A tool that changes something (the `dev_*` tools that change an
   environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
   `create_claim_link`) can still be cut off at its bound, with its change
@@ -204,33 +208,46 @@ No tool call waits on the network forever. Two bounds apply:
   429, is retryable only under that key, and says to look it up with
   `sandbox_action` rather than run it under a new key.
   A `protocol_submit` or `protocol_execute` submit that fails in transit,
-  times out, or is answered 5xx, 408 or 429 without the API's refusal (a
-  `code`) may still have been taken, so one read settles it: if the API
-  took the transactions, the call goes on as submitted; otherwise it fails
-  with `{"code": "submit-outcome-unknown", "retryable": false,
-  "executionId": ...}` and says to read the execution with
-  `protocol_intent` before submitting it or running the step again.
-  Running `protocol_submit` again for that execution, or
-  `protocol_execute` again for that step (same deployment, instance, step
-  and signer), in the same `a4 mcp` session reads the execution first: if
-  the API took it, the call waits on it and sends nothing; while it cannot
-  be read, nothing is sent; only while it is still `prepared` are its
-  transactions sent again (`protocol_execute` resends the same signed
-  transactions and prepares nothing new). `protocol_execute` run again for
-  a step whose last execution has not settled, because the wait ended
-  first, likewise answers for that execution (`note` says so) until it
-  settles. Once submitted, the settle wait
-  (`timeoutSeconds`) gives each status read only the time left; a read
-  that fails, times out or is refused (its status and a short body)
-  ends the wait with `executionId`, `settled: false`, the failure in
-  `pollError` and a `next` that says to read it with `protocol_intent`
-  and not resubmit, while a 5xx, 408 or 429 is read again until the wait
-  ends. `dev_step` settles a submit a gateway answered the same way: taken,
-  the step completes; otherwise its error names the execution to read with
-  `protocol_intent` (`dev: true`) before running the step again. It
-  reports a failed status read after its submit with the execution id and
-  "do not resubmit"; a submit request it loses in transit is reported as
-  `Submit of '<step>' failed`, so check the environment's state before
+  times out, or is answered 5xx, 408 or 429, whatever its body (a `code`
+  included), may still have been taken, so one read settles it: if the
+  API took the transactions, the call goes on as submitted; if the answer
+  said `"submissionState": "not_submitted"`, it is a refusal; otherwise it
+  fails with `{"code": "submit-outcome-unknown", "retryable": false,
+  "executionId": ..., "expiresAt": ...}` (`protocol_execute` adds the
+  `signedTransactions` it signed). A read that shows the execution
+  `prepared` does not rule out that it was taken, so do not prepare and
+  sign the step again: resend the same signed transactions with
+  `protocol_submit` (the chain takes a signed transaction once), or wait
+  until `protocol_intent` shows the execution settled or `expired`.
+  Within one `a4 mcp` session the server also guards re-runs; a restarted
+  server remembers nothing. Running `protocol_submit` again for an
+  execution it sent reads the execution first: if the API took it, the
+  call waits on it and sends nothing; while it cannot be read, nothing is
+  sent; only while it is still `prepared` are the transactions sent again.
+  `protocol_execute` reserves its step call (deployment, instance, step
+  and signer) before it funds, prepares or signs anything: a second call
+  while one runs, such as a host's retry after its own timeout, is refused
+  with `{"code": "step-in-flight", "retryable": false}`. While the step's
+  last execution has not settled (an unknown submit, or a wait that ended
+  first), running it again with the same args answers for that execution
+  (`note` says so), resending only its signed transactions, and with other
+  args is refused with `{"code": "step-unsettled", "retryable": false,
+  "executionId": ...}` until a run with the previous args, or
+  `protocol_submit` with its signed transactions, shows it settled. Once
+  submitted, the settle wait (`timeoutSeconds`) gives each
+  status read only the time left; a read that fails, times out or is
+  refused (its status and a short body) ends the wait with `executionId`,
+  `settled: false`, the failure in `pollError` and a `next` that says to
+  read it with `protocol_intent` and not resubmit, while a 5xx, 408 or 429,
+  or a 2xx that names no state (a proxy's page), is read again until the
+  wait ends, keeping the last state and noting it in `pollError`.
+  `dev_step` settles any 5xx, 408 or 429 answer to its submit the same
+  way: taken, the step completes; otherwise its error says why the read
+  did not settle it and to wait until `protocol_intent` (`dev: true`)
+  shows the execution settled or `expired` before running the step again.
+  It reports a failed status read after its submit with the execution id
+  and "do not resubmit"; a submit request it loses in transit is reported
+  as `Submit of '<step>' failed`, so check the environment's state before
   running that step again.
 
 ### Which tools are listed
@@ -630,7 +647,10 @@ or a package reference `protocol`; `dev: true` targets the project's dev deploym
   `ARETE_MCP_SIGNER_CONFIG` names): prepares, checks the signer's policy
   (`deployments`, `maxSolPerTransaction`, optional `programs`,
   `maxTokenAmounts`, `clusters`), signs, submits and waits. A refusal names
-  the rule. The keypair never appears in output, errors or logs. The caps
+  the rule. One call per step runs at a time, and an unsettled execution is
+  answered for rather than run again, within one `a4 mcp` session (see
+  [Deadlines](#deadlines)). The keypair never appears in output, errors or
+  logs. The caps
   hold per transaction and in total over the step; a transaction that uses
   an account an earlier transaction of the step writes is refused, since it
   is simulated against state from before that write. `programs` covers CPI

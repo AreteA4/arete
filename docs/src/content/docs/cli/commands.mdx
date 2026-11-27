@@ -498,28 +498,37 @@ when the API asks for one gets 2 s. Each tool call as a whole fails after 60 s
 with `<tool> did not finish within 60s` and
 `{"code": "tool-timeout", "retryable": true}` (`false` for tools that change
 something, below), except tools whose own waits are longer: `read_view` 90 s;
-`sandbox_preview` 300 s; `protocol_prepare` 240 s; other `sandbox_*`,
-`protocol_*` and `squads_*` 120 s; `dev_*` 300 s; `dev_capture` and
-`dev_scenario` 15 minutes. Tools that sign or send a transaction
-(`sandbox_invoke`, `protocol_submit`, `protocol_execute`, `dev_step`) are never
-cut off mid-action, and each of their requests and waits is bounded.
-`sandbox_invoke` returns its idempotency key and says to look a timed-out
-action, or one a gateway answered, up with `sandbox_action` and retry it only
-under that key. A `protocol_submit` or `protocol_execute` submit that fails in
-transit, times out, or is answered 5xx, 408 or 429 without the API's refusal is
-settled with one read: if the API took it, the call goes on as submitted;
-otherwise it fails with `{"code": "submit-outcome-unknown", "retryable": false}`
-and the `executionId` to read with `protocol_intent`. Running the same
-`protocol_submit` or `protocol_execute` again in that session reads the
-execution first and sends it again only while it is still `prepared`
-(`protocol_execute` prepares nothing new, also while its last execution of the
-step has not settled). Once submitted, each status read gets only the time left
-of `timeoutSeconds`; one that fails, stalls or is
-refused returns `executionId`, `settled: false` and `pollError` (with the
-status), with a `next` that says to read it with `protocol_intent` and not
-resubmit. `dev_step` settles a submit a gateway answered the same way, and
-reports a failed status read after its submit with the execution id and "do
-not resubmit", but a submit request it loses in transit only as
+`sandbox_preview` 300 s; `protocol_prepare` 240 s; `squads_attach` 150 s; other
+`sandbox_*`, `protocol_*` and `squads_*` 120 s; `dev_*` 300 s; `dev_capture` and
+`dev_scenario` 15 minutes. For some tools that bound is a backstop that can cut
+off requests made in a row (a read that pages or runs again through a sandbox, a
+dev environment request that waits for a wake). Tools that sign or send a
+transaction (`sandbox_invoke`, `protocol_submit`, `protocol_execute`,
+`dev_step`) are never cut off mid-action, and each of their requests and waits
+is bounded. `sandbox_invoke` returns its idempotency key and says to look a
+timed-out action, or one a gateway answered, up with `sandbox_action` and retry
+it only under that key. A `protocol_submit` or `protocol_execute` submit that
+fails in transit, times out, or is answered 5xx, 408 or 429 (with a `code` or
+without) is settled with one read: if the API took it, the call goes on as
+submitted; if the answer said `"submissionState": "not_submitted"`, it is a
+refusal; otherwise it fails with
+`{"code": "submit-outcome-unknown", "retryable": false}`, the `executionId`, its
+`expiresAt` and, from `protocol_execute`, the `signedTransactions`. A `prepared`
+read does not rule out that it was taken: resend the same signed transactions
+with `protocol_submit`, which cannot land twice, or wait until `protocol_intent`
+shows the execution settled or `expired`, but never prepare and sign the step
+again. Within one `a4 mcp` session (a restart forgets it), `protocol_submit` run
+again reads the execution first and sends it again only while it is still
+`prepared`, and `protocol_execute` runs one call per step at a time (another is
+refused with `step-in-flight`), answers for an unsettled execution when run
+again with the same args, and refuses other args with `step-unsettled`. Once
+submitted, each status read gets only the time left of `timeoutSeconds`; one
+that fails, stalls or is refused returns `executionId`, `settled: false` and
+`pollError` (with the status), with a `next` that says to read it with
+`protocol_intent` and not resubmit; a 2xx without a state keeps the last one.
+`dev_step` settles its submit the same way and says why its read did not, and
+reports a failed status read after its submit with the execution id and "do not
+resubmit", but a submit request it loses in transit only as
 `Submit of '<step>' failed`, so check the environment's state before running
 that step again. Other tools that change something (the `dev_*` tools that
 change an environment, `protocol_prepare`, `squads_attach`, `rename_agent`,

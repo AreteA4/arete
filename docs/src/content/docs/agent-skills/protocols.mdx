@@ -158,10 +158,17 @@ at once). The result has `state` (`completed`, `chain_failed`, `expired`,
 instance) and each transaction's signature. If it has not settled, read it
 later with `protocol_intent`. Do not submit it again. When reading its state
 failed after the submit, `pollError` says why; the transactions were still
-submitted. When the submit's own answer was lost (it failed in transit, or a
-gateway answered it) and one read cannot show the API took it, the error has
-code `submit-outcome-unknown` and the `executionId`: read it with
-`protocol_intent` before submitting it or running the step again.
+submitted. When the submit's own answer was lost (it failed in transit, or was
+answered 5xx, 408 or 429) and one read cannot show the API took it, the error
+has code `submit-outcome-unknown`, the `executionId` and its `expiresAt`. A
+read that shows it `prepared` does not mean it was not taken, so never prepare
+and sign the step again: resend the same signed transactions with
+`protocol_submit` (the chain takes a signed transaction once), or wait until
+`protocol_intent` shows the execution settled or `expired`. `protocol_execute`
+puts the transactions it signed in the error as `signedTransactions` for this,
+and, within one `a4 mcp` session, runs one call per step at a time and answers
+for an unsettled execution when run again with the same args. A restarted
+server forgets that, so follow the error's guidance after a restart.
 
 ## Receipts
 
