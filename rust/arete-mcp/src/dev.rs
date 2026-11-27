@@ -2076,7 +2076,9 @@ mod tests {
     /// route names `<origin>/rpc`, `POST /rpc` answers every method with
     /// `{value: 5}`, `/ws/sessions` mints a token, `prepare` rejects `close`
     /// and otherwise returns a legacy transaction for the requesting wallet,
-    /// `submit` completes. Returns its origin and the prepare paths it saw.
+    /// `submit` completes, except that a `pending` step's submit is taken
+    /// (`submitting`) and its status read fails. Returns its origin and the
+    /// prepare paths it saw.
     fn mock_runtime() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{BufRead, BufReader, Read};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2144,14 +2146,24 @@ mod tests {
                             .and_then(|rest| rest.split('/').next())
                             .unwrap_or("new-1")
                             .to_string();
+                        let execution = if path.contains("/steps/pending/") {
+                            "e-pending"
+                        } else {
+                            "e-1"
+                        };
                         (
                             200,
                             json!({
-                                "intent": { "executionId": "e-1", "instanceId": instance },
+                                "intent": { "executionId": execution, "instanceId": instance },
                                 "transactions": [{ "transactionBase64": base64::engine::general_purpose::STANDARD.encode(tx) }],
                             }),
                         )
                     }
+                } else if path.ends_with("/e-pending/submit") {
+                    (200, json!({ "state": "submitting", "transactions": [] }))
+                } else if path == "/api/execution-intents/e-pending" {
+                    // The status read fails: the connection closes unanswered.
+                    continue;
                 } else if path.ends_with("/submit") {
                     (200, json!({ "state": "completed", "transactions": [] }))
                 } else if path.contains("/actions") || path.starts_with("/api/protocol-instances/")
@@ -2236,6 +2248,32 @@ mod tests {
         assert_eq!(result["state"], "rejected");
         assert_eq!(phases, ["Preparing"]);
         assert_eq!(lines(&client.project.history_path()).len(), 2);
+    }
+
+    /// A status read that fails after the runtime took the transactions is
+    /// reported with the execution id and "do not resubmit", never as a
+    /// submit failure that may be submitted again.
+    #[tokio::test]
+    async fn a_failed_status_read_after_submit_says_not_to_resubmit() {
+        let (origin, _) = mock_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let client = mock_client(dir.path(), &origin);
+        let error = crate::deadline::watchdog(
+            Duration::from_secs(10),
+            client.step(&parse_replay(r#"{"step":"pending"}"#).unwrap()[0]),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.downcast_ref::<NotSubmitted>().is_none(), "{error:#}");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Execution e-pending was submitted, but reading its state failed ("),
+            "{message}"
+        );
+        assert!(
+            message.contains("read it again later and do not resubmit"),
+            "{message}"
+        );
     }
 
     #[tokio::test]
