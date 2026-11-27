@@ -10,6 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::credentials;
+use crate::deadline;
 
 const DEFAULT_API_URL: &str = "https://api.arete.run";
 const DEFAULT_APP_ORIGIN: &str = "https://app.arete.run";
@@ -136,6 +137,11 @@ pub struct RecoveryClient {
     base_url: String,
     app_origin: Url,
     http: reqwest::Client,
+    /// The bound on each request, body included.
+    timeout: std::time::Duration,
+    /// The key to send; `None` resolves it on each call (`ARETE_API_KEY`,
+    /// else the a4 login).
+    key: Option<String>,
 }
 
 impl RecoveryClient {
@@ -153,6 +159,21 @@ impl RecoveryClient {
             base_url,
             app_origin,
             http: reqwest::Client::new(),
+            timeout: deadline::REQUEST_TIMEOUT,
+            key: None,
+        }
+    }
+
+    /// A client for the API at `base_url` that sends `key`, with requests
+    /// bounded at `timeout`.
+    #[cfg(test)]
+    pub(crate) fn for_api(base_url: &str, key: &str, timeout: std::time::Duration) -> Self {
+        Self {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            app_origin: default_app_origin(base_url),
+            http: reqwest::Client::new(),
+            timeout,
+            key: Some(key.to_string()),
         }
     }
 
@@ -199,9 +220,12 @@ impl RecoveryClient {
         body: Option<&serde_json::Value>,
     ) -> Result<T> {
         validate_api_origin(&self.base_url)?;
-        let key = credentials::resolve(None, "")?
-            .key
-            .ok_or_else(|| anyhow!("no Arete API key is configured"))?;
+        let key = match &self.key {
+            Some(key) => key.clone(),
+            None => credentials::resolve(None, "")?
+                .key
+                .ok_or_else(|| anyhow!("no Arete API key is configured"))?,
+        };
         let mut request = self
             .http
             .request(method, format!("{}{path}", self.base_url))
@@ -209,17 +233,21 @@ impl RecoveryClient {
         if let Some(body) = body {
             request = request.json(body);
         }
-        let response = request.send().await.context("account request failed")?;
-        let status = response.status();
-        if response.content_length().is_some_and(|length| {
-            length > u64::try_from(MAX_RECOVERY_BODY_BYTES).unwrap_or(u64::MAX)
-        }) {
-            return Err(anyhow!("account response exceeded safe size limit"));
-        }
-        let body = response
-            .bytes()
-            .await
-            .context("could not read account response")?;
+        let (status, body) = deadline::within(self.timeout, &self.base_url, async {
+            let response = request.send().await.context("account request failed")?;
+            let status = response.status();
+            if response.content_length().is_some_and(|length| {
+                length > u64::try_from(MAX_RECOVERY_BODY_BYTES).unwrap_or(u64::MAX)
+            }) {
+                return Err(anyhow!("account response exceeded safe size limit"));
+            }
+            let body = response
+                .bytes()
+                .await
+                .context("could not read account response")?;
+            Ok((status, body))
+        })
+        .await?;
         if body.len() > MAX_RECOVERY_BODY_BYTES {
             return Err(anyhow!("account response exceeded safe size limit"));
         }
@@ -343,6 +371,29 @@ fn validate_api_origin(value: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_account_request_to_a_stalled_api_times_out_without_naming_the_key() {
+        let base = deadline::blackhole();
+        let after = std::time::Duration::from_millis(300);
+        let client = RecoveryClient::for_api(&base, "a4_sk_do_not_print", after);
+        let started = std::time::Instant::now();
+        let error = deadline::watchdog(std::time::Duration::from_secs(10), client.account_status())
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            error.downcast_ref::<deadline::TimedOut>(),
+            Some(&deadline::TimedOut::new(&base, after))
+        );
+        let message = format!("{error:#}");
+        assert_eq!(message, format!("request to {base} timed out after 300ms"));
+        assert!(!message.contains("a4_sk_"), "{message}");
+    }
 
     #[test]
     fn api_origin_allowlist_accepts_arete_and_loopback_only() {

@@ -43,6 +43,7 @@ use arete_sdk::ApiProblemV1;
 use serde_json::Value;
 
 use crate::credentials;
+use crate::deadline;
 
 const DEFAULT_API_URL: &str = "https://api.arete.run";
 
@@ -168,6 +169,8 @@ const ARTIFACT_KINDS: [&str; 4] = [
 pub struct RegistryClient {
     base_url: String,
     http: reqwest::Client,
+    /// The bound on a request whose caller sets none.
+    timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -200,7 +203,16 @@ impl RegistryClient {
         Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http: http_client(),
+            timeout: deadline::REQUEST_TIMEOUT,
         }
+    }
+
+    /// This client with requests bounded at `timeout` instead of
+    /// [`deadline::REQUEST_TIMEOUT`].
+    #[cfg(test)]
+    pub(crate) fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     pub fn new() -> Self {
@@ -213,6 +225,7 @@ impl RegistryClient {
         Self {
             base_url,
             http: http_client(),
+            timeout: deadline::REQUEST_TIMEOUT,
         }
     }
 
@@ -480,7 +493,9 @@ impl RegistryClient {
         self.send(path, Some(key), None, BodyCap::ToolResult).await
     }
 
-    /// GET `path`, refusing a body larger than `cap` allows.
+    /// GET `path`, refusing a body larger than `cap` allows, and failing
+    /// with [`deadline::TimedOut`] when the whole exchange, body included,
+    /// takes longer than `timeout` (default: the client's bound).
     async fn send(
         &self,
         path: &str,
@@ -498,17 +513,16 @@ impl RegistryClient {
         if let Some(key) = key {
             request = request.bearer_auth(key);
         }
-        if let Some(timeout) = timeout {
-            request = request.timeout(timeout);
-        }
-
-        let response = request
-            .send()
-            .await
-            .map_err(|e| anyhow!("registry request to {url} failed: {e}"))?;
-
-        let status = response.status();
-        let body = read_capped_body(response, path, cap).await?;
+        let timeout = timeout.unwrap_or(self.timeout);
+        let (status, body) = deadline::within(timeout, &url, async {
+            let response = request
+                .send()
+                .await
+                .map_err(|e| anyhow!("registry request to {url} failed: {e}"))?;
+            let status = response.status();
+            Ok((status, read_capped_body(response, path, cap).await?))
+        })
+        .await?;
 
         if !status.is_success() {
             let problem =
@@ -1026,7 +1040,7 @@ fn path_segment(value: &str, field: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn truncate_for_error(body: &str) -> String {
+pub(crate) fn truncate_for_error(body: &str) -> String {
     const LIMIT: usize = 300;
     if body.len() <= LIMIT {
         return body.to_string();
@@ -1622,39 +1636,103 @@ mod tests {
         assert!(check_size(None, "/x", BodyCap::ToolResult).is_ok());
     }
 
-    /// A server that accepts every connection and never answers.
-    fn silent_server() -> String {
+    /// A server that answers one request with `response`, then holds the
+    /// connection open until the client closes it.
+    fn answering(response: String) -> String {
+        use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         std::thread::spawn(move || {
-            let mut held = Vec::new();
-            for stream in listener.incoming().flatten() {
-                held.push(stream);
-            }
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = [0u8; 8192];
+            let _ = stream.read(&mut buffer);
+            let _ = stream.write_all(response.as_bytes());
+            while stream.read(&mut buffer).is_ok_and(|read| read > 0) {}
         });
         format!("http://{address}")
     }
 
+    fn timed_out(error: &anyhow::Error) -> &deadline::TimedOut {
+        error
+            .downcast_ref::<deadline::TimedOut>()
+            .unwrap_or_else(|| panic!("not a timeout: {error:#}"))
+    }
+
     #[tokio::test]
     async fn a_timeout_bounds_a_request_to_a_server_that_never_answers() {
-        let client = RegistryClient::with_base_url(&silent_server());
+        let base = deadline::blackhole();
+        let client = RegistryClient::with_base_url(&base);
         let started = std::time::Instant::now();
-        let error = client
-            .send(
+        let error = deadline::watchdog(
+            Duration::from_secs(10),
+            client.send(
                 "/api/registry/v1/catalog/entries/stack/ore/knowledge",
                 None,
                 Some(Duration::from_millis(300)),
                 BodyCap::ToolResult,
-            )
-            .await
-            .unwrap_err()
-            .to_string();
+            ),
+        )
+        .await
+        .unwrap_err();
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "{:?}",
             started.elapsed()
         );
-        assert!(error.contains("failed"), "{error}");
+        assert_eq!(
+            timed_out(&error),
+            &deadline::TimedOut::new(&base, Duration::from_millis(300))
+        );
+    }
+
+    /// Discovery tools set no deadline of their own, so a stalled API must
+    /// still fail them after [`deadline::REQUEST_TIMEOUT`] instead of
+    /// hanging.
+    #[tokio::test(start_paused = true)]
+    async fn the_default_deadline_bounds_a_request_to_a_server_that_never_answers() {
+        let client = RegistryClient::with_base_url(&deadline::blackhole());
+        // The watchdog's limit is above the deadline, so the paused clock
+        // reaches the deadline first; without one it fails at the watchdog.
+        let error = deadline::watchdog(deadline::REQUEST_TIMEOUT * 2, client.list_programs())
+            .await
+            .unwrap_err();
+        assert_eq!(timed_out(&error).after, deadline::REQUEST_TIMEOUT);
+        assert!(
+            error.to_string().ends_with("timed out after 30s"),
+            "{error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_deadline_covers_a_body_that_stalls_after_the_headers() {
+        let base = answering(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 100\r\n\r\n{\"programs\":["
+                .to_string(),
+        );
+        let client =
+            RegistryClient::with_base_url(&base).with_request_timeout(Duration::from_millis(300));
+        let started = std::time::Instant::now();
+        let error = deadline::watchdog(Duration::from_secs(10), client.list_programs())
+            .await
+            .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(timed_out(&error).after, Duration::from_millis(300));
+    }
+
+    #[tokio::test]
+    async fn a_prompt_answer_is_unaffected_by_a_short_deadline() {
+        let body = r#"{"programs":[]}"#;
+        let base = answering(format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
+            body.len()
+        ));
+        let client =
+            RegistryClient::with_base_url(&base).with_request_timeout(Duration::from_millis(300));
+        assert_eq!(client.list_programs().await.unwrap(), body);
     }
 
     #[tokio::test]

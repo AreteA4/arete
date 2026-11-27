@@ -343,6 +343,9 @@ type RpcFixture = std::sync::Arc<dyn Fn(&str, &Value) -> Result<Value> + Send + 
 pub struct Rpc {
     http: reqwest::Client,
     url: String,
+    /// When set, the instant after which no call is made, and the budget
+    /// it ends ([`Rpc::within`]).
+    budget: Option<(tokio::time::Instant, std::time::Duration)>,
     /// Answers calls in place of the endpoint, for tests that describe the
     /// chain as a fixture.
     #[cfg(test)]
@@ -360,9 +363,17 @@ impl Rpc {
         Self {
             http,
             url: url.to_string(),
+            budget: None,
             #[cfg(test)]
             fixture: None,
         }
+    }
+
+    /// This RPC with all its calls, from now on, bounded by `budget` as a
+    /// whole: each gets only the time left, and none is made after.
+    pub fn within(mut self, budget: std::time::Duration) -> Self {
+        self.budget = Some((tokio::time::Instant::now() + budget, budget));
+        self
     }
 
     /// An RPC whose calls `answer` handles: `Ok(result)` or `Err` with the
@@ -374,6 +385,7 @@ impl Rpc {
         Self {
             http: reqwest::Client::new(),
             url: String::new(),
+            budget: None,
             fixture: Some(std::sync::Arc::new(answer)),
         }
     }
@@ -383,16 +395,38 @@ impl Rpc {
         if let Some(answer) = &self.fixture {
             return answer(method, &params).map_err(|error| anyhow!("{method} failed: {error}"));
         }
-        let response: Value = self
-            .http
-            .post(&self.url)
-            .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
-            .send()
-            .await
-            .with_context(|| format!("The RPC is unreachable for {method}"))?
-            .json()
-            .await
-            .with_context(|| format!("The RPC answered {method} with invalid JSON"))?;
+        // Without the URL: an RPC URL may carry its provider's key.
+        let request = async {
+            self.http
+                .post(&self.url)
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
+                .send()
+                .await
+                .map_err(|error| {
+                    anyhow!(
+                        "The RPC is unreachable for {method}: {}",
+                        error.without_url()
+                    )
+                })?
+                .json::<Value>()
+                .await
+                .map_err(|error| {
+                    anyhow!(
+                        "The RPC answered {method} with invalid JSON: {}",
+                        error.without_url()
+                    )
+                })
+        };
+        let response = match self.budget {
+            None => request.await?,
+            Some((deadline, budget)) => {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    bail!("{method} was not sent: simulating this step used its whole {budget:?}");
+                }
+                crate::deadline::within(left, &self.url, request).await?
+            }
+        };
         if let Some(error) = response.get("error") {
             bail!(
                 "{method} failed: {}",
@@ -1180,6 +1214,47 @@ pub(crate) mod tests {
                 { "table": base58(&[8; 32]), "addressIndex": 3 },
             ])
         );
+    }
+
+    /// A budgeted RPC bounds every call of a summary together: against a
+    /// stalled RPC, a two-transaction step is summarized within the budget,
+    /// both simulations unknown, the second never sent. No error names the
+    /// RPC URL's key, whether the RPC stalls or refuses the connection.
+    #[tokio::test]
+    async fn an_rpc_budget_bounds_the_whole_simulation() {
+        let budget = std::time::Duration::from_millis(300);
+        let transaction = json!({ "transactionBase64": base64::engine::general_purpose::STANDARD.encode(lookup_transaction()) });
+        let prepared = json!({ "transactions": [transaction.clone(), transaction] });
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            format!("http://{}", listener.local_addr().unwrap())
+        };
+        for (base, stalls) in [(crate::deadline::blackhole(), true), (closed, false)] {
+            let url = format!("{base}/?api-key=rpc-secret");
+            let rpc = Rpc::new(reqwest::Client::new(), &url).within(budget);
+            let started = std::time::Instant::now();
+            let result = crate::deadline::watchdog(
+                std::time::Duration::from_secs(10),
+                summarize(&prepared, &base58(&[1; 32]), Some(&rpc)),
+            )
+            .await
+            .unwrap();
+            assert!(started.elapsed() < budget * 3, "{:?}", started.elapsed());
+            assert!(!result.to_string().contains("rpc-secret"), "{result}");
+            let effects: Vec<&Value> = result["transactions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| &entry["signerEffect"])
+                .collect();
+            assert!(effects.iter().all(|effect| effect["known"] == false));
+            if stalls {
+                assert!(effects[1]["error"]
+                    .as_str()
+                    .unwrap()
+                    .contains("was not sent"));
+            }
+        }
     }
 
     #[tokio::test]

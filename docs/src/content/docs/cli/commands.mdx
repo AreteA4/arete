@@ -484,6 +484,67 @@ resolved from `~/.arete/credentials.toml` before any ambient `ARETE_API_KEY`, so
 a human key cannot accidentally override it. The npm package `@usearete/mcp` is
 deprecated in favour of this command. Tools and per-host shapes: [MCP Server](/agent-skills/mcp/).
 
+No tool call waits on the network forever, so a stalled API or stack is
+answered with an error and the request gives back its place under the cap.
+Each registry, catalog, knowledge or account request, and opening a stack
+connection with `connect`, fails after 30 s (the CLI's default), connecting,
+TLS, headers and body counted together, with a JSON-RPC error that reads
+`request to <origin> timed out after 30s` and carries
+`{"code": "request-timeout", "retryable": true}`, except the account writes
+`rename_agent` and `create_claim_link`: they may have been applied before the
+reply stalled, so theirs carries `"retryable": false` and says what to check
+with `account_status` before running them again. A claim link a read tool mints
+when the API asks for one gets 2 s. Each tool call as a whole fails after 60 s
+with `<tool> did not finish within 60s` and
+`{"code": "tool-timeout", "retryable": true}` (`false` for tools that change
+something, below), except tools whose own waits are longer: `read_view` 90 s;
+`sandbox_preview` 300 s; `protocol_prepare` 240 s; `squads_attach` 150 s; other
+`sandbox_*`, `protocol_*` and `squads_*` 120 s; `dev_*` 300 s; `dev_capture` and
+`dev_scenario` 15 minutes. For some tools that bound is a backstop that can cut
+off requests made in a row (a read that pages or runs again through a sandbox, a
+dev environment request that waits for a wake). Tools that sign or send a
+transaction (`sandbox_invoke`, `protocol_submit`, `protocol_execute`,
+`dev_step`) are never cut off mid-action, and each of their requests and waits
+is bounded. `sandbox_invoke` returns its idempotency key and says to look a
+timed-out action, or one a gateway answered, up with `sandbox_action` and retry
+it only under that key. A `protocol_submit` or `protocol_execute` submit that
+fails in transit, times out, or is answered 5xx, 408 or 429 (with a `code` or
+without) is settled with one read: if the API took it, the call goes on as
+submitted; if the answer said `"submissionState": "not_submitted"`, it is a
+refusal; otherwise it fails with
+`{"code": "submit-outcome-unknown", "retryable": false}`, the `executionId`, its
+`deploymentId` and `expiresAt` and, from `protocol_execute`, the
+`signedTransactions`. A `prepared`
+read does not rule out that it was taken: resend the same signed transactions
+with `protocol_submit`, which cannot land twice, or wait until `protocol_intent`
+shows the execution settled or `expired`, but never prepare and sign the step
+again. Within one `a4 mcp` session (a restart forgets it), `protocol_submit` run
+again reads the execution first and sends it again only while it is still
+`prepared`, and `protocol_execute` runs one call per step at a time (another is
+refused with `step-in-flight`, naming the running call's `executionId` once
+prepared), answers for an unsettled execution when run again with the same
+args, refuses other args with `step-unsettled`, and answers with a completed
+execution when run again with the same args until its `expiresAt`, but for at
+least 10 minutes and at most 1 hour after it completed (this server's clock),
+unless a run with other args signs first (even one the API then refuses), which
+ends that answer; a same-args run after that window executes again. A host that
+gives up on a call (its own timeout, or `notifications/cancelled`) does not stop
+it, and its answer is lost: read the execution with `protocol_intent` before
+running the step again. Once submitted, each status read gets only the time
+left of `timeoutSeconds`; one
+that fails, stalls or is refused returns `executionId`, `settled: false` and
+`pollError` (with the status), with a `next` that says to read it with
+`protocol_intent` and not resubmit; a 2xx without a state keeps the last one.
+`dev_step` settles its submit the same way and says why its read did not, and
+reports a failed status read after its submit with the execution id and "do not
+resubmit", but a submit request it loses in transit only as
+`Submit of '<step>' failed`, so check the environment's state before running
+that step again. Other tools that change something (the `dev_*` tools that
+change an environment, `protocol_prepare`, `squads_attach`, `rename_agent`,
+`create_claim_link`) can still time out with their change in flight; their
+timeout carries `"retryable": false` and says to check the state before running
+them again.
+
 ### a4 config validate
 
 Validate your configuration.

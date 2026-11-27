@@ -47,8 +47,8 @@ pub const ENV_VAR_SANDBOX_ID: &str = "ARETE_SANDBOX_ID";
 const ENV_VAR_RETIRED_SANDBOX_KEY: &str = "ARETE_SANDBOX_KEY";
 const ENV_VAR_API_URL: &str = "ARETE_API_URL";
 /// Actions wait for the transaction to confirm.
-const ACTION_TIMEOUT: Duration = Duration::from_secs(90);
-const READ_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const ACTION_TIMEOUT: Duration = Duration::from_secs(90);
+pub(crate) const READ_TIMEOUT: Duration = Duration::from_secs(30);
 /// A token this close to expiry is re-minted before use.
 const TOKEN_REFRESH_MARGIN_SECS: u64 = 30;
 /// How long a listing of the granted sandboxes is reused to resolve calls.

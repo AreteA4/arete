@@ -9,6 +9,7 @@ pub mod authority;
 pub mod catalog_view;
 mod connections;
 pub mod credentials;
+mod deadline;
 pub mod descriptor;
 pub mod dev;
 pub mod dev_capture;

@@ -1001,8 +1001,10 @@ pub struct Prepared {
 
 /// The context of a [`DevClient::submit_prepared`] error raised before the
 /// local runtime took the signed transactions (it refused them, or could not
-/// be reached): the prepared step may be submitted again. Any other error
-/// came after the runtime took them; do not resubmit.
+/// be reached), or after a gateway answered the submit and a read did not
+/// show them taken: the same prepared step, with the same signed bytes, may
+/// be submitted again, but running the step again prepares a new execution.
+/// Any other error came after the runtime took them; do not resubmit.
 #[derive(Debug, Clone)]
 pub struct NotSubmitted {
     pub step: String,
@@ -1610,18 +1612,51 @@ impl DevClient {
         let api = self.api();
         let execution_id = &prepared.execution_id;
         progress(StepProgress::Submitting { execution_id });
-        let submitted = api
-            .submit(&prepared.token, execution_id, &signed)
-            .await
-            .map_err(|error| {
-                error.context(NotSubmitted {
-                    step: step.to_string(),
-                })
-            })?;
+        let submitted = 'submitted: {
+            match api.submit(&prepared.token, execution_id, &signed).await {
+                Ok(submitted) => submitted,
+                // Any 5xx, 408 or 429: the runtime may have taken the
+                // transactions, so one read settles it before reporting a
+                // failed submit.
+                Err(error) => {
+                    let Some(answered) = error.downcast_ref::<crate::protocol_api::SubmitUnknown>()
+                    else {
+                        return Err(error.context(NotSubmitted {
+                            step: step.to_string(),
+                        }));
+                    };
+                    let refused = answered.not_submitted;
+                    let read = api.taken_state(&prepared.token, execution_id).await;
+                    let why = match read {
+                        Ok(Some(state)) => break 'submitted state,
+                        _ if refused => {
+                            return Err(error.context(NotSubmitted {
+                                step: step.to_string(),
+                            }))
+                        }
+                        Ok(None) => "a read then showed it still `prepared`".to_string(),
+                        Err(read) => format!("then {read:#}"),
+                    };
+                    return Err(anyhow!(
+                        "{error:#}; {why}; execution {execution_id} may have been taken, even if \
+                     protocol_intent (`dev: true`) shows it `prepared`: wait until it shows the \
+                     execution settled or `expired` before running the step again"
+                    )
+                    .context(NotSubmitted {
+                        step: step.to_string(),
+                    }));
+                }
+            }
+        };
         progress(StepProgress::Confirming { execution_id });
         let waited = api
             .wait_intent(&prepared.token, execution_id, submitted, INTENT_TIMEOUT)
             .await?;
+        if let Some(error) = &waited.poll_error {
+            bail!(
+                "Execution {execution_id} was submitted, but reading its state failed ({error}); read it again later and do not resubmit"
+            );
+        }
         if !waited.settled {
             bail!(
                 "Execution {execution_id} is still '{}' after {}s; read it again later and do not resubmit",
@@ -2071,7 +2106,12 @@ mod tests {
     /// route names `<origin>/rpc`, `POST /rpc` answers every method with
     /// `{value: 5}`, `/ws/sessions` mints a token, `prepare` rejects `close`
     /// and otherwise returns a legacy transaction for the requesting wallet,
-    /// `submit` completes. Returns its origin and the prepare paths it saw.
+    /// `submit` completes, except that a `pending` step's submit is taken
+    /// (`submitting`) and its status read fails; a `gateway` step's submit
+    /// is answered 504 by a gateway but taken (`completed`), a `lost`
+    /// step's 502 while it stays `prepared`, and a `busy` step's is the
+    /// runtime's own 503 refusal. Returns its origin and the prepare paths
+    /// it saw.
     fn mock_runtime() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{BufRead, BufReader, Read};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2139,14 +2179,49 @@ mod tests {
                             .and_then(|rest| rest.split('/').next())
                             .unwrap_or("new-1")
                             .to_string();
+                        let execution =
+                            ["pending", "gateway", "lost", "busy", "internal", "refused"]
+                                .iter()
+                                .find(|step| path.contains(&format!("/steps/{step}/")))
+                                .map_or("e-1".to_string(), |step| format!("e-{step}"));
                         (
                             200,
                             json!({
-                                "intent": { "executionId": "e-1", "instanceId": instance },
+                                "intent": { "executionId": execution, "instanceId": instance },
                                 "transactions": [{ "transactionBase64": base64::engine::general_purpose::STANDARD.encode(tx) }],
                             }),
                         )
                     }
+                } else if path.ends_with("/e-gateway/submit") {
+                    (504, json!("<html>gateway timeout</html>"))
+                } else if path == "/api/execution-intents/e-gateway" {
+                    (200, json!({ "state": "completed", "transactions": [] }))
+                } else if path.ends_with("/e-lost/submit") {
+                    (502, Value::Null)
+                } else if path == "/api/execution-intents/e-lost" {
+                    (200, json!({ "state": "prepared", "transactions": [] }))
+                } else if path.ends_with("/e-busy/submit") {
+                    (503, json!({ "code": "runtime-busy", "error": "busy" }))
+                } else if path.ends_with("/e-internal/submit") {
+                    // The runtime failed after taking the transactions.
+                    (
+                        500,
+                        json!({ "code": "internal-error", "error": "internal" }),
+                    )
+                } else if path == "/api/execution-intents/e-internal" {
+                    (200, json!({ "state": "completed", "transactions": [] }))
+                } else if path.ends_with("/e-refused/submit") {
+                    (
+                        503,
+                        json!({ "code": "runtime-busy", "submissionState": "not_submitted" }),
+                    )
+                } else if path == "/api/execution-intents/e-refused" {
+                    (200, json!({ "state": "prepared", "transactions": [] }))
+                } else if path.ends_with("/e-pending/submit") {
+                    (200, json!({ "state": "submitting", "transactions": [] }))
+                } else if path == "/api/execution-intents/e-pending" {
+                    // The status read fails: the connection closes unanswered.
+                    continue;
                 } else if path.ends_with("/submit") {
                     (200, json!({ "state": "completed", "transactions": [] }))
                 } else if path.contains("/actions") || path.starts_with("/api/protocol-instances/")
@@ -2231,6 +2306,99 @@ mod tests {
         assert_eq!(result["state"], "rejected");
         assert_eq!(phases, ["Preparing"]);
         assert_eq!(lines(&client.project.history_path()).len(), 2);
+    }
+
+    /// A status read that fails after the runtime took the transactions is
+    /// reported with the execution id and "do not resubmit", never as a
+    /// submit failure that may be submitted again.
+    #[tokio::test]
+    async fn a_failed_status_read_after_submit_says_not_to_resubmit() {
+        let (origin, _) = mock_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let client = mock_client(dir.path(), &origin);
+        let error = crate::deadline::watchdog(
+            Duration::from_secs(10),
+            client.step(&parse_replay(r#"{"step":"pending"}"#).unwrap()[0]),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.downcast_ref::<NotSubmitted>().is_none(), "{error:#}");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("Execution e-pending was submitted, but reading its state failed ("),
+            "{message}"
+        );
+        assert!(
+            message.contains("read it again later and do not resubmit"),
+            "{message}"
+        );
+    }
+
+    /// Any 5xx, 408 or 429 answer to a submit, coded or not, is settled
+    /// with one read: taken, the step completes; otherwise the error says
+    /// why the read did not settle it and to wait for the execution to
+    /// settle or expire, since a `prepared` read does not rule out that it
+    /// was taken. Only a body that says `not_submitted` is a plain refusal.
+    #[tokio::test]
+    async fn a_gateway_answer_to_a_submit_is_settled_with_one_read() {
+        let (origin, _) = mock_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let client = mock_client(dir.path(), &origin);
+        let step = |name: &str| parse_replay(&format!(r#"{{"step":"{name}"}}"#)).unwrap();
+        let run = |name: &str| {
+            let request = step(name).remove(0);
+            let client = &client;
+            async move {
+                crate::deadline::watchdog(Duration::from_secs(10), client.step(&request)).await
+            }
+        };
+        let guidance = |execution: &str| {
+            format!(
+                "execution {execution} may have been taken, even if protocol_intent (`dev: \
+                 true`) shows it `prepared`: wait until it shows the execution settled or \
+                 `expired` before running the step again"
+            )
+        };
+
+        let done = run("gateway").await.unwrap();
+        assert_eq!(done["state"], "completed", "{done}");
+        assert_eq!(done["executionId"], "e-gateway", "{done}");
+
+        // A coded 500 after the runtime took the transactions.
+        let done = run("internal").await.unwrap();
+        assert_eq!(done["state"], "completed", "{done}");
+        assert_eq!(done["executionId"], "e-internal", "{done}");
+
+        let lost = run("lost").await.unwrap_err();
+        assert!(lost.downcast_ref::<NotSubmitted>().is_some(), "{lost:#}");
+        let message = format!("{lost:#}");
+        assert!(message.contains("answered 502 "), "{message}");
+        assert!(
+            message.contains("; a read then showed it still `prepared`; "),
+            "{message}"
+        );
+        assert!(message.ends_with(&guidance("e-lost")), "{message}");
+
+        // A coded 503 whose settle read fails: the read's failure is named.
+        let busy = run("busy").await.unwrap_err();
+        assert!(busy.downcast_ref::<NotSubmitted>().is_some(), "{busy:#}");
+        let message = format!("{busy:#}");
+        assert!(message.contains("runtime-busy"), "{message}");
+        assert!(
+            message.contains("; then Reading execution e-busy failed (404 "),
+            "{message}"
+        );
+        assert!(message.ends_with(&guidance("e-busy")), "{message}");
+
+        // The runtime says it did not submit them: a plain failed submit.
+        let refused = run("refused").await.unwrap_err();
+        assert!(
+            refused.downcast_ref::<NotSubmitted>().is_some(),
+            "{refused:#}"
+        );
+        let message = format!("{refused:#}");
+        assert!(message.contains("not submitted"), "{message}");
+        assert!(!message.contains("may have been taken"), "{message}");
     }
 
     #[tokio::test]

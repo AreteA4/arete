@@ -105,9 +105,11 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::future::Future;
 use std::sync::Arc;
 
 use crate::connections::ConnectionRegistry;
+use crate::deadline;
 use crate::filter::{Filter, StructuredPredicate};
 use crate::recovery::{RecoveryApiError, RecoveryClient};
 use crate::registry::{RegistryClient, MAX_RESPONSE_BYTES};
@@ -136,6 +138,11 @@ pub struct AreteMcp {
     /// The account key for direct program reads; `None` resolves it from
     /// the environment on each call (`ARETE_API_KEY`, else the a4 login).
     account_key: Option<crate::program_read::AccountKey>,
+    /// The bound on opening a stack connection (`connect`).
+    connect_timeout: std::time::Duration,
+    /// Replaces the bound of every tool [`deadline::tool_call_timeout`]
+    /// bounds (tests).
+    tool_call_timeout: Option<std::time::Duration>,
 }
 
 #[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
@@ -679,13 +686,38 @@ fn transaction_format(format: Option<&str>) -> Result<Option<&str>, McpError> {
     }
 }
 
-/// Map a protocol tool failure: argument problems are `invalid_params`.
+/// Map a protocol tool failure: argument problems are `invalid_params`; a
+/// submit whose outcome is unknown carries the execution to read, its
+/// `expiresAt` and (from `protocol_execute`) the signed transactions to
+/// resend, and is not retryable; so is a step call that is running or has
+/// not settled.
 fn protocol_error(error: anyhow::Error) -> McpError {
     if error
         .downcast_ref::<crate::protocol_agent::InvalidArgs>()
         .is_some()
     {
         McpError::invalid_params(error.to_string(), None)
+    } else if let Some(unknown) = error.downcast_ref::<crate::protocol_agent::MaybeSubmitted>() {
+        let mut data = json!({
+            "code": "submit-outcome-unknown",
+            "retryable": false,
+            "executionId": unknown.execution_id,
+            "expiresAt": unknown.expires_at,
+            "deploymentId": unknown.deployment_id,
+        });
+        if let Some(signed) = &unknown.signed {
+            data["signedTransactions"] = json!(signed);
+        }
+        McpError::internal_error(unknown.to_string(), Some(data))
+    } else if let Some(busy) = error.downcast_ref::<crate::protocol_agent::StepBusy>() {
+        McpError::internal_error(
+            busy.to_string(),
+            Some(json!({
+                "code": busy.code,
+                "retryable": false,
+                "executionId": busy.execution_id,
+            })),
+        )
     } else {
         registry_error(error)
     }
@@ -1634,6 +1666,8 @@ impl AreteMcp {
             sdk_references: None,
             protocols,
             account_key: None,
+            connect_timeout: deadline::REQUEST_TIMEOUT,
+            tool_call_timeout: None,
         }
     }
 
@@ -3565,7 +3599,17 @@ impl AreteMcp {
                           step's new instance), `state` (`completed`, `chain_failed`, \
                           `expired`, `rejected`, or a pending state), `settled` and \
                           per-transaction states with signatures. When `settled` is false, \
-                          read it later with protocol_intent and do not resubmit."
+                          read it later with protocol_intent and do not resubmit; \
+                          `pollError` then says why, when reading its state failed after \
+                          the submit. A submit whose answer was lost (in transit, or any \
+                          5xx, 408 or 429) and that one read cannot show taken fails with \
+                          code `submit-outcome-unknown`, the `executionId`, its `deploymentId` \
+                          and `expiresAt`. A read showing it `prepared` does not rule out that it \
+                          was taken: never prepare and sign the step again; resend these same \
+                          signed transactions here (the chain takes a signed transaction \
+                          once), or wait until protocol_intent shows it settled or `expired`. \
+                          In this a4 mcp session, calling this again for an execution it sent \
+                          reads it before sending anything."
     )]
     async fn protocol_submit(
         &self,
@@ -3658,7 +3702,24 @@ impl AreteMcp {
                           broke and why, and nothing is signed or sent.\n\n\
                           Otherwise returns what protocol_submit returns plus the prepare \
                           `summary`. Guard and access rejections come back as `state: \
-                          \"rejected\"` like protocol_prepare."
+                          \"rejected\"` like protocol_prepare. One call per step (deployment, \
+                          instance, step, signer) runs at a time: another is refused with \
+                          `step-in-flight` (with the running call's `executionId` once \
+                          prepared). A call your host gave up on still runs, and its answer is \
+                          lost: read its execution with protocol_intent before running the step \
+                          again. While this step's last execution has not settled \
+                          (`settled: false`, or a `submit-outcome-unknown` error, which \
+                          carries the `signedTransactions` to resend with protocol_submit), \
+                          running it again with the same args answers for that execution \
+                          (`note` says so) instead of preparing and signing a new one, and \
+                          other args are refused with `step-unsettled`. Once it completed, the \
+                          same args get that execution's answer again until its `expiresAt`, \
+                          but for at least 10 minutes and at most 1 hour after it completed \
+                          (this server's clock), unless a run with other args signs first \
+                          (even one the API then refuses), which ends that answer; a same-args \
+                          run after then executes again. \
+                          That holds only in this a4 mcp session: after a restart, resend the \
+                          `signedTransactions` or wait until the execution is `expired`."
     )]
     async fn protocol_execute(
         &self,
@@ -4008,7 +4069,7 @@ impl AreteMcp {
             Ok(status) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&status).unwrap_or_default(),
             )])),
-            Err(error) => Err(self.recovery_error(error).await),
+            Err(error) => Err(self.recovery_error(error, None).await),
         }
     }
 
@@ -4029,7 +4090,15 @@ impl AreteMcp {
             Ok(renamed) => Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string(&renamed).unwrap_or_default(),
             )])),
-            Err(error) => Err(self.recovery_error(error).await),
+            Err(error) => Err(self
+                .recovery_error(
+                    error,
+                    Some(
+                        "the rename may have been applied, so check `displayName` with \
+                         account_status before renaming again",
+                    ),
+                )
+                .await),
         }
     }
 
@@ -4039,7 +4108,15 @@ impl AreteMcp {
     async fn create_claim_link(&self) -> Result<CallToolResult, McpError> {
         match self.recovery.create_claim_link().await {
             Ok(ready) => Err(claim_url_elicitation(&ready.action)),
-            Err(error) => Err(self.recovery_error(error).await),
+            Err(error) => Err(self
+                .recovery_error(
+                    error,
+                    Some(
+                        "a claim link may have been created, so check `claimState` with \
+                         account_status before creating another",
+                    ),
+                )
+                .await),
         }
     }
 
@@ -4091,11 +4168,10 @@ impl AreteMcp {
         {
             reject_url_token(&args.url)?;
             let auth = sandbox.stream_auth(&args.url, refused.clone());
-            let id = match self
-                .connections
-                .connect_with(args.url.clone(), Some(auth), Some(refused.clone()))
-                .await
-            {
+            let opening =
+                self.connections
+                    .connect_with(args.url.clone(), Some(auth), Some(refused.clone()));
+            let id = match self.open_within(&args.url, opening).await? {
                 Ok(id) => id,
                 Err(error) => return Err(self.sandbox_stream_error(error, &refused).await),
             };
@@ -4113,11 +4189,8 @@ impl AreteMcp {
         let resolved = credentials::resolve(args.api_key, &args.url)
             .map_err(|e| McpError::invalid_params(e.to_string(), None))?;
 
-        let id = match self
-            .connections
-            .connect(args.url.clone(), resolved.key)
-            .await
-        {
+        let opening = self.connections.connect(args.url.clone(), resolved.key);
+        let id = match self.open_within(&args.url, opening).await? {
             Ok(id) => id,
             Err(error) => return Err(self.direct_stream_error(error, &refused).await),
         };
@@ -4683,6 +4756,9 @@ fn registry_result(result: anyhow::Result<String>) -> Result<CallToolResult, Mcp
 /// Classify a registry client failure: argument rejections are the caller's
 /// to fix (`invalid_params`); everything else is `internal_error`.
 fn registry_error(error: anyhow::Error) -> McpError {
+    if let Some(timeout) = error.downcast_ref::<deadline::TimedOut>() {
+        return timed_out_error(timeout, None);
+    }
     let message = error.to_string();
     let caller_fixable = message.contains("must not be empty")
         || message.contains("invalid character")
@@ -4694,6 +4770,23 @@ fn registry_error(error: anyhow::Error) -> McpError {
         McpError::invalid_params(message, None)
     } else {
         McpError::internal_error(message, None)
+    }
+}
+
+/// A request that ran past its deadline, naming the origin only. A read is
+/// retryable. A write (`write`: what may have changed and how to check it)
+/// may have been applied before its reply stalled, so its timeout is not
+/// retryable and says to check the state first.
+fn timed_out_error(timeout: &deadline::TimedOut, write: Option<&str>) -> McpError {
+    match write {
+        None => McpError::internal_error(
+            timeout.to_string(),
+            Some(json!({ "code": "request-timeout", "retryable": true })),
+        ),
+        Some(check) => McpError::internal_error(
+            format!("{timeout}; {check}"),
+            Some(json!({ "code": "request-timeout", "retryable": false })),
+        ),
     }
 }
 
@@ -5044,7 +5137,13 @@ impl AreteMcp {
         bounded_result(catalog_view::shape_body(body, shape, search))
     }
 
-    async fn recovery_error(&self, error: anyhow::Error) -> McpError {
+    /// `error` from an account request. `write` is `None` for a read, and
+    /// for a write says what may have changed and how to check it: a write
+    /// that timed out may have been applied, so it is not called retryable.
+    async fn recovery_error(&self, error: anyhow::Error, write: Option<&str>) -> McpError {
+        if let Some(timeout) = error.downcast_ref::<deadline::TimedOut>() {
+            return timed_out_error(timeout, write);
+        }
         if let Some(api_error) = error.downcast_ref::<RecoveryApiError>() {
             return self
                 .problem_error(&api_error.problem, Some(api_error.status.as_u16()), false)
@@ -5056,6 +5155,22 @@ impl AreteMcp {
         )
     }
 
+    /// `opening` a stack connection, abandoned after the connect bound: a
+    /// stalled token request or WebSocket handshake fails the call, and
+    /// dropping `opening` stops the connection task.
+    async fn open_within(
+        &self,
+        url: &str,
+        opening: impl Future<Output = Result<String, AreteError>>,
+    ) -> Result<Result<String, AreteError>, McpError> {
+        tokio::time::timeout(self.connect_timeout, opening)
+            .await
+            .map_err(|_| timed_out_error(&deadline::TimedOut::new(url, self.connect_timeout), None))
+    }
+
+    /// `problem` as a tool error. A problem whose recovery is a claim link
+    /// gets one minted when `allow_materialize`; the mint only adds a
+    /// handoff to the error, so it is abandoned after [`LOOKUP_TIMEOUT`].
     async fn problem_error(
         &self,
         problem: &ApiProblemV1,
@@ -5067,9 +5182,11 @@ impl AreteMcp {
                 .recovery_action()
                 .is_some_and(|action| action.is_claim_agent_materializer())
         {
-            return match self.recovery.create_claim_link().await {
-                Ok(ready) => claim_url_elicitation(&ready.action),
-                Err(_) => {
+            return match tokio::time::timeout(LOOKUP_TIMEOUT, self.recovery.create_claim_link())
+                .await
+            {
+                Ok(Ok(ready)) => claim_url_elicitation(&ready.action),
+                _ => {
                     structured_problem_error(problem, status, Some("claim-materialization-failed"))
                 }
             };
@@ -5433,6 +5550,43 @@ impl ServerHandler for AreteMcp {
     // answering every handshake with 2024-11-05, as before.
     fn supported_protocol_versions(&self) -> std::borrow::Cow<'static, [ProtocolVersion]> {
         std::borrow::Cow::Borrowed(ProtocolVersion::known_up_to(&ProtocolVersion::V_2024_11_05))
+    }
+
+    /// Every tool call, abandoned after its deadline
+    /// ([`deadline::tool_call_timeout`]) so none can hold its request open:
+    /// tools that make several requests in a row are bounded as a whole.
+    /// Tools that sign or send ([`deadline::SENDING_TOOLS`]) run to their
+    /// own, bounded answer; a timed-out tool that changes something
+    /// ([`deadline::CHANGING_TOOLS`]) is not called retryable.
+    async fn call_tool(
+        &self,
+        request: CallToolRequestParams,
+        context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<CallToolResponse, McpError> {
+        let after = deadline::tool_call_timeout(&request.name)
+            .map(|bound| self.tool_call_timeout.unwrap_or(bound));
+        let tool = request.name.to_string();
+        let call = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
+        let Some(after) = after else {
+            return self.tool_router.call(call).await;
+        };
+        tokio::time::timeout(after, self.tool_router.call(call))
+            .await
+            .unwrap_or_else(|_| {
+                let changing = deadline::CHANGING_TOOLS.contains(&tool.as_str());
+                let message = if changing {
+                    format!(
+                        "{tool} did not finish within {after:?}; its change may have been \
+                         made, so check the state before running it again"
+                    )
+                } else {
+                    format!("{tool} did not finish within {after:?}")
+                };
+                Err(McpError::internal_error(
+                    message,
+                    Some(json!({ "code": "tool-timeout", "retryable": !changing })),
+                ))
+            })
     }
 }
 
@@ -8302,5 +8456,1054 @@ mod sandbox_result_tests {
         assert_eq!(body["actionId"], "a-1");
         assert_eq!(body["idempotencyKey"], "k-1");
         assert!(body["hint"].as_str().unwrap().contains("sandbox_action"));
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod deadline_tests {
+    use super::*;
+    use crate::stdio_framing::StdioTransport;
+    use rmcp::ServiceExt;
+    use std::time::{Duration, Instant};
+    use tokio::io::{
+        AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream, Lines, ReadHalf, WriteHalf,
+    };
+
+    const SHORT: Duration = Duration::from_millis(300);
+    const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"deadline-test","version":"0"}}}"#;
+    const INITIALIZED: &str = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+
+    /// A server whose registry and stack connections go to `base`, with
+    /// requests bounded at [`SHORT`].
+    fn stalled(base: &str) -> AreteMcp {
+        AreteMcp {
+            registry: RegistryClient::with_base_url(base).with_request_timeout(SHORT),
+            connect_timeout: SHORT,
+            ..AreteMcp::with_agents(
+                crate::protocol_agent::ProtocolAgent::new(None),
+                crate::sandbox::SandboxClient::from_values(None, None, None),
+            )
+        }
+    }
+
+    /// A client of an `a4 mcp` server over its stdio transport.
+    pub(crate) struct Session {
+        input: WriteHalf<DuplexStream>,
+        replies: Lines<BufReader<ReadHalf<DuplexStream>>>,
+        /// Messages read while waiting for another id's reply.
+        pub(crate) skipped: Vec<Value>,
+    }
+
+    impl Session {
+        /// `server` over the stdio transport, initialized.
+        pub(crate) async fn open(server: AreteMcp) -> Self {
+            let (client, server_end) = tokio::io::duplex(1 << 20);
+            let (output, input) = tokio::io::split(client);
+            let (read, write) = tokio::io::split(server_end);
+            let mut session = Self {
+                input,
+                replies: BufReader::new(output).lines(),
+                skipped: Vec::new(),
+            };
+            session.send(INITIALIZE).await;
+            session.send(INITIALIZED).await;
+            let running = server
+                .serve(StdioTransport::new(read, write))
+                .await
+                .unwrap();
+            tokio::spawn(running.waiting());
+            session.reply(1).await;
+            session
+        }
+
+        pub(crate) async fn send(&mut self, message: &str) {
+            self.input
+                .write_all(format!("{message}\n").as_bytes())
+                .await
+                .unwrap();
+        }
+
+        /// The reply to `id`, failing the test rather than hanging when
+        /// none comes within 10 s.
+        pub(crate) async fn reply(&mut self, id: u64) -> Value {
+            let waiting = async {
+                loop {
+                    let line = self
+                        .replies
+                        .next_line()
+                        .await
+                        .unwrap()
+                        .expect("session ended");
+                    let message: Value = serde_json::from_str(&line).unwrap();
+                    if message["id"] == json!(id) {
+                        return message;
+                    }
+                    self.skipped.push(message);
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), waiting)
+                .await
+                .unwrap_or_else(|_| panic!("no reply to {id} within 10s"))
+        }
+
+        /// Read what the server writes until it has been quiet for
+        /// `quiet`, into `skipped`.
+        pub(crate) async fn drain(&mut self, quiet: Duration) {
+            while let Ok(Ok(Some(line))) =
+                tokio::time::timeout(quiet, self.replies.next_line()).await
+            {
+                self.skipped.push(serde_json::from_str(&line).unwrap());
+            }
+        }
+    }
+
+    fn call(id: u64, tool: &str) -> String {
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": tool, "arguments": {}}})
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn a_stalled_explore_programs_answers_a_timeout_and_frees_its_request_slot() {
+        let base = deadline::blackhole();
+        let mut session = Session::open(stalled(&base)).await;
+        // The same id twice: had the first call kept its place among the
+        // requests awaiting a reply, the second would be refused as a
+        // duplicate instead of running.
+        for _ in 0..2 {
+            let started = Instant::now();
+            session.send(&call(7, "explore_programs")).await;
+            let answer = session.reply(7).await;
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "{:?}",
+                started.elapsed()
+            );
+            assert_eq!(
+                answer["error"]["message"],
+                json!(format!("request to {base} timed out after 300ms")),
+                "{answer}"
+            );
+            assert_eq!(answer["error"]["data"]["code"], json!("request-timeout"));
+        }
+        session
+            .send(r#"{"jsonrpc":"2.0","id":8,"method":"tools/list"}"#)
+            .await;
+        let listed = session.reply(8).await;
+        assert!(listed["result"]["tools"].is_array(), "{listed}");
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_past_its_own_deadline_is_answered_with_a_tool_timeout() {
+        let base = deadline::blackhole();
+        let server = AreteMcp {
+            registry: RegistryClient::with_base_url(&base)
+                .with_request_timeout(Duration::from_secs(30)),
+            tool_call_timeout: Some(SHORT),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        let started = Instant::now();
+        session.send(&call(9, "explore_stacks")).await;
+        let answer = session.reply(9).await;
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            answer["error"]["message"],
+            json!("explore_stacks did not finish within 300ms"),
+            "{answer}"
+        );
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "tool-timeout", "retryable": true})
+        );
+    }
+
+    /// A tool that changes something, abandoned by the tool deadline with
+    /// its request in flight, is not called retryable: the change may have
+    /// been made, and a blind retry would make it again.
+    #[tokio::test]
+    async fn a_changing_tool_past_its_deadline_is_not_called_retryable() {
+        let base = deadline::blackhole();
+        let server = AreteMcp {
+            recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", Duration::from_secs(30)),
+            tool_call_timeout: Some(SHORT),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        let rename = json!({"jsonrpc": "2.0", "id": 12, "method": "tools/call", "params": {
+            "name": "rename_agent",
+            "arguments": {"display_name": "Renamed"},
+        }});
+        session.send(&rename.to_string()).await;
+        let answer = session.reply(12).await;
+        assert_eq!(
+            answer["error"]["message"],
+            json!(
+                "rename_agent did not finish within 300ms; its change may have been made, \
+                 so check the state before running it again"
+            ),
+            "{answer}"
+        );
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "tool-timeout", "retryable": false})
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_to_a_stalled_stack_times_out_without_naming_the_key() {
+        let base = deadline::blackhole();
+        let origin = base.replacen("http://", "ws://", 1);
+        let url = format!("{origin}/stack?key=a4_sk_in_query");
+        let args: ConnectArgs =
+            serde_json::from_value(json!({"url": url, "api_key": "a4_sk_do_not_print"})).unwrap();
+        let started = Instant::now();
+        let error = deadline::watchdog(
+            Duration::from_secs(10),
+            stalled(&base).connect(Parameters(args)),
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(
+            error.message,
+            format!("request to {origin} timed out after 300ms")
+        );
+        assert!(!format!("{error:?}").contains("a4_sk_"), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn a_stalled_account_request_answers_a_request_timeout_without_the_key() {
+        let base = deadline::blackhole();
+        let server = AreteMcp {
+            recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", SHORT),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        session.send(&call(11, "account_status")).await;
+        let answer = session.reply(11).await;
+        assert_eq!(
+            answer["error"]["message"],
+            json!(format!("request to {base} timed out after 300ms")),
+            "{answer}"
+        );
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "request-timeout", "retryable": true})
+        );
+        assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+    }
+
+    /// The whole of one HTTP request from `stream` (head and body as text),
+    /// or `None` when the client closes first.
+    fn read_request(stream: &mut std::net::TcpStream) -> Option<String> {
+        use std::io::Read;
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 8192];
+        loop {
+            match stream.read(&mut buffer) {
+                Ok(0) | Err(_) => return None,
+                Ok(read) => request.extend_from_slice(&buffer[..read]),
+            }
+            let text = String::from_utf8_lossy(&request).to_string();
+            let Some(end) = text.find("\r\n\r\n") else {
+                continue;
+            };
+            let length = text
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            if request.len() >= end + 4 + length {
+                return Some(text);
+            }
+        }
+    }
+
+    /// An API that reads each request whole, records it, and never answers.
+    fn stalling_api() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let recorded = recorded.clone();
+                std::thread::spawn(move || {
+                    let Some(request) = read_request(&mut stream) else {
+                        return;
+                    };
+                    recorded.lock().unwrap().push(request);
+                    let mut buffer = [0u8; 64];
+                    while stream.read(&mut buffer).is_ok_and(|read| read > 0) {}
+                });
+            }
+        });
+        (format!("http://{address}"), seen)
+    }
+
+    /// A write that reached the API and whose reply stalled until the
+    /// request deadline may have been applied: its timeout is not called
+    /// retryable and says how to check before running it again.
+    #[tokio::test]
+    async fn a_write_whose_reply_stalls_is_not_called_retryable() {
+        let cases = [
+            (
+                "rename_agent",
+                json!({"display_name": "Renamed"}),
+                "PATCH /api/agents/me ",
+                "the rename may have been applied, so check `displayName` with \
+                 account_status before renaming again",
+            ),
+            (
+                "create_claim_link",
+                json!({}),
+                "POST /api/agents/me/claim-links ",
+                "a claim link may have been created, so check `claimState` with \
+                 account_status before creating another",
+            ),
+        ];
+        for (tool, arguments, request_line, check) in cases {
+            let (base, seen) = stalling_api();
+            let server = AreteMcp {
+                recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", SHORT),
+                ..stalled(&base)
+            };
+            let mut session = Session::open(server).await;
+            let write = json!({"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {
+                "name": tool,
+                "arguments": arguments,
+            }});
+            session.send(&write.to_string()).await;
+            let answer = session.reply(13).await;
+            assert!(
+                seen.lock()
+                    .unwrap()
+                    .iter()
+                    .any(|request| request.starts_with(request_line)),
+                "{tool}: the write never reached the API"
+            );
+            assert_eq!(
+                answer["error"]["message"],
+                json!(format!("request to {base} timed out after 300ms; {check}")),
+                "{answer}"
+            );
+            assert_eq!(
+                answer["error"]["data"],
+                json!({"code": "request-timeout", "retryable": false}),
+                "{tool}"
+            );
+            assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+        }
+    }
+
+    /// A sandbox API that mints a token at once and answers every other
+    /// request after `delay` with a landed action.
+    fn slow_sandbox_api(delay: Duration) -> String {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                std::thread::spawn(move || {
+                    let Some(text) = read_request(&mut stream) else {
+                        return;
+                    };
+                    let body = if text.starts_with("POST /ws/sessions ") {
+                        json!({
+                            "token": "tok-1",
+                            "expiresAt": crate::sandbox::tests::now() + 600,
+                            "tokenType": "Bearer",
+                            "scopes": ["sandbox:invoke", "sandbox:withdraw"],
+                        })
+                    } else {
+                        std::thread::sleep(delay);
+                        json!({ "actionId": "act-1", "status": "landed", "signature": "sig-1" })
+                    }
+                    .to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// A sandbox action still in flight when a tool deadline would have
+    /// passed is not abandoned: the agent gets the action's own answer and
+    /// the idempotency key it ran under, not a retryable timeout that would
+    /// invite running it again under a new key.
+    #[tokio::test]
+    async fn a_sandbox_action_runs_past_the_tool_deadline_to_its_own_answer() {
+        let base = slow_sandbox_api(SHORT * 3);
+        let server = AreteMcp {
+            tool_call_timeout: Some(SHORT),
+            ..AreteMcp::with_agents(
+                crate::protocol_agent::ProtocolAgent::new(None),
+                crate::sandbox::SandboxClient::from_values(
+                    Some(crate::sandbox::tests::SANDBOX.into()),
+                    Some("a4_sk_agent".into()),
+                    Some(base),
+                ),
+            )
+        };
+        let mut session = Session::open(server).await;
+        let invoke = json!({"jsonrpc": "2.0", "id": 10, "method": "tools/call", "params": {
+            "name": "sandbox_invoke",
+            "arguments": {"action": "withdraw", "args": {"lamports": "5"}},
+        }});
+        session.send(&invoke.to_string()).await;
+        let answer = session.reply(10).await;
+        assert!(answer.get("error").is_none(), "{answer}");
+        let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["status"], json!("landed"), "{body}");
+        assert!(body["idempotencyKey"].is_string(), "{body}");
+    }
+
+    /// An API that reads each request whole, records it, and answers what
+    /// `answer` returns for it (a status and a JSON body), or never answers
+    /// when it returns `None`.
+    fn api_answering(
+        answer: impl Fn(&str) -> Option<(u16, Value)> + Send + Sync + 'static,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        let answer = Arc::new(answer);
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let recorded = recorded.clone();
+                let answer = answer.clone();
+                std::thread::spawn(move || {
+                    let Some(request) = read_request(&mut stream) else {
+                        return;
+                    };
+                    recorded.lock().unwrap().push(request.clone());
+                    let Some((status, body)) = answer(&request) else {
+                        let mut buffer = [0u8; 64];
+                        while stream.read(&mut buffer).is_ok_and(|read| read > 0) {}
+                        return;
+                    };
+                    let body = body.to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        (format!("http://{address}"), seen)
+    }
+
+    /// A protocol API: `e-slow` is taken and settles only after `SHORT * 2`;
+    /// `e-gw`'s submit is answered 504 by a gateway and its status read
+    /// fails.
+    fn protocol_api() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        api_answering(|request| {
+            let intent = |id: &str, state: &str| json!({ "executionId": id, "state": state, "transactions": [] });
+            Some(if request.starts_with("POST /ws/sessions ") {
+                (200, json!({ "token": "session-token" }))
+            } else if request.starts_with("POST /api/execution-intents/e-slow/submit ") {
+                (200, intent("e-slow", "submitting"))
+            } else if request.starts_with("GET /api/execution-intents/e-slow ") {
+                std::thread::sleep(SHORT * 2);
+                (200, intent("e-slow", "completed"))
+            } else if request.starts_with("POST /api/execution-intents/e-gw/submit ") {
+                (504, Value::Null)
+            } else {
+                (502, Value::Null)
+            })
+        })
+    }
+
+    fn submit_call(id: u64, execution: &str) -> String {
+        let signed = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            crate::prepared_summary::tests::legacy_transaction(
+                &[[9; 32]],
+                &[true],
+                &[],
+                &[[4; 32]],
+            ),
+        );
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+            "name": "protocol_submit",
+            "arguments": {"executionId": execution, "signedTransactions": [signed], "deployment": "d-1"},
+        }})
+        .to_string()
+    }
+
+    fn protocol_server(base: &str) -> AreteMcp {
+        AreteMcp {
+            tool_call_timeout: Some(SHORT),
+            ..AreteMcp::with_agents(
+                crate::protocol_agent::ProtocolAgent::new(None)
+                    .with_api(base, "a4_sk_do_not_print"),
+                crate::sandbox::SandboxClient::from_values(None, None, None),
+            )
+        }
+    }
+
+    /// A submitted execution whose settle wait outlasts a short tool bound
+    /// is not cut off: the agent gets its settled state, not a retryable
+    /// tool timeout that would invite submitting again.
+    #[tokio::test]
+    async fn a_slow_settle_wait_outlasts_a_short_tool_bound() {
+        let (base, _) = protocol_api();
+        let mut session = Session::open(protocol_server(&base)).await;
+        let started = Instant::now();
+        session.send(&submit_call(14, "e-slow")).await;
+        let answer = session.reply(14).await;
+        assert!(started.elapsed() > SHORT * 2, "{:?}", started.elapsed());
+        assert!(answer.get("error").is_none(), "{answer}");
+        let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["state"], json!("completed"), "{body}");
+        assert_eq!(body["settled"], json!(true), "{body}");
+    }
+
+    /// A submit a gateway answered, whose settling read failed too, reaches
+    /// the agent as an unknown outcome: not retryable, with the execution
+    /// to read, its deployment and its `expiresAt` (unknown to a server that did not
+    /// prepare it), the safe ways on, and without the key or the session
+    /// token.
+    #[tokio::test]
+    async fn an_unknown_submit_reaches_the_agent_with_its_execution() {
+        let (base, seen) = protocol_api();
+        let mut session = Session::open(protocol_server(&base)).await;
+        session.send(&submit_call(15, "e-gw")).await;
+        let answer = session.reply(15).await;
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "submit-outcome-unknown", "retryable": false, "executionId": "e-gw",
+                "expiresAt": null, "deploymentId": "d-1"}),
+            "{answer}"
+        );
+        let message = answer["error"]["message"].as_str().unwrap();
+        assert!(
+            message.ends_with(
+                "Execution e-gw may have been submitted, even if protocol_intent shows it \
+                 `prepared`. Do not prepare and sign the step again: resend the same signed \
+                 transactions with protocol_submit, which cannot land twice (the chain takes a \
+                 signed transaction once), or wait until protocol_intent shows the execution \
+                 settled or `expired`."
+            ),
+            "{message}"
+        );
+        assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+        assert!(!answer.to_string().contains("session-token"), "{answer}");
+        let submits = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.starts_with("POST /api/execution-intents/e-gw/submit "))
+            .count();
+        assert_eq!(submits, 1);
+    }
+
+    /// A read tool whose registry answer asks for a claim link mints one
+    /// only within the lookup bound: a stalled mint ends the call with the
+    /// registry's problem, not after the account request's 30 s.
+    #[tokio::test]
+    async fn a_stalled_claim_link_inside_a_read_answers_within_the_lookup_bound() {
+        let (base, seen) = api_answering(|request| {
+            (!request.starts_with("POST /api/agents/me/claim-links ")).then(|| {
+                (
+                    403,
+                    json!({
+                        "schemaVersion": 1,
+                        "error": "Claim this agent to continue",
+                        "code": "agent-claim-required",
+                        "retryable": false,
+                        "action": {
+                            "type": "claim_agent",
+                            "method": "POST",
+                            "path": "/api/agents/me/claim-links",
+                        },
+                    }),
+                )
+            })
+        });
+        let server = AreteMcp {
+            recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", Duration::from_secs(30)),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        let started = Instant::now();
+        session.send(&call(16, "explore_programs")).await;
+        let answer = session.reply(16).await;
+        let took = started.elapsed();
+        assert!(took >= LOOKUP_TIMEOUT, "{took:?}");
+        assert!(took < LOOKUP_TIMEOUT + Duration::from_secs(1), "{took:?}");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.starts_with("POST /api/agents/me/claim-links ")),
+            "the claim link was never asked for"
+        );
+        assert_eq!(
+            answer["error"]["data"]["code"],
+            json!("agent-claim-required")
+        );
+        assert_eq!(
+            answer["error"]["data"]["secondaryCode"],
+            json!("claim-materialization-failed"),
+            "{answer}"
+        );
+        assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+    }
+
+    /// A sandbox action a gateway answered may have run: the answer
+    /// carries the idempotency key it ran under (generated when the agent
+    /// gave none), is retryable only under that key, and running it again
+    /// with the key sends the same key, so the API runs it at most once.
+    #[tokio::test]
+    async fn a_sandbox_action_a_gateway_answered_is_retried_only_under_its_key() {
+        let (base, seen) = api_answering(|request| {
+            Some(if request.starts_with("POST /ws/sessions ") {
+                (
+                    200,
+                    json!({
+                        "token": "tok-1",
+                        "expiresAt": crate::sandbox::tests::now() + 600,
+                        "tokenType": "Bearer",
+                        "scopes": ["sandbox:invoke", "sandbox:withdraw"],
+                    }),
+                )
+            } else {
+                (504, Value::Null)
+            })
+        });
+        let server = AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(
+                Some(crate::sandbox::tests::SANDBOX.into()),
+                Some("a4_sk_agent".into()),
+                Some(base),
+            ),
+        );
+        let invoke = |key: Option<&str>| {
+            let mut args = json!({"action": "withdraw", "args": {"lamports": "5"}});
+            if let Some(key) = key {
+                args["idempotencyKey"] = json!(key);
+            }
+            serde_json::from_value::<crate::sandbox::SandboxInvokeArgs>(args).unwrap()
+        };
+        let shown = |result: CallToolResult| -> Value {
+            assert_eq!(result.is_error, Some(true));
+            let text = serde_json::to_value(&result.content).unwrap()[0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            serde_json::from_str(&text).unwrap()
+        };
+        let first = shown(
+            server
+                .sandbox_invoke(Parameters(invoke(None)))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(first["code"], json!("sandbox-api-timeout"), "{first}");
+        assert_eq!(first["retryable"], json!(true), "{first}");
+        assert!(
+            first["hint"]
+                .as_str()
+                .unwrap()
+                .contains("never retry it under a new idempotencyKey"),
+            "{first}"
+        );
+        let key = first["idempotencyKey"].as_str().unwrap().to_string();
+        let again = shown(
+            server
+                .sandbox_invoke(Parameters(invoke(Some(&key))))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(again["idempotencyKey"], json!(key));
+        let keys: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.starts_with("POST /api/sandbox/v1/actions/withdraw "))
+            .map(|request| {
+                request
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("idempotency-key:")
+                            .map(|value| value.trim().to_string())
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(keys, [key.to_ascii_lowercase(), key.to_ascii_lowercase()]);
+    }
+
+    #[test]
+    fn every_tool_given_its_own_deadline_exists() {
+        let tools: Vec<String> = AreteMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        for tool in ["dev_capture", "dev_scenario", "read_view"]
+            .into_iter()
+            .chain(deadline::SENDING_TOOLS)
+        {
+            assert!(
+                tools.iter().any(|name| name == tool),
+                "{tool} is not a tool"
+            );
+            assert_ne!(
+                deadline::tool_call_timeout(tool),
+                Some(deadline::TOOL_CALL_TIMEOUT)
+            );
+        }
+        for tool in deadline::CHANGING_TOOLS {
+            assert!(
+                tools.iter().any(|name| name == tool),
+                "{tool} is not a tool"
+            );
+            assert!(!deadline::SENDING_TOOLS.contains(&tool), "{tool}");
+        }
+    }
+
+    /// The description says a run with other args that signs ends a
+    /// completed run's held answer, not only that it executes itself.
+    #[test]
+    fn protocol_execute_says_a_signed_run_with_other_args_ends_the_held_answer() {
+        let tool = AreteMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|tool| tool.name == "protocol_execute")
+            .expect("protocol_execute is a tool");
+        let description = tool.description.as_deref().expect("described");
+        assert!(
+            description.contains(
+                "unless a run with other args signs first (even one the API then refuses), \
+                 which ends that answer; a same-args run after then executes again."
+            ),
+            "{description}"
+        );
+    }
+
+    /// How a tool's bound relates to the requests it can make in a row.
+    enum Bound {
+        /// Above every request it can make in a row, with room to spare,
+        /// so its own, more specific error reaches the agent.
+        Covers(Vec<Duration>),
+        /// A backstop: these requests in a row (at least) can outlast it,
+        /// for the reason given. A read's cut-off is retryable; a change's
+        /// (CHANGING_TOOLS) says to check the state first.
+        Backstop(Vec<Duration>, &'static str),
+        /// It signs or sends, so it has no bound.
+        Sends,
+    }
+
+    /// Every tool, with the requests its worst case makes in a row: its
+    /// bound covers them with [`MARGIN`] to spare, or it is a backstop
+    /// with a reason, or it sends and has none. A new tool must be added.
+    #[test]
+    fn every_tool_bound_covers_its_requests_or_is_a_named_backstop() {
+        use crate::dev_env::{
+            API_TIMEOUT as ENV, MAX_RETRY_AFTER, RPC_TIMEOUT as ENV_RPC, WAKE_RETRIES,
+        };
+        use crate::protocol_agent::{API_TIMEOUT as API, SIMULATION_BUDGET as SIM};
+        use crate::sandbox::{ACTION_TIMEOUT, READ_TIMEOUT as SB};
+        use deadline::REQUEST_TIMEOUT as REQ;
+        use Bound::{Backstop, Covers, Sends};
+        const MARGIN: Duration = Duration::from_secs(10);
+        // A claim link minted for a registry refusal that asks for one.
+        let claim = LOOKUP_TIMEOUT;
+        let read_view = Duration::from_secs(READ_VIEW_TIMEOUT_MAX_SECS as u64);
+        // A sandbox route: the grants listing, a token mint and the call,
+        // then a fresh mint and the call again after a stale token.
+        let sandbox = |call: Duration| vec![SB, SB, call, SB, call];
+        // One dev environment RPC call: a token mint, a 401 that renews
+        // it, and wake waits until the retries run out.
+        let env_rpc = || {
+            let mut chain = vec![ENV, ENV_RPC, ENV];
+            for _ in 1..WAKE_RETRIES {
+                chain.extend([ENV_RPC, MAX_RETRY_AFTER]);
+            }
+            chain.push(ENV_RPC);
+            chain
+        };
+        // A named dev environment is looked up first.
+        let env_then = |rest: Vec<Duration>| [vec![ENV], rest].concat();
+        // A capture request tried 6 times, each 60 s, with backoff up to 30 s.
+        let capture_request = [
+            vec![Duration::from_secs(60); 6],
+            vec![Duration::from_secs(30); 5],
+        ]
+        .concat();
+        let mut history = vec![SB];
+        for _ in 0..crate::sandbox::ledger::MAX_SCAN_PAGES {
+            history.extend([SB, SB, SB]);
+        }
+        let registry = || vec![REQ, claim];
+        let sandbox_read = "a stale sandbox token is minted again and the read repeated";
+        let protocol_read = "the protocol's registry lookup, a session mint and the read";
+        let lookup_first = "a named environment is looked up before the request";
+        let env_rpc_why = "a dev environment RPC call renews its token and waits for a wake";
+        let again = "a read the account's key may not make runs again through the sandbox";
+        let table: Vec<(&str, Bound)> = vec![
+            ("ping", Covers(vec![])),
+            ("version", Covers(vec![crate::api_build::TIMEOUT])),
+            ("describe_sdk", Covers(vec![])),
+            ("explore_stacks", Covers(registry())),
+            ("explore_starter_stacks", Covers(registry())),
+            ("explore_programs", Covers(registry())),
+            ("explore_protocols", Covers(registry())),
+            ("explore_protocol", Covers(registry())),
+            ("resolve_artifact", Covers(registry())),
+            ("get_catalog_entry", Covers(registry())),
+            ("list_catalog_vocabulary", Covers(registry())),
+            ("search_knowledge", Covers(registry())),
+            ("get_protocol", Covers(registry())),
+            ("get_program_knowledge", Covers(registry())),
+            ("get_recipe", Covers(registry())),
+            ("list_concepts", Covers(registry())),
+            (
+                "search_catalog",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "the overview searches each kind in a row",
+                ),
+            ),
+            (
+                "explore_stack",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "a failed lookup asks the catalog for a definition-only stack",
+                ),
+            ),
+            (
+                "explore_stack_schema",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "a failed lookup asks the catalog for a definition-only stack",
+                ),
+            ),
+            (
+                "explore_stack_views",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "a failed lookup asks the catalog for a definition-only stack",
+                ),
+            ),
+            (
+                "explore_program",
+                Backstop(
+                    vec![REQ, REQ],
+                    "the install descriptor, then its knowledge surface",
+                ),
+            ),
+            ("account_status", Covers(vec![REQ])),
+            ("rename_agent", Covers(vec![REQ])),
+            ("create_claim_link", Covers(vec![REQ])),
+            (
+                "connect",
+                Backstop(vec![SB, REQ, claim, SB, REQ, claim], again),
+            ),
+            ("disconnect", Covers(vec![])),
+            (
+                "read_view",
+                Backstop(vec![SB, read_view, claim, SB, read_view, claim], again),
+            ),
+            ("subscribe", Covers(vec![])),
+            ("unsubscribe", Covers(vec![])),
+            ("list_subscriptions", Covers(vec![])),
+            ("list_connections", Covers(vec![])),
+            ("get_entity", Covers(vec![SNAPSHOT_WAIT])),
+            ("query_entities", Covers(vec![SNAPSHOT_WAIT])),
+            ("list_entities", Covers(vec![SNAPSHOT_WAIT])),
+            ("get_recent", Covers(vec![SNAPSHOT_WAIT])),
+            (
+                "program_read_account",
+                Backstop(
+                    vec![SB, SB, SB, REQ, REQ, SB, REQ],
+                    "pins the sandbox, checks its programs, reads the install and the account",
+                ),
+            ),
+            ("sandbox_list", Covers(vec![SB])),
+            ("sandbox_select", Covers(vec![SB])),
+            ("sandbox_status", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_rules", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_reads", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_derive", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_find_accounts", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_action", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_holdings", Backstop(sandbox(SB), sandbox_read)),
+            (
+                "sandbox_history",
+                Backstop(history, "a filtered read scans up to MAX_SCAN_PAGES pages"),
+            ),
+            ("sandbox_preview", Covers(sandbox(ACTION_TIMEOUT))),
+            ("sandbox_invoke", Sends),
+            ("protocol_check", Covers(vec![API])),
+            (
+                "protocol_actions",
+                Backstop(vec![REQ, API, API], protocol_read),
+            ),
+            (
+                "protocol_instances",
+                Backstop(vec![REQ, API, API], protocol_read),
+            ),
+            (
+                "protocol_instance",
+                Backstop(vec![REQ, API, API], protocol_read),
+            ),
+            (
+                "protocol_intent",
+                Backstop(vec![API, API], "a session mint and the read"),
+            ),
+            (
+                "protocol_receipt",
+                Backstop(
+                    vec![API, API, API],
+                    "the receipt, the receipt keys and the transaction",
+                ),
+            ),
+            (
+                "protocol_squads_proposer",
+                Backstop(
+                    [vec![API, API], env_rpc()].concat(),
+                    "with `dev` the balance is a dev environment RPC call",
+                ),
+            ),
+            (
+                "protocol_squads_status",
+                Backstop(
+                    [vec![API, API], env_rpc()].concat(),
+                    "with `dev` the balance is a dev environment RPC call",
+                ),
+            ),
+            (
+                "squads_status",
+                Backstop(vec![API, API], "the setup, then its notifications"),
+            ),
+            ("squads_attach", Covers(vec![API, API])),
+            ("protocol_prepare", Covers(vec![REQ, API, API, SIM])),
+            ("protocol_submit", Sends),
+            ("protocol_execute", Sends),
+            ("dev_step", Sends),
+            ("dev_instance", Covers(vec![API, API])),
+            ("dev_actions", Covers(vec![API, API])),
+            ("dev_events", Covers(vec![API])),
+            (
+                "dev_status",
+                Backstop(
+                    env_then([vec![ENV], env_rpc(), vec![ENV, ENV]].concat()),
+                    "the environment, its clock, stacks and lease in a row",
+                ),
+            ),
+            (
+                "dev_environments",
+                Backstop(vec![ENV, ENV], "the list, then the quotas"),
+            ),
+            ("dev_wake", Backstop(env_then(vec![ENV]), lookup_first)),
+            ("dev_sleep", Backstop(env_then(vec![ENV]), lookup_first)),
+            (
+                "dev_checkpoint",
+                Backstop(env_then(vec![ENV]), lookup_first),
+            ),
+            ("dev_branch", Backstop(env_then(vec![ENV]), lookup_first)),
+            ("dev_restore", Backstop(env_then(vec![ENV]), lookup_first)),
+            ("dev_rebase", Backstop(env_then(vec![ENV]), lookup_first)),
+            (
+                "dev_environment_events",
+                Backstop(env_then(vec![ENV]), lookup_first),
+            ),
+            (
+                "dev_delete",
+                Backstop(
+                    env_then(vec![ENV, ENV]),
+                    "looked up, read to check the name, then deleted",
+                ),
+            ),
+            (
+                "dev_reset",
+                Backstop(
+                    env_then(vec![ENV, ENV]),
+                    "looked up, read to check the name, then reset",
+                ),
+            ),
+            (
+                "dev_reset_account",
+                Backstop(env_then(env_rpc()), env_rpc_why),
+            ),
+            ("dev_pin", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_follow", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_fund", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_preview", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_repro", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_scenario", Backstop(env_then(env_rpc()), env_rpc_why)),
+            (
+                "dev_warp",
+                Backstop(
+                    env_then([env_rpc(), env_rpc()].concat()),
+                    "clock reads, the warp and clock reads again",
+                ),
+            ),
+            (
+                "dev_capture",
+                Backstop(
+                    [capture_request.clone(), capture_request].concat(),
+                    "pages through the window, each request retried",
+                ),
+            ),
+        ];
+        let mut named: Vec<&str> = table.iter().map(|(tool, _)| *tool).collect();
+        named.sort_unstable();
+        let mut listed: Vec<String> = AreteMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(named, listed, "every tool has exactly one row");
+        for (tool, bound) in &table {
+            let ceiling = deadline::tool_call_timeout(tool);
+            match bound {
+                Sends => assert_eq!(ceiling, None, "{tool}"),
+                Covers(requests) => {
+                    let sum: Duration = requests.iter().sum();
+                    let ceiling = ceiling.unwrap();
+                    assert!(
+                        ceiling >= sum + MARGIN,
+                        "{tool}: {ceiling:?} < {sum:?} + margin"
+                    );
+                }
+                Backstop(requests, why) => {
+                    let sum: Duration = requests.iter().sum();
+                    let ceiling = ceiling.unwrap();
+                    assert!(
+                        sum + MARGIN > ceiling,
+                        "{tool} is covered ({sum:?}): say so"
+                    );
+                    assert!(!why.is_empty(), "{tool}");
+                }
+            }
+        }
     }
 }

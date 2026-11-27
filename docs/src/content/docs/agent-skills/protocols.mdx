@@ -156,7 +156,28 @@ waits up to 60 seconds (`timeoutSeconds`, at most 120; `wait: false` returns
 at once). The result has `state` (`completed`, `chain_failed`, `expired`,
 `rejected`, or a pending state), `settled`, `instanceId` (a create step's new
 instance) and each transaction's signature. If it has not settled, read it
-later with `protocol_intent`. Do not submit it again.
+later with `protocol_intent`. Do not submit it again. When reading its state
+failed after the submit, `pollError` says why; the transactions were still
+submitted. When the submit's own answer was lost (it failed in transit, or was
+answered 5xx, 408 or 429) and one read cannot show the API took it, the error
+has code `submit-outcome-unknown`, the `executionId`, its `deploymentId` (for
+`protocol_submit`) and its `expiresAt`. A
+read that shows it `prepared` does not mean it was not taken, so never prepare
+and sign the step again: resend the same signed transactions with
+`protocol_submit` (the chain takes a signed transaction once), or wait until
+`protocol_intent` shows the execution settled or `expired`. `protocol_execute`
+puts the transactions it signed in the error as `signedTransactions` for this,
+and, within one `a4 mcp` session, runs one call per step at a time (another is
+refused with `step-in-flight` and the running call's `executionId` once
+prepared), answers for an unsettled execution when run again with the same
+args, and answers with a completed execution when run again with the same args
+until its `expiresAt`, but for at least 10 minutes and at most 1 hour after it
+completed (this server's clock), unless a run with other args signs first (even
+one the API then refuses), which ends that answer; a same-args run after that
+window executes again. A host that gives up on a call does not stop it, and its
+answer is lost: read the execution with `protocol_intent` before running the
+step again. A restarted server forgets all of this, so follow the error's
+guidance after a restart.
 
 ## Receipts
 
