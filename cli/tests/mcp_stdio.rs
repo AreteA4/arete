@@ -351,3 +351,68 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
     assert!(names.contains(&"explore_stack"), "{names:?}");
     assert!(called.get("error").is_some(), "{called}");
 }
+
+/// A client that stops reading stdout and then closes stdin: once the session
+/// has given up on the replies it cannot write, the process exits rather
+/// than wait on a write to a stdout nobody reads.
+#[test]
+fn a4_mcp_exits_after_stdin_closes_while_its_replies_go_unread() {
+    let home = tempfile::tempdir().expect("home directory");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_a4"))
+        .arg("mcp")
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        // Never reach a real API: the entitlements lookup fails fast.
+        .env("ARETE_API_URL", "http://127.0.0.1:9")
+        .env("CI", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env("A4_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a4 mcp");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    // Held open and never read.
+    let _stdout = child.stdout.take().expect("child stdout");
+
+    // Replies to far more than a pipe holds, from requests that fit in what
+    // the server reads ahead while it holds them back.
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "a4-cli-test", "version": "0.0.0" }
+        }
+    });
+    writeln!(stdin, "{initialize}").expect("write initialize");
+    writeln!(
+        stdin,
+        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
+    )
+    .expect("write initialized");
+    for id in 1..=300 {
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
+        )
+        .expect("write tools/list");
+    }
+    drop(stdin);
+
+    // The session gives the unwritten replies 5 s to drain, then ends.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => break status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("a4 mcp still running 20 s after stdin closed");
+            }
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    };
+    assert!(status.success(), "a4 mcp exited with {status}");
+}

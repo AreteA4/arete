@@ -11,6 +11,12 @@ pub struct McpArgs {
     pub stdio: bool,
 }
 
+/// How long the runtime may take to stop once the session is over. Replies
+/// were already given their time to drain; what is left is a write to a
+/// stdout the client does not read, or a read of a stdin it keeps open, each
+/// blocked in a thread that dropping the runtime would wait on for good.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
 /// Serve MCP over stdio. Never prints to stdout except MCP frames.
 pub fn run(args: McpArgs) -> Result<()> {
     let _ = args;
@@ -18,7 +24,9 @@ pub fn run(args: McpArgs) -> Result<()> {
         .enable_all()
         .build()
         .context("Failed to start the async runtime for a4 mcp")?;
-    runtime.block_on(arete_mcp::serve_stdio_with(Some(std::sync::Arc::new(
+    let served = runtime.block_on(arete_mcp::serve_stdio_with(Some(std::sync::Arc::new(
         crate::project::sdk_references::ProjectSdkReferences,
-    ))))
+    ))));
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    served
 }
