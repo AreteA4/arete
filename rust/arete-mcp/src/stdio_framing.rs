@@ -23,17 +23,28 @@
 //! there and only the bytes before it are dropped, provided a usable
 //! header block follows; else those bytes are dropped too.
 //!
-//! Each request is tracked until its reply or cancellation, for the framing
-//! its reply must use, and the requests awaiting a reply are held to a
-//! budget: [`MAX_OUTSTANDING_REQUESTS`] of them, with
+//! Each request is tracked until its reply is written or it is cancelled,
+//! for the framing its reply must use, and the requests awaiting a reply are
+//! held to a budget: [`MAX_OUTSTANDING_REQUESTS`] of them, with
 //! [`MAX_OUTSTANDING_ID_BYTES`] of string ids between them. A request that
 //! would exceed it is not passed on but answered with a `Server busy` error
 //! (code -32000), with its id and in its framing, before any further input
 //! is read. A request whose id is already awaiting a reply is answered the
 //! same way with a `Duplicate request id` error (code -32600, an invalid
 //! request): it takes no room in the budget, and the request it repeats
-//! keeps its framing. The id is free again once that request is answered
-//! or cancelled.
+//! keeps its framing. The id is free again once that request's reply is
+//! written, or it is cancelled before it is answered: a cancellation that
+//! arrives once the reply is on its way changes nothing.
+//!
+//! Output is held to a budget too, so a client that does not read stdout
+//! cannot make the server buffer replies without end. A reply keeps its
+//! request's place in the budget above until it is written (or its write
+//! fails or is dropped), so unread replies fill it and the requests after
+//! them are answered `Server busy`, an answer that is itself written before
+//! more input is read. And while the frames handed to the writer but not
+//! yet written exceed [`MAX_BACKLOG_BYTES`], `receive` reads no input at
+//! all. Either way a stalled stdout stops stdin being read, and the client's
+//! writes block, until stdout is read again.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -50,7 +61,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::ops::Range;
-use std::sync::Arc;
+use std::sync::{Arc, MutexGuard, PoisonError};
 
 use rmcp::model::{
     ClientJsonRpcMessage, ClientNotification, ErrorCode, ErrorData, JsonRpcMessage, RequestId,
@@ -60,7 +71,7 @@ use rmcp::transport::Transport;
 use rmcp::RoleServer;
 use serde_json::error::Category;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify};
 
 /// Cap on one incoming message: a line, newline included, or a framed body.
 /// It is the cap `rmcp`'s own newline-delimited transport applies, so a
@@ -74,7 +85,8 @@ const MAX_HEADER_BYTES: usize = 8 * 1024;
 
 /// Cap on requests awaiting a reply, each tracked for the framing its reply
 /// must use; a request past it is answered with a `Server busy` error. It
-/// is never evicted: a request is forgotten on its reply or cancellation.
+/// is never evicted: a request is forgotten once its reply is written, or
+/// on its cancellation before it is answered.
 const MAX_OUTSTANDING_REQUESTS: usize = 1024;
 
 /// Cap on the string ids of the requests awaiting a reply, in bytes between
@@ -85,6 +97,11 @@ const MAX_OUTSTANDING_ID_BYTES: usize = 64 * 1024;
 /// The code of the error answering a request over the budget: one of the
 /// codes JSON-RPC leaves to the server.
 const SERVER_BUSY: ErrorCode = ErrorCode(-32000);
+
+/// Cap on the bytes of frames handed to the writer and not yet written.
+/// Over it, `receive` reads no input until enough is written. A single
+/// frame larger than this is still written whole.
+const MAX_BACKLOG_BYTES: usize = 1024 * 1024;
 
 /// The name of the header that frames a message, with its colon, as
 /// looked for in bytes that are not a message.
@@ -124,11 +141,90 @@ pub struct StdioTransport<R, W> {
     /// Whether the stream is closed at a frame whose end is unknown:
     /// `receive` reports its end once `pending` is written.
     closed: bool,
-    /// The framing of every request still awaiting its reply, oldest first.
-    requests: VecDeque<(RequestId, Framing)>,
+    /// The requests awaiting a reply and the frames not yet written, shared
+    /// with `send` futures, which release their share once written.
+    budget: Arc<Budget>,
+    last_seen: Framing,
+}
+
+/// What is held against the request and output budgets; see the module docs.
+#[derive(Default)]
+struct Budget {
+    state: std::sync::Mutex<Ledger>,
+    /// Signalled whenever a frame leaves the backlog.
+    released: Notify,
+}
+
+#[derive(Default)]
+struct Ledger {
+    /// Every request awaiting its reply, oldest first.
+    requests: VecDeque<Tracked>,
     /// What the ids in `requests` count toward [`MAX_OUTSTANDING_ID_BYTES`].
     id_bytes: usize,
-    last_seen: Framing,
+    /// Bytes of the frames handed to the writer and not yet written.
+    backlog: usize,
+}
+
+struct Tracked {
+    id: RequestId,
+    /// The framing its reply must use.
+    framing: Framing,
+    /// Whether its reply is on its way to the writer: the request is then
+    /// no longer cancelled, only forgotten once that reply is written.
+    answered: bool,
+}
+
+impl Budget {
+    /// Never poisoned in practice: nothing panics while holding the lock.
+    fn ledger(&self) -> MutexGuard<'_, Ledger> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Wait until the backlog is within [`MAX_BACKLOG_BYTES`]. Cancel safe:
+    /// a dropped wait has taken nothing.
+    async fn room(&self) {
+        loop {
+            // Created before the check, so a release between the check and
+            // the await still wakes it.
+            let released = self.released.notified();
+            if self.ledger().backlog <= MAX_BACKLOG_BYTES {
+                return;
+            }
+            released.await;
+        }
+    }
+}
+
+impl Ledger {
+    /// Forget the request `id`, freeing its place in the budget.
+    fn forget(&mut self, id: &RequestId) {
+        if let Some(at) = self.requests.iter().position(|tracked| tracked.id == *id) {
+            self.id_bytes -= id_bytes(id);
+            self.requests.remove(at);
+        }
+    }
+}
+
+/// A frame's share of the output budget: its bytes in the backlog and, for
+/// a reply, its request's place among those awaiting one. Released when it
+/// is dropped: once the frame is written, its write fails, or the `send`
+/// future holding it is dropped, so none of those leaks budget.
+struct Queued {
+    budget: Arc<Budget>,
+    bytes: usize,
+    answers: Option<RequestId>,
+}
+
+impl Drop for Queued {
+    fn drop(&mut self) {
+        let mut ledger = self.budget.ledger();
+        ledger.backlog -= self.bytes;
+        if let Some(id) = &self.answers {
+            ledger.forget(id);
+        }
+        drop(ledger);
+        self.budget.released.notify_waiters();
+    }
 }
 
 /// What `fill` drops from the stream before buffering again.
@@ -217,8 +313,7 @@ where
             })),
             pending: None,
             closed: false,
-            requests: VecDeque::new(),
-            id_bytes: 0,
+            budget: Arc::default(),
             last_seen: Framing::Ndjson,
         }
     }
@@ -330,67 +425,79 @@ where
         self.last_seen = framing;
     }
 
-    /// Remember the framing of a request, and forget a cancelled one: it is
-    /// never answered. `false` for a request that is not passed on but
-    /// answered here: one over the budget, or one whose id is already
-    /// awaiting a reply. JSON-RPC 2.0 wants an id unique among those, so
-    /// the repeat is an invalid request (code -32600) rather than a busy
-    /// server's; it takes no room in the budget, and the request it repeats
-    /// keeps its framing.
+    /// Remember the framing of a request, and forget one cancelled before
+    /// it is answered: it never will be. `false` for a request that is not
+    /// passed on but answered here: one over the budget, or one whose id is
+    /// already awaiting a reply, its reply unwritten. JSON-RPC 2.0 wants an
+    /// id unique among those, so the repeat is an invalid request (code
+    /// -32600) rather than a busy server's; it takes no room in the budget,
+    /// and the request it repeats keeps its framing.
     fn track(&mut self, message: &ClientJsonRpcMessage, framing: Framing) -> bool {
-        match message {
+        let refusal = match message {
             JsonRpcMessage::Request(request) => {
-                if self.requests.iter().any(|(id, _)| *id == request.id) {
-                    tracing::debug!(
-                        "answering a request whose id is already awaiting a reply with an error"
-                    );
-                    let duplicate = ErrorData::invalid_request("Duplicate request id", None);
-                    self.fail(framing, duplicate, Some(request.id.clone()));
-                    return false;
-                }
+                let mut ledger = self.budget.ledger();
                 let bytes = id_bytes(&request.id);
-                let over = if self.requests.len() == MAX_OUTSTANDING_REQUESTS {
+                let over = if ledger.requests.len() == MAX_OUTSTANDING_REQUESTS {
                     Some("too many requests awaiting a reply")
-                } else if self.id_bytes + bytes > MAX_OUTSTANDING_ID_BYTES {
+                } else if ledger.id_bytes + bytes > MAX_OUTSTANDING_ID_BYTES {
                     Some("the ids of the requests awaiting a reply are above the size limit")
                 } else {
                     None
                 };
-                if let Some(reason) = over {
+                if ledger
+                    .requests
+                    .iter()
+                    .any(|tracked| tracked.id == request.id)
+                {
+                    tracing::debug!(
+                        "answering a request whose id is already awaiting a reply with an error"
+                    );
+                    let duplicate = ErrorData::invalid_request("Duplicate request id", None);
+                    Some((duplicate, request.id.clone()))
+                } else if let Some(reason) = over {
                     tracing::warn!(
-                        outstanding = self.requests.len(),
-                        id_bytes = self.id_bytes,
+                        outstanding = ledger.requests.len(),
+                        id_bytes = ledger.id_bytes,
                         "answering a request over the budget with an error: {reason}"
                     );
                     let busy = ErrorData::new(SERVER_BUSY, "Server busy", Some(reason.into()));
-                    self.fail(framing, busy, Some(request.id.clone()));
-                    return false;
+                    Some((busy, request.id.clone()))
+                } else {
+                    ledger.id_bytes += bytes;
+                    ledger.requests.push_back(Tracked {
+                        id: request.id.clone(),
+                        framing,
+                        answered: false,
+                    });
+                    None
                 }
-                self.id_bytes += bytes;
-                self.requests.push_back((request.id.clone(), framing));
             }
             JsonRpcMessage::Notification(notification) => {
                 if let ClientNotification::CancelledNotification(cancelled) =
                     &notification.notification
                 {
                     if let Some(id) = &cancelled.params.request_id {
-                        self.untrack(id);
+                        let mut ledger = self.budget.ledger();
+                        if ledger
+                            .requests
+                            .iter()
+                            .any(|tracked| tracked.id == *id && !tracked.answered)
+                        {
+                            ledger.forget(id);
+                        }
                     }
                 }
+                None
             }
-            JsonRpcMessage::Response(_) | JsonRpcMessage::Error(_) => {}
+            JsonRpcMessage::Response(_) | JsonRpcMessage::Error(_) => None,
+        };
+        match refusal {
+            Some((error, id)) => {
+                self.fail(framing, error, Some(id));
+                false
+            }
+            None => true,
         }
-        true
-    }
-
-    /// The framing of the request `id`, forgetting it.
-    fn untrack(&mut self, id: &RequestId) -> Option<Framing> {
-        let at = self
-            .requests
-            .iter()
-            .position(|(tracked, _)| tracked == id)?;
-        self.id_bytes -= id_bytes(id);
-        self.requests.remove(at).map(|(_, framing)| framing)
     }
 }
 
@@ -405,14 +512,34 @@ where
         &mut self,
         item: ServerJsonRpcMessage,
     ) -> impl Future<Output = io::Result<()>> + Send + 'static {
-        let answered = match &item {
-            JsonRpcMessage::Response(response) => self.untrack(&response.id),
-            JsonRpcMessage::Error(error) => error.id.as_ref().and_then(|id| self.untrack(id)),
+        let replied_to = match &item {
+            JsonRpcMessage::Response(response) => Some(&response.id),
+            JsonRpcMessage::Error(error) => error.id.as_ref(),
             JsonRpcMessage::Request(_) | JsonRpcMessage::Notification(_) => None,
         };
-        let frame = encode(&item, answered.unwrap_or(self.last_seen));
+        // A reply takes its request's framing, and holds the request's place
+        // in the budget until it is written; see `Queued`.
+        let mut ledger = self.budget.ledger();
+        let answered = replied_to.and_then(|id| {
+            let tracked = ledger
+                .requests
+                .iter_mut()
+                .find(|tracked| tracked.id == *id && !tracked.answered)?;
+            tracked.answered = true;
+            Some((id.clone(), tracked.framing))
+        });
+        let frame = encode(&item, answered.as_ref().map_or(self.last_seen, |(_, f)| *f));
+        let bytes = frame.as_ref().map_or(0, Vec::len);
+        ledger.backlog += bytes;
+        drop(ledger);
+        let queued = Queued {
+            budget: Arc::clone(&self.budget),
+            bytes,
+            answers: answered.map(|(id, _)| id),
+        };
         let write = Arc::clone(&self.write);
         async move {
+            let _queued = queued;
             let frame = frame?;
             write.lock().await.write_frame(frame).await
         }
@@ -427,6 +554,7 @@ where
             if self.closed {
                 return None;
             }
+            self.budget.room().await;
             let decoded = decode(&self.buf, self.cursor);
             if self.recovering > 0 {
                 match decoded {
@@ -960,6 +1088,240 @@ mod tests {
             }
         }
         replies
+    }
+
+    impl<R, W> StdioTransport<R, W> {
+        /// The requests awaiting a reply, oldest first, each with the
+        /// framing its reply takes.
+        fn tracked(&self) -> Vec<(RequestId, Framing)> {
+            let ledger = self.budget.ledger();
+            let requests = ledger.requests.iter();
+            requests.map(|t| (t.id.clone(), t.framing)).collect()
+        }
+
+        /// What the ids of those requests count toward the budget.
+        fn held_id_bytes(&self) -> usize {
+            self.budget.ledger().id_bytes
+        }
+
+        /// Bytes of the frames handed to the writer and not yet written.
+        fn backlog(&self) -> usize {
+            self.budget.ledger().backlog
+        }
+    }
+
+    fn in_framing(json: &str, framing: Framing) -> Vec<u8> {
+        match framing {
+            Framing::Ndjson => line(json),
+            Framing::ContentLength => framed(json),
+        }
+    }
+
+    #[tokio::test]
+    async fn unwritten_replies_keep_their_requests_budgeted_and_hold_back_input() {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            // Requests up to the cap, the one at it, and one more.
+            let last = MAX_OUTSTANDING_REQUESTS as i64;
+            let input: Vec<u8> = (1..=last + 2)
+                .flat_map(|id| in_framing(&ping(id), framing))
+                .collect();
+            let (mut stdin, read) = tokio::io::duplex(input.len());
+            stdin.write_all(&input).await.unwrap();
+            // Room for part of a reply only, and nobody reading it yet.
+            let (mut client, write) = tokio::io::duplex(8);
+            let mut transport = StdioTransport::new(read, write);
+            let mut sends = tokio::task::JoinSet::new();
+            for id in 1..=last {
+                assert_eq!(request_id(&transport.receive().await.unwrap()), id);
+                // Spawned, as the service loop does with every reply.
+                sends.spawn(transport.send(reply(id)));
+            }
+
+            // No reply is written, so each keeps its request's place: the
+            // request past the cap is answered busy, nothing more is passed
+            // on, and what waits for the writer is just those replies.
+            let stalled =
+                tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(stalled.is_err(), "{framing:?}: {stalled:?}");
+            assert_eq!(transport.tracked().len(), MAX_OUTSTANDING_REQUESTS);
+            let queued: usize = (1..=last)
+                .map(|id| encode(&reply(id), framing).unwrap().len())
+                .sum();
+            assert_eq!(transport.backlog(), queued, "{framing:?}");
+
+            // Reading the replies writes each whole, the spawned ones in the
+            // order they were sent, and lets the transport go on. The busy
+            // answer is the transport's own, written whenever it gets the
+            // writer.
+            let (replies, message) = tokio::join!(
+                read_replies(&mut client, MAX_OUTSTANDING_REQUESTS + 1),
+                transport.receive()
+            );
+            assert_eq!(request_id(&message.unwrap()), last + 2);
+            assert!(replies.iter().all(|(seen, _)| *seen == framing));
+            let (busy, answered): (Vec<_>, Vec<_>) = replies
+                .into_iter()
+                .map(|(_, reply)| reply)
+                .partition(|reply| reply["error"].is_object());
+            assert_eq!(busy.len(), 1, "{busy:?}");
+            assert_eq!(busy[0]["id"], json!(last + 1), "{}", busy[0]);
+            assert_eq!(busy[0]["error"]["code"], json!(SERVER_BUSY.0));
+            for (at, reply) in answered.iter().enumerate() {
+                assert_eq!(reply["id"], json!(at + 1), "{reply}");
+                assert_eq!(reply["result"], json!({}), "{reply}");
+            }
+            while let Some(sent) = sends.join_next().await {
+                sent.unwrap().unwrap();
+            }
+            assert_eq!(
+                transport.tracked(),
+                [(RequestId::Number(last + 2), framing)]
+            );
+            assert_eq!(transport.backlog(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_backlog_over_the_cap_holds_back_input_until_it_is_written() {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let input = [in_framing(&ping(1), framing), in_framing(&ping(2), framing)].concat();
+            // A pipe far smaller than the reply, so its write stalls.
+            let (mut client, write) = tokio::io::duplex(64 * 1024);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            // One reply larger than the cap, which nobody reads yet.
+            let large = ServerJsonRpcMessage::error(
+                ErrorData::internal_error("x".repeat(MAX_BACKLOG_BYTES), None),
+                Some(RequestId::Number(1)),
+            );
+            let sending = tokio::spawn(transport.send(large));
+            let stalled =
+                tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(stalled.is_err(), "{framing:?}: {stalled:?}");
+            assert!(transport.backlog() > MAX_BACKLOG_BYTES);
+            assert_eq!(transport.tracked(), [(RequestId::Number(1), framing)]);
+
+            let (replies, message) =
+                tokio::join!(read_replies(&mut client, 1), transport.receive());
+            assert_eq!(request_id(&message.unwrap()), 2);
+            assert_eq!(replies[0].0, framing);
+            assert_eq!(replies[0].1["id"], json!(1));
+            sending.await.unwrap().unwrap();
+            assert_eq!(transport.backlog(), 0);
+            assert_eq!(transport.tracked(), [(RequestId::Number(2), framing)]);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_dropped_send_releases_its_request_and_bytes() {
+        let input = [line(&ping(1)), line(&ping(2))].concat();
+        // Room for part of a reply only, and nobody reading it.
+        let (_client, write) = tokio::io::duplex(8);
+        let mut transport = StdioTransport::new(input.as_slice(), write);
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+        // Dropped before it is polled.
+        let sending = transport.send(reply(1));
+        assert_eq!(
+            transport.tracked(),
+            [(RequestId::Number(1), Framing::Ndjson)]
+        );
+        assert!(transport.backlog() > 0);
+        drop(sending);
+        assert!(transport.tracked().is_empty());
+        assert_eq!(transport.backlog(), 0);
+
+        // Dropped part way through a stalled write.
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
+        let sending = transport.send(reply(2));
+        assert_eq!(
+            transport.tracked(),
+            [(RequestId::Number(2), Framing::Ndjson)]
+        );
+        let stalled = tokio::time::timeout(Duration::from_millis(50), sending).await;
+        assert!(stalled.is_err(), "{stalled:?}");
+        assert!(transport.tracked().is_empty());
+        assert_eq!(transport.backlog(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_failed_write_releases_its_request_and_bytes() {
+        let input = [line(&ping(1)), line(&ping(2))].concat();
+        let (client, write) = tokio::io::duplex(8);
+        let mut transport = StdioTransport::new(input.as_slice(), write);
+        // The client is gone: the write fails.
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+        drop(client);
+        let sending = transport.send(reply(1));
+        assert_eq!(
+            transport.tracked(),
+            [(RequestId::Number(1), Framing::Ndjson)]
+        );
+        assert!(sending.await.is_err());
+        assert!(transport.tracked().is_empty());
+        assert_eq!(transport.backlog(), 0);
+
+        // The transport is closed: the write fails too.
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
+        transport.close().await.unwrap();
+        let sending = transport.send(reply(2));
+        assert_eq!(
+            transport.tracked(),
+            [(RequestId::Number(2), Framing::Ndjson)]
+        );
+        assert!(sending.await.is_err());
+        assert!(transport.tracked().is_empty());
+        assert_eq!(transport.backlog(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_cancellation_after_the_reply_is_queued_keeps_the_id_until_it_is_written() {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            let input = [
+                in_framing(&ping(1), framing),
+                in_framing(&cancel(1), framing),
+                in_framing(&ping(1), framing),
+                in_framing(&ping(2), framing),
+            ]
+            .concat();
+            // Room for part of a reply only, and nobody reading it yet.
+            let (mut client, write) = tokio::io::duplex(8);
+            let mut transport = StdioTransport::new(input.as_slice(), write);
+            assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+            let sending = tokio::spawn(transport.send(reply(1)));
+            // The cancellation comes too late to forget the request: its
+            // reply is on its way, and its id is taken until written.
+            let cancelled = transport.receive().await.unwrap();
+            assert!(
+                matches!(cancelled, JsonRpcMessage::Notification(_)),
+                "{cancelled:?}"
+            );
+            assert_eq!(transport.tracked(), [(RequestId::Number(1), framing)]);
+            let stalled =
+                tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
+            assert!(stalled.is_err(), "{framing:?}: {stalled:?}");
+
+            let (replies, message) =
+                tokio::join!(read_replies(&mut client, 2), transport.receive());
+            assert_eq!(request_id(&message.unwrap()), 2);
+            // The duplicate is answered while the reply is still unwritten,
+            // so the two may come in either order.
+            assert!(replies.iter().all(|(seen, _)| *seen == framing));
+            assert!(replies.iter().all(|(_, reply)| reply["id"] == json!(1)));
+            let codes: Vec<_> = replies
+                .iter()
+                .map(|(_, reply)| reply["error"]["code"].clone())
+                .collect();
+            assert!(codes.contains(&json!(INVALID_REQUEST)), "{replies:?}");
+            assert!(
+                replies
+                    .iter()
+                    .any(|(_, reply)| reply["result"] == json!({})),
+                "{replies:?}"
+            );
+            sending.await.unwrap().unwrap();
+            assert_eq!(transport.tracked(), [(RequestId::Number(2), framing)]);
+            assert_eq!(transport.held_id_bytes(), 0);
+        }
     }
 
     #[tokio::test]
@@ -1524,7 +1886,7 @@ mod tests {
         ]
         .concat();
         assert_eq!(String::from_utf8(out).unwrap(), expected);
-        assert!(transport.requests.is_empty());
+        assert!(transport.tracked().is_empty());
     }
 
     #[tokio::test]
@@ -1645,12 +2007,12 @@ mod tests {
         for _ in 0..4 {
             transport.receive().await.unwrap();
         }
-        assert_eq!(transport.requests.len(), 4);
+        assert_eq!(transport.tracked().len(), 4);
         for _ in 0..2 {
             transport.receive().await.unwrap();
         }
         assert_eq!(
-            transport.requests,
+            transport.tracked(),
             [
                 (RequestId::Number(3), Framing::ContentLength),
                 (RequestId::Number(4), Framing::Ndjson),
@@ -1667,7 +2029,7 @@ mod tests {
         assert_eq!(replies[0].1["id"], json!(4));
         assert_eq!(replies[1].0, Framing::ContentLength);
         assert_eq!(replies[1].1["id"], json!(3));
-        assert!(transport.requests.is_empty());
+        assert!(transport.tracked().is_empty());
     }
 
     #[tokio::test]
@@ -1692,7 +2054,7 @@ mod tests {
         // delivered: `receive` waits for more input instead.
         let waiting = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
         assert!(waiting.is_err(), "{waiting:?}");
-        assert_eq!(transport.requests.len(), MAX_OUTSTANDING_REQUESTS);
+        assert_eq!(transport.tracked().len(), MAX_OUTSTANDING_REQUESTS);
         let replies = read_replies(&mut client, 1).await;
         assert_eq!(replies[0].0, Framing::Ndjson);
         assert_eq!(replies[0].1["id"], json!(last + 1));
@@ -1704,12 +2066,12 @@ mod tests {
         let replies = read_replies(&mut client, 1).await;
         assert_eq!(replies[0].0, Framing::ContentLength);
         assert_eq!(replies[0].1["id"], json!(1));
-        assert_eq!(transport.requests.len(), MAX_OUTSTANDING_REQUESTS - 1);
+        assert_eq!(transport.tracked().len(), MAX_OUTSTANDING_REQUESTS - 1);
         stdin.write_all(&framed(&ping(last + 2))).await.unwrap();
         assert_eq!(request_id(&transport.receive().await.unwrap()), last + 2);
-        assert_eq!(transport.requests.len(), MAX_OUTSTANDING_REQUESTS);
+        assert_eq!(transport.tracked().len(), MAX_OUTSTANDING_REQUESTS);
         assert_eq!(
-            transport.requests.back(),
+            transport.tracked().last(),
             Some(&(RequestId::Number(last + 2), Framing::ContentLength))
         );
     }
@@ -1734,10 +2096,10 @@ mod tests {
         for _ in 1..=4 {
             transport.receive().await.unwrap();
         }
-        assert_eq!(transport.id_bytes, MAX_OUTSTANDING_ID_BYTES);
+        assert_eq!(transport.held_id_bytes(), MAX_OUTSTANDING_ID_BYTES);
         let waiting = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
         assert!(waiting.is_err(), "{waiting:?}");
-        assert_eq!(transport.requests.len(), 4);
+        assert_eq!(transport.tracked().len(), 4);
         let replies = read_replies(&mut client, 1).await;
         assert_eq!(replies[0].0, Framing::Ndjson);
         assert_eq!(replies[0].1["id"], json!("5"));
@@ -1752,14 +2114,20 @@ mod tests {
         let replies = read_replies(&mut client, 1).await;
         assert_eq!(replies[0].0, Framing::ContentLength);
         assert_eq!(replies[0].1["id"], json!(big(1)));
-        assert_eq!(transport.id_bytes, MAX_OUTSTANDING_ID_BYTES - quarter);
+        assert_eq!(
+            transport.held_id_bytes(),
+            MAX_OUTSTANDING_ID_BYTES - quarter
+        );
         stdin.write_all(&line(&request("6"))).await.unwrap();
         let JsonRpcMessage::Request(admitted) = transport.receive().await.unwrap() else {
             panic!("not a request");
         };
         assert_eq!(admitted.id, RequestId::String("6".into()));
-        assert_eq!(transport.requests.len(), 4);
-        assert_eq!(transport.id_bytes, MAX_OUTSTANDING_ID_BYTES - quarter + 1);
+        assert_eq!(transport.tracked().len(), 4);
+        assert_eq!(
+            transport.held_id_bytes(),
+            MAX_OUTSTANDING_ID_BYTES - quarter + 1
+        );
     }
 
     #[tokio::test]
@@ -1799,14 +2167,14 @@ mod tests {
                 tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
             assert!(waiting.is_err(), "{waiting:?}");
             assert_eq!(
-                transport.requests,
+                transport.tracked(),
                 [
                     (RequestId::String("a".into()), original),
                     (RequestId::Number(2), other),
                     (RequestId::Number(3), other),
                 ]
             );
-            assert_eq!(transport.id_bytes, 1);
+            assert_eq!(transport.held_id_bytes(), 1);
             let replies = read_replies(&mut client, MAX_OUTSTANDING_REQUESTS + 1).await;
             for (framing, reply) in &replies {
                 assert_eq!(*framing, other, "{reply}");
@@ -1841,13 +2209,13 @@ mod tests {
             transport.receive().await.unwrap();
             assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
             assert_eq!(
-                transport.requests,
+                transport.tracked(),
                 [
                     (RequestId::String("a".into()), other),
                     (RequestId::Number(2), original),
                 ]
             );
-            assert_eq!(transport.id_bytes, 1);
+            assert_eq!(transport.held_id_bytes(), 1);
         }
     }
 
@@ -1947,6 +2315,64 @@ mod tests {
                 "overrun {overrun}: {replies:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_session_stops_reading_a_client_that_does_not_read_its_replies() {
+        // Each tools/list reply is tens of KiB: far more of them than the
+        // backlog holds, though too few to fill the request budget.
+        let count = 300;
+        let mut input = [line(INITIALIZE), line(INITIALIZED)].concat();
+        for id in 2..count as i64 + 2 {
+            input.extend(line(&format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
+            )));
+        }
+        let total = input.len();
+        // Small pipes, so what they buffer is small beside the input.
+        let (mut stdin, read) = tokio::io::duplex(256);
+        let (mut client, write) = tokio::io::duplex(1024);
+        let fed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let feeder = tokio::spawn({
+            let fed = Arc::clone(&fed);
+            async move {
+                for chunk in input.chunks(64) {
+                    stdin.write_all(chunk).await.unwrap();
+                    fed.fetch_add(chunk.len(), std::sync::atomic::Ordering::SeqCst);
+                }
+                stdin
+            }
+        });
+        let running = server()
+            .serve(StdioTransport::new(read, write))
+            .await
+            .unwrap();
+        // Nobody reads the replies: once the backlog is full, the server
+        // takes no more input.
+        let mut last = 0;
+        loop {
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let now = fed.load(std::sync::atomic::Ordering::SeqCst);
+            if now == last {
+                break;
+            }
+            last = now;
+        }
+        assert!(last < total / 2, "{last} of {total} bytes of input taken");
+
+        // Reading the replies lets it go on, and none is lost.
+        let replies = read_replies(&mut client, count + 1).await;
+        assert!(
+            replies[1..]
+                .iter()
+                .all(|(_, reply)| reply["result"]["tools"].is_array()),
+            "{:?}",
+            replies[1..]
+                .iter()
+                .find(|(_, reply)| !reply["result"]["tools"].is_array())
+        );
+        drop(feeder.await.unwrap());
+        running.waiting().await.unwrap();
     }
 
     #[tokio::test]

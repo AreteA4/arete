@@ -15,10 +15,15 @@ stdout carries MCP frames only and logs go to stderr. Input that is not a
 message is answered with a JSON-RPC parse error, and a `Content-Length`
 header block that cannot be used (so where the message ends is unknown) is
 answered with one and then the stream is closed. Requests awaiting a reply
-are capped; one past the cap is answered with a `Server busy` error
+are capped, and a request keeps its place under the cap until its reply is
+written to stdout; one past the cap is answered with a `Server busy` error
 (`-32000`) in its own framing, and one that repeats the id of a request
 awaiting a reply with a `Duplicate request id` error (`-32600`) rather
-than a place under the cap. This crate is a library
+than a place under the cap. Output is backpressured: when the client does
+not read stdout, the server stops reading stdin once 1 MiB of output is
+waiting to be written or the cap is full (a `Server busy` answer is written
+before more input is read), so memory stays bounded and the client's writes
+block until it reads again. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 
