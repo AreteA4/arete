@@ -173,9 +173,10 @@ No tool call waits on the network forever. Two bounds apply:
   Program Read 30 s, sandbox reads 30 s and actions 90 s, protocol API
   60 s, cloud dev environments 150 s, `read_view` its `timeout_secs`.
 - **Each tool call.** A call as a whole, however many requests it makes,
-  fails after its tool's bound with
-  `<tool> did not finish within <bound>` and
-  `{"code": "tool-timeout", "retryable": true}`. The bound is 60 s, except
+  fails after its tool's bound (tools that sign or send have none, see
+  below) with `<tool> did not finish within <bound>` and
+  `{"code": "tool-timeout", "retryable": true}` (`false` for tools that
+  change something, see below). The bound is 60 s, except
   where a tool's own waits are longer: `read_view` 90 s; `sandbox_*`,
   `protocol_*` and `squads_*` 120 s; `dev_*` 300 s; `dev_capture` and
   `dev_scenario` 15 minutes (use `a4 dev capture` for larger captures).
