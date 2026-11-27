@@ -878,13 +878,14 @@ impl ProtocolAgent {
     }
 
     /// What a step call keeps once its execution settled with `answer`: a
-    /// completed one with a known `expiresAt`, until then.
+    /// completed one with a known `expiresAt` still ahead, until then.
     fn completed(&self, execution_id: &str, args: Value, answer: &Value) -> Option<StepRun> {
         if answer["state"] != "completed" {
             return None;
         }
         let expires_at = self.executions.get(execution_id)?.expires_at.clone()?;
-        let until = unix_seconds(&expires_at)?;
+        let until =
+            unix_seconds(&expires_at).filter(|until| *until > crate::dev::unix_now() as i64)?;
         Some(StepRun::Completed {
             args,
             answer: answer.clone(),
@@ -1238,6 +1239,9 @@ impl ProtocolAgent {
             other => other.clone(),
         };
         let now = crate::dev::unix_now() as i64;
+        // A completed run past its expiresAt answers nothing any more.
+        self.steps
+            .retain(|_, run| !matches!(run, StepRun::Completed { until, .. } if *until <= now));
         let resumed = match self.steps.entry(call_key.clone()) {
             dashmap::mapref::entry::Entry::Vacant(free) => {
                 free.insert(StepRun::InFlight(None));
@@ -1291,12 +1295,13 @@ impl ProtocolAgent {
                     held.insert(StepRun::InFlight(Some(previous.execution_id.clone())));
                     Some(previous)
                 }
+                // Unexpired: expired ones were pruned above.
                 StepRun::Completed {
                     args,
                     mut answer,
                     expires_at,
-                    until,
-                } if args == step_args && until > now => {
+                    ..
+                } if args == step_args => {
                     answer["note"] = json!(format!(
                         "This answers the last protocol_execute of step '{}' with these args, \
                          which completed: nothing new was prepared or signed. Until its \

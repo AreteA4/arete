@@ -1507,6 +1507,26 @@ async fn running_protocol_execute_again_never_submits_a_step_twice() {
                 .contains("Until its expiresAt (2030-01-01T00:00:00Z)"));
         }
     }
+
+    // A completed run whose expiresAt passes is dropped once another step
+    // call runs (one that has expired by its own end keeps nothing), and
+    // the same args then run anew.
+    restart(&state);
+    // Whole seconds: 2 s ahead holds across a run, 3.1 s later it has passed.
+    let soon = crate::dev::unix_now() + 2;
+    state.lock().unwrap().expires_at = Some(json!(soon));
+    let agent = signing_agent(dir.path(), &origin);
+    exec(&agent, &call, None).await.unwrap();
+    assert_eq!(agent.steps.len(), 1);
+    tokio::time::sleep(Duration::from_millis(3100)).await;
+    let elsewhere = StepCall {
+        instance: Some("i-2"),
+        ..tip_call(&args)
+    };
+    exec(&agent, &elsewhere, None).await.unwrap();
+    assert!(agent.steps.is_empty());
+    exec(&agent, &call, None).await.unwrap();
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 3);
 }
 
 /// Running `protocol_submit` again for an execution whose submit had an
@@ -1749,8 +1769,8 @@ async fn a_step_in_flight_is_prepared_and_sent_once() {
     assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
 
     // Unsettled again: resending its signed transactions with
-    // protocol_submit, as the error says, settles it, and the step then
-    // runs with other args.
+    // protocol_submit, as the error says, completes it, so the same args
+    // get that answer and the step runs with other args.
     restart(&state);
     {
         let mut guard = state.lock().unwrap();
@@ -1768,6 +1788,14 @@ async fn a_step_in_flight_is_prepared_and_sent_once() {
         .await
         .unwrap();
     assert_eq!(resent["settled"], true, "{resent}");
+    let again = run().await.unwrap();
+    assert_eq!(again["executionId"], "e-1", "{again}");
+    assert!(again["note"]
+        .as_str()
+        .unwrap()
+        .starts_with("This answers the last protocol_execute of step 'tip' with these args"));
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 2);
     let fresh = run_other().await.unwrap();
     assert!(fresh.get("note").is_none(), "{fresh}");
     assert_eq!(sent(&state, "POST", "/prepare").len(), 2);
