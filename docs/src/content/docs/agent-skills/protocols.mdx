@@ -167,9 +167,14 @@ and sign the step again: resend the same signed transactions with
 `protocol_submit` (the chain takes a signed transaction once), or wait until
 `protocol_intent` shows the execution settled or `expired`. `protocol_execute`
 puts the transactions it signed in the error as `signedTransactions` for this,
-and, within one `a4 mcp` session, runs one call per step at a time and answers
-for an unsettled execution when run again with the same args. A restarted
-server forgets that, so follow the error's guidance after a restart.
+and, within one `a4 mcp` session, runs one call per step at a time (another is
+refused with `step-in-flight` and the running call's `executionId` once
+prepared), answers for an unsettled execution when run again with the same
+args, and answers with a completed execution when run again with the same args
+before its `expiresAt`. A host that gives up on a call does not stop it, and its
+answer is lost: read the execution with `protocol_intent` before running the
+step again. A restarted server forgets all of this, so follow the error's
+guidance after a restart.
 
 ## Receipts
 

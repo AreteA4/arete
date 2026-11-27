@@ -227,14 +227,22 @@ No tool call waits on the network forever. Two bounds apply:
   sent; only while it is still `prepared` are the transactions sent again.
   `protocol_execute` reserves its step call (deployment, instance, step
   and signer) before it funds, prepares or signs anything: a second call
-  while one runs, such as a host's retry after its own timeout, is refused
-  with `{"code": "step-in-flight", "retryable": false}`. While the step's
+  while one runs is refused with `{"code": "step-in-flight",
+  "retryable": false, "executionId": ...}` (the running call's execution,
+  once prepared). A host that gives up on a call, after its own timeout
+  or with `notifications/cancelled`, does not stop it: the call runs on
+  and its answer is lost, so read that execution with `protocol_intent`
+  before running the step again. While the step's
   last execution has not settled (an unknown submit, or a wait that ended
   first), running it again with the same args answers for that execution
   (`note` says so), resending only its signed transactions, and with other
   args is refused with `{"code": "step-unsettled", "retryable": false,
   "executionId": ...}` until a run with the previous args, or
   `protocol_submit` with its signed transactions, shows it settled. Once
+  it completed, running the step with the same args before its
+  `expiresAt` answers with that execution (`note` says so) instead of
+  sending a second one; other args, or the same args after `expiresAt`,
+  run anew. Restarting `a4 mcp` clears all of this. Once
   submitted, the settle wait (`timeoutSeconds`) gives each
   status read only the time left; a read that fails, times out or is
   refused (its status and a short body) ends the wait with `executionId`,
