@@ -9162,4 +9162,305 @@ mod deadline_tests {
             assert!(!deadline::SENDING_TOOLS.contains(&tool), "{tool}");
         }
     }
+
+    /// How a tool's bound relates to the requests it can make in a row.
+    enum Bound {
+        /// Above every request it can make in a row, with room to spare,
+        /// so its own, more specific error reaches the agent.
+        Covers(Vec<Duration>),
+        /// A backstop: these requests in a row (at least) can outlast it,
+        /// for the reason given. A read's cut-off is retryable; a change's
+        /// (CHANGING_TOOLS) says to check the state first.
+        Backstop(Vec<Duration>, &'static str),
+        /// It signs or sends, so it has no bound.
+        Sends,
+    }
+
+    /// Every tool, with the requests its worst case makes in a row: its
+    /// bound covers them with [`MARGIN`] to spare, or it is a backstop
+    /// with a reason, or it sends and has none. A new tool must be added.
+    #[test]
+    fn every_tool_bound_covers_its_requests_or_is_a_named_backstop() {
+        use crate::dev_env::{
+            API_TIMEOUT as ENV, MAX_RETRY_AFTER, RPC_TIMEOUT as ENV_RPC, WAKE_RETRIES,
+        };
+        use crate::protocol_agent::{API_TIMEOUT as API, SIMULATION_BUDGET as SIM};
+        use crate::sandbox::{ACTION_TIMEOUT, READ_TIMEOUT as SB};
+        use deadline::REQUEST_TIMEOUT as REQ;
+        use Bound::{Backstop, Covers, Sends};
+        const MARGIN: Duration = Duration::from_secs(10);
+        // A claim link minted for a registry refusal that asks for one.
+        let claim = LOOKUP_TIMEOUT;
+        let read_view = Duration::from_secs(READ_VIEW_TIMEOUT_MAX_SECS as u64);
+        // A sandbox route: the grants listing, a token mint and the call,
+        // then a fresh mint and the call again after a stale token.
+        let sandbox = |call: Duration| vec![SB, SB, call, SB, call];
+        // One dev environment RPC call: a token mint, a 401 that renews
+        // it, and wake waits until the retries run out.
+        let env_rpc = || {
+            let mut chain = vec![ENV, ENV_RPC, ENV];
+            for _ in 1..WAKE_RETRIES {
+                chain.extend([ENV_RPC, MAX_RETRY_AFTER]);
+            }
+            chain.push(ENV_RPC);
+            chain
+        };
+        // A named dev environment is looked up first.
+        let env_then = |rest: Vec<Duration>| [vec![ENV], rest].concat();
+        // A capture request tried 6 times, each 60 s, with backoff up to 30 s.
+        let capture_request = [
+            vec![Duration::from_secs(60); 6],
+            vec![Duration::from_secs(30); 5],
+        ]
+        .concat();
+        let mut history = vec![SB];
+        for _ in 0..crate::sandbox::ledger::MAX_SCAN_PAGES {
+            history.extend([SB, SB, SB]);
+        }
+        let registry = || vec![REQ, claim];
+        let sandbox_read = "a stale sandbox token is minted again and the read repeated";
+        let protocol_read = "the protocol's registry lookup, a session mint and the read";
+        let lookup_first = "a named environment is looked up before the request";
+        let env_rpc_why = "a dev environment RPC call renews its token and waits for a wake";
+        let again = "a read the account's key may not make runs again through the sandbox";
+        let table: Vec<(&str, Bound)> = vec![
+            ("ping", Covers(vec![])),
+            ("version", Covers(vec![crate::api_build::TIMEOUT])),
+            ("describe_sdk", Covers(vec![])),
+            ("explore_stacks", Covers(registry())),
+            ("explore_starter_stacks", Covers(registry())),
+            ("explore_programs", Covers(registry())),
+            ("explore_protocols", Covers(registry())),
+            ("explore_protocol", Covers(registry())),
+            ("resolve_artifact", Covers(registry())),
+            ("get_catalog_entry", Covers(registry())),
+            ("list_catalog_vocabulary", Covers(registry())),
+            ("search_knowledge", Covers(registry())),
+            ("get_protocol", Covers(registry())),
+            ("get_program_knowledge", Covers(registry())),
+            ("get_recipe", Covers(registry())),
+            ("list_concepts", Covers(registry())),
+            (
+                "search_catalog",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "the overview searches each kind in a row",
+                ),
+            ),
+            (
+                "explore_stack",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "a failed lookup asks the catalog for a definition-only stack",
+                ),
+            ),
+            (
+                "explore_stack_schema",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "a failed lookup asks the catalog for a definition-only stack",
+                ),
+            ),
+            (
+                "explore_stack_views",
+                Backstop(
+                    vec![REQ, REQ, claim],
+                    "a failed lookup asks the catalog for a definition-only stack",
+                ),
+            ),
+            (
+                "explore_program",
+                Backstop(
+                    vec![REQ, REQ],
+                    "the install descriptor, then its knowledge surface",
+                ),
+            ),
+            ("account_status", Covers(vec![REQ])),
+            ("rename_agent", Covers(vec![REQ])),
+            ("create_claim_link", Covers(vec![REQ])),
+            (
+                "connect",
+                Backstop(vec![SB, REQ, claim, SB, REQ, claim], again),
+            ),
+            ("disconnect", Covers(vec![])),
+            (
+                "read_view",
+                Backstop(vec![SB, read_view, claim, SB, read_view, claim], again),
+            ),
+            ("subscribe", Covers(vec![])),
+            ("unsubscribe", Covers(vec![])),
+            ("list_subscriptions", Covers(vec![])),
+            ("list_connections", Covers(vec![])),
+            ("get_entity", Covers(vec![SNAPSHOT_WAIT])),
+            ("query_entities", Covers(vec![SNAPSHOT_WAIT])),
+            ("list_entities", Covers(vec![SNAPSHOT_WAIT])),
+            ("get_recent", Covers(vec![SNAPSHOT_WAIT])),
+            (
+                "program_read_account",
+                Backstop(
+                    vec![SB, SB, SB, REQ, REQ, SB, REQ],
+                    "pins the sandbox, checks its programs, reads the install and the account",
+                ),
+            ),
+            ("sandbox_list", Covers(vec![SB])),
+            ("sandbox_select", Covers(vec![SB])),
+            ("sandbox_status", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_rules", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_reads", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_derive", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_find_accounts", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_action", Backstop(sandbox(SB), sandbox_read)),
+            ("sandbox_holdings", Backstop(sandbox(SB), sandbox_read)),
+            (
+                "sandbox_history",
+                Backstop(history, "a filtered read scans up to MAX_SCAN_PAGES pages"),
+            ),
+            ("sandbox_preview", Covers(sandbox(ACTION_TIMEOUT))),
+            ("sandbox_invoke", Sends),
+            ("protocol_check", Covers(vec![API])),
+            (
+                "protocol_actions",
+                Backstop(vec![REQ, API, API], protocol_read),
+            ),
+            (
+                "protocol_instances",
+                Backstop(vec![REQ, API, API], protocol_read),
+            ),
+            (
+                "protocol_instance",
+                Backstop(vec![REQ, API, API], protocol_read),
+            ),
+            (
+                "protocol_intent",
+                Backstop(vec![API, API], "a session mint and the read"),
+            ),
+            (
+                "protocol_receipt",
+                Backstop(
+                    vec![API, API, API],
+                    "the receipt, the receipt keys and the transaction",
+                ),
+            ),
+            (
+                "protocol_squads_proposer",
+                Backstop(
+                    [vec![API, API], env_rpc()].concat(),
+                    "with `dev` the balance is a dev environment RPC call",
+                ),
+            ),
+            (
+                "protocol_squads_status",
+                Backstop(
+                    [vec![API, API], env_rpc()].concat(),
+                    "with `dev` the balance is a dev environment RPC call",
+                ),
+            ),
+            (
+                "squads_status",
+                Backstop(vec![API, API], "the setup, then its notifications"),
+            ),
+            ("squads_attach", Covers(vec![API, API])),
+            ("protocol_prepare", Covers(vec![REQ, API, API, SIM])),
+            ("protocol_submit", Sends),
+            ("protocol_execute", Sends),
+            ("dev_step", Sends),
+            ("dev_instance", Covers(vec![API, API])),
+            ("dev_actions", Covers(vec![API, API])),
+            ("dev_events", Covers(vec![API])),
+            (
+                "dev_status",
+                Backstop(
+                    env_then([vec![ENV], env_rpc(), vec![ENV, ENV]].concat()),
+                    "the environment, its clock, stacks and lease in a row",
+                ),
+            ),
+            (
+                "dev_environments",
+                Backstop(vec![ENV, ENV], "the list, then the quotas"),
+            ),
+            ("dev_wake", Backstop(env_then(vec![ENV]), lookup_first)),
+            ("dev_sleep", Backstop(env_then(vec![ENV]), lookup_first)),
+            (
+                "dev_checkpoint",
+                Backstop(env_then(vec![ENV]), lookup_first),
+            ),
+            ("dev_branch", Backstop(env_then(vec![ENV]), lookup_first)),
+            ("dev_restore", Backstop(env_then(vec![ENV]), lookup_first)),
+            ("dev_rebase", Backstop(env_then(vec![ENV]), lookup_first)),
+            (
+                "dev_environment_events",
+                Backstop(env_then(vec![ENV]), lookup_first),
+            ),
+            (
+                "dev_delete",
+                Backstop(
+                    env_then(vec![ENV, ENV]),
+                    "looked up, read to check the name, then deleted",
+                ),
+            ),
+            (
+                "dev_reset",
+                Backstop(
+                    env_then(vec![ENV, ENV]),
+                    "looked up, read to check the name, then reset",
+                ),
+            ),
+            (
+                "dev_reset_account",
+                Backstop(env_then(env_rpc()), env_rpc_why),
+            ),
+            ("dev_pin", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_follow", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_fund", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_preview", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_repro", Backstop(env_then(env_rpc()), env_rpc_why)),
+            ("dev_scenario", Backstop(env_then(env_rpc()), env_rpc_why)),
+            (
+                "dev_warp",
+                Backstop(
+                    env_then([env_rpc(), env_rpc()].concat()),
+                    "clock reads, the warp and clock reads again",
+                ),
+            ),
+            (
+                "dev_capture",
+                Backstop(
+                    [capture_request.clone(), capture_request].concat(),
+                    "pages through the window, each request retried",
+                ),
+            ),
+        ];
+        let mut named: Vec<&str> = table.iter().map(|(tool, _)| *tool).collect();
+        named.sort_unstable();
+        let mut listed: Vec<String> = AreteMcp::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        listed.sort_unstable();
+        assert_eq!(named, listed, "every tool has exactly one row");
+        for (tool, bound) in &table {
+            let ceiling = deadline::tool_call_timeout(tool);
+            match bound {
+                Sends => assert_eq!(ceiling, None, "{tool}"),
+                Covers(requests) => {
+                    let sum: Duration = requests.iter().sum();
+                    let ceiling = ceiling.unwrap();
+                    assert!(
+                        ceiling >= sum + MARGIN,
+                        "{tool}: {ceiling:?} < {sum:?} + margin"
+                    );
+                }
+                Backstop(requests, why) => {
+                    let sum: Duration = requests.iter().sum();
+                    let ceiling = ceiling.unwrap();
+                    assert!(
+                        sum + MARGIN > ceiling,
+                        "{tool} is covered ({sum:?}): say so"
+                    );
+                    assert!(!why.is_empty(), "{tool}");
+                }
+            }
+        }
+    }
 }

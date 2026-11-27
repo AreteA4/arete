@@ -47,9 +47,14 @@ pub const LAMPORTS_PER_SOL: u64 = 1_000_000_000;
 /// Renew a token when it has less than this left (seconds).
 const TOKEN_RENEW_BEFORE: i64 = 60;
 /// How often a call is retried while a sleeping environment wakes.
-const WAKE_RETRIES: usize = 4;
+pub(crate) const WAKE_RETRIES: usize = 4;
 /// The longest `Retry-After` a call waits out.
-const MAX_RETRY_AFTER: Duration = Duration::from_secs(10);
+pub(crate) const MAX_RETRY_AFTER: Duration = Duration::from_secs(10);
+/// One request to the dev environment API (a sleeping environment wakes
+/// first).
+pub(crate) const API_TIMEOUT: Duration = Duration::from_secs(150);
+/// One request to an environment's RPC endpoint.
+pub(crate) const RPC_TIMEOUT: Duration = Duration::from_secs(120);
 const DEFAULT_API_ORIGIN: &str = "https://api.arete.run";
 
 // ---------------------------------------------------------------------------
@@ -427,7 +432,7 @@ impl EnvApi {
             .http
             .request(method.clone(), &url)
             .bearer_auth(&self.key)
-            .timeout(Duration::from_secs(150));
+            .timeout(API_TIMEOUT);
         if let Some(generation) = lease {
             request = request.header(LEASE_HEADER, generation.to_string());
         }
@@ -950,7 +955,7 @@ impl EnvRpc {
                 .bearer_auth(&token.token)
                 .header(reqwest::header::CONTENT_TYPE, "application/json")
                 .body(body.to_vec())
-                .timeout(Duration::from_secs(120))
+                .timeout(RPC_TIMEOUT)
                 .send()
                 .await
                 .map_err(|error| {
@@ -1200,7 +1205,7 @@ impl WarpTarget {
 /// it was created on.
 pub async fn resolve_env(project: Option<&Path>, reference: Option<&str>) -> Result<EnvRpc> {
     let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(150))
+        .timeout(API_TIMEOUT)
         .build()
         .unwrap_or_default();
     let reference = reference

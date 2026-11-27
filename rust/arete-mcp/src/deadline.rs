@@ -87,11 +87,18 @@ pub const CHANGING_TOOLS: [&str; 18] = [
 /// - `protocol_prepare`: 240 s, above the 210 s its requests can take in a
 ///   row: the protocol's registry lookup (30 s), the session mint and the
 ///   prepare (60 s each), and simulating the step (60 s as a whole).
+/// - `squads_attach`: 150 s, above its attach and proposer read (60 s
+///   each).
 /// - Other `sandbox_*`, `protocol_*` and `squads_*` tools: 120 s, above any
 ///   one of their requests (the sandbox's 90 s, the protocol API's 60 s).
 ///   A read that makes several in a row can be cut off by it; its timeout
 ///   is retryable.
 /// - `read_view`: 90 s, above its own `timeout_secs` (at most 60 s).
+///
+/// Where a tool's requests in a row can outlast its bound (a read that
+/// pages or is tried again through a sandbox, a dev environment request
+/// that waits for a wake), the bound is a backstop: the server's tests
+/// list each such tool with why.
 pub fn tool_call_timeout(tool: &str) -> Option<Duration> {
     if SENDING_TOOLS.contains(&tool) {
         return None;
@@ -101,6 +108,7 @@ pub fn tool_call_timeout(tool: &str) -> Option<Duration> {
         "read_view" => Duration::from_secs(90),
         "sandbox_preview" => Duration::from_secs(300),
         "protocol_prepare" => Duration::from_secs(240),
+        "squads_attach" => Duration::from_secs(150),
         _ if tool.starts_with("dev_") => Duration::from_secs(300),
         _ if ["sandbox_", "protocol_", "squads_"]
             .iter()
@@ -228,44 +236,6 @@ mod tests {
         );
         for tool in SENDING_TOOLS {
             assert_eq!(tool_call_timeout(tool), None, "{tool}");
-        }
-    }
-
-    /// Each tool's bound is at least the sum of the request bounds it can
-    /// hit in a row, so its own, more specific error reaches the agent.
-    #[test]
-    fn ceilings_cover_the_requests_each_tool_makes_in_a_row() {
-        use crate::protocol_agent::{API_TIMEOUT, SIMULATION_BUDGET};
-        use crate::sandbox::{ACTION_TIMEOUT, READ_TIMEOUT};
-        let table: [(&str, Vec<Duration>); 3] = [
-            (
-                // Grants, mint, dry run; a fresh mint and the dry run again
-                // after a stale token.
-                "sandbox_preview",
-                vec![
-                    READ_TIMEOUT,
-                    READ_TIMEOUT,
-                    ACTION_TIMEOUT,
-                    READ_TIMEOUT,
-                    ACTION_TIMEOUT,
-                ],
-            ),
-            (
-                // Registry lookup of `protocol`, session mint, prepare,
-                // simulation as a whole.
-                "protocol_prepare",
-                vec![REQUEST_TIMEOUT, API_TIMEOUT, API_TIMEOUT, SIMULATION_BUDGET],
-            ),
-            (
-                // The attach, then the proposer read.
-                "squads_attach",
-                vec![API_TIMEOUT, API_TIMEOUT],
-            ),
-        ];
-        for (tool, requests) in table {
-            let sum: Duration = requests.iter().sum();
-            let ceiling = tool_call_timeout(tool).unwrap();
-            assert!(ceiling >= sum, "{tool}: {ceiling:?} < {sum:?}");
         }
     }
 }
