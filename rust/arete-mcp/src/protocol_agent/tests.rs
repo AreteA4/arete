@@ -1782,6 +1782,22 @@ async fn squads_onboarding_reads_the_proposer_and_status_and_builds_nothing() {
     let without = agent.squads_proposer(&target, None).await.unwrap();
     assert_eq!(without["proposerLamports"], Value::Null);
     assert_eq!(without["balance"], "unavailable");
+    // An RPC that cannot be reached: the note never names its URL's key.
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!(
+            "http://{}/?api-key=rpc-secret",
+            listener.local_addr().unwrap()
+        )
+    };
+    let unreachable = agent.squads_proposer(&target, Some(&closed)).await.unwrap();
+    assert_eq!(unreachable["balance"], "unavailable");
+    let note = unreachable["balanceNote"].as_str().unwrap();
+    assert!(note.contains("The RPC is unreachable"), "{note}");
+    assert!(
+        !unreachable.to_string().contains("rpc-secret"),
+        "{unreachable}"
+    );
 
     let ready = agent
         .squads_status(&target, &b58(&[62; 32]), Some(&rpc))

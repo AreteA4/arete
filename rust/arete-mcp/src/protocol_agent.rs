@@ -939,10 +939,15 @@ impl ProtocolAgent {
             }))
             .send()
             .await
-            .context("The RPC is unreachable")?
+            .map_err(|error| anyhow!("The RPC is unreachable: {}", error.without_url()))?
             .json()
             .await
-            .context("The RPC returned a body that is not JSON")?;
+            .map_err(|error| {
+                anyhow!(
+                    "The RPC returned a body that is not JSON: {}",
+                    error.without_url()
+                )
+            })?;
         if let Some(error) = response.get("error") {
             bail!("getTransaction failed: {error}");
         }
@@ -1327,10 +1332,15 @@ async fn rpc_call(http: &reqwest::Client, url: &str, method: &str, params: Value
         .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
         .send()
         .await
-        .context("The RPC is unreachable")?
+        .map_err(|error| anyhow!("The RPC is unreachable: {}", error.without_url()))?
         .json()
         .await
-        .context("The RPC returned a body that is not JSON")?;
+        .map_err(|error| {
+            anyhow!(
+                "The RPC returned a body that is not JSON: {}",
+                error.without_url()
+            )
+        })?;
     if let Some(error) = response.get("error").filter(|error| !error.is_null()) {
         bail!("{method} failed: {error}");
     }
