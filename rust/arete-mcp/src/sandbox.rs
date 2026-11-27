@@ -13,8 +13,9 @@
 //! then the one chosen with `sandbox_select` (saved per project), then
 //! `ARETE_SANDBOX_ID`, then the only active grant.
 //!
-//! Auth: the agent's own API key (`ARETE_API_KEY` or its a4 login) lists
-//! the grants and mints a short-lived token for the chosen sandbox at
+//! Auth: the agent's own API key (the selected profile's a4 login; without
+//! a profile, `ARETE_API_KEY`, else the a4 login) lists the grants and
+//! mints a short-lived token for the chosen sandbox at
 //! `POST /ws/sessions` (`targetKind: "sandbox"`). The mint succeeds only
 //! while the sandbox's owner grants this agent access, and the token carries
 //! one `sandbox:<action>` scope per granted action: the API refuses an
@@ -495,7 +496,7 @@ fn hint_for(
             "This Arete API cannot list the sandboxes granted to this agent. Pass `sandbox` with the sandbox id, or set ARETE_SANDBOX_ID to it."
         }
         "sandbox-agent-key-required" => {
-            "A sandbox token is minted with the agent account's secret API key: set ARETE_API_KEY to it (or log in as the agent)."
+            "A sandbox token is minted with the agent account's secret API key: log in as the agent (`a4 auth login --profile agent --key <a4_ak_...>`). ARETE_API_KEY counts only when no profile is selected, so not under the generated `a4 --profile agent mcp` config."
         }
         "sandbox-session-invalid" | "sandbox-session-revoked" | "sandbox-session-expired" => {
             "The sandbox token no longer works and could not be renewed. Ask the owner whether this agent's access was revoked."
@@ -828,8 +829,9 @@ type CachedRead = (ReadSession, u64);
 
 impl SandboxClient {
     /// From `ARETE_SANDBOX_ID`, `ARETE_API_URL`, the account key the rest
-    /// of this server uses (`ARETE_API_KEY`, else the a4 login for that
-    /// API) and the sandbox saved for the working directory.
+    /// of this server uses (the selected profile's a4 login for that API;
+    /// without a profile, `ARETE_API_KEY`, else the a4 login) and the
+    /// sandbox saved for the working directory.
     pub fn from_env() -> Self {
         if std::env::var(ENV_VAR_RETIRED_SANDBOX_KEY).is_ok_and(|key| !key.trim().is_empty()) {
             tracing::warn!(
@@ -984,7 +986,7 @@ impl SandboxClient {
         self.api_key.as_deref().ok_or_else(|| {
             SandboxRefusal::local(
                 "sandbox-agent-key-required",
-                "No API key: set ARETE_API_KEY to the agent account's secret key (or log in as the agent) to use a sandbox",
+                "No API key: log in as the agent (`a4 auth login --profile agent --key <a4_ak_...>`) to use a sandbox. ARETE_API_KEY counts only when no profile is selected, so not under the generated `a4 --profile agent mcp` config.",
             )
         })
     }
@@ -3015,7 +3017,16 @@ pub(crate) mod tests {
         )]);
         let shown = agent(&base).list().await.unwrap_err().to_json();
         assert_eq!(shown["code"], "sandbox-agent-key-required");
-        assert!(shown["hint"].as_str().unwrap().contains("ARETE_API_KEY"));
+        // Followed literally under the generated `a4 --profile agent mcp`
+        // config, "set ARETE_API_KEY" does nothing: the hint leads with the
+        // login and qualifies the environment key.
+        let hint = shown["hint"].as_str().unwrap();
+        assert!(hint.contains("a4 auth login --profile agent"), "{hint}");
+        assert!(
+            hint.contains("ARETE_API_KEY counts only when no profile is selected"),
+            "{hint}"
+        );
+        assert!(!hint.contains("set ARETE_API_KEY"), "{hint}");
 
         let (base, _) = stub(vec![("GET", GRANTS_PATH, 401, Value::Null)]);
         let shown = agent(&base).list().await.unwrap_err().to_json();

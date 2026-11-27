@@ -130,14 +130,57 @@ enum Commands {
 
     /// Run the Arete stream MCP server over stdio
     ///
-    /// Reads newline-delimited JSON-RPC messages from stdin (one message
-    /// per line), as the MCP stdio transport specifies, and also accepts
-    /// LSP-style `Content-Length` framed messages from clients that use
-    /// that framing; it is detected per message, and each request is
-    /// answered in the framing it arrived in. Input that is not a message
-    /// gets a JSON-RPC parse error, and a header block that cannot be used
-    /// gets one and closes the stream. Nothing but MCP frames is written
+    /// Reads JSON-RPC messages from stdin in either of two framings,
+    /// detected per message: newline-delimited JSON, one message per line,
+    /// as the MCP stdio transport specifies; or LSP-style `Content-Length`
+    /// framing, a block of `Name: value` header lines holding
+    /// `Content-Length: <bytes>`, a blank line, then that many bytes of
+    /// JSON. Each reply uses the framing of the request it answers; a
+    /// message the server starts uses the framing last seen from the client
+    /// (newline-delimited before the first). Input that is not JSON gets a
+    /// `Parse error` (-32700) and JSON that is not a JSON-RPC message an
+    /// `Invalid request` (-32600), both without an id. A header block that
+    /// cannot be used (over 8 KiB, a header line that starts with
+    /// whitespace, a line that is not a header, or a `Content-Length` that
+    /// is missing, repeated or not a byte count) gets a `Parse error` and
+    /// the stream is closed. A line (newline included)
+    /// or framed body over 16 MiB is dropped without a reply and logged.
+    /// At most 1024 requests may await a reply, with 64 KiB of string ids
+    /// between them; a request past either limit gets a `Server busy` error
+    /// (-32000) with its id, in its framing. A request that repeats the id
+    /// of one awaiting a reply gets a `Duplicate request id` error (-32600)
+    /// and takes no room in the budget; an id is free again once its
+    /// request is answered or cancelled. Nothing but MCP frames is written
     /// to stdout; logs go to stderr.
+    ///
+    /// The `sandbox_*` tools appear in `tools/list` under two visibility
+    /// conditions. First, an account API key that resolves for the
+    /// configured API (`--api-url` / `ARETE_API_URL`, default
+    /// `https://api.arete.run`), or `ARETE_SANDBOX_ID` set to a sandbox id
+    /// (a UUID; any other non-blank value is ignored with a warning on
+    /// stderr). With
+    /// a profile selected (`--profile`, else the project's `agent` default,
+    /// else `ARETE_PROFILE`) the key is only that profile's a4 login for
+    /// that API and `ARETE_API_KEY` is not read: the generated
+    /// `a4 --profile agent mcp` config uses the `agent` profile's login,
+    /// and a key set only in `ARETE_API_KEY` does not count there.
+    /// `ARETE_API_KEY` applies only without a selected profile, before the
+    /// a4 login for that API. A sandbox chosen earlier with
+    /// `sandbox_select` or `a4 sandbox use` (saved for the project) does
+    /// not list them. Second, their group is `sandboxes`: when
+    /// `GET /api/auth/me` reports a `commandGroups` list, they are listed
+    /// only if it names `sandboxes` (an empty list hides them); with no
+    /// list (no key, a lookup that fails or times out after 3 seconds, or
+    /// an answer without one) the first condition decides on its own.
+    ///
+    /// Listing is not access. A call needs the key, which mints the
+    /// sandbox token, and the API mints one only while the sandbox's owner
+    /// grants the account access. The group check only hides tools (a
+    /// hidden tool cannot be called either) and never grants anything: the
+    /// API refuses what the account may not do. With a sandbox id
+    /// alone the tools are listed but every call that needs the API is
+    /// refused (`sandbox-agent-key-required`). Setting an agent up with a
+    /// key and a sandbox: https://docs.arete.run/sandboxes/connect-agent/
     Mcp(commands::mcp::McpArgs),
 
     /// Run a protocol locally against a Surfpool fork and drive it (`a4 dev up`)
@@ -2611,6 +2654,78 @@ mod tests {
     #[test]
     fn clap_definition_is_consistent() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn mcp_help_states_framing_and_sandbox_tool_listing() {
+        let mcp = Cli::command().find_subcommand("mcp").cloned().unwrap();
+        let (_, long) = rendered_help(mcp);
+        // Help wraps to the terminal width: compare on one line.
+        let long = long.split_whitespace().collect::<Vec<_>>().join(" ");
+        for needle in [
+            // Both framings, detected per message; replies mirror the
+            // request's framing.
+            "either of two framings, detected per message",
+            "newline-delimited JSON, one message per line",
+            "LSP-style `Content-Length` framing",
+            "Each reply uses the framing of the request it answers",
+            "the framing last seen from the client",
+            // Bad input and unusable header blocks.
+            "`Parse error` (-32700)",
+            "`Invalid request` (-32600), both without an id",
+            "a header line that starts with whitespace, a line that is not a header, or a `Content-Length` that is missing, repeated or not a byte count) gets a `Parse error` and the stream is closed",
+            "over 16 MiB is dropped without a reply",
+            // The outstanding-request budget and duplicate ids.
+            "At most 1024 requests may await a reply, with 64 KiB of string ids",
+            "`Server busy` error (-32000) with its id, in its framing",
+            "`Duplicate request id` error (-32600)",
+            "Nothing but MCP frames is written to stdout; logs go to stderr",
+            // Listing conditions: a key for the configured API or a
+            // sandbox id (a UUID; else warned and ignored). A saved choice
+            // lists nothing.
+            "visibility conditions",
+            "sandbox_*",
+            "resolves for the configured API (`--api-url` / `ARETE_API_URL`, default `https://api.arete.run`)",
+            "ARETE_SANDBOX_ID",
+            "a UUID; any other non-blank value is ignored with a warning",
+            "`sandbox_select` or `a4 sandbox use` (saved for the project) does not list them",
+            // A selected profile reads only its own login for that API;
+            // the environment key counts only without one. The project's
+            // `agent` default outranks an inherited `ARETE_PROFILE`, as in
+            // `config::resolve_auth_profile`. The generated config selects
+            // `agent`.
+            "(`--profile`, else the project's `agent` default, else `ARETE_PROFILE`)",
+            "the key is only that profile's a4 login for that API and `ARETE_API_KEY` is not read",
+            "`a4 --profile agent mcp` config uses the `agent` profile's login",
+            "`ARETE_API_KEY` applies only without a selected profile, before the a4 login for that API",
+            // Their own group rule: a reported list must name `sandboxes`;
+            // an empty list hides, a missing list does not.
+            "listed only if it names `sandboxes` (an empty list hides them)",
+            "with no list (no key, a lookup that fails or times out after 3 seconds, or an answer without one) the first condition decides on its own",
+            // Listing is not access: a call needs the key and the owner's
+            // grant (the API's check). The group check removes the route,
+            // so a hidden tool cannot be called, and grants nothing.
+            "Listing is not access",
+            "the API mints one only while the sandbox's owner grants the account access",
+            "The group check only hides tools (a hidden tool cannot be called either) and never grants anything",
+            "a sandbox id alone the tools are listed but every call that needs the API is refused (`sandbox-agent-key-required`)",
+            "docs.arete.run/sandboxes/connect-agent",
+        ] {
+            assert!(long.contains(needle), "{needle:?} missing:\n{long}");
+        }
+        // `Content-Length` framing is accepted: the help must not say
+        // otherwise.
+        assert!(!long.contains("not supported"), "{long}");
+        // `commandGroups: []` is a known empty set, not an absent one: the
+        // help must not fold the two into "no groups".
+        assert!(!long.contains("no groups"), "{long}");
+        // The sandbox tools' group rule is their own: account tools are
+        // always listed and `install` needs an explicit grant, so the help
+        // must not generalise it to every tool.
+        assert!(!long.to_lowercase().contains("every tool"), "{long}");
+        // Hiding removes the tool's route (`AreteMcp::with_surface`): the
+        // help must not say the group check leaves calls alone.
+        assert!(!long.contains("affects listing only"), "{long}");
     }
 
     /// The subcommand is `validate`; `check` is an alias for the word the

@@ -144,8 +144,9 @@ pub struct ConnectArgs {
     /// (e.g. `wss://your-stack.stack.arete.run`).
     pub url: String,
     /// Optional explicit API key (override). If omitted, the server resolves
-    /// the key from the `ARETE_API_KEY` env var, then from the a4 login
-    /// (`a4 auth signup` / `a4 auth login`).
+    /// the selected profile's a4 login (generated configs select `agent`);
+    /// without a selected profile, the `ARETE_API_KEY` env var, then the a4
+    /// login (`a4 auth signup` / `a4 auth login`).
     /// Prefer leaving this blank in agent calls so the key does not enter
     /// the model context or chat transcript.
     #[serde(default)]
@@ -4047,8 +4048,11 @@ impl AreteMcp {
                           Returns a connection_id used by subscribe and query tools.\n\n\
                           AUTH: Prefer omitting `api_key` in agent calls — the \
                           server resolves it automatically from (1) explicit arg, \
-                          (2) `ARETE_API_KEY` env var, (3) the a4 login \
-                          (`a4 auth signup` / `a4 auth login`). Passing the key as an argument puts it \
+                          (2) the selected profile's a4 login (generated configs \
+                          select `agent`; `ARETE_API_KEY` is then not read), \
+                          (3) without a selected profile, the `ARETE_API_KEY` env \
+                          var, then the a4 login (`a4 auth signup` / `a4 auth \
+                          login`). Passing the key as an argument puts it \
                           in the model context and chat transcript, which is \
                           usually not what you want. The response includes a \
                           `key_source` field so you can see which lookup path \
@@ -6826,6 +6830,30 @@ mod ergonomics_tests {
         );
         assert!(
             !description.contains("only where its `coverageVia` entry has `subscribe: true`"),
+            "{description}"
+        );
+    }
+
+    #[test]
+    fn connect_states_the_key_precedence_credentials_resolve_applies() {
+        // `credentials::resolve_with`: a selected profile's login outranks
+        // `ARETE_API_KEY`, which is read only without one. The generated
+        // config selects `agent`, so an order with the environment key
+        // second sends agents to a key that is never read.
+        let tools = AreteMcp::new().tools();
+        let description = tools
+            .iter()
+            .find(|tool| tool.name == "connect")
+            .and_then(|tool| tool.description.clone())
+            .expect("connect is listed with a description");
+        assert!(
+            description.contains(
+                "(2) the selected profile's a4 login (generated configs select `agent`; `ARETE_API_KEY` is then not read), (3) without a selected profile, the `ARETE_API_KEY` env var, then the a4 login"
+            ),
+            "{description}"
+        );
+        assert!(
+            !description.contains("(2) `ARETE_API_KEY`"),
             "{description}"
         );
     }

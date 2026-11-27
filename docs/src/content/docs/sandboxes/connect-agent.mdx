@@ -37,14 +37,16 @@ a4 doctor --summary --json
 [Grant the agent's account](/sandboxes/agents/#grants) on the sandbox's page.
 That's all the setup the agent needs: no sandbox id goes into its
 configuration. The MCP server lists the `sandbox_*` tools whenever it has the
-agent's key, and asks Arete which sandboxes the agent has been granted.
+agent's key and the account has the `sandboxes` command group (the default),
+and asks Arete which sandboxes the agent has been granted.
 
 Restart the host if it was running before setup, so it starts the `arete` MCP
 server that `a4 init` configured. Where each host keeps its configuration
 (Claude Code, Cursor, VS Code, Codex, OpenCode, Gemini CLI) is in the
-[MCP reference](/agent-skills/mcp/#configure-your-agent-1). `ARETE_API_KEY`
-set to the agent account's secret key replaces the stored login, for hosts
-without one.
+[MCP reference](/agent-skills/mcp/#configure-your-agent-1). That
+configuration runs `a4 --profile agent mcp`, which reads only the `agent`
+profile's login and ignores `ARETE_API_KEY`; on a host without the login,
+store the agent's key with `a4 auth login --profile agent --key <a4_ak_...>`.
 
 ## 3. Choose the sandbox
 

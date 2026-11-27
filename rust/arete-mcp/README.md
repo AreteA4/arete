@@ -8,17 +8,26 @@ primitives a human operator uses through `a4 explore`, `a4 know`, and
 `a4 stream`.
 
 **The server ships inside the `a4` CLI as `a4 mcp`.** It speaks MCP over
-stdio: newline-delimited JSON (one message per line), as the MCP stdio
-transport specifies, with LSP-style `Content-Length` framing also accepted
-for clients that use it, detected per message and mirrored in each reply;
-stdout carries MCP frames only and logs go to stderr. Input that is not a
-message is answered with a JSON-RPC parse error, and a `Content-Length`
-header block that cannot be used (so where the message ends is unknown) is
-answered with one and then the stream is closed. Requests awaiting a reply
-are capped; one past the cap is answered with a `Server busy` error
-(`-32000`) in its own framing, and one that repeats the id of a request
-awaiting a reply with a `Duplicate request id` error (`-32600`) rather
-than a place under the cap. This crate is a library
+stdio, reading JSON-RPC messages in either of two framings, detected per
+message: newline-delimited JSON, one message per line, as the MCP stdio
+transport specifies; or LSP-style `Content-Length` framing, a block of
+`Name: value` header lines holding `Content-Length: <bytes>`, a blank line,
+then that many bytes of JSON. Each reply uses the framing of the request it
+answers; a message the server starts uses the framing last seen from the
+client (newline-delimited before the first). Input that is not JSON gets a
+`Parse error` (`-32700`) and JSON that is not a JSON-RPC message an
+`Invalid request` (`-32600`), both without an id. A header block that
+cannot be used (over 8 KiB, a header line that starts with whitespace, a
+line that is not a header, or a `Content-Length` that is missing, repeated
+or not a byte count) gets a `Parse error` and the stream is closed. A line
+(newline included) or framed body over 16 MiB is dropped without a reply
+and logged. At most 1024
+requests may await a reply, with 64 KiB of string ids between them; a
+request past either limit gets a `Server busy` error (`-32000`) with its id,
+in its framing. A request that repeats the id of one awaiting a reply gets a
+`Duplicate request id` error (`-32600`) and takes no room in the budget; an
+id is free again once its request is answered or cancelled. stdout carries
+MCP frames only and logs go to stderr. This crate is a library
 (`arete_mcp::serve_stdio()`) that the `a4` binary links; you do not install
 it separately.
 
@@ -173,10 +182,12 @@ only their tools. `ping`, `account_status`, `rename_agent` and
 | `protocols` | `protocol_*`, `squads_*` |
 | `dev` | `dev_*` |
 
-With no key, when the API can't be reached, or when it reports no groups,
-every tool is listed except the `install` group's (`describe_sdk`), which
-needs the API to report `install`. Hiding is never the gate: the API refuses
-calls the account may not make, whether the tool is listed or not.
+With no key, when the API can't be reached, or when it reports no
+`commandGroups` list, every tool is listed except the `install` group's
+(`describe_sdk`), which needs the API to report `install`; an empty list
+hides all but the always-listed tools. Hiding is never the gate: a hidden tool
+cannot be called, and the API refuses the calls a listed tool makes that the
+account may not make.
 
 ### Discovery
 
@@ -285,8 +296,8 @@ platform can do for each: `read` (fetch on-chain account state), `build`
 stack).
 
 **Unlike the discovery tools, every knowledge tool requires an API key.** The
-key resolves through the same precedence as `connect` (`ARETE_API_KEY`, then
-the `a4` login), and when none resolves the call fails
+key resolves as `connect`'s does (see [Authentication](#authentication)),
+and when none resolves the call fails
 immediately with an error pointing at `a4 auth login` — there is no public
 subset. The same HTTPS-origin rule as discovery applies: a key is only sent to
 `https://arete.run`, `https://*.arete.run`, or a loopback address.
@@ -343,8 +354,9 @@ chat transcript, and the JSON-RPC stdio traffic between the client and
 
 1. **Explicit `api_key` argument** on the `connect` call (override, useful
    for testing or multi-stack setups; it must match a selected built-in profile)
-2. When **`ARETE_PROFILE` is selected**, that named profile of the `a4`
-   login. A selected profile deliberately outranks `ARETE_API_KEY`.
+2. When a **profile is selected** (`a4 --profile`, else the project's `agent`
+   default, else `ARETE_PROFILE`), that named profile of the `a4` login. A
+   selected profile deliberately outranks `ARETE_API_KEY`, which is not read.
 3. Without a selected profile, **`ARETE_API_KEY`**, then the single `a4` login
    profile holding a key (`a4 auth signup` stores the `agent` profile,
    `a4 auth login --profile human` the `human` one).
@@ -585,9 +597,12 @@ transaction to sign or an RPC URL. Owner operations (rules, caps, grants,
 pause, revoke) live in the dashboard and are not reachable from these tools.
 
 **Auth.** Listed when there is an account API key (or `ARETE_SANDBOX_ID`
-is set). The agent uses its own account's secret API key (`ARETE_API_KEY`,
-or its a4 login) for two calls: `GET /api/agent/sandboxes` lists the
-sandboxes this key can mint a token for right now, and `POST /ws/sessions`
+is set to a sandbox id), unless `GET /api/auth/me` reports a
+`commandGroups` list without `sandboxes`. The agent uses its own account's
+secret API key (the selected profile's a4 login; without a profile,
+`ARETE_API_KEY`, else the a4 login) for two calls: `GET /api/agent/sandboxes`
+lists the sandboxes this key can mint a token for right now, and
+`POST /ws/sessions`
 with `{ "targetKind": "sandbox", "targetId": "<sandbox id>" }` mints a
 short-lived token for one of them. The mint succeeds only while the
 sandbox's owner grants this agent access; the token carries a

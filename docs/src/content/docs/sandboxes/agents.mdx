@@ -16,8 +16,9 @@ a4 --profile agent auth signup --if-missing --json
 ```
 
 That stores an `a4_ak_*` key in the `agent` profile and never prints it. The
-CLI and the MCP server load it for you; `ARETE_API_KEY` set to the agent's
-secret key works too, for hosts where you configure the server by hand.
+CLI and the MCP server load it for you. `ARETE_API_KEY` set to the agent's
+secret key works only where no profile is selected: not under the generated
+`a4 --profile agent mcp` config, nor in a project `a4 init` set up.
 
 To attach the agent to your account, have it create a claim link and open the
 link yourself:
