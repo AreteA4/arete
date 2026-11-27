@@ -27,7 +27,8 @@ const SELF = path
 
 const CMDLET =
   /(?<![\w$.-])(?:irm|iwr|Invoke-RestMethod|Invoke-WebRequest)(?![\w-])/gi;
-const WEBCLIENT = /\bDownload(?:String|File)\s*\(/gi;
+// A WebClient method call; the `.` keeps a JS `downloadFile(...)` out.
+const WEBCLIENT = /\.Download(?:String|File)\s*\(/gi;
 // Switch parameters of Invoke-RestMethod / Invoke-WebRequest. Any other
 // parameter takes a value, so the token after it is not the URL.
 const SWITCHES = [
@@ -112,48 +113,50 @@ function readValue(text, i) {
   return [text.slice(i, i + end), i + end];
 }
 
-// The URL an Invoke-RestMethod / Invoke-WebRequest call at `i` (just after
-// the cmdlet name) fetches: the -Uri value, else the first positional
-// argument. Arguments end at a pipe, `;`, `,`, a closing bracket or a comment.
-function cmdletUrl(text, i) {
-  let uri = null;
-  let positional = null;
+// The URL an Invoke-RestMethod / Invoke-WebRequest call fetches, from `text`
+// (the line after the cmdlet name): the -Uri value or the first positional
+// argument. Uri is the only positional parameter, so the first of either is
+// the URL. Arguments end at a pipe, `;`, `,`, a closing bracket or a comment.
+function cmdletUrl(text) {
+  let i = 0;
   for (;;) {
     while (/\s/.test(text[i] ?? "")) i++;
-    if (i >= text.length || "|;,)}]#".includes(text[i])) break;
+    if (i >= text.length || "|;,)}]#".includes(text[i])) return null;
     const param = /^-([A-Za-z]\w*)(:?)/.exec(text.slice(i));
-    if (!param) {
-      const [value, next] = readValue(text, i);
-      positional ??= value;
-      i = next;
-      continue;
-    }
+    if (!param) return readValue(text, i)[0];
     i += param[0].length;
     const name = param[1].toLowerCase();
     const isUri = name.length >= 2 && "uri".startsWith(name);
-    const isSwitch = !isUri && SWITCHES.some((s) => s.startsWith(name));
+    // An exact name wins over a longer one it prefixes: -Proxy takes a value
+    // although -ProxyUseDefaultCredentials is a switch.
+    const isSwitch =
+      !isUri && name !== "proxy" && SWITCHES.some((s) => s.startsWith(name));
     if (isSwitch && !param[2]) continue;
-    while (!param[2] && /\s/.test(text[i] ?? "")) i++;
-    if (i >= text.length || "|;,)}]#".includes(text[i])) break;
+    // `-Uri: value` binds like `-Uri:value`.
+    while (/\s/.test(text[i] ?? "")) i++;
+    if (i >= text.length || "|;,)}]#".includes(text[i])) return null;
     const [value, next] = readValue(text, i);
-    if (isUri) uri ??= value;
+    if (isUri) return value;
     i = next;
   }
-  return uri ?? positional;
 }
 
 // The URLs one logical line fetches with PowerShell: each cmdlet call's URL
 // and the first argument of each WebClient DownloadString/DownloadFile call.
+// A call's arguments are read from at most WINDOW characters after its name,
+// which keeps a line full of cmdlet names or open brackets linear.
+const WINDOW = 1024;
 function fetchedUrls(line) {
   const urls = [];
   for (const m of line.matchAll(CMDLET)) {
-    const url = cmdletUrl(line, m.index + m[0].length);
+    const start = m.index + m[0].length;
+    const url = cmdletUrl(line.slice(start, start + WINDOW));
     if (url !== null) urls.push(url);
   }
   for (const m of line.matchAll(WEBCLIENT)) {
-    let i = m.index + m[0].length;
-    while (/\s/.test(line[i] ?? "")) i++;
-    if (i < line.length && line[i] !== ")") urls.push(readValue(line, i)[0]);
+    const start = m.index + m[0].length;
+    const args = line.slice(start, start + WINDOW).trimStart();
+    if (args && args[0] !== ")") urls.push(readValue(args, 0)[0]);
   }
   return urls;
 }
@@ -232,6 +235,8 @@ test("the matcher catches PowerShell fetches of arete.run, and only those", () =
     "irm https://www.arete.run/install.ps1 | iex",
     "irm `\n  https://arete.run/install.ps1 | iex",
     "Invoke-WebRequest -UseBasicParsing ` \r\n  -Uri https://arete.run/install.ps1",
+    "irm -Uri: https://arete.run/install.ps1 | iex",
+    "irm -Proxy http://proxy:8080 https://arete.run/install.ps1 | iex",
   ]) {
     assert.ok(flagged(snippet), snippet);
   }
@@ -250,9 +255,26 @@ test("the matcher catches PowerShell fetches of arete.run, and only those", () =
     "irm fails when https://arete.run/install.ps1 answers 308 Permanent Redirect",
     "Invoke-WebRequest -Uri https://docs.arete.run/install.ps1 -Headers @{ Referer = 'https://arete.run/' }",
     "Run `irm`\nhttps://arete.run/ is the site",
+    "irm https://docs.arete.run/install.ps1 -Proxy http://arete.run/",
+    'await downloadFile("https://arete.run/a4/latest.json")',
   ]) {
     assert.ok(!flagged(snippet), snippet);
   }
+});
+
+test("a line full of cmdlet names or open brackets is scanned in linear time", () => {
+  const started = performance.now();
+  for (const unit of [
+    "irm a ",
+    "irm -Method ",
+    "irm (",
+    "irm @{ ",
+    ".DownloadString((",
+  ]) {
+    assert.deepEqual(offendersIn("big.js", unit.repeat(10_000)), []);
+  }
+  // About 1 s here; the quadratic parser took over 25 s on these lines.
+  assert.ok(performance.now() - started < 5_000);
 });
 
 test("a URL in a simple literal assignment is resolved (concatenations, environment variables and computed strings are not)", () => {
