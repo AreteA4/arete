@@ -183,8 +183,8 @@ const EOF_STDOUT_GRACE: Duration = Duration::from_secs(5);
 /// had read all of the frame, and a client that reads a large frame slowly
 /// would see the grace run out while it reads; in writes this small, each
 /// part of the frame it reads counts. A client must so read at least this
-/// much per [`EOF_STDOUT_GRACE`] to be waited for. It is the pipe's atomic
-/// write size.
+/// much per [`EOF_STDOUT_GRACE`] to be waited for. It is Linux's atomic
+/// pipe write size (`PIPE_BUF`).
 const MAX_WRITE_BYTES: usize = 4 * 1024;
 
 /// The name of the header that frames a message, with its colon, as
