@@ -462,14 +462,18 @@ const SEED: u8 = 42;
 
 /// A signer whose keypair file is in `dir`, with `policy` (TOML lines).
 fn signer(dir: &Path, origin: &str, policy: &str) -> (LocalSigner, SigningKey) {
+    signer_with_rpc(dir, &format!("{origin}/rpc"), policy)
+}
+
+/// [`signer`] with its `rpcUrl` at `rpc`.
+fn signer_with_rpc(dir: &Path, rpc: &str, policy: &str) -> (LocalSigner, SigningKey) {
     let key = SigningKey::from_bytes(&[SEED; 32]);
     let mut bytes = vec![SEED; 32];
     bytes.extend_from_slice(key.verifying_key().as_bytes());
     let path = dir.join("agent.json");
     std::fs::write(&path, serde_json::to_string(&bytes).unwrap()).unwrap();
-    let text = format!(
-        "[signer]\nkeypair = {path:?}\nrpcUrl = \"{origin}/rpc\"\n[signer.policy]\n{policy}"
-    );
+    let text =
+        format!("[signer]\nkeypair = {path:?}\nrpcUrl = \"{rpc}\"\n[signer.policy]\n{policy}");
     (LocalSigner::from_toml(&text).unwrap().unwrap(), key)
 }
 
@@ -1067,11 +1071,13 @@ async fn execute_keeps_the_execution_id_when_the_api_stalls_after_sending() {
         guard.stall = Some(("POST", "/api/execution-intents/e-1/submit"));
         guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
     }
-    let error = execute().await.unwrap_err().to_string();
+    let error = execute().await.unwrap_err();
+    let unknown = error.downcast_ref::<MaybeSubmitted>().expect("unknown");
+    assert_eq!(unknown.execution_id, "e-1");
+    let error = error.to_string();
     assert!(
-        error.ends_with(
-            "Execution e-1 may have been submitted: read it with protocol_intent before \
-             submitting it or running the step again."
+        error.contains(
+            "; a read then showed it still `prepared`. Execution e-1 may have been submitted"
         ),
         "{error}"
     );
@@ -1114,11 +1120,37 @@ fn taken(state: &str) -> (u16, Value) {
     )
 }
 
-/// A gateway's answer to a submit (a 5xx, 408 or 429 without the API's
-/// refusal) may hide a submit the API took. One read settles it: taken,
-/// the execution is reported submitted; otherwise the error keeps the
-/// execution id and says to read it before anything is run again, never a
-/// plain refusal. A refusal the API wrote (with a `code`) stays one.
+/// The guidance an unknown submit ends with, from `protocol_submit` (the
+/// agent holds the signed transactions) or `protocol_execute` (they are in
+/// the error's data).
+fn unknown_guidance(execution: &str, expires_at: &str, execute: bool) -> String {
+    let mut text = format!(
+        "Execution {execution} may have been submitted, even if protocol_intent shows it \
+         `prepared`. Do not prepare and sign the step again: resend the same signed \
+         transactions with protocol_submit{}, which cannot land twice (the chain takes a \
+         signed transaction once), or wait until protocol_intent shows the execution settled \
+         or `expired` (expiresAt {expires_at}).",
+        if execute {
+            " (`signedTransactions` in this error's data)"
+        } else {
+            ""
+        }
+    );
+    if execute {
+        text.push_str(
+            " Running protocol_execute again for this step resends them itself, but only in \
+             this a4 mcp session: a restarted server does not remember the execution.",
+        );
+    }
+    text
+}
+
+/// Any 5xx, 408 or 429 answer to a submit may hide a submit the API took,
+/// whether a gateway answered it or the API did, with a `code` or without.
+/// One read settles it: taken, the execution is reported submitted;
+/// otherwise the error keeps the execution id, says how the read failed to
+/// settle it, and gives the safe ways on, never a plain refusal. Only a
+/// body that says `submissionState: "not_submitted"` is a refusal.
 #[tokio::test]
 async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
     let (origin, state) = mock_api();
@@ -1140,11 +1172,32 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
         let signed = b64(&crate::dev::sign_transaction(&bytes, key).unwrap());
         (agent, signed)
     };
-    for status in [502, 504, 408, 429] {
+    let answers = [
+        (502, json!("<html>upstream timed out</html>")),
+        (504, json!("<html>upstream timed out</html>")),
+        (408, json!("<html>upstream timed out</html>")),
+        (429, json!("<html>upstream timed out</html>")),
+        // The transport error the transactions SDKs model for a submit
+        // whose outcome the API itself does not know.
+        (
+            504,
+            json!({ "code": "upstream_timeout", "message": "Submission outcome is unknown",
+                "retryable": false, "submissionState": "unknown" }),
+        ),
+        (
+            500,
+            json!({ "error": "internal", "code": "internal-error" }),
+        ),
+        (
+            503,
+            json!({ "error": "submits are paused", "code": "protocol-submit-paused" }),
+        ),
+    ];
+    for (status, body) in answers.clone() {
         restart(&state);
         {
             let mut guard = state.lock().unwrap();
-            guard.submit_answer = Some((status, json!("<html>upstream timed out</html>")));
+            guard.submit_answer = Some((status, body.clone()));
             guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
         }
         let (agent, signed) =
@@ -1155,39 +1208,45 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
             .unwrap_err();
         let unknown = error.downcast_ref::<MaybeSubmitted>().expect("unknown");
         assert_eq!(unknown.execution_id, "e-1");
+        assert_eq!(unknown.expires_at, Some(json!(1_900_000_000)));
+        assert_eq!(unknown.signed, None);
         let message = error.to_string();
         assert!(
-            message.contains(&format!("answered {status} ")),
+            message.starts_with(&format!("The submit was answered {status} ")),
             "{message}"
         );
         assert!(
-            message.ends_with(
-                "Execution e-1 may have been submitted: read it with protocol_intent before \
-                 submitting it or running the step again."
-            ),
+            message.ends_with(&format!(
+                "; a read then showed it still `prepared`. {}",
+                unknown_guidance("e-1", "1900000000", false)
+            )),
             "{message}"
         );
         assert!(!message.contains("a4_sk_test"), "{message}");
         assert!(!message.contains("session-token"), "{message}");
         assert_eq!(sent(&state, "GET", "/execution-intents/e-1").len(), 1);
+        assert_eq!(sent(&state, "POST", "/submit").len(), 1);
     }
 
-    // The API took them behind the gateway's 504: reported submitted.
-    restart(&state);
-    {
-        let mut guard = state.lock().unwrap();
-        guard.submit_answer = Some((504, Value::Null));
-        guard.intent_answer = Some(taken("submitting"));
+    // The API took them behind the error, whatever the body: reported
+    // submitted.
+    for (status, body) in answers {
+        restart(&state);
+        {
+            let mut guard = state.lock().unwrap();
+            guard.submit_answer = Some((status, body));
+            guard.intent_answer = Some(taken("submitting"));
+        }
+        let (agent, signed) =
+            prepare_signed(ProtocolAgent::new(None).with_api(&origin, "a4_sk_test")).await;
+        let result = agent
+            .submit(&TargetArgs::default(), "e-1", &[signed], Some(false), None)
+            .await
+            .unwrap();
+        assert_eq!(result["executionId"], "e-1", "{result}");
+        assert_eq!(result["state"], "submitting", "{result}");
+        assert_eq!(sent(&state, "POST", "/submit").len(), 1);
     }
-    let (agent, signed) =
-        prepare_signed(ProtocolAgent::new(None).with_api(&origin, "a4_sk_test")).await;
-    let result = agent
-        .submit(&TargetArgs::default(), "e-1", &[signed], Some(false), None)
-        .await
-        .unwrap();
-    assert_eq!(result["executionId"], "e-1", "{result}");
-    assert_eq!(result["state"], "submitting", "{result}");
-    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
 
     // A read that names no state (a proxy's page) shows nothing either way.
     restart(&state);
@@ -1205,26 +1264,84 @@ async fn a_gateway_answer_to_a_submit_is_an_unknown_outcome() {
     assert!(error.downcast_ref::<MaybeSubmitted>().is_some(), "{error}");
     assert!(error.to_string().contains("returned no state"), "{error}");
 
-    // The API's own refusal, even with a 5xx, is a refusal.
+    // The API says it did not submit them: a refusal, after the read.
+    for spelling in ["submissionState", "submission_state"] {
+        restart(&state);
+        {
+            let mut guard = state.lock().unwrap();
+            guard.submit_answer = Some((
+                503,
+                json!({ "error": "submits are paused", "code": "protocol-submit-paused",
+                    spelling: "not_submitted" }),
+            ));
+            guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
+        }
+        let (agent, signed) =
+            prepare_signed(ProtocolAgent::new(None).with_api(&origin, "a4_sk_test")).await;
+        let error = agent
+            .submit(&TargetArgs::default(), "e-1", &[signed], None, None)
+            .await
+            .unwrap_err();
+        assert!(error.downcast_ref::<MaybeSubmitted>().is_none(), "{error}");
+        assert!(
+            error
+                .to_string()
+                .starts_with("The submit was refused with 503 Service Unavailable, not submitted"),
+            "{error}"
+        );
+        assert_eq!(sent(&state, "GET", "/execution-intents/e-1").len(), 1);
+    }
+
+    // protocol_execute: a coded 500 after the API took the transactions
+    // completes the step; a coded unknown outcome is remembered, and
+    // running the step again prepares nothing new.
+    let dir = tempfile::tempdir().unwrap();
+    let agent = signing_agent(dir.path(), &origin);
+    let call_args = json!({});
+    let call = tip_call(&call_args);
+    let target = hosted(Some("d-1"));
     restart(&state);
-    state.lock().unwrap().submit_answer = Some((
-        503,
-        json!({ "error": "submits are paused", "code": "protocol-submit-paused" }),
-    ));
-    let (agent, signed) =
-        prepare_signed(ProtocolAgent::new(None).with_api(&origin, "a4_sk_test")).await;
-    let error = agent
-        .submit(&TargetArgs::default(), "e-1", &[signed], None, None)
-        .await
-        .unwrap_err();
-    assert!(error.downcast_ref::<MaybeSubmitted>().is_none(), "{error}");
+    {
+        let mut guard = state.lock().unwrap();
+        guard.submit_answer = Some((
+            500,
+            json!({ "error": "internal", "code": "internal-error" }),
+        ));
+        guard.intent_answer = Some(taken("completed"));
+    }
+    let done = agent.execute(&target, &call, None, None).await.unwrap();
+    assert_eq!(done["state"], "completed", "{done}");
+    assert_eq!(sent(&state, "GET", "/execution-intents/e-1").len(), 1);
+    restart(&state);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.submit_answer = Some((
+            504,
+            json!({ "code": "upstream_timeout", "submissionState": "unknown" }),
+        ));
+        guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
+    }
+    let error = agent.execute(&target, &call, None, None).await.unwrap_err();
+    let unknown = error.downcast_ref::<MaybeSubmitted>().expect("unknown");
+    let submitted: Vec<String> = sent(&state, "POST", "/submit")[0].body["signedTransactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|signed| signed.as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(unknown.signed.as_ref(), Some(&submitted));
     assert!(
         error
             .to_string()
-            .starts_with("Submit of execution e-1 failed (503 Service Unavailable): "),
+            .ends_with(&unknown_guidance("e-1", "1900000000", true)),
         "{error}"
     );
-    assert!(sent(&state, "GET", "/execution-intents/e-1").is_empty());
+    // The API had taken them: running the step again reports that.
+    state.lock().unwrap().intent_answer = Some(taken("completed"));
+    let again = agent.execute(&target, &call, None, None).await.unwrap();
+    assert_eq!(again["state"], "completed", "{again}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
 }
 
 /// Running `protocol_execute` again before its last execution settled (an
@@ -1381,6 +1498,346 @@ async fn running_protocol_submit_again_sends_an_execution_once() {
     assert_eq!(result["state"], "completed", "{result}");
     assert_eq!(result["settled"], true, "{result}");
     assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+}
+
+/// The safe ways on after an unknown submit hold across a restart of the
+/// server (a fresh agent remembers nothing): resending the same signed
+/// transactions with protocol_submit, from `signedTransactions` in
+/// protocol_execute's error or from the external signer's own, never
+/// prepares a second execution, and every submit carries the same bytes.
+/// So do duplicate protocol_submit calls in parallel. Waiting until the
+/// execution is `expired` is the other way: only then does a fresh run
+/// prepare anew.
+#[tokio::test]
+async fn after_a_restart_the_safe_way_on_sends_no_second_transaction() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let call_args = json!({});
+    let call = tip_call(&call_args);
+    let target = hosted(Some("d-1"));
+    let unknown_submit = |state: &Shared| {
+        let mut guard = state.lock().unwrap();
+        guard.submit_answer = Some((504, Value::Null));
+        guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
+    };
+    let same_bytes = |state: &Shared| {
+        let submits = sent(state, "POST", "/submit");
+        assert!(submits.iter().all(|seen| seen.body == submits[0].body));
+        submits.len()
+    };
+
+    // protocol_execute, then a restarted server.
+    unknown_submit(&state);
+    let error = signing_agent(dir.path(), &origin)
+        .execute(&target, &call, None, None)
+        .await
+        .unwrap_err();
+    let signed = error
+        .downcast_ref::<MaybeSubmitted>()
+        .unwrap()
+        .signed
+        .clone()
+        .unwrap();
+    state.lock().unwrap().submit_answer = None;
+    let fresh = signing_agent(dir.path(), &origin);
+    let result = fresh
+        .submit(&target, "e-1", &signed, None, None)
+        .await
+        .unwrap();
+    assert_eq!(result["state"], "completed", "{result}");
+    assert_eq!(same_bytes(&state), 2);
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+
+    // The external signer: protocol_prepare, sign, protocol_submit.
+    restart(&state);
+    unknown_submit(&state);
+    let key = SigningKey::from_bytes(&[7; 32]);
+    let wallet = b58(key.verifying_key().as_bytes());
+    let external = ProtocolAgent::new(None).with_api(&origin, "a4_sk_test");
+    let prepared = external.prepare(&target, &call, &wallet).await.unwrap();
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(
+            prepared["transactions"][0]["transactionBase64"]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    let signed = vec![b64(&crate::dev::sign_transaction(&bytes, &key).unwrap())];
+    let error = external
+        .submit(&target, "e-1", &signed, None, None)
+        .await
+        .unwrap_err();
+    assert!(error.downcast_ref::<MaybeSubmitted>().is_some(), "{error}");
+    // Two duplicate calls at once on a restarted server, the API still
+    // answering 504: only the same bytes are sent.
+    let fresh = ProtocolAgent::new(None).with_api(&origin, "a4_sk_test");
+    let (first, second) = tokio::join!(
+        fresh.submit(&target, "e-1", &signed, None, None),
+        fresh.submit(&target, "e-1", &signed, None, None)
+    );
+    assert!(first.is_err() && second.is_err());
+    assert_eq!(same_bytes(&state), 3);
+    state.lock().unwrap().submit_answer = None;
+    let result = fresh
+        .submit(&target, "e-1", &signed, None, None)
+        .await
+        .unwrap();
+    assert_eq!(result["state"], "completed", "{result}");
+    assert_eq!(same_bytes(&state), 4);
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+
+    // Expired: it can no longer land, so a fresh run is a new execution.
+    restart(&state);
+    state.lock().unwrap().intent_answer = Some(taken("expired"));
+    let fresh = signing_agent(dir.path(), &origin);
+    assert_eq!(
+        fresh.intent(&target, "e-1").await.unwrap()["state"],
+        "expired"
+    );
+    state.lock().unwrap().intent_answer = None;
+    fresh.execute(&target, &call, None, None).await.unwrap();
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+}
+
+/// protocol_execute reserves its step call before preparing: a second
+/// call while the first runs (two at once, or a host that timed out and
+/// called again) is refused `step-in-flight` and prepares and signs
+/// nothing. While the first one's execution is unsettled, a call with
+/// other args is refused `step-unsettled`; the same args answer for it,
+/// and once it settles other args run anew.
+#[tokio::test]
+async fn a_step_in_flight_is_prepared_and_sent_once() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let mut agent = signing_agent(dir.path(), &origin);
+    // The stalled submit is cut off at 500 ms: an unknown outcome.
+    agent.http = reqwest::Client::builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .unwrap();
+    {
+        let mut guard = state.lock().unwrap();
+        guard.stall = Some(("POST", "/api/execution-intents/e-1/submit"));
+        guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
+    }
+    let call_args = json!({});
+    let call = tip_call(&call_args);
+    let target = hosted(Some("d-1"));
+    let other_args = json!({ "amount": "2" });
+    let other = tip_call(&other_args);
+    let run = || {
+        crate::deadline::watchdog(
+            Duration::from_secs(10),
+            agent.execute(&target, &call, None, None),
+        )
+    };
+    let run_other = || {
+        crate::deadline::watchdog(
+            Duration::from_secs(10),
+            agent.execute(&target, &other, None, None),
+        )
+    };
+    let (first, second) = tokio::join!(run(), run());
+    let errors = [first.unwrap_err(), second.unwrap_err()];
+    let busy: Vec<&StepBusy> = errors
+        .iter()
+        .filter_map(|error| error.downcast_ref::<StepBusy>())
+        .collect();
+    assert_eq!(busy.len(), 1, "{errors:?}");
+    assert_eq!(busy[0].code, "step-in-flight");
+    assert!(busy[0]
+        .to_string()
+        .contains("nothing was prepared or signed for this call"));
+    assert!(errors
+        .iter()
+        .any(|error| error.downcast_ref::<MaybeSubmitted>().is_some()));
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+
+    let error = run_other().await.unwrap_err();
+    let busy = error.downcast_ref::<StepBusy>().expect("busy");
+    assert_eq!(busy.code, "step-unsettled");
+    assert_eq!(busy.execution_id.as_deref(), Some("e-1"));
+    assert!(error.to_string().contains("previous args ({})"), "{error}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+
+    {
+        let mut guard = state.lock().unwrap();
+        guard.stall = None;
+        guard.intent_answer = Some(taken("completed"));
+    }
+    let done = run().await.unwrap();
+    assert_eq!(done["executionId"], "e-1", "{done}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+    restart(&state);
+    run_other().await.unwrap();
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+
+    // Unsettled again: resending its signed transactions with
+    // protocol_submit, as the error says, settles it, and the step then
+    // runs with other args.
+    restart(&state);
+    {
+        let mut guard = state.lock().unwrap();
+        guard.stall = Some(("POST", "/api/execution-intents/e-1/submit"));
+        guard.intent_answer = Some((200, json!({ "executionId": "e-1", "state": "prepared" })));
+    }
+    let error = run().await.unwrap_err();
+    let signed = error
+        .downcast_ref::<MaybeSubmitted>()
+        .and_then(|unknown| unknown.signed.clone())
+        .expect("signed");
+    state.lock().unwrap().stall = None;
+    let resent = agent
+        .submit(&target, "e-1", &signed, None, None)
+        .await
+        .unwrap();
+    assert_eq!(resent["settled"], true, "{resent}");
+    let fresh = run_other().await.unwrap();
+    assert!(fresh.get("note").is_none(), "{fresh}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 2);
+
+    // A submit the API refused took nothing: the step is free at once.
+    restart(&state);
+    state.lock().unwrap().submit_answer = Some((
+        400,
+        json!({ "error": "bad signature", "code": "intent-invalid" }),
+    ));
+    let error = run().await.unwrap_err();
+    assert!(error.downcast_ref::<MaybeSubmitted>().is_none(), "{error}");
+    state.lock().unwrap().submit_answer = None;
+    let fresh = run().await.unwrap();
+    assert!(fresh.get("note").is_none(), "{fresh}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 2);
+}
+
+/// A protocol_execute dropped mid-call (a host cancelled it) frees its
+/// step while nothing is signed, and leaves it unsettled once signed, so
+/// the next run answers for that execution with the same bytes.
+#[tokio::test]
+async fn a_cancelled_execute_frees_its_step_until_it_signs() {
+    let (origin, state) = mock_api();
+    let dir = tempfile::tempdir().unwrap();
+    let agent = signing_agent(dir.path(), &origin);
+    let call_args = json!({});
+    let call = tip_call(&call_args);
+    let target = hosted(Some("d-1"));
+    let cancelled = |after| tokio::time::timeout(after, agent.execute(&target, &call, None, None));
+
+    // Dropped while preparing.
+    state.lock().unwrap().stall = Some(("POST", "/api/protocol-instances/i-1/steps/tip/prepare"));
+    cancelled(Duration::from_millis(300))
+        .await
+        .expect_err("still running");
+    restart(&state);
+    let done = agent.execute(&target, &call, None, None).await.unwrap();
+    assert!(done.get("note").is_none(), "{done}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+
+    // Dropped while sending.
+    restart(&state);
+    state.lock().unwrap().stall = Some(("POST", "/api/execution-intents/e-1/submit"));
+    cancelled(Duration::from_secs(2))
+        .await
+        .expect_err("still running");
+    state.lock().unwrap().stall = None;
+    let again = agent.execute(&target, &call, None, None).await.unwrap();
+    assert_eq!(again["state"], "completed", "{again}");
+    assert!(again["note"].is_string(), "{again}");
+    assert_eq!(sent(&state, "POST", "/prepare").len(), 1);
+    assert_eq!(sent(&state, "POST", "/submit").len(), 1);
+}
+
+/// `http://<address>` of an RPC that answers every request with a 200
+/// whose body is not JSON.
+fn not_json_rpc() -> String {
+    use std::io::Write;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let origin = format!("http://{}", listener.local_addr().unwrap());
+    std::thread::spawn(move || {
+        for mut stream in listener.incoming().flatten() {
+            let mut buffer = [0u8; 8192];
+            let _ = stream.read(&mut buffer);
+            let _ = stream.write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: 11\r\nconnection: close\r\n\r\n<html></ht>",
+            );
+        }
+    });
+    origin
+}
+
+/// An RPC whose URL carries its provider's key never shows that key, and
+/// never holds a call past its bound, whether it refuses the connection,
+/// answers something that is not JSON, or stalls: the receipt's
+/// `getTransaction`, the proposer's balance, and the simulation of a
+/// prepared step, which ends within the agent's simulation budget even
+/// when each RPC request has no bound of its own.
+#[tokio::test]
+async fn rpc_failures_never_show_the_rpc_key_or_hang() {
+    let (origin, _state) = mock_api();
+    let closed = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        format!("http://{}", listener.local_addr().unwrap())
+    };
+    let signature = receipt_case("legacy-wire")["receipt"]["signature"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let target = hosted(Some("d-1"));
+    let call_args = json!({});
+    let call = tip_call(&call_args);
+    let short = || {
+        reqwest::Client::builder()
+            .timeout(Duration::from_millis(300))
+            .build()
+            .unwrap()
+    };
+    for base in [closed, not_json_rpc(), crate::deadline::blackhole()] {
+        let rpc = format!("{base}/?api-key=rpc-secret");
+        let dir = tempfile::tempdir().unwrap();
+        let (signer, _) = signer_with_rpc(
+            dir.path(),
+            &rpc,
+            "deployments = [\"d-1\"]\nmaxSolPerTransaction = 1\n",
+        );
+        let mut agent = ProtocolAgent::new(Some(signer)).with_api(&origin, "a4_sk_test");
+        agent.http = short();
+
+        let receipt = crate::deadline::watchdog(Duration::from_secs(10), agent.receipt(&signature))
+            .await
+            .unwrap();
+        assert_eq!(receipt["onChain"]["checked"], false, "{receipt}");
+        assert!(receipt["onChain"]["error"].is_string(), "{receipt}");
+        assert!(!receipt.to_string().contains("rpc-secret"), "{receipt}");
+
+        let proposer = crate::deadline::watchdog(
+            Duration::from_secs(10),
+            agent.squads_proposer(&target, Some(&rpc)),
+        )
+        .await
+        .unwrap();
+        assert_eq!(proposer["balance"], "unavailable", "{proposer}");
+        assert!(!proposer.to_string().contains("rpc-secret"), "{proposer}");
+
+        // No bound on each RPC request: only the budget ends the stall.
+        agent.http = reqwest::Client::new();
+        agent.simulation_budget = Duration::from_millis(300);
+        let started = std::time::Instant::now();
+        let refused = crate::deadline::watchdog(
+            Duration::from_secs(10),
+            agent.execute(&target, &call, None, None),
+        )
+        .await
+        .unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(refused["state"], "refused", "{refused}");
+        assert!(!refused.to_string().contains("rpc-secret"), "{refused}");
+    }
 }
 
 #[tokio::test]

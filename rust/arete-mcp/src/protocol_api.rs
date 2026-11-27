@@ -345,8 +345,10 @@ impl ProtocolApi {
     }
 
     /// Submit the signed transactions of a prepared intent. A 5xx, 408 or
-    /// 429 without the API's refusal body (a `code`) is [`SubmitUnknown`]:
-    /// a gateway answered, and the API may have taken the transactions.
+    /// 429 is [`SubmitUnknown`] whatever its body, a `code` included: a
+    /// gateway, or an API that failed after taking the transactions, may
+    /// have answered, so the caller settles it with one read. Only a body
+    /// that says `submissionState: "not_submitted"` marks it as refused.
     pub async fn submit(
         &self,
         token: &str,
@@ -362,14 +364,13 @@ impl ProtocolApi {
             )
             .await?;
         if !status.is_success() {
-            let refused = submitted
-                .get("code")
-                .and_then(Value::as_str)
-                .is_some_and(|code| !code.is_empty());
-            if !refused && retried_status(status) {
+            if retried_status(status) {
                 return Err(anyhow!(SubmitUnknown {
                     status,
                     body: bounded_body(&submitted),
+                    not_submitted: ["submissionState", "submission_state"]
+                        .iter()
+                        .any(|field| submitted[*field] == "not_submitted"),
                 }));
             }
             bail!("Submit of execution {execution_id} failed ({status}): {submitted}");
@@ -414,7 +415,8 @@ impl ProtocolApi {
     /// submitted, so a read that fails, times out or is refused ends the
     /// wait with the last state read and the failure in `poll_error`
     /// instead of an error that would lose the execution id. A 5xx, 408 or
-    /// 429 is read again until the wait ends.
+    /// 429, or a 2xx that names no state (a proxy's page), is read again
+    /// until the wait ends, keeping the last state.
     pub async fn wait_intent(
         &self,
         token: &str,
@@ -453,9 +455,15 @@ impl ProtocolApi {
                 self.api_json(reqwest::Method::GET, &path, token, None),
             );
             match read.await {
-                Ok((status, body)) if status.is_success() => {
+                Ok((status, body)) if status.is_success() && body["state"].is_string() => {
                     state = body;
                     poll_error = None;
+                }
+                Ok((status, body)) if status.is_success() => {
+                    poll_error = Some(format!(
+                        "Reading execution {execution_id} returned no state ({status}): {}",
+                        bounded_body(&body)
+                    ));
                 }
                 Ok((status, body)) => {
                     let error = format!(
@@ -502,21 +510,29 @@ fn bounded_body(body: &Value) -> String {
     })
 }
 
-/// A submit answered with a 5xx, 408 or 429 and no refusal body: a gateway
-/// answered, not the API, so the transactions may have been taken.
+/// A submit answered with a 5xx, 408 or 429: a gateway, or an API that
+/// failed after taking the transactions, may have answered, so the
+/// transactions may have been taken unless the body says otherwise.
 #[derive(Debug)]
 pub struct SubmitUnknown {
     pub status: reqwest::StatusCode,
     pub body: String,
+    /// The body says `submissionState: "not_submitted"`: the API refused
+    /// the transactions without taking them.
+    pub not_submitted: bool,
 }
 
 impl std::fmt::Display for SubmitUnknown {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "The submit was answered {} without the API's refusal ({})",
-            self.status, self.body
-        )
+        if self.not_submitted {
+            write!(
+                f,
+                "The submit was refused with {}, not submitted ({})",
+                self.status, self.body
+            )
+        } else {
+            write!(f, "The submit was answered {} ({})", self.status, self.body)
+        }
     }
 }
 
@@ -1004,6 +1020,25 @@ mod wait_tests {
             assert!(!shown.contains("a4_sk_"), "{shown}");
             assert!(!shown.contains("session-secret"), "{shown}");
         }
+    }
+
+    /// A 2xx read that names no state (a proxy's page) keeps the last
+    /// state, is reported in `poll_error`, and is read again until the wait
+    /// ends.
+    #[tokio::test]
+    async fn a_poll_without_a_state_keeps_the_last_one() {
+        let origin = answering(200, "<html>sign in to the proxy</html>");
+        let (settled, took) = wait(&origin, Duration::from_millis(1200)).await;
+        assert!(took >= Duration::from_secs(1), "read again: {took:?}");
+        assert!(!settled.settled);
+        assert_eq!(settled.state, json!({ "state": "submitting" }));
+        assert_eq!(
+            settled.poll_error.as_deref(),
+            Some(
+                "Reading execution e-1 returned no state (200 OK): \
+                 <html>sign in to the proxy</html>"
+            )
+        );
     }
 
     /// A long error body is cut before it reaches `poll_error`.

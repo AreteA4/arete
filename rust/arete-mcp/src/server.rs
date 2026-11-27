@@ -687,8 +687,10 @@ fn transaction_format(format: Option<&str>) -> Result<Option<&str>, McpError> {
 }
 
 /// Map a protocol tool failure: argument problems are `invalid_params`; a
-/// submit whose outcome is unknown carries the execution to read and is
-/// not retryable.
+/// submit whose outcome is unknown carries the execution to read, its
+/// `expiresAt` and (from `protocol_execute`) the signed transactions to
+/// resend, and is not retryable; so is a step call that is running or has
+/// not settled.
 fn protocol_error(error: anyhow::Error) -> McpError {
     if error
         .downcast_ref::<crate::protocol_agent::InvalidArgs>()
@@ -696,12 +698,23 @@ fn protocol_error(error: anyhow::Error) -> McpError {
     {
         McpError::invalid_params(error.to_string(), None)
     } else if let Some(unknown) = error.downcast_ref::<crate::protocol_agent::MaybeSubmitted>() {
+        let mut data = json!({
+            "code": "submit-outcome-unknown",
+            "retryable": false,
+            "executionId": unknown.execution_id,
+            "expiresAt": unknown.expires_at,
+        });
+        if let Some(signed) = &unknown.signed {
+            data["signedTransactions"] = json!(signed);
+        }
+        McpError::internal_error(unknown.to_string(), Some(data))
+    } else if let Some(busy) = error.downcast_ref::<crate::protocol_agent::StepBusy>() {
         McpError::internal_error(
-            unknown.to_string(),
+            busy.to_string(),
             Some(json!({
-                "code": "submit-outcome-unknown",
+                "code": busy.code,
                 "retryable": false,
-                "executionId": unknown.execution_id,
+                "executionId": busy.execution_id,
             })),
         )
     } else {
@@ -3587,11 +3600,15 @@ impl AreteMcp {
                           per-transaction states with signatures. When `settled` is false, \
                           read it later with protocol_intent and do not resubmit; \
                           `pollError` then says why, when reading its state failed after \
-                          the submit. A submit whose answer was lost (in transit, or a \
-                          gateway's 5xx, 408 or 429) and that one read cannot show taken \
-                          fails with code `submit-outcome-unknown` and the `executionId` to \
-                          read first; calling this again for that execution reads it before \
-                          sending anything."
+                          the submit. A submit whose answer was lost (in transit, or any \
+                          5xx, 408 or 429) and that one read cannot show taken fails with \
+                          code `submit-outcome-unknown`, the `executionId` and its \
+                          `expiresAt`. A read showing it `prepared` does not rule out that it \
+                          was taken: never prepare and sign the step again; resend these same \
+                          signed transactions here (the chain takes a signed transaction \
+                          once), or wait until protocol_intent shows it settled or `expired`. \
+                          In this a4 mcp session, calling this again for an execution it sent \
+                          reads it before sending anything."
     )]
     async fn protocol_submit(
         &self,
@@ -3684,11 +3701,16 @@ impl AreteMcp {
                           broke and why, and nothing is signed or sent.\n\n\
                           Otherwise returns what protocol_submit returns plus the prepare \
                           `summary`. Guard and access rejections come back as `state: \
-                          \"rejected\"` like protocol_prepare. While this step's last \
-                          execution has not settled (`settled: false`, or a \
-                          `submit-outcome-unknown` error), running it again answers for that \
-                          execution (`note` says so) instead of preparing and signing a new \
-                          one."
+                          \"rejected\"` like protocol_prepare. One call per step (deployment, \
+                          instance, step, signer) runs at a time: another is refused with \
+                          `step-in-flight`. While this step's last execution has not settled \
+                          (`settled: false`, or a `submit-outcome-unknown` error, which \
+                          carries the `signedTransactions` to resend with protocol_submit), \
+                          running it again with the same args answers for that execution \
+                          (`note` says so) instead of preparing and signing a new one, and \
+                          other args are refused with `step-unsettled`. That holds only in \
+                          this a4 mcp session: after a restart, resend the \
+                          `signedTransactions` or wait until the execution is `expired`."
     )]
     async fn protocol_execute(
         &self,
@@ -8936,7 +8958,9 @@ mod deadline_tests {
 
     /// A submit a gateway answered, whose settling read failed too, reaches
     /// the agent as an unknown outcome: not retryable, with the execution
-    /// to read, and without the key or the session token.
+    /// to read and its `expiresAt` (unknown to a server that did not
+    /// prepare it), the safe ways on, and without the key or the session
+    /// token.
     #[tokio::test]
     async fn an_unknown_submit_reaches_the_agent_with_its_execution() {
         let (base, seen) = protocol_api();
@@ -8945,14 +8969,18 @@ mod deadline_tests {
         let answer = session.reply(15).await;
         assert_eq!(
             answer["error"]["data"],
-            json!({"code": "submit-outcome-unknown", "retryable": false, "executionId": "e-gw"}),
+            json!({"code": "submit-outcome-unknown", "retryable": false, "executionId": "e-gw",
+                "expiresAt": null}),
             "{answer}"
         );
         let message = answer["error"]["message"].as_str().unwrap();
         assert!(
             message.ends_with(
-                "Execution e-gw may have been submitted: read it with protocol_intent before \
-                 submitting it or running the step again."
+                "Execution e-gw may have been submitted, even if protocol_intent shows it \
+                 `prepared`. Do not prepare and sign the step again: resend the same signed \
+                 transactions with protocol_submit, which cannot land twice (the chain takes a \
+                 signed transaction once), or wait until protocol_intent shows the execution \
+                 settled or `expired`."
             ),
             "{message}"
         );

@@ -86,34 +86,119 @@ struct Remembered {
     wallet: Option<String>,
     /// Whether this server has sent the execution's submit.
     sent: bool,
+    /// The intent's `expiresAt`, from its prepare.
+    expires_at: Option<Value>,
 }
 
-/// A submit whose outcome is unknown: it failed in transit, or a gateway
-/// answered it, and one read did not show the API took the transactions.
+/// A submit whose outcome is unknown: it failed in transit, or was answered
+/// 5xx, 408 or 429, and one read did not show the API took the
+/// transactions. A read that shows the execution `prepared` does not rule
+/// that out, so the safe ways on are the same signed bytes again, which
+/// cannot land twice, or waiting until the execution is `expired`.
 #[derive(Debug)]
 pub struct MaybeSubmitted {
     pub execution_id: String,
     cause: String,
+    /// The intent's `expiresAt`, when known.
+    pub expires_at: Option<Value>,
+    /// The signed transactions, when the agent did not pass them itself
+    /// (`protocol_execute` signed them).
+    pub signed: Option<Vec<String>>,
 }
 
 impl std::fmt::Display for MaybeSubmitted {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{}. Execution {} may have been submitted: read it with protocol_intent before \
-             submitting it or running the step again.",
-            self.cause, self.execution_id
-        )
+            "{}. Execution {} may have been submitted, even if protocol_intent shows it \
+             `prepared`. Do not prepare and sign the step again: resend the same signed \
+             transactions with protocol_submit{}, which cannot land twice (the chain takes \
+             a signed transaction once), or wait until protocol_intent shows the execution \
+             settled or `expired`{}.",
+            self.cause,
+            self.execution_id,
+            if self.signed.is_some() {
+                " (`signedTransactions` in this error's data)"
+            } else {
+                ""
+            },
+            match &self.expires_at {
+                Some(Value::String(at)) => format!(" (expiresAt {at})"),
+                Some(at) => format!(" (expiresAt {at})"),
+                None => String::new(),
+            }
+        )?;
+        if self.signed.is_some() {
+            write!(
+                f,
+                " Running protocol_execute again for this step resends them itself, but only \
+                 in this a4 mcp session: a restarted server does not remember the execution."
+            )?;
+        }
+        Ok(())
     }
 }
 
 impl std::error::Error for MaybeSubmitted {}
 
-fn maybe_submitted(execution_id: &str, cause: &anyhow::Error) -> anyhow::Error {
-    anyhow!(MaybeSubmitted {
-        execution_id: execution_id.to_string(),
-        cause: format!("{cause:#}"),
-    })
+/// A `protocol_execute` refused before anything was prepared or signed,
+/// because the same step call is running or has not settled.
+#[derive(Debug)]
+pub struct StepBusy {
+    /// `step-in-flight` or `step-unsettled`.
+    pub code: &'static str,
+    pub execution_id: Option<String>,
+    message: String,
+}
+
+impl std::fmt::Display for StepBusy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for StepBusy {}
+
+/// What `protocol_execute` holds for a step call (deployment, instance,
+/// step and signer) in this session.
+#[derive(Debug, Clone)]
+enum StepRun {
+    /// A call is preparing, signing or sending it.
+    InFlight,
+    /// Its last execution has not settled: the submit's outcome was
+    /// unknown, or the wait ended first.
+    Unsettled(Unsettled),
+}
+
+#[derive(Debug, Clone)]
+struct Unsettled {
+    execution_id: String,
+    signed: Vec<String>,
+    /// The step args it was prepared with.
+    args: Value,
+}
+
+/// A step call reserved as [`StepRun::InFlight`]. Dropped, it leaves the
+/// step [`StepRun::Unsettled`] while `keep` holds a signed execution (it
+/// may have been sent), and free otherwise.
+struct Reservation {
+    steps: Arc<DashMap<String, StepRun>>,
+    key: String,
+    keep: Option<Unsettled>,
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        match self.keep.take() {
+            Some(unsettled) => {
+                self.steps
+                    .insert(self.key.clone(), StepRun::Unsettled(unsettled));
+            }
+            None => {
+                self.steps.remove(&self.key);
+            }
+        }
+    }
 }
 
 /// One resolved protocol API.
@@ -151,11 +236,13 @@ pub struct ProtocolAgent {
     hosted: Option<HostedOverride>,
     executions: Arc<DashMap<String, Remembered>>,
     instances: Arc<DashMap<String, Remembered>>,
-    /// Step calls whose last `protocol_execute` has not settled (its submit
-    /// had an unknown outcome, or the wait ended first): the execution and
-    /// its signed transactions. Running the call again answers for that
-    /// execution instead of preparing a new one, until it settles.
-    unsettled: Arc<DashMap<String, (String, Vec<String>)>>,
+    /// What `protocol_execute` holds per step call in this session: one
+    /// running, or one whose last execution has not settled (its submit
+    /// had an unknown outcome, or the wait ended first). Running the call
+    /// again answers for that execution instead of preparing a new one.
+    steps: Arc<DashMap<String, StepRun>>,
+    /// How long simulating a prepared step may take as a whole.
+    simulation_budget: Duration,
 }
 
 impl ProtocolAgent {
@@ -170,7 +257,8 @@ impl ProtocolAgent {
             hosted: None,
             executions: Arc::new(DashMap::new()),
             instances: Arc::new(DashMap::new()),
-            unsettled: Arc::new(DashMap::new()),
+            steps: Arc::new(DashMap::new()),
+            simulation_budget: SIMULATION_BUDGET,
         }
     }
 
@@ -576,7 +664,7 @@ impl ProtocolAgent {
         let rpc = target
             .rpc_url
             .as_deref()
-            .map(|url| Rpc::new(self.http.clone(), url).within(SIMULATION_BUDGET));
+            .map(|url| Rpc::new(self.http.clone(), url).within(self.simulation_budget));
         let summary = prepared_summary::summarize(&prepared, wallet, rpc.as_ref()).await?;
         let execution_id = prepared["intent"]["executionId"]
             .as_str()
@@ -595,6 +683,8 @@ impl ProtocolAgent {
                 instance: instance.clone(),
                 wallet: Some(wallet.to_string()),
                 sent: false,
+                expires_at: Some(prepared["intent"]["expiresAt"].clone())
+                    .filter(|at| !at.is_null()),
             },
         );
         if let Some(instance) = &instance {
@@ -690,16 +780,25 @@ impl ProtocolAgent {
         let target = self.target(args, remembered.as_ref())?;
         let deployment = self.deployment(&target, args, remembered.as_ref()).await?;
         let signed: Vec<String> = signed.iter().map(|s| s.trim().to_string()).collect();
-        self.submit_and_wait(
-            &target,
-            &deployment,
-            execution_id,
-            &signed,
-            remembered.as_ref(),
-            wait,
-            timeout,
-        )
-        .await
+        let result = self
+            .submit_and_wait(
+                &target,
+                &deployment,
+                execution_id,
+                &signed,
+                remembered.as_ref(),
+                wait,
+                timeout,
+            )
+            .await?;
+        // Settled: a protocol_execute step left unsettled by this execution
+        // (resent here, as its error says) is free to run anew.
+        if result["settled"] == json!(true) {
+            self.steps.retain(|_, run| {
+                !matches!(run, StepRun::Unsettled(unsettled) if unsettled.execution_id == execution_id)
+            });
+        }
+        Ok(result)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -768,9 +867,10 @@ impl ProtocolAgent {
     /// never sending an execution twice: one this server already sent is
     /// sent again only when a read shows the API never took it (still
     /// `prepared`), so the same signed bytes go again. A submit whose
-    /// outcome is unknown (lost in transit, timed out, or a 5xx, 408 or 429
-    /// without the API's refusal) is settled with one read; unless that
-    /// shows the transactions taken, it fails with [`MaybeSubmitted`].
+    /// outcome is unknown (lost in transit, timed out, or any 5xx, 408 or
+    /// 429) is settled with one read: taken, its state is returned; a 5xx
+    /// whose body says `not_submitted` is a refusal; otherwise it fails
+    /// with [`MaybeSubmitted`].
     async fn send_once(
         &self,
         target: &Target,
@@ -787,7 +887,7 @@ impl ProtocolAgent {
             match target.api.taken_state(token, execution_id).await {
                 Ok(Some(state)) => return Ok(state),
                 Ok(None) => {}
-                Err(error) => return Err(maybe_submitted(execution_id, &error)),
+                Err(error) => return Err(self.maybe_submitted(execution_id, &error)),
             }
         }
         self.executions
@@ -802,19 +902,36 @@ impl ProtocolAgent {
             Ok(submitted) => return Ok(submitted),
             Err(error) => error,
         };
-        let unknown = error.downcast_ref::<SubmitUnknown>().is_some()
-            || error.downcast_ref::<reqwest::Error>().is_some();
-        if !unknown {
-            return Err(error);
-        }
+        let refused = match error.downcast_ref::<SubmitUnknown>() {
+            Some(answered) => answered.not_submitted,
+            None if error.downcast_ref::<reqwest::Error>().is_some() => false,
+            None => return Err(error),
+        };
         match target.api.taken_state(token, execution_id).await {
             Ok(Some(state)) => Ok(state),
-            Ok(None) => Err(maybe_submitted(execution_id, &error)),
-            Err(read) => Err(maybe_submitted(
+            _ if refused => Err(error),
+            Ok(None) => Err(self.maybe_submitted(
                 execution_id,
-                &anyhow!("{error:#}; then {read:#}"),
+                &anyhow!("{error:#}; a read then showed it still `prepared`"),
             )),
+            Err(read) => {
+                Err(self.maybe_submitted(execution_id, &anyhow!("{error:#}; then {read:#}")))
+            }
         }
+    }
+
+    /// [`MaybeSubmitted`] for `execution_id`, with its `expiresAt` when
+    /// this server prepared it.
+    fn maybe_submitted(&self, execution_id: &str, cause: &anyhow::Error) -> anyhow::Error {
+        anyhow!(MaybeSubmitted {
+            execution_id: execution_id.to_string(),
+            cause: format!("{cause:#}"),
+            expires_at: self
+                .executions
+                .get(execution_id)
+                .and_then(|entry| entry.expires_at.clone()),
+            signed: None,
+        })
     }
 
     /// `protocol_intent`.
@@ -984,10 +1101,14 @@ impl ProtocolAgent {
     }
 
     /// `protocol_execute`: prepare for the signer, check the policy, sign,
-    /// submit and wait. While this step call's last execution has not
-    /// settled (an unknown submit, or a wait that ended first), it answers
-    /// for that execution (the same signed bytes) instead of preparing and
-    /// signing a new one.
+    /// submit and wait. The step call (deployment, instance, step, signer)
+    /// is reserved before anything is funded, prepared or signed, so a
+    /// second call while one runs is refused with [`StepBusy`]. While its
+    /// last execution has not settled (an unknown submit, or a wait that
+    /// ended first), a call with the same args answers for that execution
+    /// (the same signed bytes) instead of preparing and signing a new one,
+    /// and a call with other args is refused. This lasts for this server's
+    /// session only.
     pub async fn execute(
         &self,
         args: &TargetArgs,
@@ -1019,22 +1140,79 @@ impl ProtocolAgent {
             wallet.as_str(),
         ]
         .join("\n");
-        if let Some((previous, signed)) = self.unsettled.get(&call_key).map(|entry| entry.clone()) {
-            let remembered = self.executions.get(&previous).map(|entry| entry.clone());
+        let step_args = match call.args {
+            Value::Null => json!({}),
+            other => other.clone(),
+        };
+        let resumed = match self.steps.entry(call_key.clone()) {
+            dashmap::mapref::entry::Entry::Vacant(free) => {
+                free.insert(StepRun::InFlight);
+                None
+            }
+            dashmap::mapref::entry::Entry::Occupied(mut held) => match held.get().clone() {
+                StepRun::InFlight => {
+                    return Err(anyhow!(StepBusy {
+                        code: "step-in-flight",
+                        execution_id: None,
+                        message: format!(
+                            "protocol_execute of step '{}' is already running for this signer \
+                             in this a4 mcp session; nothing was prepared or signed for this \
+                             call. Wait for that call's answer instead of running the step \
+                             again.",
+                            call.step
+                        ),
+                    }))
+                }
+                StepRun::Unsettled(previous) if previous.args != step_args => {
+                    return Err(anyhow!(StepBusy {
+                        code: "step-unsettled",
+                        message: format!(
+                            "Step '{}' was last run with other args, and its execution {} has \
+                             not settled; nothing was prepared or signed for this call. Run \
+                             the step again with its previous args ({}) to answer for that \
+                             execution; once that answer, or protocol_submit with its signed \
+                             transactions, shows it settled, the step runs with new args.",
+                            call.step, previous.execution_id, previous.args
+                        ),
+                        execution_id: Some(previous.execution_id),
+                    }))
+                }
+                StepRun::Unsettled(previous) => {
+                    held.insert(StepRun::InFlight);
+                    Some(previous)
+                }
+            },
+        };
+        let mut reservation = Reservation {
+            steps: self.steps.clone(),
+            key: call_key,
+            keep: resumed.clone(),
+        };
+        if let Some(previous) = resumed {
+            let remembered = self
+                .executions
+                .get(&previous.execution_id)
+                .map(|entry| entry.clone());
             let mut result = self
                 .submit_and_wait(
                     &target,
                     &deployment,
-                    &previous,
-                    &signed,
+                    &previous.execution_id,
+                    &previous.signed,
                     remembered.as_ref(),
                     wait,
                     timeout,
                 )
-                .await?;
+                .await
+                .map_err(|mut error| {
+                    if let Some(unknown) = error.downcast_mut::<MaybeSubmitted>() {
+                        unknown.signed = Some(previous.signed.clone());
+                    }
+                    error
+                })?;
             let settled = result["settled"] == json!(true);
             if settled {
-                self.unsettled.remove(&call_key);
+                reservation.keep = None;
             }
             result["note"] = json!(if settled {
                 "This answers the previous protocol_execute of this step, which had not \
@@ -1043,7 +1221,7 @@ impl ProtocolAgent {
             } else {
                 "This answers the previous protocol_execute of this step, which has not \
                  settled: nothing new was prepared or signed, and running the step again \
-                 answers for this execution until it settles."
+                 in this a4 mcp session answers for this execution until it settles."
             });
             return Ok(result);
         }
@@ -1071,6 +1249,13 @@ impl ProtocolAgent {
             ));
         }
         let signed = signer.sign_all(&prepared)?;
+        // Signed: from here on it may be sent, so the step stays unsettled
+        // unless it settles or the API refuses it.
+        reservation.keep = Some(Unsettled {
+            execution_id: execution_id.clone(),
+            signed: signed.clone(),
+            args: step_args,
+        });
         let remembered = self
             .executions
             .get(&execution_id)
@@ -1088,15 +1273,17 @@ impl ProtocolAgent {
             .await
         {
             Ok(result) => result,
-            Err(error) => {
-                if error.downcast_ref::<MaybeSubmitted>().is_some() {
-                    self.unsettled.insert(call_key, (execution_id, signed));
+            Err(mut error) => {
+                match error.downcast_mut::<MaybeSubmitted>() {
+                    Some(unknown) => unknown.signed = Some(signed),
+                    // Refused, or never sent: nothing was taken.
+                    None => reservation.keep = None,
                 }
                 return Err(error);
             }
         };
-        if result["settled"] != json!(true) {
-            self.unsettled.insert(call_key, (execution_id, signed));
+        if result["settled"] == json!(true) {
+            reservation.keep = None;
         }
         result["summary"] = summary;
         Ok(result)
