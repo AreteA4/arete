@@ -22,7 +22,7 @@ awaiting a reply with a `Duplicate request id` error (`-32600`) rather
 than a place under the cap. Output is backpressured: when the client does
 not read stdout, the server takes no more requests once 1 MiB of output is
 waiting to be written, and no more input once the cap is full (a
-`Server busy` answer is written before more input is read). It also takes
+`Server busy` answer is written before more input is taken). It also takes
 no more requests while 32 requests are running with no reply yet, so only
 their replies can still join the waiting output, and a reply larger than
 16 MiB (the largest message the server reads) is answered with an

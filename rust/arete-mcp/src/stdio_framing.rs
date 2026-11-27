@@ -12,7 +12,7 @@
 //! the first message arrives.
 //!
 //! Input that is not a message is answered with an error that has no id,
-//! written before any further input is read, so a stalled stdout holds
+//! written before any further input is decoded, so a stalled stdout holds
 //! stdin back: a `Parse error` for a line or framed body that is not JSON,
 //! an `Invalid request` for JSON that is not a JSON-RPC message. In a framed
 //! stream, bytes that are not JSON may be a frame whose `Content-Length`
@@ -29,7 +29,7 @@
 //! [`MAX_OUTSTANDING_ID_BYTES`] of string ids between them. A request that
 //! would exceed it is not passed on but answered with a `Server busy` error
 //! (code -32000), with its id and in its framing, before any further input
-//! is read. A request whose id is already awaiting a reply is answered the
+//! is decoded. A request whose id is already awaiting a reply is answered the
 //! same way with a `Duplicate request id` error (code -32600, an invalid
 //! request): it takes no room in the budget, and the request it repeats
 //! keeps its framing. The id is free again once that request's reply is
@@ -41,7 +41,7 @@
 //! request's place in the budget above until it is written (or its write
 //! fails, or the stream is closed), so unread replies fill it and the
 //! requests after them are answered `Server busy`, an answer that is itself
-//! written before more input is read. While the frames handed to the writer
+//! written before more input is decoded. While the frames handed to the writer
 //! but not yet written exceed [`MAX_BACKLOG_BYTES`], `receive` passes no
 //! request on, and so it does while [`MAX_RUNNING_REQUESTS`] requests are
 //! passed on with no reply in the backlog yet: those are the only replies
@@ -60,10 +60,11 @@
 //! on, and stdin being read once [`MAX_READ_AHEAD_BYTES`] of it are
 //! buffered, and the client's writes block until stdout is read again.
 //!
-//! While held back, `receive` still reads up to [`MAX_READ_AHEAD_BYTES`] of
-//! input, decoding no more of it than the message at its front, so it sees
-//! the stream end if it ends within that; input past it stays unread, and so
-//! does the end, until room is made. If stdin ends while the backlog is over
+//! While held back, or while a reply of its own waits on stdout, `receive`
+//! still reads up to [`MAX_READ_AHEAD_BYTES`] of input, decoding no more of
+//! it than the message at its front, so it sees the stream end if it ends
+//! within that; input past it stays unread, and so does the end, until room
+//! is made or the reply is written. If stdin ends while the backlog is over
 //! its cap, nothing more can be answered until the client reads, which it
 //! may do late, slowly, or never: the transport keeps waiting for room as
 //! long as stdout makes progress, giving it [`EOF_STDOUT_GRACE`] afresh
@@ -71,7 +72,11 @@
 //! back. Only once stdout writes nothing for that long does it report the
 //! end of the stream, dropping the input it holds that was not passed on,
 //! and the session shuts down as on any end of input. Held back only by the
-//! running requests, it passes the rest of the input on as they finish.
+//! running requests, it passes the rest of the input on as they finish. A
+//! reply of its own left waiting on stdout once stdin has ended is waited
+//! for the same way: written while stdout makes progress, else given up on,
+//! with the end of the stream reported, once stdout writes nothing for that
+//! grace.
 //! Once all of the input is passed on, it reports the end when every
 //! request passed on has its reply written and no other frame is left
 //! unwritten, or stdout writes nothing for that grace: the service gives
@@ -490,21 +495,26 @@ where
         }
     }
 
-    /// Append the next chunk of the stream to `buf`, less what `skip` drops;
-    /// `Ok(false)` at its end.
+    /// Append the next chunk of `read` to `buf`, less what `skip` drops;
+    /// `Ok(false)` at its end. It takes the fields it uses rather than
+    /// `self`, so that it can wait alongside a write.
     ///
     /// `receive` is polled inside a `select!`, so this may be dropped at any
     /// await. `fill_buf` consumes nothing when dropped, and the copy and the
     /// `consume` after it have no await between them, so a cancelled read
     /// loses nothing.
-    async fn fill(&mut self) -> io::Result<bool> {
+    async fn fill(
+        read: &mut BufReader<R>,
+        skip: &mut Option<Skip>,
+        buf: &mut Vec<u8>,
+    ) -> io::Result<bool> {
         let taken = {
-            let chunk = self.read.fill_buf().await?;
+            let chunk = read.fill_buf().await?;
             if chunk.is_empty() {
                 return Ok(false);
             }
             // Where buffering resumes in this chunk, if the skip ends in it.
-            let resume = match &mut self.skip {
+            let resume = match skip {
                 None => Some(0),
                 Some(Skip::Line) => chunk
                     .iter()
@@ -517,46 +527,60 @@ where
                 }
             };
             if let Some(from) = resume {
-                self.skip = None;
-                self.buf.extend_from_slice(&chunk[from..]);
+                *skip = None;
+                buf.extend_from_slice(&chunk[from..]);
             }
             chunk.len()
         };
-        self.read.consume(taken);
+        read.consume(taken);
         Ok(true)
     }
 
-    /// While input is held back: read on, decoding nothing, until `buf`
+    /// While input waits on stdout (requests held back, or a reply of the
+    /// transport's own unwritten): read on, decoding nothing, until `buf`
     /// holds [`MAX_READ_AHEAD_BYTES`] (plus at most one read's chunk), so
     /// that the end of the stream is still seen; then, or once it is seen,
     /// wait for good. Cancel safe, as `fill` is.
-    async fn read_ahead(&mut self) -> io::Result<()> {
-        if self.eof || self.buf.len() >= MAX_READ_AHEAD_BYTES {
+    async fn read_ahead(
+        read: &mut BufReader<R>,
+        skip: &mut Option<Skip>,
+        buf: &mut Vec<u8>,
+        eof: &mut bool,
+    ) -> io::Result<()> {
+        if *eof || buf.len() >= MAX_READ_AHEAD_BYTES {
             return std::future::pending().await;
         }
-        if !self.fill().await? {
-            self.eof = true;
+        if !Self::fill(read, skip, buf).await? {
+            *eof = true;
         }
         Ok(())
     }
 
-    /// Once stdin has ended, with output unwritten: wait for `released`, or
-    /// until stdout has written nothing for [`EOF_STDOUT_GRACE`] since the
-    /// first such wait began, or since its last write if later. `false`, at
-    /// once, if that time has come. Cancel safe: what it waits on is kept
-    /// in `self`.
+    /// Once stdin has ended: wait until stdout has written nothing for
+    /// [`EOF_STDOUT_GRACE`] since the first such wait began (`since`), or
+    /// since its last write if later; at once if that time has come. Cancel
+    /// safe: what it waits on is kept in `since` and the budget.
+    async fn stdout_stalled(since: &mut Option<Instant>, budget: &Budget) {
+        let since = *since.get_or_insert_with(Instant::now);
+        loop {
+            let last_written = *budget.last_write();
+            let stalls_at = last_written.map_or(since, |at| at.max(since)) + EOF_STDOUT_GRACE;
+            if Instant::now() >= stalls_at {
+                return;
+            }
+            tokio::time::sleep_until(stalls_at).await;
+        }
+    }
+
+    /// Once stdin has ended, with output unwritten: wait for `released`.
+    /// `false` once stdout has stalled instead, at once if it has; see
+    /// `stdout_stalled`.
     async fn wait_on_stdout(&mut self, released: Notified<'_>) -> bool {
-        let since = *self.eof_wait_since.get_or_insert_with(Instant::now);
-        let last_written = *self.budget.last_write();
-        let stalls_at = last_written.map_or(since, |at| at.max(since)) + EOF_STDOUT_GRACE;
-        if Instant::now() >= stalls_at {
-            return false;
-        }
         tokio::select! {
-            () = released => {}
-            () = tokio::time::sleep_until(stalls_at) => {}
+            biased;
+            () = Self::stdout_stalled(&mut self.eof_wait_since, &self.budget) => false,
+            () = released => true,
         }
-        true
     }
 
     /// While input is held back: the message at the front of `buf` if it is
@@ -608,25 +632,71 @@ where
     /// With no reply pending, it still finishes a frame left in flight by a
     /// dropped `send` if no write holds the writer, so that frame does not
     /// wait for the next `send` to be written.
-    async fn write_pending(&mut self) -> io::Result<()> {
-        let mut writer = if self.pending.is_some() {
-            self.write.lock().await
+    async fn write_pending(
+        pending: &mut Option<Pending>,
+        write: &Mutex<Writer<W>>,
+    ) -> io::Result<()> {
+        let mut writer = if pending.is_some() {
+            write.lock().await
         } else {
-            match self.write.try_lock() {
+            match write.try_lock() {
                 Ok(writer) if writer.in_flight.is_some() => writer,
                 _ => return Ok(()),
             }
         };
         writer.finish().await?;
-        if self.pending.is_none() {
+        if pending.is_none() {
             return Ok(());
         }
-        if let Some(Pending::Queued(frame)) = self.pending.replace(Pending::Writing) {
+        if let Some(Pending::Queued(frame)) = pending.replace(Pending::Writing) {
             writer.start(frame, None);
         }
         writer.finish().await?;
-        self.pending = None;
+        *pending = None;
         Ok(())
+    }
+
+    /// `write_pending`, reading ahead while it waits on stdout, as `receive`
+    /// does while it holds requests back, so that the end of the input is
+    /// still seen: once it is, the write is given up on when stdout has
+    /// stalled (see `stdout_stalled`). Else a client that sent input the
+    /// transport answers itself, then stopped reading stdout and closed
+    /// stdin, would keep the session waiting on that write for good. `false`
+    /// if the write failed or was given up on. Cancel safe, as what it waits
+    /// on is.
+    async fn flush_pending(&mut self) -> bool {
+        loop {
+            tokio::select! {
+                biased;
+                written = Self::write_pending(&mut self.pending, &self.write) => {
+                    return match written {
+                        Ok(()) => true,
+                        Err(error) => {
+                            tracing::error!("error writing a reply: {error}");
+                            false
+                        }
+                    };
+                }
+                read = Self::read_ahead(
+                    &mut self.read,
+                    &mut self.skip,
+                    &mut self.buf,
+                    &mut self.eof,
+                ), if !self.eof => {
+                    if let Err(error) = read {
+                        tracing::error!("error reading the stream: {error}");
+                        return false;
+                    }
+                }
+                () = Self::stdout_stalled(&mut self.eof_wait_since, &self.budget), if self.eof => {
+                    tracing::warn!(
+                        "stdin ended and stdout made no progress for {EOF_STDOUT_GRACE:?}: \
+                         ending the session with a reply of the transport's own unwritten"
+                    );
+                    return false;
+                }
+            }
+        }
     }
 
     /// Queue an error reply: with no id, for input that is not a message, or
@@ -821,8 +891,7 @@ where
 
     async fn receive(&mut self) -> Option<ClientJsonRpcMessage> {
         loop {
-            if let Err(error) = self.write_pending().await {
-                tracing::error!("error writing a reply: {error}");
+            if !self.flush_pending().await {
                 return None;
             }
             if self.closed {
@@ -846,7 +915,12 @@ where
                 }
                 tokio::select! {
                     () = released => {}
-                    read = self.read_ahead() => {
+                    read = Self::read_ahead(
+                        &mut self.read,
+                        &mut self.skip,
+                        &mut self.buf,
+                        &mut self.eof,
+                    ) => {
                         if let Err(error) = read {
                             tracing::error!("error reading the stream: {error}");
                             return None;
@@ -957,7 +1031,7 @@ where
                         }
                         continue;
                     }
-                    match self.fill().await {
+                    match Self::fill(&mut self.read, &mut self.skip, &mut self.buf).await {
                         Ok(true) => {}
                         Ok(false) => self.eof = true,
                         Err(error) => {
@@ -1893,6 +1967,87 @@ mod tests {
         }
     }
 
+    /// Ping 1 in `framing`, passed on, then `tail`, input the transport
+    /// answers itself, then the end of the input. The reply to ping 1 is
+    /// larger than the pipe to the client, though within the backlog cap,
+    /// and holds the writer, so the tail is decoded and the error answering
+    /// it waits on stdout.
+    async fn an_error_reply_behind_a_stalled_write(
+        framing: Framing,
+        tail: &str,
+    ) -> (
+        StdioTransport<std::io::Cursor<Vec<u8>>, tokio::io::DuplexStream>,
+        tokio::io::DuplexStream,
+        tokio::task::JoinHandle<io::Result<()>>,
+    ) {
+        let input = [in_framing(&ping(1), framing), in_framing(tail, framing)].concat();
+        let (client, write) = tokio::io::duplex(1024);
+        let mut transport = StdioTransport::new(std::io::Cursor::new(input), write);
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+        let reply = ServerJsonRpcMessage::error(
+            ErrorData::internal_error("x".repeat(16 * 1024), None),
+            Some(RequestId::Number(1)),
+        );
+        let sending = tokio::spawn(transport.send(reply));
+        while transport.write.try_lock().is_ok() {
+            tokio::task::yield_now().await;
+        }
+        (transport, client, sending)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_end_of_input_behind_an_error_reply_waiting_on_an_unread_stdout_ends_the_stream() {
+        // Input that is not JSON, and the request repeated while its reply
+        // is unwritten: the client neither reads stdout nor keeps stdin
+        // open, so the stream ends once stdout has written nothing for the
+        // grace, rather than wait on that write for good.
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            for tail in ["not json".to_string(), ping(1)] {
+                let (mut transport, _client, _sending) =
+                    an_error_reply_behind_a_stalled_write(framing, &tail).await;
+                let started = tokio::time::Instant::now();
+                let ended = tokio::time::timeout(
+                    EOF_STDOUT_GRACE + Duration::from_secs(1),
+                    transport.receive(),
+                )
+                .await;
+                assert!(matches!(ended, Ok(None)), "{framing:?} {tail}: {ended:?}");
+                assert!(started.elapsed() >= EOF_STDOUT_GRACE, "{framing:?} {tail}");
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_error_reply_waiting_on_stdout_at_the_end_of_input_is_written_to_a_client_that_reads_late(
+    ) {
+        for framing in [Framing::Ndjson, Framing::ContentLength] {
+            for (tail, code) in [
+                ("not json".to_string(), PARSE_ERROR),
+                (ping(1), INVALID_REQUEST),
+            ] {
+                let (mut transport, mut client, sending) =
+                    an_error_reply_behind_a_stalled_write(framing, &tail).await;
+                let read_late = async {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    read_replies(&mut client, 2).await
+                };
+                let both = async { tokio::join!(read_late, transport.receive()) };
+                let (replies, ended) = tokio::time::timeout(2 * EOF_STDOUT_GRACE, both)
+                    .await
+                    .unwrap_or_else(|_| panic!("{framing:?} {tail}: a reply never came"));
+                assert!(ended.is_none(), "{framing:?} {tail}: {ended:?}");
+                sending.await.unwrap().unwrap();
+                assert!(replies.iter().all(|(seen, _)| *seen == framing));
+                assert_eq!(replies[0].1["id"], json!(1), "{framing:?} {tail}");
+                assert_eq!(
+                    replies[1].1["error"]["code"],
+                    json!(code),
+                    "{framing:?} {tail}"
+                );
+            }
+        }
+    }
+
     #[tokio::test]
     async fn the_end_of_input_held_back_by_running_requests_waits_for_them_and_passes_the_rest_on()
     {
@@ -2801,7 +2956,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stalled_replies_hold_back_reading_until_each_is_written() {
+    async fn stalled_replies_hold_back_input_until_each_is_written() {
         let input = [
             line("not json"),
             line(r#"{"hello":"world"}"#),
@@ -2815,9 +2970,10 @@ mod tests {
         let mut transport = StdioTransport::new(ByteAtATime(&input), write);
         let stalled = tokio::time::timeout(Duration::from_millis(50), transport.receive()).await;
         assert!(stalled.is_err(), "{stalled:?}");
-        // Nothing past the message being answered has been read.
-        let unread = input.len() - line("not json").len();
-        assert_eq!(transport.read.get_ref().0.len(), unread);
+        // Input past the message being answered is read ahead, so that the
+        // end of the stream is seen, but none of it is decoded.
+        assert_eq!(transport.buf, input[line("not json").len()..]);
+        assert!(transport.eof);
         assert!(transport.pending.is_some());
 
         // Reading the replies lets the transport go on, one reply at a time;

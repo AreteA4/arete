@@ -352,16 +352,12 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
     assert!(called.get("error").is_some(), "{called}");
 }
 
-/// A client that stops reading stdout and then closes stdin: once the session
-/// has given up on the replies it cannot write, the process exits rather
-/// than wait on a write to a stdout nobody reads.
-#[test]
-fn a4_mcp_exits_after_stdin_closes_while_its_replies_go_unread() {
-    let home = tempfile::tempdir().expect("home directory");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_a4"))
+/// `a4 mcp` in `home`, with stdin and stdout piped and stderr discarded.
+fn spawn_a4_mcp(home: &std::path::Path) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_a4"))
         .arg("mcp")
-        .current_dir(home.path())
-        .env("HOME", home.path())
+        .current_dir(home)
+        .env("HOME", home)
         // Never reach a real API: the entitlements lookup fails fast.
         .env("ARETE_API_URL", "http://127.0.0.1:9")
         .env("CI", "1")
@@ -371,13 +367,29 @@ fn a4_mcp_exits_after_stdin_closes_while_its_replies_go_unread() {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .expect("spawn a4 mcp");
-    let mut stdin = child.stdin.take().expect("child stdin");
-    // Held open and never read.
-    let _stdout = child.stdout.take().expect("child stdout");
+        .expect("spawn a4 mcp")
+}
 
-    // Replies to far more than a pipe holds, from requests that fit in what
-    // the server reads ahead while it holds them back.
+/// How `child` exits, which it must within 20 s of stdin closing: the
+/// server waits 5 s for stdout to take more output, then gives the
+/// unwritten replies 5 s to drain, and the session ends.
+fn exit_after_stdin_closes(child: &mut std::process::Child) -> std::process::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => return status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("a4 mcp still running 20 s after stdin closed");
+            }
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// The `initialize` request and `initialized` notification, one per line.
+fn handshake_lines() -> String {
     let initialize = serde_json::json!({
         "jsonrpc": "2.0", "id": 0, "method": "initialize",
         "params": {
@@ -386,12 +398,25 @@ fn a4_mcp_exits_after_stdin_closes_while_its_replies_go_unread() {
             "clientInfo": { "name": "a4-cli-test", "version": "0.0.0" }
         }
     });
-    writeln!(stdin, "{initialize}").expect("write initialize");
-    writeln!(
-        stdin,
-        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
-    )
-    .expect("write initialized");
+    format!("{initialize}\n{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}\n")
+}
+
+/// A client that stops reading stdout and then closes stdin: once the session
+/// has given up on the replies it cannot write, the process exits rather
+/// than wait on a write to a stdout nobody reads.
+#[test]
+fn a4_mcp_exits_after_stdin_closes_while_its_replies_go_unread() {
+    let home = tempfile::tempdir().expect("home directory");
+    let mut child = spawn_a4_mcp(home.path());
+    let mut stdin = child.stdin.take().expect("child stdin");
+    // Held open and never read.
+    let _stdout = child.stdout.take().expect("child stdout");
+
+    // Replies to far more than a pipe holds, from requests that fit in what
+    // the server reads ahead while it holds them back.
+    stdin
+        .write_all(handshake_lines().as_bytes())
+        .expect("write handshake");
     for id in 1..=300 {
         writeln!(
             stdin,
@@ -401,20 +426,41 @@ fn a4_mcp_exits_after_stdin_closes_while_its_replies_go_unread() {
     }
     drop(stdin);
 
-    // The server waits 5 s for stdout to take more output, then gives the
-    // unwritten replies 5 s to drain, and the session ends.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let status = loop {
-        match child.try_wait().expect("try_wait") {
-            Some(status) => break status,
-            None if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("a4 mcp still running 20 s after stdin closed");
-            }
-            None => thread::sleep(Duration::from_millis(50)),
-        }
-    };
+    let status = exit_after_stdin_closes(&mut child);
+    assert!(status.success(), "a4 mcp exited with {status}");
+}
+
+/// A client that stops reading stdout, then sends input the server answers
+/// itself and closes stdin: the process still exits, rather than wait for
+/// good to write that answer behind replies nobody reads.
+#[test]
+fn a4_mcp_exits_after_stdin_closes_behind_an_answer_to_bad_input_that_goes_unread() {
+    let home = tempfile::tempdir().expect("home directory");
+    let mut child = spawn_a4_mcp(home.path());
+    let mut stdin = child.stdin.take().expect("child stdin");
+    // Held open and never read.
+    let _stdout = child.stdout.take().expect("child stdout");
+
+    // Replies to more than a pipe holds, though less than the server holds
+    // unwritten before it holds input back, so it goes on decoding input.
+    stdin
+        .write_all(handshake_lines().as_bytes())
+        .expect("write handshake");
+    for id in 1..=10 {
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
+        )
+        .expect("write tools/list");
+    }
+    stdin.flush().expect("flush");
+    // Once those replies are stuck on stdout, input that is not JSON: its
+    // parse error waits behind them.
+    thread::sleep(Duration::from_millis(1500));
+    writeln!(stdin, "not json").expect("write a line that is not JSON");
+    drop(stdin);
+
+    let status = exit_after_stdin_closes(&mut child);
     assert!(status.success(), "a4 mcp exited with {status}");
 }
 
@@ -468,20 +514,7 @@ fn a4_mcp_answers_every_request_when_stdout_is_read_after_stdin_closes() {
             }
         };
         let home = tempfile::tempdir().expect("home directory");
-        let mut child = Command::new(env!("CARGO_BIN_EXE_a4"))
-            .arg("mcp")
-            .current_dir(home.path())
-            .env("HOME", home.path())
-            // Never reach a real API: the entitlements lookup fails fast.
-            .env("ARETE_API_URL", "http://127.0.0.1:9")
-            .env("CI", "1")
-            .env("DO_NOT_TRACK", "1")
-            .env("A4_NO_UPDATE_CHECK", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn a4 mcp");
+        let mut child = spawn_a4_mcp(home.path());
         let mut stdin = child.stdin.take().expect("child stdin");
         let mut stdout = child.stdout.take().expect("child stdout");
 
