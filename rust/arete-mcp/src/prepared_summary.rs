@@ -343,6 +343,9 @@ type RpcFixture = std::sync::Arc<dyn Fn(&str, &Value) -> Result<Value> + Send + 
 pub struct Rpc {
     http: reqwest::Client,
     url: String,
+    /// When set, the instant after which no call is made, and the budget
+    /// it ends ([`Rpc::within`]).
+    budget: Option<(tokio::time::Instant, std::time::Duration)>,
     /// Answers calls in place of the endpoint, for tests that describe the
     /// chain as a fixture.
     #[cfg(test)]
@@ -360,9 +363,17 @@ impl Rpc {
         Self {
             http,
             url: url.to_string(),
+            budget: None,
             #[cfg(test)]
             fixture: None,
         }
+    }
+
+    /// This RPC with all its calls, from now on, bounded by `budget` as a
+    /// whole: each gets only the time left, and none is made after.
+    pub fn within(mut self, budget: std::time::Duration) -> Self {
+        self.budget = Some((tokio::time::Instant::now() + budget, budget));
+        self
     }
 
     /// An RPC whose calls `answer` handles: `Ok(result)` or `Err` with the
@@ -374,6 +385,7 @@ impl Rpc {
         Self {
             http: reqwest::Client::new(),
             url: String::new(),
+            budget: None,
             fixture: Some(std::sync::Arc::new(answer)),
         }
     }
@@ -383,16 +395,27 @@ impl Rpc {
         if let Some(answer) = &self.fixture {
             return answer(method, &params).map_err(|error| anyhow!("{method} failed: {error}"));
         }
-        let response: Value = self
-            .http
-            .post(&self.url)
-            .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
-            .send()
-            .await
-            .with_context(|| format!("The RPC is unreachable for {method}"))?
-            .json()
-            .await
-            .with_context(|| format!("The RPC answered {method} with invalid JSON"))?;
+        let request = async {
+            self.http
+                .post(&self.url)
+                .json(&json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params }))
+                .send()
+                .await
+                .with_context(|| format!("The RPC is unreachable for {method}"))?
+                .json::<Value>()
+                .await
+                .with_context(|| format!("The RPC answered {method} with invalid JSON"))
+        };
+        let response = match self.budget {
+            None => request.await?,
+            Some((deadline, budget)) => {
+                let left = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if left.is_zero() {
+                    bail!("{method} was not sent: simulating this step used its whole {budget:?}");
+                }
+                crate::deadline::within(left, &self.url, request).await?
+            }
+        };
         if let Some(error) = response.get("error") {
             bail!(
                 "{method} failed: {}",

@@ -28,7 +28,9 @@ use serde_json::{json, Value};
 use crate::credentials;
 use crate::dev::{DevClient, DevProject};
 use crate::prepared_summary::{self, decode_transaction, Rpc};
-use crate::protocol_api::{PrepareRequest, Prepared, ProtocolApi, TRANSACTION_SCOPES};
+use crate::protocol_api::{
+    PrepareRequest, Prepared, ProtocolApi, SubmitUnknown, TRANSACTION_SCOPES,
+};
 use crate::registry::RegistryClient;
 use crate::signer::{LocalSigner, Refusal};
 
@@ -40,6 +42,11 @@ pub const ENV_RPC_URL: &str = "ARETE_MCP_RPC_URL";
 pub const DEFAULT_WAIT: Duration = Duration::from_secs(60);
 /// The longest wait a caller may ask for.
 pub const MAX_WAIT: Duration = Duration::from_secs(120);
+/// How long one request to the protocol API or an RPC may take.
+pub const API_TIMEOUT: Duration = Duration::from_secs(60);
+/// How long simulating a prepared step may take as a whole, however many
+/// transactions it has: past it the rest are summarized unsimulated.
+pub const SIMULATION_BUDGET: Duration = Duration::from_secs(60);
 
 /// An argument the caller must fix.
 #[derive(Debug)]
@@ -77,6 +84,36 @@ struct Remembered {
     step: Option<String>,
     instance: Option<String>,
     wallet: Option<String>,
+    /// Whether this server has sent the execution's submit.
+    sent: bool,
+}
+
+/// A submit whose outcome is unknown: it failed in transit, or a gateway
+/// answered it, and one read did not show the API took the transactions.
+#[derive(Debug)]
+pub struct MaybeSubmitted {
+    pub execution_id: String,
+    cause: String,
+}
+
+impl std::fmt::Display for MaybeSubmitted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}. Execution {} may have been submitted: read it with protocol_intent before \
+             submitting it or running the step again.",
+            self.cause, self.execution_id
+        )
+    }
+}
+
+impl std::error::Error for MaybeSubmitted {}
+
+fn maybe_submitted(execution_id: &str, cause: &anyhow::Error) -> anyhow::Error {
+    anyhow!(MaybeSubmitted {
+        execution_id: execution_id.to_string(),
+        cause: format!("{cause:#}"),
+    })
 }
 
 /// One resolved protocol API.
@@ -114,13 +151,17 @@ pub struct ProtocolAgent {
     hosted: Option<HostedOverride>,
     executions: Arc<DashMap<String, Remembered>>,
     instances: Arc<DashMap<String, Remembered>>,
+    /// Step calls whose last `protocol_execute` submit has an unknown
+    /// outcome: the execution and its signed transactions. Running the call
+    /// again settles that execution instead of preparing a new one.
+    unsettled: Arc<DashMap<String, (String, Vec<String>)>>,
 }
 
 impl ProtocolAgent {
     pub fn new(signer: Option<LocalSigner>) -> Self {
         Self {
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(60))
+                .timeout(API_TIMEOUT)
                 .build()
                 .unwrap_or_default(),
             registry: RegistryClient::new(),
@@ -128,6 +169,7 @@ impl ProtocolAgent {
             hosted: None,
             executions: Arc::new(DashMap::new()),
             instances: Arc::new(DashMap::new()),
+            unsettled: Arc::new(DashMap::new()),
         }
     }
 
@@ -533,7 +575,7 @@ impl ProtocolAgent {
         let rpc = target
             .rpc_url
             .as_deref()
-            .map(|url| Rpc::new(self.http.clone(), url));
+            .map(|url| Rpc::new(self.http.clone(), url).within(SIMULATION_BUDGET));
         let summary = prepared_summary::summarize(&prepared, wallet, rpc.as_ref()).await?;
         let execution_id = prepared["intent"]["executionId"]
             .as_str()
@@ -551,6 +593,7 @@ impl ProtocolAgent {
                 step: Some(request.step.to_string()),
                 instance: instance.clone(),
                 wallet: Some(wallet.to_string()),
+                sent: false,
             },
         );
         if let Some(instance) = &instance {
@@ -670,21 +713,9 @@ impl ProtocolAgent {
         timeout: Option<Duration>,
     ) -> Result<Value> {
         let token = target.api.token(deployment, &TRANSACTION_SCOPES).await?;
-        let submitted = target
-            .api
-            .submit(&token, execution_id, signed)
-            .await
-            .map_err(|error| {
-                // A refusal is the API's answer; a request that failed in
-                // transit may still have been taken.
-                if error.downcast_ref::<reqwest::Error>().is_none() {
-                    return error;
-                }
-                anyhow!(
-                    "{error:#}. Execution {execution_id} may have been submitted: read it with \
-                     protocol_intent before submitting it or running the step again."
-                )
-            })?;
+        let submitted = self
+            .send_once(target, &token, deployment, execution_id, signed)
+            .await?;
         let waited = if wait.unwrap_or(true) {
             target
                 .api
@@ -730,6 +761,55 @@ impl ProtocolAgent {
             );
         }
         Ok(result)
+    }
+
+    /// Submit `signed` for `execution_id` and return the intent's state,
+    /// never sending an execution twice: one this server already sent is
+    /// sent again only when a read shows the API never took it (still
+    /// `prepared`), so the same signed bytes go again. A submit whose
+    /// outcome is unknown (lost in transit, timed out, or a 5xx, 408 or 429
+    /// without the API's refusal) is settled with one read; unless that
+    /// shows the transactions taken, it fails with [`MaybeSubmitted`].
+    async fn send_once(
+        &self,
+        target: &Target,
+        token: &str,
+        deployment: &str,
+        execution_id: &str,
+        signed: &[String],
+    ) -> Result<Value> {
+        let sent = self
+            .executions
+            .get(execution_id)
+            .is_some_and(|entry| entry.sent);
+        if sent {
+            match target.api.taken_state(token, execution_id).await {
+                Ok(Some(state)) => return Ok(state),
+                Ok(None) => {}
+                Err(error) => return Err(maybe_submitted(execution_id, &error)),
+            }
+        }
+        self.executions
+            .entry(execution_id.to_string())
+            .or_insert_with(|| Remembered {
+                dev_project: target.dev.as_ref().map(|dev| dev.project.root.clone()),
+                deployment: deployment.to_string(),
+                ..Remembered::default()
+            })
+            .sent = true;
+        let error = match target.api.submit(token, execution_id, signed).await {
+            Ok(submitted) => return Ok(submitted),
+            Err(error) => error,
+        };
+        let unknown = error.downcast_ref::<SubmitUnknown>().is_some()
+            || error.downcast_ref::<reqwest::Error>().is_some();
+        if !unknown {
+            return Err(error);
+        }
+        match target.api.taken_state(token, execution_id).await {
+            Ok(Some(state)) => Ok(state),
+            _ => Err(maybe_submitted(execution_id, &error)),
+        }
     }
 
     /// `protocol_intent`.
@@ -894,7 +974,9 @@ impl ProtocolAgent {
     }
 
     /// `protocol_execute`: prepare for the signer, check the policy, sign,
-    /// submit and wait.
+    /// submit and wait. When this step call's last submit had an unknown
+    /// outcome, it settles that execution (the same signed bytes) instead
+    /// of preparing and signing a new one.
     pub async fn execute(
         &self,
         args: &TargetArgs,
@@ -918,6 +1000,35 @@ impl ProtocolAgent {
             return Ok(refused(&refusal, &deployment, target.cluster, None, None));
         }
         let wallet = signer.pubkey();
+        let call_key = [
+            target.label(),
+            deployment.as_str(),
+            call.instance.unwrap_or_default(),
+            call.step,
+            wallet.as_str(),
+        ]
+        .join("\n");
+        if let Some((previous, signed)) = self.unsettled.get(&call_key).map(|entry| entry.clone()) {
+            let remembered = self.executions.get(&previous).map(|entry| entry.clone());
+            let mut result = self
+                .submit_and_wait(
+                    &target,
+                    &deployment,
+                    &previous,
+                    &signed,
+                    remembered.as_ref(),
+                    wait,
+                    timeout,
+                )
+                .await?;
+            self.unsettled.remove(&call_key);
+            result["note"] = json!(
+                "This answers the previous protocol_execute of this step, whose submit had an \
+                 unknown outcome: nothing new was prepared or signed. Run the step again for a \
+                 new execution."
+            );
+            return Ok(result);
+        }
         if let Some(dev) = &target.dev {
             fund_on_fork(dev, &wallet).await?;
         }
@@ -946,7 +1057,7 @@ impl ProtocolAgent {
             .executions
             .get(&execution_id)
             .map(|entry| entry.clone());
-        let mut result = self
+        let mut result = match self
             .submit_and_wait(
                 &target,
                 &deployment,
@@ -956,7 +1067,16 @@ impl ProtocolAgent {
                 wait,
                 timeout,
             )
-            .await?;
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                if error.downcast_ref::<MaybeSubmitted>().is_some() {
+                    self.unsettled.insert(call_key, (execution_id, signed));
+                }
+                return Err(error);
+            }
+        };
         result["summary"] = summary;
         Ok(result)
     }

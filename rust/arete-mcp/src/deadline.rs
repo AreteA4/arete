@@ -81,8 +81,16 @@ pub const CHANGING_TOOLS: [&str; 18] = [
 ///   captures belong to `a4 dev capture`.
 /// - Other `dev_*` tools: 300 s. Cloud dev environment requests are bounded
 ///   at 150 s (a sleeping environment wakes first).
-/// - `sandbox_*`, `protocol_*` and `squads_*` tools: 120 s, above the
-///   sandbox's 90 s preview bound and the protocol API's 60 s.
+/// - `sandbox_preview`: 300 s, above the 270 s its requests can take in a
+///   row: listing the grants and minting a token (30 s each), the dry run
+///   (90 s), and a fresh token and the dry run again after a stale one.
+/// - `protocol_prepare`: 240 s, above the 210 s its requests can take in a
+///   row: the protocol's registry lookup (30 s), the session mint and the
+///   prepare (60 s each), and simulating the step (60 s as a whole).
+/// - Other `sandbox_*`, `protocol_*` and `squads_*` tools: 120 s, above any
+///   one of their requests (the sandbox's 90 s, the protocol API's 60 s).
+///   A read that makes several in a row can be cut off by it; its timeout
+///   is retryable.
 /// - `read_view`: 90 s, above its own `timeout_secs` (at most 60 s).
 pub fn tool_call_timeout(tool: &str) -> Option<Duration> {
     if SENDING_TOOLS.contains(&tool) {
@@ -91,6 +99,8 @@ pub fn tool_call_timeout(tool: &str) -> Option<Duration> {
     Some(match tool {
         "dev_capture" | "dev_scenario" => Duration::from_secs(15 * 60),
         "read_view" => Duration::from_secs(90),
+        "sandbox_preview" => Duration::from_secs(300),
+        "protocol_prepare" => Duration::from_secs(240),
         _ if tool.starts_with("dev_") => Duration::from_secs(300),
         _ if ["sandbox_", "protocol_", "squads_"]
             .iter()
@@ -199,8 +209,63 @@ mod tests {
         );
         assert_eq!(tool_call_timeout("read_view"), secs(90));
         assert_eq!(tool_call_timeout("sandbox_status"), secs(120));
-        assert_eq!(tool_call_timeout("protocol_prepare"), secs(120));
         assert_eq!(tool_call_timeout("dev_wake"), secs(300));
         assert_eq!(tool_call_timeout("dev_capture"), secs(900));
+    }
+
+    /// Exactly these tools sign or send, and none of them has a tool
+    /// deadline that could cut an action off mid-flight.
+    #[test]
+    fn sending_tools_are_exactly_the_four_and_never_cut_off() {
+        assert_eq!(
+            SENDING_TOOLS,
+            [
+                "sandbox_invoke",
+                "protocol_submit",
+                "protocol_execute",
+                "dev_step"
+            ]
+        );
+        for tool in SENDING_TOOLS {
+            assert_eq!(tool_call_timeout(tool), None, "{tool}");
+        }
+    }
+
+    /// Each tool's bound is at least the sum of the request bounds it can
+    /// hit in a row, so its own, more specific error reaches the agent.
+    #[test]
+    fn ceilings_cover_the_requests_each_tool_makes_in_a_row() {
+        use crate::protocol_agent::{API_TIMEOUT, SIMULATION_BUDGET};
+        use crate::sandbox::{ACTION_TIMEOUT, READ_TIMEOUT};
+        let table: [(&str, Vec<Duration>); 3] = [
+            (
+                // Grants, mint, dry run; a fresh mint and the dry run again
+                // after a stale token.
+                "sandbox_preview",
+                vec![
+                    READ_TIMEOUT,
+                    READ_TIMEOUT,
+                    ACTION_TIMEOUT,
+                    READ_TIMEOUT,
+                    ACTION_TIMEOUT,
+                ],
+            ),
+            (
+                // Registry lookup of `protocol`, session mint, prepare,
+                // simulation as a whole.
+                "protocol_prepare",
+                vec![REQUEST_TIMEOUT, API_TIMEOUT, API_TIMEOUT, SIMULATION_BUDGET],
+            ),
+            (
+                // The attach, then the proposer read.
+                "squads_attach",
+                vec![API_TIMEOUT, API_TIMEOUT],
+            ),
+        ];
+        for (tool, requests) in table {
+            let sum: Duration = requests.iter().sum();
+            let ceiling = tool_call_timeout(tool).unwrap();
+            assert!(ceiling >= sum, "{tool}: {ceiling:?} < {sum:?}");
+        }
     }
 }

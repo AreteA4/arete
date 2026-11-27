@@ -66,8 +66,9 @@ pub struct Settled {
     pub state: Value,
     /// False when the wait ended before the intent reached a final state.
     pub settled: bool,
-    /// Why the wait ended early: reading the intent's state failed (the
-    /// request failed or timed out). `state` is the last one read.
+    /// Why the intent is unsettled when reading its state failed: the read
+    /// failed, timed out or was refused (its status and a bounded body).
+    /// `state` is the last one read.
     pub poll_error: Option<String>,
 }
 
@@ -343,7 +344,9 @@ impl ProtocolApi {
         Ok(Prepared::Intent(prepared))
     }
 
-    /// Submit the signed transactions of a prepared intent.
+    /// Submit the signed transactions of a prepared intent. A 5xx, 408 or
+    /// 429 without the API's refusal body (a `code`) is [`SubmitUnknown`]:
+    /// a gateway answered, and the API may have taken the transactions.
     pub async fn submit(
         &self,
         token: &str,
@@ -359,6 +362,16 @@ impl ProtocolApi {
             )
             .await?;
         if !status.is_success() {
+            let refused = submitted
+                .get("code")
+                .and_then(Value::as_str)
+                .is_some_and(|code| !code.is_empty());
+            if !refused && retried_status(status) {
+                return Err(anyhow!(SubmitUnknown {
+                    status,
+                    body: bounded_body(&submitted),
+                }));
+            }
             bail!("Submit of execution {execution_id} failed ({status}): {submitted}");
         }
         Ok(submitted)
@@ -380,10 +393,20 @@ impl ProtocolApi {
         Ok(body)
     }
 
-    /// Poll the intent from `state` until it settles or `timeout` passes.
-    /// The transactions are already submitted, so a failed read ends the
+    /// One read after a submit whose outcome is unknown: the intent's state
+    /// when the API took the transactions (any state but `prepared`), `None`
+    /// while it is still `prepared`.
+    pub async fn taken_state(&self, token: &str, execution_id: &str) -> Result<Option<Value>> {
+        let state = self.intent(token, execution_id).await?;
+        Ok((state["state"].as_str() != Some("prepared")).then_some(state))
+    }
+
+    /// Poll the intent from `state` until it settles or `timeout` passes;
+    /// each read gets only the time left. The transactions are already
+    /// submitted, so a read that fails, times out or is refused ends the
     /// wait with the last state read and the failure in `poll_error`
-    /// instead of an error that would lose the execution id.
+    /// instead of an error that would lose the execution id. A 5xx, 408 or
+    /// 429 is read again until the wait ends.
     pub async fn wait_intent(
         &self,
         token: &str,
@@ -392,7 +415,9 @@ impl ProtocolApi {
         timeout: Duration,
     ) -> Result<Settled> {
         let path = format!("/execution-intents/{}", path_segment(execution_id)?);
+        let url = format!("{}{path}", self.api_base);
         let deadline = Instant::now() + timeout;
+        let mut poll_error = None;
         loop {
             if is_final(&state) {
                 return Ok(Settled {
@@ -401,20 +426,43 @@ impl ProtocolApi {
                     poll_error: None,
                 });
             }
-            if Instant::now() >= deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
                 return Ok(Settled {
                     state,
                     settled: false,
-                    poll_error: None,
+                    poll_error,
                 });
             }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-            match self
-                .api_json(reqwest::Method::GET, &path, token, None)
-                .await
-            {
-                Ok((status, body)) if status.is_success() => state = body,
-                Ok(_) => {}
+            tokio::time::sleep(POLL_INTERVAL.min(left)).await;
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                continue;
+            }
+            let read = crate::deadline::within(
+                left,
+                &url,
+                self.api_json(reqwest::Method::GET, &path, token, None),
+            );
+            match read.await {
+                Ok((status, body)) if status.is_success() => {
+                    state = body;
+                    poll_error = None;
+                }
+                Ok((status, body)) => {
+                    let error = format!(
+                        "Reading execution {execution_id} failed ({status}): {}",
+                        bounded_body(&body)
+                    );
+                    if !retried_status(status) {
+                        return Ok(Settled {
+                            state,
+                            settled: false,
+                            poll_error: Some(error),
+                        });
+                    }
+                    poll_error = Some(error);
+                }
                 Err(error) => {
                     return Ok(Settled {
                         state,
@@ -426,6 +474,45 @@ impl ProtocolApi {
         }
     }
 }
+
+/// How often [`ProtocolApi::wait_intent`] reads the intent.
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
+
+/// A status that says nothing about the request itself: a gateway or the
+/// API was busy, slow or down.
+fn retried_status(status: reqwest::StatusCode) -> bool {
+    status.is_server_error()
+        || status == reqwest::StatusCode::REQUEST_TIMEOUT
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS
+}
+
+/// An answer body for an error message, cut to a few hundred bytes.
+fn bounded_body(body: &Value) -> String {
+    crate::registry::truncate_for_error(&match body {
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    })
+}
+
+/// A submit answered with a 5xx, 408 or 429 and no refusal body: a gateway
+/// answered, not the API, so the transactions may have been taken.
+#[derive(Debug)]
+pub struct SubmitUnknown {
+    pub status: reqwest::StatusCode,
+    pub body: String,
+}
+
+impl std::fmt::Display for SubmitUnknown {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "The submit was answered {} without the API's refusal ({})",
+            self.status, self.body
+        )
+    }
+}
+
+impl std::error::Error for SubmitUnknown {}
 
 /// The Squads onboarding routes of a deployment
 /// (`/protocol-deployments/{d}/squads/*`), read with a read-only session.
@@ -809,5 +896,123 @@ mod tests {
             .contains("participant"));
         assert_eq!(state_rejection_hint("deadline_passed"), None);
         assert_eq!(state_rejection_hint("step_requires_secret_key"), None);
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use crate::deadline::{blackhole, watchdog};
+
+    /// An API at `<origin>/api` that answers every request with `status`
+    /// and `body`.
+    fn answering(status: u16, body: &'static str) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let mut buffer = [0u8; 4096];
+                let _ = stream.read(&mut buffer);
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        origin
+    }
+
+    fn api(origin: &str) -> ProtocolApi {
+        // No client timeout: only the wait bounds a read.
+        ProtocolApi::new(
+            reqwest::Client::new(),
+            &format!("{origin}/api"),
+            "unused",
+            "a4_sk_do_not_print",
+        )
+    }
+
+    async fn wait(origin: &str, timeout: Duration) -> (Settled, Duration) {
+        let started = Instant::now();
+        let settled = watchdog(
+            Duration::from_secs(10),
+            api(origin).wait_intent(
+                "session-secret",
+                "e-1",
+                json!({ "state": "submitting" }),
+                timeout,
+            ),
+        )
+        .await
+        .unwrap();
+        (settled, started.elapsed())
+    }
+
+    /// A stalled status read gets only the time left of the wait, so a
+    /// short `timeoutSeconds` answers on time, and a read cut off by it is
+    /// reported in `poll_error`.
+    #[tokio::test]
+    async fn a_stalled_poll_never_outlasts_the_wait() {
+        let base = blackhole();
+        let (settled, took) = wait(&base, Duration::from_millis(100)).await;
+        assert!(took < Duration::from_secs(1), "{took:?}");
+        assert!(!settled.settled);
+        assert_eq!(settled.state["state"], "submitting");
+
+        let (settled, took) = wait(&base, Duration::from_secs(1)).await;
+        assert!(took < Duration::from_millis(1500), "{took:?}");
+        assert!(!settled.settled);
+        let error = settled.poll_error.unwrap();
+        assert!(
+            error.starts_with(&format!("request to {base} timed out after")),
+            "{error}"
+        );
+    }
+
+    /// A refused status read ends the wait at once with its status and
+    /// body; a gateway error is read again until the wait ends, and is
+    /// still reported. Neither names the key or the session token.
+    #[tokio::test]
+    async fn a_refused_poll_is_reported_with_its_status() {
+        let origin = answering(401, r#"{"error":"session expired","code":"token-expired"}"#);
+        let (settled, took) = wait(&origin, Duration::from_secs(5)).await;
+        assert!(took < Duration::from_secs(2), "{took:?}");
+        assert!(!settled.settled);
+        let error = settled.poll_error.unwrap();
+        assert!(
+            error.starts_with("Reading execution e-1 failed (401 Unauthorized): "),
+            "{error}"
+        );
+        assert!(error.contains("session expired"), "{error}");
+
+        let origin = answering(503, "<html>upstream unavailable</html>");
+        let (settled, took) = wait(&origin, Duration::from_millis(1200)).await;
+        assert!(took >= Duration::from_secs(1), "read again: {took:?}");
+        let error = settled.poll_error.unwrap();
+        assert!(error.contains("(503 Service Unavailable)"), "{error}");
+        for shown in [&error, &settled.state.to_string()] {
+            assert!(!shown.contains("a4_sk_"), "{shown}");
+            assert!(!shown.contains("session-secret"), "{shown}");
+        }
+    }
+
+    /// A long error body is cut before it reaches `poll_error`.
+    #[tokio::test]
+    async fn a_poll_error_body_is_bounded() {
+        const LONG: &str = concat!(
+            "\"",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "\""
+        );
+        let origin = answering(404, LONG);
+        let (settled, _) = wait(&origin, Duration::from_secs(5)).await;
+        let error = settled.poll_error.unwrap();
+        assert!(error.len() < 400, "{} bytes", error.len());
+        assert!(error.ends_with('…'), "{error}");
     }
 }

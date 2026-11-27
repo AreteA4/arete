@@ -1001,8 +1001,10 @@ pub struct Prepared {
 
 /// The context of a [`DevClient::submit_prepared`] error raised before the
 /// local runtime took the signed transactions (it refused them, or could not
-/// be reached): the prepared step may be submitted again. Any other error
-/// came after the runtime took them; do not resubmit.
+/// be reached), or after a gateway answered the submit and a read did not
+/// show them taken: the same prepared step, with the same signed bytes, may
+/// be submitted again, but running the step again prepares a new execution.
+/// Any other error came after the runtime took them; do not resubmit.
 #[derive(Debug, Clone)]
 pub struct NotSubmitted {
     pub step: String,
@@ -1610,14 +1612,35 @@ impl DevClient {
         let api = self.api();
         let execution_id = &prepared.execution_id;
         progress(StepProgress::Submitting { execution_id });
-        let submitted = api
-            .submit(&prepared.token, execution_id, &signed)
-            .await
-            .map_err(|error| {
-                error.context(NotSubmitted {
+        let submitted = match api.submit(&prepared.token, execution_id, &signed).await {
+            Ok(submitted) => submitted,
+            // A gateway answered: the runtime may have taken the
+            // transactions, so one read settles it before reporting a
+            // failed submit.
+            Err(error)
+                if error
+                    .downcast_ref::<crate::protocol_api::SubmitUnknown>()
+                    .is_some() =>
+            {
+                match api.taken_state(&prepared.token, execution_id).await {
+                    Ok(Some(state)) => state,
+                    _ => {
+                        return Err(anyhow!(
+                            "{error:#}; execution {execution_id} may have been taken: read it \
+                             with protocol_intent (`dev: true`) before running the step again"
+                        )
+                        .context(NotSubmitted {
+                            step: step.to_string(),
+                        }))
+                    }
+                }
+            }
+            Err(error) => {
+                return Err(error.context(NotSubmitted {
                     step: step.to_string(),
-                })
-            })?;
+                }))
+            }
+        };
         progress(StepProgress::Confirming { execution_id });
         let waited = api
             .wait_intent(&prepared.token, execution_id, submitted, INTENT_TIMEOUT)
@@ -2077,8 +2100,11 @@ mod tests {
     /// `{value: 5}`, `/ws/sessions` mints a token, `prepare` rejects `close`
     /// and otherwise returns a legacy transaction for the requesting wallet,
     /// `submit` completes, except that a `pending` step's submit is taken
-    /// (`submitting`) and its status read fails. Returns its origin and the
-    /// prepare paths it saw.
+    /// (`submitting`) and its status read fails; a `gateway` step's submit
+    /// is answered 504 by a gateway but taken (`completed`), a `lost`
+    /// step's 502 while it stays `prepared`, and a `busy` step's is the
+    /// runtime's own 503 refusal. Returns its origin and the prepare paths
+    /// it saw.
     fn mock_runtime() -> (String, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
         use std::io::{BufRead, BufReader, Read};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -2146,11 +2172,10 @@ mod tests {
                             .and_then(|rest| rest.split('/').next())
                             .unwrap_or("new-1")
                             .to_string();
-                        let execution = if path.contains("/steps/pending/") {
-                            "e-pending"
-                        } else {
-                            "e-1"
-                        };
+                        let execution = ["pending", "gateway", "lost", "busy"]
+                            .iter()
+                            .find(|step| path.contains(&format!("/steps/{step}/")))
+                            .map_or("e-1".to_string(), |step| format!("e-{step}"));
                         (
                             200,
                             json!({
@@ -2159,6 +2184,16 @@ mod tests {
                             }),
                         )
                     }
+                } else if path.ends_with("/e-gateway/submit") {
+                    (504, json!("<html>gateway timeout</html>"))
+                } else if path == "/api/execution-intents/e-gateway" {
+                    (200, json!({ "state": "completed", "transactions": [] }))
+                } else if path.ends_with("/e-lost/submit") {
+                    (502, Value::Null)
+                } else if path == "/api/execution-intents/e-lost" {
+                    (200, json!({ "state": "prepared", "transactions": [] }))
+                } else if path.ends_with("/e-busy/submit") {
+                    (503, json!({ "code": "runtime-busy", "error": "busy" }))
                 } else if path.ends_with("/e-pending/submit") {
                     (200, json!({ "state": "submitting", "transactions": [] }))
                 } else if path == "/api/execution-intents/e-pending" {
@@ -2274,6 +2309,48 @@ mod tests {
             message.contains("read it again later and do not resubmit"),
             "{message}"
         );
+    }
+
+    /// A submit a gateway answered (a 5xx without the runtime's refusal)
+    /// is settled with one read: taken, the step completes; not taken, it
+    /// stays a submit the same prepared step may retry, but names the
+    /// execution to read before the step is run again. The runtime's own
+    /// refusal stays a plain failed submit.
+    #[tokio::test]
+    async fn a_gateway_answer_to_a_submit_is_settled_with_one_read() {
+        let (origin, _) = mock_runtime();
+        let dir = tempfile::tempdir().unwrap();
+        let client = mock_client(dir.path(), &origin);
+        let step = |name: &str| parse_replay(&format!(r#"{{"step":"{name}"}}"#)).unwrap();
+        let run = |name: &str| {
+            let request = step(name).remove(0);
+            let client = &client;
+            async move {
+                crate::deadline::watchdog(Duration::from_secs(10), client.step(&request)).await
+            }
+        };
+
+        let done = run("gateway").await.unwrap();
+        assert_eq!(done["state"], "completed", "{done}");
+        assert_eq!(done["executionId"], "e-gateway", "{done}");
+
+        let lost = run("lost").await.unwrap_err();
+        assert!(lost.downcast_ref::<NotSubmitted>().is_some(), "{lost:#}");
+        let message = format!("{lost:#}");
+        assert!(message.contains("answered 502 "), "{message}");
+        assert!(
+            message.contains(
+                "execution e-lost may have been taken: read it with protocol_intent \
+                 (`dev: true`) before running the step again"
+            ),
+            "{message}"
+        );
+
+        let busy = run("busy").await.unwrap_err();
+        assert!(busy.downcast_ref::<NotSubmitted>().is_some(), "{busy:#}");
+        let message = format!("{busy:#}");
+        assert!(message.contains("runtime-busy"), "{message}");
+        assert!(!message.contains("may have been taken"), "{message}");
     }
 
     #[tokio::test]

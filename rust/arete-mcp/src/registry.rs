@@ -1040,7 +1040,7 @@ fn path_segment(value: &str, field: &str) -> Result<String> {
     Ok(trimmed.to_string())
 }
 
-fn truncate_for_error(body: &str) -> String {
+pub(crate) fn truncate_for_error(body: &str) -> String {
     const LIMIT: usize = 300;
     if body.len() <= LIMIT {
         return body.to_string();

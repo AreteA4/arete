@@ -686,13 +686,24 @@ fn transaction_format(format: Option<&str>) -> Result<Option<&str>, McpError> {
     }
 }
 
-/// Map a protocol tool failure: argument problems are `invalid_params`.
+/// Map a protocol tool failure: argument problems are `invalid_params`; a
+/// submit whose outcome is unknown carries the execution to read and is
+/// not retryable.
 fn protocol_error(error: anyhow::Error) -> McpError {
     if error
         .downcast_ref::<crate::protocol_agent::InvalidArgs>()
         .is_some()
     {
         McpError::invalid_params(error.to_string(), None)
+    } else if let Some(unknown) = error.downcast_ref::<crate::protocol_agent::MaybeSubmitted>() {
+        McpError::internal_error(
+            unknown.to_string(),
+            Some(json!({
+                "code": "submit-outcome-unknown",
+                "retryable": false,
+                "executionId": unknown.execution_id,
+            })),
+        )
     } else {
         registry_error(error)
     }
@@ -3576,8 +3587,11 @@ impl AreteMcp {
                           per-transaction states with signatures. When `settled` is false, \
                           read it later with protocol_intent and do not resubmit; \
                           `pollError` then says why, when reading its state failed after \
-                          the submit. A submit request that fails in transit may still have \
-                          been taken: its error names the execution to read first."
+                          the submit. A submit whose answer was lost (in transit, or a \
+                          gateway's 5xx, 408 or 429) and that one read cannot show taken \
+                          fails with code `submit-outcome-unknown` and the `executionId` to \
+                          read first; calling this again for that execution reads it before \
+                          sending anything."
     )]
     async fn protocol_submit(
         &self,
@@ -3670,7 +3684,10 @@ impl AreteMcp {
                           broke and why, and nothing is signed or sent.\n\n\
                           Otherwise returns what protocol_submit returns plus the prepare \
                           `summary`. Guard and access rejections come back as `state: \
-                          \"rejected\"` like protocol_prepare."
+                          \"rejected\"` like protocol_prepare. After a submit with an \
+                          unknown outcome (`submit-outcome-unknown`), running the same step \
+                          again settles that execution (`note` says so) instead of \
+                          preparing and signing a new one."
     )]
     async fn protocol_execute(
         &self,
@@ -5119,6 +5136,9 @@ impl AreteMcp {
             .map_err(|_| timed_out_error(&deadline::TimedOut::new(url, self.connect_timeout), None))
     }
 
+    /// `problem` as a tool error. A problem whose recovery is a claim link
+    /// gets one minted when `allow_materialize`; the mint only adds a
+    /// handoff to the error, so it is abandoned after [`LOOKUP_TIMEOUT`].
     async fn problem_error(
         &self,
         problem: &ApiProblemV1,
@@ -5130,9 +5150,11 @@ impl AreteMcp {
                 .recovery_action()
                 .is_some_and(|action| action.is_claim_agent_materializer())
         {
-            return match self.recovery.create_claim_link().await {
-                Ok(ready) => claim_url_elicitation(&ready.action),
-                Err(_) => {
+            return match tokio::time::timeout(LOOKUP_TIMEOUT, self.recovery.create_claim_link())
+                .await
+            {
+                Ok(Ok(ready)) => claim_url_elicitation(&ready.action),
+                _ => {
                     structured_problem_error(problem, status, Some("claim-materialization-failed"))
                 }
             };
@@ -8804,6 +8826,283 @@ mod deadline_tests {
         let body: Value = serde_json::from_str(text).unwrap();
         assert_eq!(body["status"], json!("landed"), "{body}");
         assert!(body["idempotencyKey"].is_string(), "{body}");
+    }
+
+    /// An API that reads each request whole, records it, and answers what
+    /// `answer` returns for it (a status and a JSON body), or never answers
+    /// when it returns `None`.
+    fn api_answering(
+        answer: impl Fn(&str) -> Option<(u16, Value)> + Send + Sync + 'static,
+    ) -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = seen.clone();
+        let answer = Arc::new(answer);
+        std::thread::spawn(move || {
+            for mut stream in listener.incoming().flatten() {
+                let recorded = recorded.clone();
+                let answer = answer.clone();
+                std::thread::spawn(move || {
+                    let Some(request) = read_request(&mut stream) else {
+                        return;
+                    };
+                    recorded.lock().unwrap().push(request.clone());
+                    let Some((status, body)) = answer(&request) else {
+                        let mut buffer = [0u8; 64];
+                        while stream.read(&mut buffer).is_ok_and(|read| read > 0) {}
+                        return;
+                    };
+                    let body = body.to_string();
+                    let _ = write!(
+                        stream,
+                        "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                });
+            }
+        });
+        (format!("http://{address}"), seen)
+    }
+
+    /// A protocol API: `e-slow` is taken and settles only after `SHORT * 2`;
+    /// `e-gw`'s submit is answered 504 by a gateway and its status read
+    /// fails.
+    fn protocol_api() -> (String, Arc<std::sync::Mutex<Vec<String>>>) {
+        api_answering(|request| {
+            let intent = |id: &str, state: &str| json!({ "executionId": id, "state": state, "transactions": [] });
+            Some(if request.starts_with("POST /ws/sessions ") {
+                (200, json!({ "token": "session-token" }))
+            } else if request.starts_with("POST /api/execution-intents/e-slow/submit ") {
+                (200, intent("e-slow", "submitting"))
+            } else if request.starts_with("GET /api/execution-intents/e-slow ") {
+                std::thread::sleep(SHORT * 2);
+                (200, intent("e-slow", "completed"))
+            } else if request.starts_with("POST /api/execution-intents/e-gw/submit ") {
+                (504, Value::Null)
+            } else {
+                (502, Value::Null)
+            })
+        })
+    }
+
+    fn submit_call(id: u64, execution: &str) -> String {
+        let signed = base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            crate::prepared_summary::tests::legacy_transaction(
+                &[[9; 32]],
+                &[true],
+                &[],
+                &[[4; 32]],
+            ),
+        );
+        json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {
+            "name": "protocol_submit",
+            "arguments": {"executionId": execution, "signedTransactions": [signed], "deployment": "d-1"},
+        }})
+        .to_string()
+    }
+
+    fn protocol_server(base: &str) -> AreteMcp {
+        AreteMcp {
+            tool_call_timeout: Some(SHORT),
+            ..AreteMcp::with_agents(
+                crate::protocol_agent::ProtocolAgent::new(None)
+                    .with_api(base, "a4_sk_do_not_print"),
+                crate::sandbox::SandboxClient::from_values(None, None, None),
+            )
+        }
+    }
+
+    /// A submitted execution whose settle wait outlasts a short tool bound
+    /// is not cut off: the agent gets its settled state, not a retryable
+    /// tool timeout that would invite submitting again.
+    #[tokio::test]
+    async fn a_slow_settle_wait_outlasts_a_short_tool_bound() {
+        let (base, _) = protocol_api();
+        let mut session = Session::open(protocol_server(&base)).await;
+        let started = Instant::now();
+        session.send(&submit_call(14, "e-slow")).await;
+        let answer = session.reply(14).await;
+        assert!(started.elapsed() > SHORT * 2, "{:?}", started.elapsed());
+        assert!(answer.get("error").is_none(), "{answer}");
+        let text = answer["result"]["content"][0]["text"].as_str().unwrap();
+        let body: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(body["state"], json!("completed"), "{body}");
+        assert_eq!(body["settled"], json!(true), "{body}");
+    }
+
+    /// A submit a gateway answered, whose settling read failed too, reaches
+    /// the agent as an unknown outcome: not retryable, with the execution
+    /// to read, and without the key or the session token.
+    #[tokio::test]
+    async fn an_unknown_submit_reaches_the_agent_with_its_execution() {
+        let (base, seen) = protocol_api();
+        let mut session = Session::open(protocol_server(&base)).await;
+        session.send(&submit_call(15, "e-gw")).await;
+        let answer = session.reply(15).await;
+        assert_eq!(
+            answer["error"]["data"],
+            json!({"code": "submit-outcome-unknown", "retryable": false, "executionId": "e-gw"}),
+            "{answer}"
+        );
+        let message = answer["error"]["message"].as_str().unwrap();
+        assert!(
+            message.ends_with(
+                "Execution e-gw may have been submitted: read it with protocol_intent before \
+                 submitting it or running the step again."
+            ),
+            "{message}"
+        );
+        assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+        assert!(!answer.to_string().contains("session-token"), "{answer}");
+        let submits = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.starts_with("POST /api/execution-intents/e-gw/submit "))
+            .count();
+        assert_eq!(submits, 1);
+    }
+
+    /// A read tool whose registry answer asks for a claim link mints one
+    /// only within the lookup bound: a stalled mint ends the call with the
+    /// registry's problem, not after the account request's 30 s.
+    #[tokio::test]
+    async fn a_stalled_claim_link_inside_a_read_answers_within_the_lookup_bound() {
+        let (base, seen) = api_answering(|request| {
+            (!request.starts_with("POST /api/agents/me/claim-links ")).then(|| {
+                (
+                    403,
+                    json!({
+                        "schemaVersion": 1,
+                        "error": "Claim this agent to continue",
+                        "code": "agent-claim-required",
+                        "retryable": false,
+                        "action": {
+                            "type": "claim_agent",
+                            "method": "POST",
+                            "path": "/api/agents/me/claim-links",
+                        },
+                    }),
+                )
+            })
+        });
+        let server = AreteMcp {
+            recovery: RecoveryClient::for_api(&base, "a4_sk_do_not_print", Duration::from_secs(30)),
+            ..stalled(&base)
+        };
+        let mut session = Session::open(server).await;
+        let started = Instant::now();
+        session.send(&call(16, "explore_programs")).await;
+        let answer = session.reply(16).await;
+        let took = started.elapsed();
+        assert!(took >= LOOKUP_TIMEOUT, "{took:?}");
+        assert!(took < LOOKUP_TIMEOUT + Duration::from_secs(1), "{took:?}");
+        assert!(
+            seen.lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.starts_with("POST /api/agents/me/claim-links ")),
+            "the claim link was never asked for"
+        );
+        assert_eq!(
+            answer["error"]["data"]["code"],
+            json!("agent-claim-required")
+        );
+        assert_eq!(
+            answer["error"]["data"]["secondaryCode"],
+            json!("claim-materialization-failed"),
+            "{answer}"
+        );
+        assert!(!answer.to_string().contains("a4_sk_"), "{answer}");
+    }
+
+    /// A sandbox action a gateway answered may have run: the answer
+    /// carries the idempotency key it ran under (generated when the agent
+    /// gave none), is retryable only under that key, and running it again
+    /// with the key sends the same key, so the API runs it at most once.
+    #[tokio::test]
+    async fn a_sandbox_action_a_gateway_answered_is_retried_only_under_its_key() {
+        let (base, seen) = api_answering(|request| {
+            Some(if request.starts_with("POST /ws/sessions ") {
+                (
+                    200,
+                    json!({
+                        "token": "tok-1",
+                        "expiresAt": crate::sandbox::tests::now() + 600,
+                        "tokenType": "Bearer",
+                        "scopes": ["sandbox:invoke", "sandbox:withdraw"],
+                    }),
+                )
+            } else {
+                (504, Value::Null)
+            })
+        });
+        let server = AreteMcp::with_agents(
+            crate::protocol_agent::ProtocolAgent::new(None),
+            crate::sandbox::SandboxClient::from_values(
+                Some(crate::sandbox::tests::SANDBOX.into()),
+                Some("a4_sk_agent".into()),
+                Some(base),
+            ),
+        );
+        let invoke = |key: Option<&str>| {
+            let mut args = json!({"action": "withdraw", "args": {"lamports": "5"}});
+            if let Some(key) = key {
+                args["idempotencyKey"] = json!(key);
+            }
+            serde_json::from_value::<crate::sandbox::SandboxInvokeArgs>(args).unwrap()
+        };
+        let shown = |result: CallToolResult| -> Value {
+            assert_eq!(result.is_error, Some(true));
+            let text = serde_json::to_value(&result.content).unwrap()[0]["text"]
+                .as_str()
+                .unwrap()
+                .to_string();
+            serde_json::from_str(&text).unwrap()
+        };
+        let first = shown(
+            server
+                .sandbox_invoke(Parameters(invoke(None)))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(first["code"], json!("sandbox-api-timeout"), "{first}");
+        assert_eq!(first["retryable"], json!(true), "{first}");
+        assert!(
+            first["hint"]
+                .as_str()
+                .unwrap()
+                .contains("never retry it under a new idempotencyKey"),
+            "{first}"
+        );
+        let key = first["idempotencyKey"].as_str().unwrap().to_string();
+        let again = shown(
+            server
+                .sandbox_invoke(Parameters(invoke(Some(&key))))
+                .await
+                .unwrap(),
+        );
+        assert_eq!(again["idempotencyKey"], json!(key));
+        let keys: Vec<String> = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|request| request.starts_with("POST /api/sandbox/v1/actions/withdraw "))
+            .map(|request| {
+                request
+                    .lines()
+                    .find_map(|line| {
+                        line.to_ascii_lowercase()
+                            .strip_prefix("idempotency-key:")
+                            .map(|value| value.trim().to_string())
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert_eq!(keys, [key.to_ascii_lowercase(), key.to_ascii_lowercase()]);
     }
 
     #[test]
