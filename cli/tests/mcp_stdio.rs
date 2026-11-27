@@ -351,3 +351,219 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
     assert!(names.contains(&"explore_stack"), "{names:?}");
     assert!(called.get("error").is_some(), "{called}");
 }
+
+/// `a4 mcp` in `home`, with stdin and stdout piped and stderr discarded.
+fn spawn_a4_mcp(home: &std::path::Path) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_a4"))
+        .arg("mcp")
+        .current_dir(home)
+        .env("HOME", home)
+        // Never reach a real API: the entitlements lookup fails fast.
+        .env("ARETE_API_URL", "http://127.0.0.1:9")
+        .env("CI", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env("A4_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn a4 mcp")
+}
+
+/// How `child` exits, which it must within 20 s of stdin closing: the
+/// server waits 5 s for stdout to take more output, then gives the
+/// unwritten replies 5 s to drain, and the session ends.
+fn exit_after_stdin_closes(child: &mut std::process::Child) -> std::process::ExitStatus {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => return status,
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("a4 mcp still running 20 s after stdin closed");
+            }
+            None => thread::sleep(Duration::from_millis(50)),
+        }
+    }
+}
+
+/// The `initialize` request and `initialized` notification, one per line.
+fn handshake_lines() -> String {
+    let initialize = serde_json::json!({
+        "jsonrpc": "2.0", "id": 0, "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": { "name": "a4-cli-test", "version": "0.0.0" }
+        }
+    });
+    format!("{initialize}\n{{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}}\n")
+}
+
+/// A client that stops reading stdout and then closes stdin: once the session
+/// has given up on the replies it cannot write, the process exits rather
+/// than wait on a write to a stdout nobody reads.
+#[test]
+fn a4_mcp_exits_after_stdin_closes_while_its_replies_go_unread() {
+    let home = tempfile::tempdir().expect("home directory");
+    let mut child = spawn_a4_mcp(home.path());
+    let mut stdin = child.stdin.take().expect("child stdin");
+    // Held open and never read.
+    let _stdout = child.stdout.take().expect("child stdout");
+
+    // Replies to far more than a pipe holds, from requests that fit in what
+    // the server reads ahead while it holds them back.
+    stdin
+        .write_all(handshake_lines().as_bytes())
+        .expect("write handshake");
+    for id in 1..=300 {
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
+        )
+        .expect("write tools/list");
+    }
+    drop(stdin);
+
+    let status = exit_after_stdin_closes(&mut child);
+    assert!(status.success(), "a4 mcp exited with {status}");
+}
+
+/// A client that stops reading stdout, then sends input the server answers
+/// itself and closes stdin: the process still exits, rather than wait for
+/// good to write that answer behind replies nobody reads.
+#[test]
+fn a4_mcp_exits_after_stdin_closes_behind_an_answer_to_bad_input_that_goes_unread() {
+    let home = tempfile::tempdir().expect("home directory");
+    let mut child = spawn_a4_mcp(home.path());
+    let mut stdin = child.stdin.take().expect("child stdin");
+    // Held open and never read.
+    let _stdout = child.stdout.take().expect("child stdout");
+
+    // Replies to more than a pipe holds, though less than the server holds
+    // unwritten before it holds input back, so it goes on decoding input.
+    stdin
+        .write_all(handshake_lines().as_bytes())
+        .expect("write handshake");
+    for id in 1..=10 {
+        writeln!(
+            stdin,
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
+        )
+        .expect("write tools/list");
+    }
+    stdin.flush().expect("flush");
+    // Once those replies are stuck on stdout, input that is not JSON: its
+    // parse error waits behind them.
+    thread::sleep(Duration::from_millis(1500));
+    writeln!(stdin, "not json").expect("write a line that is not JSON");
+    drop(stdin);
+
+    let status = exit_after_stdin_closes(&mut child);
+    assert!(status.success(), "a4 mcp exited with {status}");
+}
+
+/// The JSON-RPC messages in `bytes`, newline-delimited or `Content-Length`
+/// framed.
+fn messages_in(mut bytes: &[u8]) -> Vec<serde_json::Value> {
+    let mut messages = Vec::new();
+    loop {
+        while let [b'\r' | b'\n', rest @ ..] = bytes {
+            bytes = rest;
+        }
+        if bytes.is_empty() {
+            return messages;
+        }
+        let body;
+        if bytes.starts_with(b"Content-Length:") {
+            let blank = bytes
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .expect("end of the header block");
+            let length: usize = std::str::from_utf8(&bytes[15..blank])
+                .unwrap()
+                .trim()
+                .parse()
+                .unwrap();
+            (body, bytes) = bytes[blank + 4..].split_at(length);
+        } else {
+            let newline = bytes
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .expect("a whole line");
+            body = &bytes[..newline];
+            bytes = &bytes[newline + 1..];
+        }
+        messages.push(serde_json::from_slice(body).expect("a JSON message"));
+    }
+}
+
+/// A client that closes stdin with replies due to far more than the server
+/// holds unwritten, and starts reading stdout only a second later: every
+/// request is still answered, in either framing.
+#[test]
+fn a4_mcp_answers_every_request_when_stdout_is_read_after_stdin_closes() {
+    let count = 200;
+    for framed in [false, true] {
+        let frame = |json: String| {
+            if framed {
+                format!("Content-Length: {}\r\n\r\n{json}", json.len())
+            } else {
+                format!("{json}\n")
+            }
+        };
+        let home = tempfile::tempdir().expect("home directory");
+        let mut child = spawn_a4_mcp(home.path());
+        let mut stdin = child.stdin.take().expect("child stdin");
+        let mut stdout = child.stdout.take().expect("child stdout");
+
+        let initialize = serde_json::json!({
+            "jsonrpc": "2.0", "id": 0, "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "a4-cli-test", "version": "0.0.0" }
+            }
+        });
+        let mut input = frame(initialize.to_string());
+        input += &frame(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#.into());
+        for id in 1..=count {
+            input += &frame(format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/list"}}"#
+            ));
+        }
+        stdin.write_all(input.as_bytes()).expect("write requests");
+        drop(stdin);
+
+        thread::sleep(Duration::from_secs(1));
+        let (out_tx, out_rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            let mut out = Vec::new();
+            stdout.read_to_end(&mut out).expect("read stdout");
+            let _ = out_tx.send(out);
+        });
+        let out = match out_rx.recv_timeout(RESPONSE_TIMEOUT) {
+            Ok(out) => out,
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("a4 mcp kept stdout open {RESPONSE_TIMEOUT:?} after stdin closed");
+            }
+        };
+        reader.join().expect("stdout reader");
+        let status = child.wait().expect("wait");
+        assert!(status.success(), "a4 mcp exited with {status}");
+
+        let mut answered: Vec<i64> = messages_in(&out)
+            .iter()
+            .filter(|message| message.get("id").is_some())
+            .map(|reply| {
+                assert!(reply["result"].is_object(), "framed {framed}: {reply}");
+                reply["id"].as_i64().expect("a reply id")
+            })
+            .collect();
+        answered.sort_unstable();
+        assert_eq!(answered, (0..=count).collect::<Vec<_>>(), "framed {framed}");
+    }
+}
