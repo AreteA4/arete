@@ -39,7 +39,7 @@ mod subscriptions;
 
 pub use server::AreteMcp;
 
-use handler_budget::HandlerBudget;
+use handler_budget::{Budget, HandlerBudget};
 use rmcp::{transport::stdio, RoleServer, Service, ServiceExt};
 use stdio_framing::StdioTransport;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -87,17 +87,18 @@ pub async fn serve_stdio_with(
 }
 
 /// Serve `server` on a byte stream pair until the input ends: over the
-/// stdio transport, with the request handlers running at once capped,
-/// cancelled requests' included; see [`handler_budget`].
+/// stdio transport, with the requests being handled or answered capped,
+/// cancelled requests' included until their handler finishes; see
+/// [`handler_budget`].
 async fn serve_streams<S, R, W>(server: S, read: R, write: W) -> anyhow::Result<()>
 where
     S: Service<RoleServer>,
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    let service = HandlerBudget::new(server)
-        .serve(StdioTransport::new(read, write))
-        .await?;
+    let budget = Budget::new();
+    let transport = StdioTransport::new(read, write).with_budget(budget.clone());
+    let service = HandlerBudget::new(server, budget).serve(transport).await?;
     service.waiting().await?;
     Ok(())
 }

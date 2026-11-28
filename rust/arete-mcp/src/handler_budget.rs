@@ -1,5 +1,5 @@
 //! A cap on the request handlers running at once, cancelled requests'
-//! included.
+//! included, and on the replies not yet written.
 //!
 //! rmcp runs each request's handler in a task of its own. A
 //! `notifications/cancelled` only cancels the request's token, which the
@@ -12,13 +12,17 @@
 //! requests to a slow tool and cancelled each one could so start handlers
 //! without end, each with a task and the memory its call holds.
 //!
-//! [`HandlerBudget`] counts every request from the moment its handler
-//! starts until the handler finishes, whether or not the request was
-//! cancelled, and answers a request past [`MAX_RUNNING_HANDLERS`] with a
-//! `Server busy` error (code -32000) without running it, as the transport
-//! answers one past its own cap. Its error reaches the client unless that
-//! request is cancelled too, in which case rmcp drops it like any other
-//! reply to a cancelled request.
+//! A [`Budget`] holds [`MAX_RUNNING_HANDLERS`] places. The stdio transport
+//! takes one as it admits a request ([`StdioTransport::with_budget`]) and
+//! answers a request it finds none for with a `Server busy` error (code
+//! -32000) itself, written before any further input is read, as it answers
+//! one over its own cap: refusals so never pile up behind a stalled stdout.
+//! The place, an [`Admission`], rides on the request to its handler, and is
+//! given back only once the handler has finished, whether or not the
+//! request was cancelled, and the transport is done with the request: its
+//! reply written, or the request cancelled. [`HandlerBudget`] holds it for
+//! the handler, and takes a place itself for a request that arrives
+//! without one.
 //!
 //! Handlers are not stopped on cancellation: dropping one part way could
 //! cut a tool off between a change and the record of it (a transaction
@@ -26,6 +30,8 @@
 //! and would bound only handlers that yield. Counting them until they end
 //! bounds every handler, whatever it awaits, and leaves each tool behaving
 //! as it does for a client that is still waiting.
+//!
+//! [`StdioTransport::with_budget`]: crate::stdio_framing::StdioTransport::with_budget
 
 use std::borrow::Cow;
 use std::future::Future;
@@ -34,30 +40,63 @@ use std::sync::Arc;
 use rmcp::model::{ErrorCode, ErrorData, ProtocolVersion};
 use rmcp::service::{MaybeSendFuture, NotificationContext, RequestContext, ServiceRole};
 use rmcp::{RoleServer, Service};
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-/// Cap on request handlers running at once, cancelled requests' included
-/// until their handler finishes. The same as the stdio transport's cap on
-/// requests awaiting a reply, which counts only requests not cancelled.
+/// Cap on requests whose handler is running or whose reply is not yet
+/// written, cancelled requests' included until their handler finishes. The
+/// same as the stdio transport's cap on requests awaiting a reply, which
+/// counts only requests not cancelled.
 pub const MAX_RUNNING_HANDLERS: usize = 1024;
 
 /// The code of the error answering a request over the cap: the one the
 /// stdio transport answers a request over its own budget with.
 const SERVER_BUSY: ErrorCode = ErrorCode(-32000);
 
-/// `S`, running at most [`MAX_RUNNING_HANDLERS`] request handlers at once;
-/// see the module docs.
+/// Why a request over the cap is refused, as reported to the client.
+pub const OVER_BUDGET: &str = "too many requests are still being handled, cancelled ones included";
+
+/// The places under [`MAX_RUNNING_HANDLERS`], shared by the transport and
+/// [`HandlerBudget`].
+#[derive(Clone)]
+pub struct Budget(Arc<Semaphore>);
+
+impl Budget {
+    pub fn new() -> Self {
+        Self(Arc::new(Semaphore::new(MAX_RUNNING_HANDLERS)))
+    }
+
+    /// A place, if one is free.
+    pub fn admit(&self) -> Option<Admission> {
+        let permit = Arc::clone(&self.0).try_acquire_owned().ok()?;
+        Some(Admission {
+            _permit: Arc::new(permit),
+        })
+    }
+}
+
+impl Default for Budget {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A request's place under the [`Budget`], given back once every clone of
+/// it is dropped.
+#[derive(Clone)]
+pub struct Admission {
+    _permit: Arc<OwnedSemaphorePermit>,
+}
+
+/// `S`, with each request's handler holding its [`Admission`] until it
+/// finishes; see the module docs.
 pub struct HandlerBudget<S> {
     inner: S,
-    running: Arc<Semaphore>,
+    budget: Budget,
 }
 
 impl<S> HandlerBudget<S> {
-    pub fn new(inner: S) -> Self {
-        Self {
-            inner,
-            running: Arc::new(Semaphore::new(MAX_RUNNING_HANDLERS)),
-        }
+    pub fn new(inner: S, budget: Budget) -> Self {
+        Self { inner, budget }
     }
 }
 
@@ -68,11 +107,17 @@ impl<S: Service<RoleServer>> Service<RoleServer> for HandlerBudget<S> {
         context: RequestContext<RoleServer>,
     ) -> impl Future<Output = Result<<RoleServer as ServiceRole>::Resp, ErrorData>> + MaybeSendFuture + '_
     {
-        // Held by the handler's future, so its place is given back when the
-        // handler finishes, or when rmcp drops it at shutdown.
-        let permit = Arc::clone(&self.running).try_acquire_owned();
+        // Held by the handler's future, so the handler gives its place back
+        // when it finishes. rmcp does not wait for handlers when the client
+        // disconnects: one still running then keeps its place until it ends
+        // on its own, as cancelling its token does not stop it.
+        let admission = context
+            .extensions
+            .get::<Admission>()
+            .cloned()
+            .or_else(|| self.budget.admit());
         async move {
-            let Ok(_running) = permit else {
+            let Some(_admission) = admission else {
                 tracing::warn!(
                     running = MAX_RUNNING_HANDLERS,
                     "answering a request over the cap on running handlers with an error"
@@ -80,9 +125,7 @@ impl<S: Service<RoleServer>> Service<RoleServer> for HandlerBudget<S> {
                 return Err(ErrorData::new(
                     SERVER_BUSY,
                     "Server busy",
-                    Some(
-                        "too many requests are still being handled, cancelled ones included".into(),
-                    ),
+                    Some(OVER_BUDGET.into()),
                 ));
             };
             self.inner.handle_request(request, context).await
@@ -355,5 +398,92 @@ mod tests {
         while let Some(reply) = replies.recv().await {
             assert_flood_refusal(&reply, flood);
         }
+    }
+
+    fn initialize() -> String {
+        line(json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "cancel-flood", "version": "0" },
+            },
+        })) + &line(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }))
+    }
+
+    #[tokio::test]
+    async fn refusals_over_the_cap_wait_on_a_stalled_stdout_rather_than_pile_up() {
+        let running = Arc::new(AtomicUsize::new(0));
+        let (release, released) = watch::channel(false);
+        let tasks_before = tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks();
+
+        // Small pipes, so a client that stops reading stalls stdout soon.
+        let (client, server_end) = tokio::io::duplex(4 * 1024);
+        let (read, write) = tokio::io::split(server_end);
+        let served = tokio::spawn(crate::serve_streams(
+            Slow {
+                running: Arc::clone(&running),
+                release: released,
+            },
+            read,
+            write,
+        ));
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let mut lines = BufReader::new(client_read).lines();
+        client_write
+            .write_all(initialize().as_bytes())
+            .await
+            .unwrap();
+        let initialized: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(initialized["id"], json!(0), "{initialized}");
+
+        // Cancelled slow calls fill the cap; nothing is written for them.
+        let mut held = String::new();
+        for id in 1..=MAX_RUNNING_HANDLERS {
+            held += &call(id, "slow");
+            held += &cancel(id);
+        }
+        client_write.write_all(held.as_bytes()).await.unwrap();
+        until_running(&running, |running| running == MAX_RUNNING_HANDLERS).await;
+
+        // Then, with stdout no longer read, calls that every one is refused.
+        let refused = MAX_RUNNING_HANDLERS + 1..=5 * MAX_RUNNING_HANDLERS;
+        let flood: String = refused.clone().map(|id| call(id, "fast")).collect();
+        let writer = tokio::spawn(async move {
+            client_write.write_all(flood.as_bytes()).await.unwrap();
+            client_write
+        });
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let tasks = tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks();
+        assert!(
+            tasks <= tasks_before + MAX_RUNNING_HANDLERS + 16,
+            "{tasks} tasks alive behind a stalled stdout for {MAX_RUNNING_HANDLERS} running handlers"
+        );
+        assert!(
+            !writer.is_finished(),
+            "the server read all of the input while it could not write its refusals"
+        );
+
+        // Read again: each call is refused, in order, and the rest of the
+        // input is taken.
+        for id in refused {
+            let reply: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(reply["id"], json!(id), "{reply}");
+            assert_eq!(reply["error"]["code"], json!(-32000), "{reply}");
+        }
+        let mut client_write = writer.await.unwrap();
+        release.send(true).unwrap();
+        until_running(&running, |running| running == 0).await;
+        client_write.shutdown().await.unwrap();
+        served.await.unwrap().unwrap();
+        assert!(lines.next_line().await.unwrap().is_none());
     }
 }

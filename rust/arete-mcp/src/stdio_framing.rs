@@ -35,6 +35,15 @@
 //! keeps its framing. The id is free again once that request is answered
 //! or cancelled.
 //!
+//! Given a [`Budget`] ([`StdioTransport::with_budget`]), the transport also
+//! takes a place under it for each request it passes on, and answers a
+//! request it finds no place for with a `Server busy` error the same way,
+//! before any further input is read. The place rides on the request to its
+//! handler, which holds it until it finishes, and the transport holds it
+//! until the request's reply is written, or until the request is cancelled,
+//! so a cancelled request whose handler runs on, and a reply waiting on
+//! stdout, both keep theirs; see [`crate::handler_budget`].
+//!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
 //! skipped as they arrive, never buffered, and the frame after it is read as
@@ -46,21 +55,23 @@
 //! a block without a usable `Content-Length`: missing, repeated, or not a
 //! byte count, which is ASCII digits with at most spaces or tabs around them.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::io;
 use std::ops::Range;
 use std::sync::Arc;
 
 use rmcp::model::{
-    ClientJsonRpcMessage, ClientNotification, ErrorCode, ErrorData, JsonRpcMessage, RequestId,
-    ServerJsonRpcMessage,
+    ClientJsonRpcMessage, ClientNotification, ErrorCode, ErrorData, GetExtensions, JsonRpcMessage,
+    RequestId, ServerJsonRpcMessage,
 };
 use rmcp::transport::Transport;
 use rmcp::RoleServer;
 use serde_json::error::Category;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
 use tokio::sync::Mutex;
+
+use crate::handler_budget::{Admission, Budget, OVER_BUDGET};
 
 /// Cap on one incoming message: a line, newline included, or a framed body.
 /// It is the cap `rmcp`'s own newline-delimited transport applies, so a
@@ -128,6 +139,10 @@ pub struct StdioTransport<R, W> {
     requests: VecDeque<(RequestId, Framing)>,
     /// What the ids in `requests` count toward [`MAX_OUTSTANDING_ID_BYTES`].
     id_bytes: usize,
+    /// The places requests are passed on under, if any; see `with_budget`.
+    budget: Option<Budget>,
+    /// The place of each request in `requests` taken under `budget`.
+    admissions: HashMap<RequestId, Admission>,
     last_seen: Framing,
 }
 
@@ -219,8 +234,17 @@ where
             closed: false,
             requests: VecDeque::new(),
             id_bytes: 0,
+            budget: None,
+            admissions: HashMap::new(),
             last_seen: Framing::Ndjson,
         }
+    }
+
+    /// Pass each request on under a place in `budget`, answering one that
+    /// finds none with a `Server busy` error; see the module docs.
+    pub(crate) fn with_budget(mut self, budget: Budget) -> Self {
+        self.budget = Some(budget);
+        self
     }
 
     /// Append the next chunk of the stream to `buf`, less what `skip` drops;
@@ -337,7 +361,7 @@ where
     /// the repeat is an invalid request (code -32600) rather than a busy
     /// server's; it takes no room in the budget, and the request it repeats
     /// keeps its framing.
-    fn track(&mut self, message: &ClientJsonRpcMessage, framing: Framing) -> bool {
+    fn track(&mut self, message: &mut ClientJsonRpcMessage, framing: Framing) -> bool {
         match message {
             JsonRpcMessage::Request(request) => {
                 if self.requests.iter().any(|(id, _)| *id == request.id) {
@@ -366,6 +390,28 @@ where
                     self.fail(framing, busy, Some(request.id.clone()));
                     return false;
                 }
+                let admission = match &self.budget {
+                    None => None,
+                    Some(budget) => {
+                        let Some(admission) = budget.admit() else {
+                            tracing::warn!(
+                                "answering a request over the cap on running handlers with an error"
+                            );
+                            let busy = ErrorData::new(
+                                SERVER_BUSY,
+                                "Server busy",
+                                Some(OVER_BUDGET.into()),
+                            );
+                            self.fail(framing, busy, Some(request.id.clone()));
+                            return false;
+                        };
+                        Some(admission)
+                    }
+                };
+                if let Some(admission) = admission {
+                    request.request.extensions_mut().insert(admission.clone());
+                    self.admissions.insert(request.id.clone(), admission);
+                }
                 self.id_bytes += bytes;
                 self.requests.push_back((request.id.clone(), framing));
             }
@@ -375,6 +421,7 @@ where
                 {
                     if let Some(id) = &cancelled.params.request_id {
                         self.untrack(id);
+                        self.admissions.remove(id);
                     }
                 }
             }
@@ -405,14 +452,19 @@ where
         &mut self,
         item: ServerJsonRpcMessage,
     ) -> impl Future<Output = io::Result<()>> + Send + 'static {
-        let answered = match &item {
-            JsonRpcMessage::Response(response) => self.untrack(&response.id),
-            JsonRpcMessage::Error(error) => error.id.as_ref().and_then(|id| self.untrack(id)),
+        let id = match &item {
+            JsonRpcMessage::Response(response) => Some(&response.id),
+            JsonRpcMessage::Error(error) => error.id.as_ref(),
             JsonRpcMessage::Request(_) | JsonRpcMessage::Notification(_) => None,
         };
+        let answered = id.and_then(|id| self.untrack(id));
+        // The request keeps its place under the budget until its reply is
+        // written, so replies waiting on stdout are bounded too.
+        let admission = id.and_then(|id| self.admissions.remove(id));
         let frame = encode(&item, answered.unwrap_or(self.last_seen));
         let write = Arc::clone(&self.write);
         async move {
+            let _admission = admission;
             let frame = frame?;
             write.lock().await.write_frame(frame).await
         }
@@ -451,10 +503,10 @@ where
                 Decoded::Message { body, end, framing } => {
                     self.cursor = Cursor::START;
                     match parse(&self.buf[body.clone()]) {
-                        Ok(message) => {
+                        Ok(mut message) => {
                             self.buf.drain(..end);
                             self.last_seen = framing;
-                            if self.track(&message, framing) {
+                            if self.track(&mut message, framing) {
                                 return Some(message);
                             }
                         }
