@@ -136,8 +136,13 @@ enum Commands {
     /// that framing; it is detected per message, and each request is
     /// answered in the framing it arrived in. Input that is not a message
     /// gets a JSON-RPC parse error, and a header block that cannot be used
-    /// gets one and closes the stream. Nothing but MCP frames is written
-    /// to stdout; logs go to stderr.
+    /// gets one and closes the stream. Requests awaiting a reply are
+    /// capped, and so are the request handlers running at once, cancelled
+    /// requests' included until their handler finishes (a cancelled call is
+    /// not stopped, only its reply dropped): a request past either cap gets
+    /// a `Server busy` error (-32000), so no client can pile up running
+    /// handlers. Nothing but MCP frames is written to stdout; logs go to
+    /// stderr.
     Mcp(commands::mcp::McpArgs),
 
     /// Run a protocol locally against a Surfpool fork and drive it (`a4 dev up`)
