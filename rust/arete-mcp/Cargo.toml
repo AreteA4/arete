@@ -17,6 +17,7 @@ chrono = { version = "0.4", default-features = false, features = ["std"] }
 ed25519-dalek = "2"
 getrandom = "0.2"
 dashmap = "6"
+futures-util = "0.3"
 dirs = "5"
 arete-solana-contracts = { version = "0.3.0", path = "../arete-solana-contracts", features = ["raw-capture"] }
 arete-sdk = { package = "arete-a4-sdk", path = "../arete-a4-sdk", version = "0.62.1" }

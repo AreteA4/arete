@@ -1,10 +1,10 @@
 //! A cap on the request handlers running at once, cancelled requests'
-//! included, and on the replies not yet written.
+//! included, and on the replies not yet written or discarded.
 //!
 //! rmcp runs each request's handler in a task of its own. A
 //! `notifications/cancelled` only cancels the request's token, which the
-//! handlers here do not watch, so the handler runs on to its end, and rmcp
-//! then drops its reply unsent. The stdio transport forgets a cancelled
+//! handlers here do not watch, so the handler runs on to its end, and its
+//! reply is then dropped unsent. The stdio transport forgets a cancelled
 //! request at once, as no reply will answer it, so its place under the
 //! transport's cap on requests awaiting a reply is free again while its
 //! handler still runs. Nothing is written for such a handler either, so a
@@ -20,9 +20,24 @@
 //! The place, an [`Admission`], rides on the request to its handler, and is
 //! given back only once the handler has finished, whether or not the
 //! request was cancelled, and the transport is done with the request: its
-//! reply written, or the request cancelled. [`HandlerBudget`] holds it for
-//! the handler, and takes a place itself for a request that arrives
-//! without one.
+//! reply written, or, for a cancelled request, its reply handed back by
+//! rmcp and dropped. [`HandlerBudget`] holds it for the handler, and takes
+//! a place itself for a request that arrives without one.
+//!
+//! The transport keeps a cancelled request's cancellation from rmcp, which
+//! would otherwise drop the reply where the transport cannot see it, after
+//! the handler gave its place back but while its task still waits to hand
+//! the reply over: a burst of such replies would wait with no place held
+//! while new requests took the places they freed. It cancels the request
+//! through its [`Admission`] instead, which cancels the handler's token as
+//! rmcp would have. A handler that finds its request cancelled drops its
+//! result before handing it over, so what waits is a small error, never
+//! the result of the call.
+//!
+//! A handler that panics is answered with an `Internal error` (code
+//! -32603), so its request is answered and its place given back as for any
+//! other reply; rmcp would otherwise drop the request without a reply and
+//! the transport would keep its place until the session ends.
 //!
 //! Handlers are not stopped on cancellation: dropping one part way could
 //! cut a tool off between a change and the record of it (a transaction
@@ -33,19 +48,22 @@
 //!
 //! [`StdioTransport::with_budget`]: crate::stdio_framing::StdioTransport::with_budget
 
+use std::any::Any;
 use std::borrow::Cow;
 use std::future::Future;
-use std::sync::Arc;
+use std::panic::AssertUnwindSafe;
+use std::sync::{Arc, Mutex, PoisonError};
 
+use futures_util::FutureExt;
 use rmcp::model::{ErrorCode, ErrorData, ProtocolVersion};
 use rmcp::service::{MaybeSendFuture, NotificationContext, RequestContext, ServiceRole};
 use rmcp::{RoleServer, Service};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// Cap on requests whose handler is running or whose reply is not yet
-/// written, cancelled requests' included until their handler finishes. The
-/// same as the stdio transport's cap on requests awaiting a reply, which
-/// counts only requests not cancelled.
+/// written, cancelled requests' included until their handler finishes and
+/// their reply is dropped. The same as the stdio transport's cap on
+/// requests awaiting a reply, which counts only requests not cancelled.
 pub const MAX_RUNNING_HANDLERS: usize = 1024;
 
 /// The code of the error answering a request over the cap: the one the
@@ -54,6 +72,10 @@ const SERVER_BUSY: ErrorCode = ErrorCode(-32000);
 
 /// Why a request over the cap is refused, as reported to the client.
 pub const OVER_BUDGET: &str = "too many requests are still being handled, cancelled ones included";
+
+/// Why a request whose handler panicked is answered with an error, as
+/// reported to the client. What the panic said is logged, not sent.
+const HANDLER_PANICKED: &str = "the request's handler panicked";
 
 /// The places under [`MAX_RUNNING_HANDLERS`], shared by the transport and
 /// [`HandlerBudget`].
@@ -68,9 +90,16 @@ impl Budget {
     /// A place, if one is free.
     pub fn admit(&self) -> Option<Admission> {
         let permit = Arc::clone(&self.0).try_acquire_owned().ok()?;
-        Some(Admission {
-            _permit: Arc::new(permit),
-        })
+        Some(Admission(Arc::new(Place {
+            _permit: permit,
+            cancel: Mutex::new(Cancel::Open(None)),
+        })))
+    }
+
+    /// How many places are free.
+    #[cfg(test)]
+    pub(crate) fn free(&self) -> usize {
+        self.0.available_permits()
     }
 }
 
@@ -81,14 +110,53 @@ impl Default for Budget {
 }
 
 /// A request's place under the [`Budget`], given back once every clone of
-/// it is dropped.
+/// it is dropped, and the way the transport cancels the request's handler
+/// when it keeps the cancellation from rmcp; see the module docs.
 #[derive(Clone)]
-pub struct Admission {
-    _permit: Arc<OwnedSemaphorePermit>,
+pub struct Admission(Arc<Place>);
+
+struct Place {
+    _permit: OwnedSemaphorePermit,
+    cancel: Mutex<Cancel>,
+}
+
+/// Whether the request is cancelled, and what to run when it is.
+enum Cancel {
+    Open(Option<Box<dyn FnOnce() + Send>>),
+    Cancelled,
+}
+
+impl Admission {
+    /// Run `hook` once the request is cancelled: now, if it already is.
+    pub(crate) fn on_cancel(&self, hook: impl FnOnce() + Send + 'static) {
+        let mut cancel = self.0.cancel.lock().unwrap_or_else(PoisonError::into_inner);
+        match &mut *cancel {
+            Cancel::Open(waiting) => *waiting = Some(Box::new(hook)),
+            Cancel::Cancelled => {
+                drop(cancel);
+                hook();
+            }
+        }
+    }
+
+    /// Cancel the request, running the hook given to `on_cancel`, if any.
+    pub(crate) fn cancel(&self) {
+        let hook = {
+            let mut cancel = self.0.cancel.lock().unwrap_or_else(PoisonError::into_inner);
+            match std::mem::replace(&mut *cancel, Cancel::Cancelled) {
+                Cancel::Open(hook) => hook,
+                Cancel::Cancelled => None,
+            }
+        };
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
 }
 
 /// `S`, with each request's handler holding its [`Admission`] until it
-/// finishes; see the module docs.
+/// finishes, and a panic in a handler answered with an error; see the
+/// module docs.
 pub struct HandlerBudget<S> {
     inner: S,
     budget: Budget,
@@ -116,6 +184,11 @@ impl<S: Service<RoleServer>> Service<RoleServer> for HandlerBudget<S> {
             .get::<Admission>()
             .cloned()
             .or_else(|| self.budget.admit());
+        let token = context.ct.clone();
+        if let Some(admission) = &admission {
+            let token = token.clone();
+            admission.on_cancel(move || token.cancel());
+        }
         async move {
             let Some(_admission) = admission else {
                 tracing::warn!(
@@ -128,7 +201,30 @@ impl<S: Service<RoleServer>> Service<RoleServer> for HandlerBudget<S> {
                     Some(OVER_BUDGET.into()),
                 ));
             };
-            self.inner.handle_request(request, context).await
+            // Unwinding is caught at the handler, so the request is still
+            // answered. Its future is dropped with the panic, as rmcp drops
+            // it when it catches none.
+            let handled = AssertUnwindSafe(self.inner.handle_request(request, context))
+                .catch_unwind()
+                .await;
+            let result = handled.unwrap_or_else(|panic| {
+                tracing::error!(
+                    panic = panic_message(&*panic),
+                    "answering a request whose handler panicked with an error"
+                );
+                Err(ErrorData::internal_error(
+                    "Internal error",
+                    Some(HANDLER_PANICKED.into()),
+                ))
+            });
+            if token.is_cancelled() {
+                // No reply is written for a cancelled request, nor once the
+                // session is over. The result is dropped here, under the
+                // place, rather than wait with rmcp to be dropped there.
+                drop(result);
+                return Err(ErrorData::internal_error("Request cancelled", None));
+            }
+            result
         }
     }
 
@@ -149,13 +245,23 @@ impl<S: Service<RoleServer>> Service<RoleServer> for HandlerBudget<S> {
     }
 }
 
+/// What a panic said, when it said it with a string.
+fn panic_message(panic: &(dyn Any + Send)) -> &str {
+    panic
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic without a message")
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use rmcp::model::{
-        CallToolRequestParams, CallToolResponse, CallToolResult, ServerCapabilities, ServerConfig,
+        CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ServerCapabilities,
+        ServerConfig,
     };
     use rmcp::ServerHandler;
     use serde_json::{json, Value};
@@ -165,10 +271,52 @@ mod tests {
     use super::*;
 
     /// A server whose `slow` tool runs until `release` turns true, counted
-    /// in `running` while it does, and whose other tools answer at once.
+    /// in `running` while it does, and whose other tools answer at once,
+    /// but for those of [`Tools`].
     struct Slow {
         running: Arc<AtomicUsize>,
         release: watch::Receiver<bool>,
+        tools: Tools,
+    }
+
+    /// The rest of [`Slow`]'s tools: `hold`, which runs until `hold` turns
+    /// true, counted in `held` while it does, and records in `peak_tasks`
+    /// the most tasks alive as one starts; `panic`, which panics; and
+    /// `big`, which answers with a MiB of text. `cancelled` counts the
+    /// `slow` and `hold` calls that found their token cancelled as they
+    /// finished.
+    struct Tools {
+        held: Arc<AtomicUsize>,
+        hold: watch::Receiver<bool>,
+        peak_tasks: Arc<AtomicUsize>,
+        cancelled: Arc<AtomicUsize>,
+    }
+
+    impl Default for Tools {
+        fn default() -> Self {
+            Self {
+                held: Arc::default(),
+                hold: watch::channel(true).1,
+                peak_tasks: Arc::default(),
+                cancelled: Arc::default(),
+            }
+        }
+    }
+
+    impl Slow {
+        fn new(running: &Arc<AtomicUsize>, release: watch::Receiver<bool>) -> Self {
+            Self {
+                running: Arc::clone(running),
+                release,
+                tools: Tools::default(),
+            }
+        }
+    }
+
+    fn alive_tasks() -> usize {
+        tokio::runtime::Handle::current()
+            .metrics()
+            .num_alive_tasks()
     }
 
     /// One `slow` call in `running`, for as long as its handler runs.
@@ -195,12 +343,30 @@ mod tests {
         async fn call_tool(
             &self,
             request: CallToolRequestParams,
-            _context: RequestContext<RoleServer>,
+            context: RequestContext<RoleServer>,
         ) -> Result<CallToolResponse, ErrorData> {
-            if request.name == "slow" {
-                let _running = Running::new(&self.running);
-                let mut release = self.release.clone();
-                let _ = release.wait_for(|released| *released).await;
+            let tools = &self.tools;
+            let gate = match &*request.name {
+                "slow" => Some((&self.running, &self.release)),
+                "hold" => {
+                    tools.peak_tasks.fetch_max(alive_tasks(), Ordering::SeqCst);
+                    Some((&tools.held, &tools.hold))
+                }
+                "panic" => panic!("a tool that panics"),
+                "big" => {
+                    let text = ContentBlock::text("x".repeat(1 << 20));
+                    return Ok(CallToolResponse::Complete(CallToolResult::success(vec![
+                        text,
+                    ])));
+                }
+                _ => None,
+            };
+            if let Some((count, gate)) = gate {
+                let _running = Running::new(count);
+                let _ = gate.clone().wait_for(|open| *open).await;
+                if context.ct.is_cancelled() {
+                    tools.cancelled.fetch_add(1, Ordering::SeqCst);
+                }
             }
             Ok(CallToolResponse::Complete(CallToolResult::success(vec![])))
         }
@@ -284,15 +450,14 @@ mod tests {
             .metrics()
             .num_alive_tasks();
 
+        let budget = Budget::new();
         let (client, server_end) = tokio::io::duplex(64 * 1024);
         let (read, write) = tokio::io::split(server_end);
-        let served = tokio::spawn(crate::serve_streams(
-            Slow {
-                running: Arc::clone(&running),
-                release: released,
-            },
+        let served = tokio::spawn(crate::serve_under(
+            Slow::new(&running, released),
             read,
             write,
+            budget.clone(),
         ));
         let (client_read, mut client_write) = tokio::io::split(client);
         let (replies_tx, mut replies) = mpsc::unbounded_channel();
@@ -367,12 +532,13 @@ mod tests {
             "{refused}"
         );
 
-        // Once the slow calls finish, every place is free again, and their
-        // replies are never written: a second batch of slow calls, none
-        // cancelled, is all admitted at once, and each is answered with its
-        // result once released.
+        // Once the slow calls finish and their replies are dropped, every
+        // place is free again, and those replies are never written: a second
+        // batch of slow calls, none cancelled, is all admitted at once, and
+        // each is answered with its result once released.
         release.send(true).unwrap();
         until_running(&running, |running| running == 0).await;
+        until_free(&budget).await;
         release.send(false).unwrap();
         let batch = flood + 2..flood + 2 + MAX_RUNNING_HANDLERS;
         let second: String = batch.clone().map(|id| call(id, "slow")).collect();
@@ -425,10 +591,7 @@ mod tests {
         let (client, server_end) = tokio::io::duplex(4 * 1024);
         let (read, write) = tokio::io::split(server_end);
         let served = tokio::spawn(crate::serve_streams(
-            Slow {
-                running: Arc::clone(&running),
-                release: released,
-            },
+            Slow::new(&running, released),
             read,
             write,
         ));
@@ -485,5 +648,213 @@ mod tests {
         client_write.shutdown().await.unwrap();
         served.await.unwrap().unwrap();
         assert!(lines.next_line().await.unwrap().is_none());
+    }
+
+    /// Wait until every place under `budget` is free, or fail after 30 s.
+    async fn until_free(budget: &Budget) {
+        let waited = tokio::time::timeout(Duration::from_secs(30), async {
+            while budget.free() != MAX_RUNNING_HANDLERS {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        assert!(
+            waited.is_ok(),
+            "{} places still taken after 30 s",
+            MAX_RUNNING_HANDLERS - budget.free()
+        );
+    }
+
+    /// A session of `server` under `budget`, past its handshake: the input
+    /// to it, and every reply it writes.
+    struct Session {
+        served: tokio::task::JoinHandle<anyhow::Result<()>>,
+        input: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        replies: mpsc::UnboundedReceiver<Value>,
+    }
+
+    async fn start(server: Slow, budget: &Budget) -> Session {
+        let (client, server_end) = tokio::io::duplex(64 * 1024);
+        let (read, write) = tokio::io::split(server_end);
+        let served = tokio::spawn(crate::serve_under(server, read, write, budget.clone()));
+        let (client_read, mut input) = tokio::io::split(client);
+        let (replies_tx, mut replies) = mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(client_read).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                let _ = replies_tx.send(serde_json::from_str::<Value>(&line).unwrap());
+            }
+        });
+        input.write_all(initialize().as_bytes()).await.unwrap();
+        let initialized = next(&mut replies).await;
+        assert!(initialized["result"].is_object(), "{initialized}");
+        Session {
+            served,
+            input,
+            replies,
+        }
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_cancelled_completions_under_churn_keeps_every_handler_task_under_a_place() {
+        let budget = Budget::new();
+        let running = Arc::new(AtomicUsize::new(0));
+        let (release, released) = watch::channel(false);
+        let (unhold, hold) = watch::channel(false);
+        let mut server = Slow::new(&running, released);
+        server.tools.hold = hold;
+        let held = Arc::clone(&server.tools.held);
+        let peak_tasks = Arc::clone(&server.tools.peak_tasks);
+        let cancelled = Arc::clone(&server.tools.cancelled);
+        let tasks_before = alive_tasks();
+        let mut session = start(server, &budget).await;
+
+        // Cancelled slow calls fill the cap.
+        let fill: String = (1..=MAX_RUNNING_HANDLERS)
+            .map(|id| call(id, "slow") + &cancel(id))
+            .collect();
+        session.input.write_all(fill.as_bytes()).await.unwrap();
+        until_running(&running, |running| running == MAX_RUNNING_HANDLERS).await;
+        assert_eq!(budget.free(), 0);
+
+        // Every one finishes at once, its reply to be dropped, while more
+        // cancelled calls arrive, to a tool that holds them. Each of those
+        // starts only once a place is free, which is once a reply of the
+        // burst has been dropped, not as soon as its handler ended: the
+        // tasks still handing a reply over count under the cap.
+        let flood = 3 * MAX_RUNNING_HANDLERS;
+        let churn: String = (MAX_RUNNING_HANDLERS + 1..=flood)
+            .map(|id| call(id, "hold") + &cancel(id))
+            .collect();
+        release.send(true).unwrap();
+        session.input.write_all(churn.as_bytes()).await.unwrap();
+        let probe = flood + 1;
+        session
+            .input
+            .write_all(call(probe, "fast").as_bytes())
+            .await
+            .unwrap();
+        reply_to(&mut session.replies, probe, flood).await;
+        until_running(&running, |running| running == 0).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        // Each slow handler still saw its request cancelled.
+        assert_eq!(cancelled.load(Ordering::SeqCst), MAX_RUNNING_HANDLERS);
+        let holding = held.load(Ordering::SeqCst);
+        assert!(holding > 0, "no held call started after the burst");
+        assert_eq!(
+            budget.free(),
+            MAX_RUNNING_HANDLERS - holding,
+            "places taken beyond the {holding} held calls running"
+        );
+        let peak = peak_tasks.load(Ordering::SeqCst);
+        assert!(
+            peak <= tasks_before + MAX_RUNNING_HANDLERS + 32,
+            "{peak} tasks alive as a held call started, {tasks_before} before the session"
+        );
+
+        // Released, the held calls give every place back, and no cancelled
+        // call is ever answered with a result.
+        unhold.send(true).unwrap();
+        until_running(&held, |held| held == 0).await;
+        until_free(&budget).await;
+        assert_eq!(
+            cancelled.load(Ordering::SeqCst),
+            MAX_RUNNING_HANDLERS + holding
+        );
+        let last = probe + 1;
+        session
+            .input
+            .write_all(call(last, "fast").as_bytes())
+            .await
+            .unwrap();
+        let answered = reply_to(&mut session.replies, last, flood).await;
+        assert!(answered["result"].is_object(), "{answered}");
+        session.input.shutdown().await.unwrap();
+        session.served.await.unwrap().unwrap();
+        while let Some(reply) = session.replies.recv().await {
+            assert_flood_refusal(&reply, flood);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_handler_that_panics_is_answered_with_an_internal_error_and_gives_its_place_back() {
+        let budget = Budget::new();
+        let running = Arc::new(AtomicUsize::new(0));
+        let (_release, released) = watch::channel(false);
+        let mut session = start(Slow::new(&running, released), &budget).await;
+        let calls = call(1, "panic") + &call(2, "fast") + &call(3, "panic");
+        session.input.write_all(calls.as_bytes()).await.unwrap();
+        let mut replies = std::collections::BTreeMap::new();
+        for _ in 0..3 {
+            let reply = next(&mut session.replies).await;
+            replies.insert(reply["id"].as_u64().unwrap(), reply);
+        }
+        for id in [1, 3] {
+            let reply = &replies[&id];
+            assert_eq!(reply["error"]["code"], json!(-32603), "{reply}");
+            assert_eq!(
+                reply["error"]["message"],
+                json!("Internal error"),
+                "{reply}"
+            );
+            assert_eq!(reply["error"]["data"], json!(HANDLER_PANICKED), "{reply}");
+        }
+        assert!(replies[&2]["result"].is_object(), "{}", replies[&2]);
+        until_free(&budget).await;
+
+        // The session goes on.
+        session
+            .input
+            .write_all(call(4, "fast").as_bytes())
+            .await
+            .unwrap();
+        let reply = next(&mut session.replies).await;
+        assert_eq!(reply["id"], json!(4), "{reply}");
+        assert!(reply["result"].is_object(), "{reply}");
+        session.input.shutdown().await.unwrap();
+        session.served.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_end_of_input_ends_the_session_and_frees_every_place_while_stdout_goes_unread() {
+        let budget = Budget::new();
+        let running = Arc::new(AtomicUsize::new(0));
+        let (_release, released) = watch::channel(false);
+        let (client, server_end) = tokio::io::duplex(4 * 1024);
+        let (read, write) = tokio::io::split(server_end);
+        let served = tokio::spawn(crate::serve_under(
+            Slow::new(&running, released),
+            read,
+            write,
+            budget.clone(),
+        ));
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let mut lines = BufReader::new(client_read).lines();
+        client_write
+            .write_all(initialize().as_bytes())
+            .await
+            .unwrap();
+        let initialized: Value =
+            serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+        assert_eq!(initialized["id"], json!(0), "{initialized}");
+
+        // Replies far bigger than the pipe, which the client leaves unread
+        // and open as it ends its input.
+        let calls: String = (1..=4).map(|id| call(id, "big")).collect();
+        client_write.write_all(calls.as_bytes()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(budget.free(), MAX_RUNNING_HANDLERS - 4);
+        client_write.shutdown().await.unwrap();
+
+        // rmcp waits 5 s for the replies, then closes the transport, which
+        // gives them up rather than wait on the writer they hold.
+        tokio::time::timeout(Duration::from_secs(30), served)
+            .await
+            .expect("the session outlived its input behind an unread stdout")
+            .unwrap()
+            .unwrap();
+        until_free(&budget).await;
+        drop(lines);
     }
 }

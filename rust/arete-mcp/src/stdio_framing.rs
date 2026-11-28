@@ -33,16 +33,30 @@
 //! same way with a `Duplicate request id` error (code -32600, an invalid
 //! request): it takes no room in the budget, and the request it repeats
 //! keeps its framing. The id is free again once that request is answered
-//! or cancelled.
+//! or cancelled; for a request cancelled under a [`Budget`], once its reply
+//! has come back (see below).
 //!
 //! Given a [`Budget`] ([`StdioTransport::with_budget`]), the transport also
 //! takes a place under it for each request it passes on, and answers a
 //! request it finds no place for with a `Server busy` error the same way,
 //! before any further input is read. The place rides on the request to its
 //! handler, which holds it until it finishes, and the transport holds it
-//! until the request's reply is written, or until the request is cancelled,
-//! so a cancelled request whose handler runs on, and a reply waiting on
-//! stdout, both keep theirs; see [`crate::handler_budget`].
+//! until the request's reply is written, so a reply waiting on stdout keeps
+//! its place; see [`crate::handler_budget`]. A request's cancellation is
+//! not passed on then: the transport cancels the request through its place,
+//! and keeps that place until the reply comes back from the handler, then
+//! drops the reply unwritten. (The service so never hears of cancellations
+//! as notifications; its handlers see their token cancelled, as rmcp would
+//! have done.) So a cancelled request
+//! whose handler runs on, or whose reply is on its way back, keeps its
+//! place too, and its id counts as awaiting a reply until then: a request
+//! repeating it is answered with a `Duplicate request id` error, as the
+//! reply to come could not be told from the repeat's.
+//!
+//! Closing the transport gives up the replies still being written, or
+//! waiting to be: rmcp closes it once it has stopped waiting for them, and
+//! a reply stuck on a stdout the client no longer reads must not hold the
+//! transport, and the places of the replies behind it, open.
 //!
 //! A line longer than [`MAX_MESSAGE_BYTES`], newline included, is dropped
 //! and logged, and so is a framed body longer than that: its bytes are
@@ -69,7 +83,7 @@ use rmcp::transport::Transport;
 use rmcp::RoleServer;
 use serde_json::error::Category;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 
 use crate::handler_budget::{Admission, Budget, OVER_BUDGET};
 
@@ -143,6 +157,11 @@ pub struct StdioTransport<R, W> {
     budget: Option<Budget>,
     /// The place of each request in `requests` taken under `budget`.
     admissions: HashMap<RequestId, Admission>,
+    /// The place of each request cancelled while it held one, until its
+    /// reply comes back to be dropped; see the module docs.
+    cancelled: HashMap<RequestId, Admission>,
+    /// Set by `close`, which gives up every reply still being written.
+    closing: watch::Sender<bool>,
     last_seen: Framing,
 }
 
@@ -236,6 +255,8 @@ where
             id_bytes: 0,
             budget: None,
             admissions: HashMap::new(),
+            cancelled: HashMap::new(),
+            closing: watch::Sender::new(false),
             last_seen: Framing::Ndjson,
         }
     }
@@ -355,16 +376,19 @@ where
     }
 
     /// Remember the framing of a request, and forget a cancelled one: it is
-    /// never answered. `false` for a request that is not passed on but
-    /// answered here: one over the budget, or one whose id is already
-    /// awaiting a reply. JSON-RPC 2.0 wants an id unique among those, so
-    /// the repeat is an invalid request (code -32600) rather than a busy
-    /// server's; it takes no room in the budget, and the request it repeats
-    /// keeps its framing.
+    /// never answered. `false` for a message that is not passed on: a
+    /// request answered here, which is one over the budget or one whose id
+    /// is already awaiting a reply, or, under a budget, the cancellation of
+    /// a request, which is cancelled here instead. JSON-RPC 2.0 wants
+    /// an id unique among those awaiting a reply, so the repeat is an
+    /// invalid request (code -32600) rather than a busy server's; it takes
+    /// no room in the budget, and the request it repeats keeps its framing.
     fn track(&mut self, message: &mut ClientJsonRpcMessage, framing: Framing) -> bool {
         match message {
             JsonRpcMessage::Request(request) => {
-                if self.requests.iter().any(|(id, _)| *id == request.id) {
+                let repeat = self.requests.iter().any(|(id, _)| *id == request.id)
+                    || self.cancelled.contains_key(&request.id);
+                if repeat {
                     tracing::debug!(
                         "answering a request whose id is already awaiting a reply with an error"
                     );
@@ -421,7 +445,18 @@ where
                 {
                     if let Some(id) = &cancelled.params.request_id {
                         self.untrack(id);
-                        self.admissions.remove(id);
+                        // rmcp would drop the reply of a request it saw
+                        // cancelled where the place could not follow it: the
+                        // place is kept here until the reply comes back.
+                        if let Some(admission) = self.admissions.remove(id) {
+                            admission.cancel();
+                            self.cancelled.insert(id.clone(), admission);
+                        }
+                        // Under a budget, every request rmcp could cancel
+                        // holds a place here until its reply comes back, so
+                        // passing the cancellation on would only start a
+                        // task for it.
+                        return self.budget.is_none();
                     }
                 }
             }
@@ -457,16 +492,37 @@ where
             JsonRpcMessage::Error(error) => error.id.as_ref(),
             JsonRpcMessage::Request(_) | JsonRpcMessage::Notification(_) => None,
         };
-        let answered = id.and_then(|id| self.untrack(id));
-        // The request keeps its place under the budget until its reply is
-        // written, so replies waiting on stdout are bounded too.
-        let admission = id.and_then(|id| self.admissions.remove(id));
-        let frame = encode(&item, answered.unwrap_or(self.last_seen));
+        // The reply to a request cancelled under a place is dropped, and the
+        // place with it.
+        let discarded = id.and_then(|id| self.cancelled.remove(id));
+        let (frame, admission) = match discarded {
+            Some(admission) => {
+                tracing::debug!("dropping the reply to a cancelled request");
+                (None, Some(admission))
+            }
+            None => {
+                let answered = id.and_then(|id| self.untrack(id));
+                // The request keeps its place under the budget until its
+                // reply is written, so replies waiting on stdout are bounded
+                // too.
+                let admission = id.and_then(|id| self.admissions.remove(id));
+                let frame = encode(&item, answered.unwrap_or(self.last_seen));
+                (Some(frame), admission)
+            }
+        };
         let write = Arc::clone(&self.write);
+        let closing = self.closing.subscribe();
         async move {
             let _admission = admission;
+            let Some(frame) = frame else {
+                return Ok(());
+            };
             let frame = frame?;
-            write.lock().await.write_frame(frame).await
+            tokio::select! {
+                biased;
+                () = closed_by(closing) => Err(closed()),
+                written = async { write.lock().await.write_frame(frame).await } => written,
+            }
         }
     }
 
@@ -568,13 +624,26 @@ where
     }
 
     async fn close(&mut self) -> io::Result<()> {
+        // Every reply still written, or waiting for the writer, gives up:
+        // the one holding the writer lets go of it, so the stream can be
+        // dropped however long the client leaves stdout unread.
+        self.closing.send_replace(true);
         drop(self.write.lock().await.stream.take());
+        self.admissions.clear();
+        self.cancelled.clear();
         Ok(())
     }
 }
 
 fn closed() -> io::Error {
     io::Error::new(io::ErrorKind::NotConnected, "Transport is closed")
+}
+
+/// Once `closing` turns true; never if the transport is dropped unclosed.
+async fn closed_by(mut closing: watch::Receiver<bool>) {
+    if closing.wait_for(|closing| *closing).await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }
 
 /// A `Parse error`, with why as its `data`.
@@ -835,6 +904,7 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt, ReadBuf};
 
     use super::*;
+    use crate::handler_budget::MAX_RUNNING_HANDLERS;
 
     const PARSE_ERROR: i64 = -32700;
     const INVALID_REQUEST: i64 = -32600;
@@ -1901,6 +1971,110 @@ mod tests {
             );
             assert_eq!(transport.id_bytes, 1);
         }
+    }
+
+    /// The place riding on `message`, a request taken under a budget.
+    fn admission_of(message: &ClientJsonRpcMessage) -> Admission {
+        let JsonRpcMessage::Request(request) = message else {
+            panic!("not a request: {message:?}");
+        };
+        request
+            .request
+            .extensions()
+            .get::<Admission>()
+            .unwrap()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_request_keeps_its_place_and_id_until_its_reply_comes_back_to_be_dropped() {
+        let budget = Budget::new();
+        let input = [
+            line(&ping(1)),
+            line(&ping(2)),
+            framed(&cancel(1)),
+            line(&cancel(1)),
+            line(&ping(1)),
+            line(&ping(3)),
+        ]
+        .concat();
+        let (mut stdin, read) = tokio::io::duplex(1024);
+        let (mut client, server) = tokio::io::duplex(64 * 1024);
+        let (_, write) = tokio::io::split(server);
+        let mut transport = StdioTransport::new(read, write).with_budget(budget.clone());
+        stdin.write_all(&input).await.unwrap();
+        let first = transport.receive().await.unwrap();
+        let handler = admission_of(&first);
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let seen = Arc::clone(&cancelled);
+        handler.on_cancel(move || seen.store(true, std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 2);
+
+        // Neither cancellation is passed on, but the request is cancelled
+        // through its place; the repeat of its id is refused, and the next
+        // request passed on.
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 3);
+        assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
+        let replies = read_replies(&mut client, 1).await;
+        assert_eq!(replies[0].1["id"], json!(1));
+        assert_eq!(
+            replies[0].1["error"]["message"],
+            json!("Duplicate request id")
+        );
+        assert_eq!(
+            transport
+                .requests
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>(),
+            [RequestId::Number(2), RequestId::Number(3)]
+        );
+
+        // The handler finishing gives back no place: the transport holds it
+        // until the reply comes back, then drops the reply unwritten.
+        drop(first);
+        drop(handler);
+        assert_eq!(budget.free(), MAX_RUNNING_HANDLERS - 3);
+        transport.send(reply(1)).await.unwrap();
+        assert_eq!(budget.free(), MAX_RUNNING_HANDLERS - 2);
+        transport.send(reply(2)).await.unwrap();
+        assert_eq!(budget.free(), MAX_RUNNING_HANDLERS - 1);
+        let replies = read_replies(&mut client, 1).await;
+        assert_eq!(replies[0].1["id"], json!(2));
+        assert!(replies[0].1["result"].is_object(), "{}", replies[0].1);
+
+        // The id is free again.
+        stdin.write_all(&line(&ping(1))).await.unwrap();
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+    }
+
+    #[tokio::test]
+    async fn closing_gives_up_replies_stuck_on_an_unread_stdout_and_their_places() {
+        let budget = Budget::new();
+        let input = [line(&ping(1)), line(&ping(2))].concat();
+        // Too small for one reply, and never read.
+        let (_client, server) = tokio::io::duplex(16);
+        let (_, write) = tokio::io::split(server);
+        let mut transport =
+            StdioTransport::new(input.as_slice(), write).with_budget(budget.clone());
+        transport.receive().await.unwrap();
+        transport.receive().await.unwrap();
+        assert!(transport.receive().await.is_none());
+        let stuck = tokio::spawn(transport.send(reply(1)));
+        let behind = tokio::spawn(transport.send(reply(2)));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!stuck.is_finished() && !behind.is_finished());
+        assert_eq!(budget.free(), MAX_RUNNING_HANDLERS - 2);
+
+        tokio::time::timeout(Duration::from_secs(5), transport.close())
+            .await
+            .expect("close waited on a reply stuck on stdout")
+            .unwrap();
+        for send in [stuck, behind] {
+            let error = send.await.unwrap().unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::NotConnected, "{error}");
+        }
+        assert_eq!(budget.free(), MAX_RUNNING_HANDLERS);
     }
 
     const INITIALIZE: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"framing-test","version":"0"}}}"#;
