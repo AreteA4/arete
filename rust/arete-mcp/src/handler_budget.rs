@@ -324,17 +324,31 @@ mod tests {
             "{refused}"
         );
 
-        // Once the slow calls finish, their places are free again, and
-        // their replies are never written.
+        // Once the slow calls finish, every place is free again, and their
+        // replies are never written: a second batch of slow calls, none
+        // cancelled, is all admitted at once, and each is answered with its
+        // result once released.
         release.send(true).unwrap();
         until_running(&running, |running| running == 0).await;
-        let fast = flood + 2;
-        client_write
-            .write_all(call(fast, "fast").as_bytes())
-            .await
-            .unwrap();
-        let answered = reply_to(&mut replies, fast, flood).await;
-        assert!(answered["result"].is_object(), "{answered}");
+        release.send(false).unwrap();
+        let batch = flood + 2..flood + 2 + MAX_RUNNING_HANDLERS;
+        let second: String = batch.clone().map(|id| call(id, "slow")).collect();
+        client_write.write_all(second.as_bytes()).await.unwrap();
+        until_running(&running, |running| running == MAX_RUNNING_HANDLERS).await;
+        release.send(true).unwrap();
+        let mut answered = std::collections::BTreeSet::new();
+        while answered.len() < MAX_RUNNING_HANDLERS {
+            let reply = next(&mut replies).await;
+            let id = reply["id"].as_u64().map(|id| id as usize);
+            match id.filter(|id| batch.contains(id)) {
+                Some(id) => {
+                    assert!(reply["result"].is_object(), "{reply}");
+                    assert!(answered.insert(id), "answered twice: {reply}");
+                }
+                None => assert_flood_refusal(&reply, flood),
+            }
+        }
+        until_running(&running, |running| running == 0).await;
 
         client_write.shutdown().await.unwrap();
         served.await.unwrap().unwrap();
