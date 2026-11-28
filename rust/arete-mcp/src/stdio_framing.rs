@@ -49,9 +49,10 @@
 //! as notifications; its handlers see their token cancelled, as rmcp would
 //! have done.) So a cancelled request
 //! whose handler runs on, or whose reply is on its way back, keeps its
-//! place too, and its id counts as awaiting a reply until then: a request
-//! repeating it is answered with a `Duplicate request id` error, as the
-//! reply to come could not be told from the repeat's.
+//! place too, and its id counts as awaiting a reply until then, toward
+//! [`MAX_OUTSTANDING_ID_BYTES`] as well: a request repeating it is answered
+//! with a `Duplicate request id` error, as the reply to come could not be
+//! told from the repeat's.
 //!
 //! Closing the transport gives up the replies still being written, or
 //! waiting to be: rmcp closes it once it has stopped waiting for them, and
@@ -151,7 +152,8 @@ pub struct StdioTransport<R, W> {
     closed: bool,
     /// The framing of every request still awaiting its reply, oldest first.
     requests: VecDeque<(RequestId, Framing)>,
-    /// What the ids in `requests` count toward [`MAX_OUTSTANDING_ID_BYTES`].
+    /// What the ids in `requests` and `cancelled` count toward
+    /// [`MAX_OUTSTANDING_ID_BYTES`].
     id_bytes: usize,
     /// The places requests are passed on under, if any; see `with_budget`.
     budget: Option<Budget>,
@@ -450,6 +452,8 @@ where
                         // place is kept here until the reply comes back.
                         if let Some(admission) = self.admissions.remove(id) {
                             admission.cancel();
+                            // Its id is still held, so its bytes still count.
+                            self.id_bytes += id_bytes(id);
                             self.cancelled.insert(id.clone(), admission);
                         }
                         // Under a budget, every request rmcp could cancel
@@ -494,10 +498,11 @@ where
         };
         // The reply to a request cancelled under a place is dropped, and the
         // place with it.
-        let discarded = id.and_then(|id| self.cancelled.remove(id));
+        let discarded = id.and_then(|id| Some((id, self.cancelled.remove(id)?)));
         let (frame, admission) = match discarded {
-            Some(admission) => {
+            Some((id, admission)) => {
                 tracing::debug!("dropping the reply to a cancelled request");
+                self.id_bytes -= id_bytes(id);
                 (None, Some(admission))
             }
             None => {
@@ -630,7 +635,9 @@ where
         self.closing.send_replace(true);
         drop(self.write.lock().await.stream.take());
         self.admissions.clear();
-        self.cancelled.clear();
+        for (id, _) in self.cancelled.drain() {
+            self.id_bytes -= id_bytes(&id);
+        }
         Ok(())
     }
 }
@@ -2046,6 +2053,30 @@ mod tests {
         // The id is free again.
         stdin.write_all(&line(&ping(1))).await.unwrap();
         assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_string_id_counts_toward_the_id_byte_budget_until_its_reply_is_dropped() {
+        let request = |id: &str| format!(r#"{{"jsonrpc":"2.0","id":"{id}","method":"ping"}}"#);
+        let cancel = |id: &str| {
+            format!(
+                r#"{{"jsonrpc":"2.0","method":"notifications/cancelled","params":{{"requestId":"{id}"}}}}"#
+            )
+        };
+        let input = [line(&request("abc")), line(&cancel("abc")), line(&ping(1))].concat();
+        let (_client, server) = tokio::io::duplex(64 * 1024);
+        let (_, write) = tokio::io::split(server);
+        let mut transport = StdioTransport::new(input.as_slice(), write).with_budget(Budget::new());
+        transport.receive().await.unwrap();
+        assert_eq!(transport.id_bytes, 3);
+        assert_eq!(request_id(&transport.receive().await.unwrap()), 1);
+        assert_eq!(transport.id_bytes, 3, "the cancelled id stopped counting");
+        let dropped = ServerJsonRpcMessage::response(
+            ServerResult::empty(()),
+            RequestId::String("abc".into()),
+        );
+        transport.send(dropped).await.unwrap();
+        assert_eq!(transport.id_bytes, 0);
     }
 
     #[tokio::test]

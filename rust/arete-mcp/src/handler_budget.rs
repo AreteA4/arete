@@ -202,11 +202,13 @@ impl<S: Service<RoleServer>> Service<RoleServer> for HandlerBudget<S> {
                 ));
             };
             // Unwinding is caught at the handler, so the request is still
-            // answered. Its future is dropped with the panic, as rmcp drops
-            // it when it catches none.
-            let handled = AssertUnwindSafe(self.inner.handle_request(request, context))
-                .catch_unwind()
-                .await;
+            // answered: while its future is made as well as while it runs.
+            // The future is dropped with the panic, as rmcp drops it when it
+            // catches none.
+            let handled =
+                AssertUnwindSafe(async move { self.inner.handle_request(request, context).await })
+                    .catch_unwind()
+                    .await;
             let result = handled.unwrap_or_else(|panic| {
                 tracing::error!(
                     panic = panic_message(&*panic),
@@ -814,6 +816,67 @@ mod tests {
         assert!(reply["result"].is_object(), "{reply}");
         session.input.shutdown().await.unwrap();
         session.served.await.unwrap().unwrap();
+    }
+
+    /// [`Slow`], but a tool call panics before its handler's future is made.
+    struct PanicsEarly(Slow);
+
+    impl Service<RoleServer> for PanicsEarly {
+        fn handle_request(
+            &self,
+            request: <RoleServer as ServiceRole>::PeerReq,
+            context: RequestContext<RoleServer>,
+        ) -> impl Future<Output = Result<<RoleServer as ServiceRole>::Resp, ErrorData>>
+               + MaybeSendFuture
+               + '_ {
+            if matches!(request, rmcp::model::ClientRequest::CallToolRequest(_)) {
+                panic!("a handler that panics before its future is made");
+            }
+            Service::handle_request(&self.0, request, context)
+        }
+
+        fn handle_notification(
+            &self,
+            notification: <RoleServer as ServiceRole>::PeerNot,
+            context: NotificationContext<RoleServer>,
+        ) -> impl Future<Output = Result<(), ErrorData>> + MaybeSendFuture + '_ {
+            Service::handle_notification(&self.0, notification, context)
+        }
+
+        fn get_info(&self) -> <RoleServer as ServiceRole>::Info {
+            Service::get_info(&self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_handler_that_panics_before_its_future_is_made_is_answered_too() {
+        let budget = Budget::new();
+        let running = Arc::new(AtomicUsize::new(0));
+        let (_release, released) = watch::channel(false);
+        let (client, server_end) = tokio::io::duplex(64 * 1024);
+        let (read, write) = tokio::io::split(server_end);
+        let served = tokio::spawn(crate::serve_under(
+            PanicsEarly(Slow::new(&running, released)),
+            read,
+            write,
+            budget.clone(),
+        ));
+        let (client_read, mut client_write) = tokio::io::split(client);
+        let mut lines = BufReader::new(client_read).lines();
+        let input = initialize() + &call(1, "fast");
+        client_write.write_all(input.as_bytes()).await.unwrap();
+        for id in [0, 1] {
+            let reply: Value =
+                serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+            assert_eq!(reply["id"], json!(id), "{reply}");
+            if id == 1 {
+                assert_eq!(reply["error"]["code"], json!(-32603), "{reply}");
+                assert_eq!(reply["error"]["data"], json!(HANDLER_PANICKED), "{reply}");
+            }
+        }
+        until_free(&budget).await;
+        client_write.shutdown().await.unwrap();
+        served.await.unwrap().unwrap();
     }
 
     #[tokio::test]
