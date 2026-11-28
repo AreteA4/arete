@@ -69,7 +69,7 @@ Install the prebuilt, signed `a4` binary (no Rust toolchain or account needed):
 
 ```bash
 curl -fsSL https://arete.run/install.sh | sh        # macOS / Linux
-irm https://arete.run/install.ps1 | iex             # Windows PowerShell
+irm https://docs.arete.run/install.ps1 | iex        # Windows PowerShell
 npx @usearete/a4 install                            # if you prefer npm
 ```
 

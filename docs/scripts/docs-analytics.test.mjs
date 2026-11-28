@@ -87,7 +87,7 @@ test("copied install and CLI snippets are classified, other code is not", () => 
     },
   );
   assert.equal(
-    classifyCopiedSnippet("irm https://arete.run/install.ps1 | iex")
+    classifyCopiedSnippet("irm https://docs.arete.run/install.ps1 | iex")
       ?.snippet_kind,
     "install_script",
   );

@@ -26,7 +26,7 @@ MCP configuration for the detected host) and runs `a4 doctor`. Signup comes
 first so `a4 init` installs only the account's skills. To do it by hand:
 
 ```bash
-curl -fsSL https://arete.run/install.sh | sh     # Windows: irm https://arete.run/install.ps1 | iex
+curl -fsSL https://arete.run/install.sh | sh     # Windows: irm https://docs.arete.run/install.ps1 | iex
 a4 --profile agent auth signup --if-missing --json
 a4 init -y
 a4 doctor --summary --json
