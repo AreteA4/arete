@@ -96,7 +96,16 @@ where
     R: AsyncRead + Send + Unpin + 'static,
     W: AsyncWrite + Send + Unpin + 'static,
 {
-    let budget = Budget::new();
+    serve_under(server, read, write, Budget::new()).await
+}
+
+/// [`serve_streams`], under `budget`.
+async fn serve_under<S, R, W>(server: S, read: R, write: W, budget: Budget) -> anyhow::Result<()>
+where
+    S: Service<RoleServer>,
+    R: AsyncRead + Send + Unpin + 'static,
+    W: AsyncWrite + Send + Unpin + 'static,
+{
     let transport = StdioTransport::new(read, write).with_budget(budget.clone());
     let service = HandlerBudget::new(server, budget).serve(transport).await?;
     service.waiting().await?;

@@ -18,7 +18,18 @@ pub fn run(args: McpArgs) -> Result<()> {
         .enable_all()
         .build()
         .context("Failed to start the async runtime for a4 mcp")?;
-    runtime.block_on(arete_mcp::serve_stdio_with(Some(std::sync::Arc::new(
+    let served = runtime.block_on(arete_mcp::serve_stdio_with(Some(std::sync::Arc::new(
         crate::project::sdk_references::ProjectSdkReferences,
-    ))))
+    ))));
+    // Tokio writes stdout from a blocking thread, and a write to a pipe the
+    // client keeps open but never reads blocks it for good. The session has
+    // given up on such a reply by now, but dropping the runtime would wait
+    // for that thread forever: wait a moment for blocking work, then leave
+    // whatever is still stuck to the end of the process.
+    runtime.shutdown_timeout(SHUTDOWN_GRACE);
+    served
 }
+
+/// How long the end of `a4 mcp` waits for blocking work still running,
+/// such as a write to a stdout nobody reads.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(1);

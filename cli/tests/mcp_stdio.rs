@@ -351,3 +351,82 @@ fn a4_mcp_neither_lists_nor_runs_tools_it_removed() {
     assert!(names.contains(&"explore_stack"), "{names:?}");
     assert!(called.get("error").is_some(), "{called}");
 }
+
+#[test]
+fn a4_mcp_exits_once_stdin_closes_while_nobody_reads_stdout() {
+    let home = tempfile::tempdir().expect("home directory");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_a4"))
+        .arg("mcp")
+        .current_dir(home.path())
+        .env("HOME", home.path())
+        .env_remove("ARETE_API_KEY")
+        .env_remove("ARETE_PROFILE")
+        .env_remove("ARETE_CREDENTIALS_PATH")
+        .env("CI", "1")
+        .env("DO_NOT_TRACK", "1")
+        .env("A4_NO_UPDATE_CHECK", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn a4 mcp");
+    let mut stdin = child.stdin.take().expect("child stdin");
+    // Held open and never read, so the replies fill the pipe and a write
+    // to it blocks for good.
+    let stdout = child.stdout.take().expect("child stdout");
+    let stderr = child.stderr.take().expect("child stderr");
+    let stderr_thread = thread::spawn(move || {
+        let mut text = String::new();
+        let _ = BufReader::new(stderr).read_to_string(&mut text);
+        text
+    });
+
+    // The handshake, then far more tool listings than the pipe holds, then
+    // the end of the input. Written apart, so a server that stops reading
+    // cannot block the test.
+    let writer = thread::spawn(move || {
+        let mut input = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "a4-cli-test", "version": "0.0.0" }
+            }
+        })
+        .to_string();
+        input += "\n{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}\n";
+        for id in 1..=64 {
+            input += &format!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"tools/list\"}}\n");
+        }
+        let _ = stdin.write_all(input.as_bytes());
+        let _ = stdin.flush();
+        drop(stdin);
+    });
+
+    // rmcp waits 5 s for replies once the input ends; well past that, the
+    // process must be gone.
+    let deadline = Instant::now() + RESPONSE_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait().expect("poll a4 mcp") {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!(
+                "a4 mcp still running {RESPONSE_TIMEOUT:?} after its input ended with stdout unread; stderr:\n{}",
+                stderr_thread.join().unwrap_or_default()
+            );
+        }
+        thread::sleep(Duration::from_millis(50));
+    };
+    writer.join().expect("input writer");
+    let stderr = stderr_thread.join().unwrap_or_default();
+    assert!(
+        status.success(),
+        "a4 mcp exited with {status}; stderr:\n{stderr}"
+    );
+    drop(stdout);
+}
