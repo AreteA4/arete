@@ -191,19 +191,45 @@ mod tests {
             .expect("the server closed stdout")
     }
 
-    /// Wait until `running` reads `want`, or fail after 30 s.
-    async fn until_running(running: &AtomicUsize, want: usize) {
+    /// Wait until `ready` holds of `running`, or fail after 30 s.
+    async fn until_running(running: &AtomicUsize, ready: impl Fn(usize) -> bool) {
         let waited = tokio::time::timeout(Duration::from_secs(30), async {
-            while running.load(Ordering::SeqCst) != want {
+            while !ready(running.load(Ordering::SeqCst)) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await;
         assert!(
             waited.is_ok(),
-            "{} slow handlers running, not {want}",
+            "still {} slow handlers running after 30 s",
             running.load(Ordering::SeqCst)
         );
+    }
+
+    /// The reply to the request `id`. A cancelled call of the flood may be
+    /// answered on the way: refused, when its handler had no place and
+    /// rmcp took the refusal before the cancellation that followed it, but
+    /// never with a result, as no call that ran is answered once cancelled.
+    async fn reply_to(
+        replies: &mut mpsc::UnboundedReceiver<Value>,
+        id: usize,
+        flood: usize,
+    ) -> Value {
+        loop {
+            let reply = next(replies).await;
+            if reply["id"] == json!(id) {
+                return reply;
+            }
+            assert_flood_refusal(&reply, flood);
+        }
+    }
+
+    fn assert_flood_refusal(reply: &Value, flood: usize) {
+        let in_flood = reply["id"]
+            .as_u64()
+            .is_some_and(|id| (1..=flood as u64).contains(&id));
+        assert!(in_flood, "an unexpected reply: {reply}");
+        assert_eq!(reply["error"]["code"], json!(-32000), "{reply}");
     }
 
     #[tokio::test]
@@ -235,7 +261,7 @@ mod tests {
         });
 
         // The handshake, then every call to the slow tool cancelled right
-        // after it is sent, then a ping.
+        // after it is sent.
         let mut input = line(json!({
             "jsonrpc": "2.0",
             "id": 0,
@@ -247,23 +273,28 @@ mod tests {
             },
         }));
         input += &line(json!({ "jsonrpc": "2.0", "method": "notifications/initialized" }));
-        for id in 1..=flood {
+        // The last few calls are written apart from their cancellations, so
+        // their refusals may well be answered before they are cancelled.
+        let apart = flood - 8;
+        for id in 1..=apart {
             input += &call(id, "slow");
             input += &cancel(id);
         }
-        let ping = flood + 1;
-        input += &line(json!({ "jsonrpc": "2.0", "id": ping, "method": "ping" }));
-        let writer = tokio::spawn(async move {
-            client_write.write_all(input.as_bytes()).await.unwrap();
+        client_write.write_all(input.as_bytes()).await.unwrap();
+        for id in apart + 1..=flood {
             client_write
-        });
-
-        let initialized = next(&mut replies).await;
-        assert_eq!(initialized["id"], json!(0), "{initialized}");
+                .write_all(call(id, "slow").as_bytes())
+                .await
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(5)).await;
+            client_write.write_all(cancel(id).as_bytes()).await.unwrap();
+        }
+        let initialized = reply_to(&mut replies, 0, flood).await;
         assert!(initialized["result"].is_object(), "{initialized}");
-        // No cancelled call is answered, so the next reply is the ping's.
-        let pinged = next(&mut replies).await;
-        // Let every call that was sent start, if it is going to.
+
+        // Every call that is going to start has once the cap is full, the
+        // rest refused; give any left over the time to start, if they can.
+        until_running(&running, |running| running >= MAX_RUNNING_HANDLERS).await;
         tokio::time::sleep(Duration::from_millis(200)).await;
         let started = running.load(Ordering::SeqCst);
         assert_eq!(
@@ -277,28 +308,38 @@ mod tests {
             tasks <= tasks_before + MAX_RUNNING_HANDLERS + 16,
             "{tasks} tasks alive for {MAX_RUNNING_HANDLERS} running handlers"
         );
-        // The ping is refused, as the cancelled calls still running fill
-        // the cap.
-        assert_eq!(pinged["id"], json!(ping), "{pinged}");
-        assert_eq!(pinged["error"]["code"], json!(-32000), "{pinged}");
-        assert_eq!(pinged["error"]["message"], json!("Server busy"), "{pinged}");
+
+        // A call nobody cancels is refused while the cancelled calls still
+        // running fill the cap.
+        let probe = flood + 1;
+        client_write
+            .write_all(call(probe, "fast").as_bytes())
+            .await
+            .unwrap();
+        let refused = reply_to(&mut replies, probe, flood).await;
+        assert_eq!(refused["error"]["code"], json!(-32000), "{refused}");
+        assert_eq!(
+            refused["error"]["message"],
+            json!("Server busy"),
+            "{refused}"
+        );
 
         // Once the slow calls finish, their places are free again, and
         // their replies are never written.
         release.send(true).unwrap();
-        until_running(&running, 0).await;
-        let mut client_write = writer.await.unwrap();
+        until_running(&running, |running| running == 0).await;
         let fast = flood + 2;
         client_write
             .write_all(call(fast, "fast").as_bytes())
             .await
             .unwrap();
-        let answered = next(&mut replies).await;
-        assert_eq!(answered["id"], json!(fast), "{answered}");
+        let answered = reply_to(&mut replies, fast, flood).await;
         assert!(answered["result"].is_object(), "{answered}");
 
         client_write.shutdown().await.unwrap();
         served.await.unwrap().unwrap();
-        assert!(replies.recv().await.is_none());
+        while let Some(reply) = replies.recv().await {
+            assert_flood_refusal(&reply, flood);
+        }
     }
 }
